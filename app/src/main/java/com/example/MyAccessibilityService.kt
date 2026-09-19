@@ -11,14 +11,17 @@ import android.view.accessibility.AccessibilityNodeInfo
 
 /**
  * Production-ready Android Accessibility Service that monitors on-screen ride/order requests
- * (e.g. Rapido Captain, Uber Driver, Ola) and automatically executes an "Accept" action
- * when user-configured criteria (Min Fare, Max Pickup Distance) are satisfied.
+ * from driver apps (specifically Rapido Captain: com.rapido.passenger.driver) and automatically
+ * executes an "Accept" action when user-configured criteria (Min Fare, Max Pickup Distance) are met.
+ *
+ * Includes strict package filtering, event debounce (COOLDOWN_MS), and duplicate offer checking
+ * (lastEvaluatedText) to prevent repeated processing and logging during scrolling or screen updates.
  */
 open class MyAccessibilityService : AccessibilityService() {
 
     companion object {
         const val TAG = "MyAccessibilityService"
-        private const val DEBOUNCE_MS = 2500L
+        const val COOLDOWN_MS = 2000L // 2 seconds delay between checks
 
         @Volatile
         var isServiceRunning: Boolean = false
@@ -31,8 +34,8 @@ open class MyAccessibilityService : AccessibilityService() {
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var isPendingExecution: Boolean = false
-    private var lastExecutionTime: Long = 0L
-    private var lastProcessedContentHash: Int = 0
+    private var lastProcessTime: Long = 0L
+    private var lastEvaluatedText: String = ""
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -41,7 +44,7 @@ open class MyAccessibilityService : AccessibilityService() {
         Log.d(TAG, "Accessibility Service connected and operational.")
         AppSettings.addLog(
             title = "Service Connected",
-            message = "Ride Auto-Accept Accessibility Service is active and monitoring screen events.",
+            message = "Rapido Captain Auto-Accept Accessibility Service is active and monitoring.",
             severity = LogSeverity.INFO
         )
         broadcastLog("Accessibility Service started and monitoring events.")
@@ -69,7 +72,13 @@ open class MyAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        // 1. Monitor required event types
+        // 1. Strict Package Check: Trigger on Rapido Captain App or in-app testing
+        val eventPackage = event.packageName?.toString() ?: ""
+        if (!eventPackage.contains("rapido", ignoreCase = true) && eventPackage != packageName) {
+            return
+        }
+
+        // Only monitor state and content change events
         val eventType = event.eventType
         if (eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
             eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
@@ -77,80 +86,77 @@ open class MyAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 2. Check master switch setting
+        // Check if master switch is enabled
         if (!AppSettings.isAutoAcceptEnabled(this)) {
             return
         }
 
-        // 3. Debounce check: prevent double-clicks or re-triggering while execution is queued
-        val now = System.currentTimeMillis()
-        if (isPendingExecution || (now - lastExecutionTime < DEBOUNCE_MS)) {
+        // Debounce check: skip frequent event spams within cooldown window
+        val currentTime = System.currentTimeMillis()
+        if (isPendingExecution || (currentTime - lastProcessTime < COOLDOWN_MS)) {
             return
         }
 
-        // Retrieve active window root node safely
         val rootNode = rootInActiveWindow ?: return
+        val extractedText = extractAllText(rootNode)
 
-        try {
-            // 4. Quick check: Is there any Accept button/label in the current hierarchy?
-            val hasAcceptButton = containsAcceptNode(rootNode)
-            if (!hasAcceptButton) {
-                recycleNode(rootNode)
-                return
-            }
-
-            // 5. Collect all text from current hierarchy nodes
-            val stringCollector = StringBuilder()
-            collectHierarchyText(rootNode, stringCollector)
-            val combinedText = stringCollector.toString().trim()
-
+        // 2. Duplicate Offer Check: Agar same content hai toh re-evaluate na karein
+        if (extractedText == lastEvaluatedText || extractedText.isBlank()) {
             recycleNode(rootNode)
+            return
+        }
 
-            if (combinedText.isBlank()) return
+        // Processing Logic
+        val offer = TextAnalysisEngine.parse(extractedText)
+        lastEvaluatedText = extractedText
+        lastProcessTime = currentTime
 
-            // Avoid reprocessing the exact same screen content repeatedly
-            val contentHash = combinedText.hashCode()
-            if (contentHash == lastProcessedContentHash && (now - lastExecutionTime < DEBOUNCE_MS * 2)) {
+        evaluateAndAction(offer, rootNode)
+    }
+
+    /**
+     * Evaluates parsed ride offer parameters against configured thresholds
+     * and triggers automatic acceptance if criteria are satisfied.
+     */
+    private fun evaluateAndAction(offer: ParsedRideOffer, rootNode: AccessibilityNodeInfo) {
+        try {
+            // If offer has no detectable fare or distance, skip action
+            if (offer.totalFare == null && offer.pickupDistanceKm == null) {
                 return
             }
 
-            // 6. Parse and evaluate ride parameters through TextAnalysisEngine
-            val parsedOffer = TextAnalysisEngine.parseRideOffer(combinedText)
             val minFare = AppSettings.getMinFare(this)
             val maxPickupDist = AppSettings.getMaxPickupDistance(this)
             val isEnabled = AppSettings.isAutoAcceptEnabled(this)
 
             val evaluation = TextAnalysisEngine.evaluateRideOffer(
-                offer = parsedOffer,
+                offer = offer,
                 minFare = minFare,
                 maxPickupDistance = maxPickupDist,
                 isAutoAcceptEnabled = isEnabled
             )
 
-            // 7. Decision Handling
             if (evaluation.isAccepted) {
                 isPendingExecution = true
-                lastProcessedContentHash = contentHash
 
                 val delayMs = AppSettings.getClickDelayMs(this)
-                val breakdownText = if (parsedOffer.fareBreakdown.size > 1) {
-                    " (${parsedOffer.fareBreakdown.joinToString(" + ") { "₹$it" }})"
+                val breakdownText = if (offer.fareBreakdown.size > 1) {
+                    " (${offer.fareBreakdown.joinToString(" + ") { "₹$it" }})"
                 } else ""
 
                 AppSettings.addLog(
                     title = "Ride Match Found!",
-                    message = "Fare: ₹${parsedOffer.totalFare}$breakdownText, Pickup: ${parsedOffer.pickupDistanceKm}km. Auto-clicking Accept in ${delayMs}ms...",
+                    message = "Fare: ₹${offer.totalFare}$breakdownText, Pickup: ${offer.pickupDistanceKm}km. Auto-clicking Accept in ${delayMs}ms...",
                     severity = LogSeverity.MATCH_ACCEPTED,
                     evaluation = evaluation
                 )
-                broadcastLog("Matched: Fare ₹${parsedOffer.totalFare}, Pickup ${parsedOffer.pickupDistanceKm}km. Accepting in ${delayMs}ms...")
+                broadcastLog("Matched: Fare ₹${offer.totalFare}, Pickup ${offer.pickupDistanceKm}km. Accepting in ${delayMs}ms...")
 
                 mainHandler.postDelayed({
                     executeAcceptClick(evaluation)
                 }, delayMs)
-            } else if (parsedOffer.totalFare != null || parsedOffer.pickupDistanceKm != null) {
-                // Log evaluated ride request that didn't meet thresholds (with debounce)
-                lastProcessedContentHash = contentHash
+            } else {
+                // Log rejected offer without re-triggering
                 AppSettings.addLog(
                     title = "Offer Evaluated (Skipped)",
                     message = evaluation.decisionReason,
@@ -158,8 +164,43 @@ open class MyAccessibilityService : AccessibilityService() {
                     evaluation = evaluation
                 )
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error evaluating accessibility event", e)
+        } finally {
+            recycleNode(rootNode)
+        }
+    }
+
+    /**
+     * Extracts all text and content descriptions from the active node tree.
+     * Recursively traverses nodes with safe node recycling.
+     */
+    private fun extractAllText(node: AccessibilityNodeInfo?): String {
+        if (node == null) return ""
+        val sb = StringBuilder()
+        collectAllTextRecursive(node, sb)
+        return sb.toString().trim()
+    }
+
+    private fun collectAllTextRecursive(node: AccessibilityNodeInfo?, sb: StringBuilder) {
+        if (node == null) return
+
+        val text = node.text
+        if (!text.isNullOrEmpty()) {
+            sb.append(text).append(" ")
+        }
+
+        val desc = node.contentDescription
+        if (!desc.isNullOrEmpty()) {
+            sb.append(desc).append(" ")
+        }
+
+        val childCount = node.childCount
+        for (i in 0 until childCount) {
+            val child = node.getChild(i) ?: continue
+            try {
+                collectAllTextRecursive(child, sb)
+            } finally {
+                recycleNode(child)
+            }
         }
     }
 
@@ -168,7 +209,7 @@ open class MyAccessibilityService : AccessibilityService() {
      */
     private fun executeAcceptClick(evaluation: RideEvaluation) {
         isPendingExecution = false
-        lastExecutionTime = System.currentTimeMillis()
+        lastProcessTime = System.currentTimeMillis()
 
         val rootNode = rootInActiveWindow ?: run {
             Log.w(TAG, "Cannot execute Accept click: rootInActiveWindow is null")
@@ -185,7 +226,7 @@ open class MyAccessibilityService : AccessibilityService() {
                 AppSettings.addLog(
                     title = "Click Failed",
                     message = "Accept node disappeared before click could be delivered.",
-                    severity = LogSeverity.REJECTED,
+                    severity = LogSeverity.WARNING,
                     evaluation = evaluation
                 )
                 return
@@ -221,40 +262,6 @@ open class MyAccessibilityService : AccessibilityService() {
             }
             recycleNode(rootNode)
         }
-    }
-
-    /**
-     * Efficiently checks if any node in the hierarchy displays "Accept".
-     * Cleans up traversed node instances to avoid memory leaks.
-     */
-    private fun containsAcceptNode(root: AccessibilityNodeInfo): Boolean {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(AccessibilityNodeInfo.obtain(root))
-
-        while (queue.isNotEmpty()) {
-            val node = queue.removeFirst()
-
-            val text = node.text?.toString() ?: ""
-            val desc = node.contentDescription?.toString() ?: ""
-
-            if (isAcceptAction(text) || isAcceptAction(desc)) {
-                recycleNode(node)
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
-                }
-                return true
-            }
-
-            val childCount = node.childCount
-            for (i in 0 until childCount) {
-                val child = node.getChild(i)
-                if (child != null) {
-                    queue.add(child)
-                }
-            }
-            recycleNode(node)
-        }
-        return false
     }
 
     /**
@@ -297,32 +304,6 @@ open class MyAccessibilityService : AccessibilityService() {
                 trimmed.equals("Accept Ride", ignoreCase = true) ||
                 trimmed.contains("Swipe to Accept", ignoreCase = true) ||
                 trimmed.contains("Accept", ignoreCase = true)
-    }
-
-    /**
-     * Recursive tree collector gathering text from nodes.
-     * Manages child references and ensures each node is safely recycled.
-     */
-    private fun collectHierarchyText(node: AccessibilityNodeInfo, out: StringBuilder) {
-        val text = node.text?.toString()
-        if (!text.isNullOrBlank()) {
-            out.append(text).append(" ")
-        }
-
-        val desc = node.contentDescription?.toString()
-        if (!desc.isNullOrBlank()) {
-            out.append(desc).append(" ")
-        }
-
-        val childCount = node.childCount
-        for (i in 0 until childCount) {
-            val child = node.getChild(i) ?: continue
-            try {
-                collectHierarchyText(child, out)
-            } finally {
-                recycleNode(child)
-            }
-        }
     }
 
     /**

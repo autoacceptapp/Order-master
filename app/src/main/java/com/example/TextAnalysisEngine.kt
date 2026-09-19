@@ -179,6 +179,8 @@ object TextAnalysisEngine {
     /**
      * Parses the raw screen text into a structured ParsedRideOffer.
      */
+    fun parse(text: String): ParsedRideOffer = parseRideOffer(text)
+
     fun parseRideOffer(text: String): ParsedRideOffer {
         val (totalFare, breakdown) = extractCurrencies(text)
         val (pickupDist, dropDist) = extractRideDistances(text)
