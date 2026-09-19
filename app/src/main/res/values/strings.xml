@@ -1,0 +1,28 @@
+<resources>
+    <string name="app_name">Smart Text Analyzer</string>
+    <string name="filter_title">Minimum Value Filter (₹ / $)</string>
+    <string name="filter_desc">Extracts ₹, Rs., $ patterns (e.g. ₹100 + ₹50, Rs. 150, $75)</string>
+    <string name="filter_condition">requires sum &gt;= this value</string>
+    
+    <string name="accessibility_service_name">Smart Text Notification &amp; Analysis Service</string>
+    <string name="accessibility_service_description">Educational smart accessibility service for notification and on-screen text analysis, evaluating currency values and distance thresholds.</string>
+    
+    <string name="title_filter_settings">Decision Thresholds</string>
+    <string name="label_min_value_filter">Minimum Value Filter (₹ / $)</string>
+    <string name="hint_min_value_filter">e.g. 150</string>
+    <string name="label_max_distance_filter">Maximum Distance Filter (km)</string>
+    <string name="hint_max_distance_filter">e.g. 8.5</string>
+    
+    <string name="label_enable_service_switch">Enable Service Automation</string>
+    <string name="desc_enable_service_switch">Master switch to toggle evaluation and auto-click execution</string>
+    <string name="btn_open_accessibility_settings">Open Accessibility Settings</string>
+    
+    <string name="status_service_active">● Accessibility Service is ACTIVE</string>
+    <string name="status_service_inactive">○ Accessibility Service is INACTIVE (Tap button below to grant permission)</string>
+    
+    <string name="educational_demo_title">Educational Live Sandbox</string>
+    <string name="educational_demo_desc">Test on-screen regex parsing and auto-action directly:</string>
+    <string name="demo_order_text">New Offer: ₹180 + ₹40 • Distance: 4.2 km</string>
+    <string name="demo_accept_button">Accept</string>
+    <string name="demo_result_idle">Tap or edit test offer to evaluate hierarchy</string>
+</resources>
