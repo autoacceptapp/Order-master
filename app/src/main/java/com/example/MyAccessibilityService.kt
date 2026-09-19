@@ -95,68 +95,104 @@ open class MyAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        // 1. Strict Package Check: Trigger on Rapido Captain App (com.rapido.rider) or in-app simulation testing
-        val eventPackage = event.packageName?.toString() ?: ""
-        if (eventPackage != TARGET_PACKAGE &&
-            !eventPackage.contains("rapido", ignoreCase = true) &&
-            eventPackage != packageName
-        ) {
-            return
-        }
-
-        // Only monitor state and content change events
+        // 1. Monitor specified event types: TYPE_WINDOW_STATE_CHANGED, TYPE_WINDOW_CONTENT_CHANGED, TYPE_VIEW_CLICKED
         val eventType = event.eventType
         if (eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+            eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
+            eventType != AccessibilityEvent.TYPE_VIEW_CLICKED
         ) {
             return
         }
 
-        // Check if master switch is enabled
+        // 2. Master switch check: skip if auto-accept is turned off
         if (!AppSettings.isAutoAcceptEnabled(this)) {
             return
         }
 
-        // Debounce check: skip frequent event spams within cooldown window
+        // 3. Debounce check: skip event spams within cooldown window to protect UI thread
         val currentTime = System.currentTimeMillis()
         if (isPendingExecution || (currentTime - lastProcessTime < COOLDOWN_MS)) {
             return
         }
 
-        val rootNode = rootInActiveWindow ?: return
+        // 4. Multi-Window & Overlay Support: Retrieve root nodes across active window and overlays
+        val rootWindows = getAllRootWindows()
+        if (rootWindows.isEmpty()) return
 
-        // =========================================================================
-        // STRICT ACCEPT BUTTON PRE-CHECK:
-        // Before running Regex parsers for fare (₹) or distance (km), perform a strict
-        // check to verify that an actual clickable/actionable "Accept" / "Go" / "Accept Order"
-        // button (or popup action node) exists on the screen.
-        // If no actionable button/popup node is present, immediately return early
-        // WITHOUT running Regex parsers or logging any "Skipped/Rejected" events.
-        // =========================================================================
-        val acceptNode = findAcceptNode(rootNode)
-        if (acceptNode == null) {
-            // Not an active ride popup / offer screen (e.g. earnings history, profile, static text).
-            // Return early silently - NO regex execution, NO log spam.
-            recycleNode(rootNode)
-            return
+        var activeTargetRoot: AccessibilityNodeInfo? = null
+        try {
+            // Check across all active windows and system overlays for an actionable accept button
+            for (root in rootWindows) {
+                val acceptNode = findAcceptNode(root)
+                if (acceptNode != null) {
+                    recycleNode(acceptNode)
+                    activeTargetRoot = root
+                    break
+                }
+            }
+
+            // If no actionable button is present on any screen or overlay, return early silently
+            if (activeTargetRoot == null) {
+                return
+            }
+
+            // 5. Recursive DFS text extraction across node hierarchy
+            val extractedText = extractAllText(activeTargetRoot)
+
+            // Duplicate Offer Check: Skip if exact same content was already evaluated
+            if (extractedText == lastEvaluatedText || extractedText.isBlank()) {
+                return
+            }
+
+            // Processing Logic: Parse offer parameters from extracted screen text
+            val offer = TextAnalysisEngine.parse(extractedText)
+            lastEvaluatedText = extractedText
+            lastProcessTime = currentTime
+
+            @Suppress("DEPRECATION")
+            val rootToPreserve = AccessibilityNodeInfo.obtain(activeTargetRoot)
+            evaluateAndAction(offer, rootToPreserve)
+        } finally {
+            for (root in rootWindows) {
+                recycleNode(root)
+            }
         }
-        // Recycle the pre-check node as rootNode is still held and will be evaluated
-        recycleNode(acceptNode)
+    }
 
-        val extractedText = extractAllText(rootNode)
+    /**
+     * Traversal logic that checks both rootInActiveWindow and loops through windows using
+     * window.root (for API level 21+) to capture text and nodes from background overlays,
+     * floating dialogs, and SYSTEM_ALERT_WINDOW overlays.
+     */
+    fun getAllRootWindows(): List<AccessibilityNodeInfo> {
+        val rootList = mutableListOf<AccessibilityNodeInfo>()
+        val seenWindowIds = mutableSetOf<Int>()
 
-        // Duplicate Offer Check: Skip if exact same content was already evaluated
-        if (extractedText == lastEvaluatedText || extractedText.isBlank()) {
-            recycleNode(rootNode)
-            return
+        // 1. Check primary active window root
+        val activeRoot = rootInActiveWindow
+        if (activeRoot != null) {
+            rootList.add(activeRoot)
+            seenWindowIds.add(activeRoot.windowId)
         }
 
-        // Processing Logic: Now safe to parse and evaluate because an actionable Accept button is confirmed
-        val offer = TextAnalysisEngine.parse(extractedText)
-        lastEvaluatedText = extractedText
-        lastProcessTime = currentTime
+        // 2. Multi-Window & Overlay Support: loop through windows for system overlays and dialogs (API 21+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            try {
+                val currentWindows = windows
+                for (window in currentWindows) {
+                    if (seenWindowIds.contains(window.id)) {
+                        continue
+                    }
+                    val windowRoot = window.root ?: continue
+                    rootList.add(windowRoot)
+                    seenWindowIds.add(window.id)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error traversing multi-window hierarchy", e)
+            }
+        }
 
-        evaluateAndAction(offer, rootNode)
+        return rootList
     }
 
     /**
@@ -166,7 +202,7 @@ open class MyAccessibilityService : AccessibilityService() {
      */
     private fun evaluateAndAction(offer: ParsedRideOffer, rootNode: AccessibilityNodeInfo) {
         try {
-            // Verify offer has detectable fare and distance indicators
+            // Verify offer has detectable fare or distance indicators
             if (offer.totalFare == null && offer.pickupDistanceKm == null) {
                 return
             }
@@ -220,80 +256,173 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Extracts all text and content descriptions from the active node tree.
-     * Recursively traverses nodes with safe node recycling.
+     * Recursive Depth-First Search (DFS) function that traverses the entire AccessibilityNodeInfo hierarchy.
+     * Retrieves text from both node.text and node.contentDescription fields to ensure no hidden labels
+     * or custom UI elements are missed.
+     * Aggregates all extracted text into a clean string format for downstream logic processing.
+     *
+     * Features:
+     * - DFS tree traversal with depth limit (max 50) and time budget (150ms) to prevent UI thread blocking.
+     * - Extracts both node.text and node.contentDescription cleanly.
+     * - Null-safe child navigation with proper node recycling.
      */
-    private fun extractAllText(node: AccessibilityNodeInfo?): String {
+    fun extractAllText(node: AccessibilityNodeInfo?): String {
         if (node == null) return ""
         val sb = StringBuilder()
-        collectAllTextRecursive(node, sb)
+        val startTime = System.currentTimeMillis()
+        val timeoutMs = 150L // Prevents UI thread blocking during rapid windowContentChanged events
+
+        fun dfs(current: AccessibilityNodeInfo?, depth: Int) {
+            if (current == null || depth > 50) return
+            if (System.currentTimeMillis() - startTime > timeoutMs) {
+                Log.w(TAG, "extractAllText: DFS traversal timeout budget reached ($timeoutMs ms).")
+                return
+            }
+
+            // 1. Retrieve text from node.text
+            val text = current.text
+            if (!text.isNullOrBlank()) {
+                val cleanText = text.toString().trim()
+                if (cleanText.isNotEmpty()) {
+                    sb.append(cleanText).append(" ")
+                }
+            }
+
+            // 2. Retrieve text from node.contentDescription
+            val desc = current.contentDescription
+            if (!desc.isNullOrBlank()) {
+                val cleanDesc = desc.toString().trim()
+                // Avoid duplicate tokens when text and contentDescription are identical
+                if (cleanDesc.isNotEmpty() && !cleanDesc.equals(text?.toString()?.trim(), ignoreCase = true)) {
+                    sb.append(cleanDesc).append(" ")
+                }
+            }
+
+            // 3. Recurse through children (Depth-First Search)
+            val childCount = current.childCount
+            for (i in 0 until childCount) {
+                val child = current.getChild(i) ?: continue
+                try {
+                    dfs(child, depth + 1)
+                } finally {
+                    recycleNode(child)
+                }
+            }
+        }
+
+        dfs(node, 0)
         return sb.toString().trim()
     }
 
-    private fun collectAllTextRecursive(node: AccessibilityNodeInfo?, sb: StringBuilder) {
-        if (node == null) return
-
-        val text = node.text
-        if (!text.isNullOrEmpty()) {
-            sb.append(text).append(" ")
-        }
-
-        val desc = node.contentDescription
-        if (!desc.isNullOrEmpty()) {
-            sb.append(desc).append(" ")
-        }
-
-        val childCount = node.childCount
-        for (i in 0 until childCount) {
-            val child = node.getChild(i) ?: continue
-            try {
-                collectAllTextRecursive(child, sb)
-            } finally {
-                recycleNode(child)
+    /**
+     * Traverses all active and overlay windows, extracting and aggregating all text
+     * across system overlays, floating dialogs, and active app screens.
+     */
+    fun extractAllTextFromAllWindows(): String {
+        val rootWindows = getAllRootWindows()
+        val sb = StringBuilder()
+        try {
+            for (root in rootWindows) {
+                val windowText = extractAllText(root)
+                if (windowText.isNotEmpty()) {
+                    sb.append(windowText).append(" ")
+                }
+            }
+        } finally {
+            for (root in rootWindows) {
+                recycleNode(root)
             }
         }
+        return sb.toString().trim()
+    }
+
+    /**
+     * Generic Click Logic:
+     * Robust matching mechanism for target action keywords (e.g. "Accept", "Auto Accept", "Confirm").
+     * If the matching AccessibilityNodeInfo is clickable (isClickable == true), triggers ACTION_CLICK on that node.
+     * If the node itself is not clickable, recursively walks up the view hierarchy to locate the nearest
+     * clickable parent container and executes ACTION_CLICK on it.
+     *
+     * @param root Optional specific root node to search. If null, searches across rootInActiveWindow
+     *             and all multi-window overlays (window.root).
+     * @return true if an accept button was found and clicked successfully, false otherwise.
+     */
+    fun findAndClickAcceptButton(root: AccessibilityNodeInfo? = null): Boolean {
+        val rootsToSearch = if (root != null) {
+            listOf(root)
+        } else {
+            getAllRootWindows()
+        }
+
+        var clicked = false
+        val shouldRecycleRoots = (root == null)
+
+        try {
+            for (r in rootsToSearch) {
+                val acceptNode = findAcceptNode(r) ?: continue
+                try {
+                    val targetToClick = findClickableParentOrSelf(acceptNode) ?: acceptNode
+                    clicked = targetToClick.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    Log.i(TAG, "findAndClickAcceptButton: Clicked on '${targetToClick.className}', success=$clicked")
+                    if (targetToClick !== acceptNode) {
+                        recycleNode(targetToClick)
+                    }
+                    if (clicked) {
+                        break
+                    }
+                } finally {
+                    recycleNode(acceptNode)
+                }
+            }
+        } finally {
+            if (shouldRecycleRoots) {
+                for (r in rootsToSearch) {
+                    recycleNode(r)
+                }
+            }
+        }
+        return clicked
+    }
+
+    /**
+     * If the node itself is clickable and enabled, returns a reference.
+     * If not clickable, recursively walks up the view hierarchy to locate the nearest clickable parent container.
+     */
+    fun findClickableParentOrSelf(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isClickable && node.isEnabled) {
+            @Suppress("DEPRECATION")
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        var current: AccessibilityNodeInfo? = node.parent
+        var depth = 0
+        val maxDepth = 10
+
+        while (current != null && depth < maxDepth) {
+            if (current.isClickable && current.isEnabled) {
+                return current
+            }
+            val parent = current.parent
+            recycleNode(current)
+            current = parent
+            depth++
+        }
+        current?.let { recycleNode(it) }
+        return null
     }
 
     private fun executeAcceptClick(evaluation: RideEvaluation) {
         isPendingExecution = false
         lastProcessTime = System.currentTimeMillis()
 
-        val rootNode = rootInActiveWindow ?: run {
-            Log.w(TAG, "Cannot execute Accept click: rootInActiveWindow is null")
-            return
-        }
-
-        var acceptNode: AccessibilityNodeInfo? = null
-        var targetClickable: AccessibilityNodeInfo? = null
-
         try {
-            acceptNode = findAcceptNode(rootNode)
-            if (acceptNode == null) {
-                Log.w(TAG, "Accept node was not found during execution phase")
-                AppSettings.addLog(
-                    title = "Click Failed",
-                    message = "Accept node disappeared before click could be delivered.",
-                    severity = LogSeverity.WARNING,
-                    evaluation = evaluation
-                )
-                return
-            }
+            val clickSucceeded = findAndClickAcceptButton()
 
-            // Find nearest clickable container (either the button itself or clickable parent)
-            targetClickable = AccessibilityNodeInfo.obtain(acceptNode)
-            while (targetClickable != null && !targetClickable.isClickable) {
-                val parent = targetClickable.parent
-                recycleNode(targetClickable)
-                targetClickable = parent
-            }
-
-            val finalNode = targetClickable ?: acceptNode
-            val clickSucceeded = finalNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-
-            Log.i(TAG, "Executed ACTION_CLICK on Accept. Success = $clickSucceeded")
+            Log.i(TAG, "Executed accept click via findAndClickAcceptButton. Success = $clickSucceeded")
             AppSettings.addLog(
                 title = if (clickSucceeded) "Order Accepted!" else "Click Attempted",
-                message = "ACTION_CLICK delivered to '${finalNode.className}'. Result = $clickSucceeded",
+                message = if (clickSucceeded) "ACTION_CLICK delivered successfully to Accept button/container."
+                else "Accept button could not be clicked or disappeared.",
                 severity = if (clickSucceeded) LogSeverity.CLICK_EXECUTED else LogSeverity.WARNING,
                 evaluation = evaluation
             )
@@ -304,28 +433,31 @@ open class MyAccessibilityService : AccessibilityService() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Exception while executing accept click", e)
-        } finally {
-            if (targetClickable != null && targetClickable !== acceptNode) {
-                recycleNode(targetClickable)
-            }
-            if (acceptNode != null) {
-                recycleNode(acceptNode)
-            }
-            recycleNode(rootNode)
         }
     }
 
     /**
      * Strict Accept Button Detection:
-     * Finds and returns an actionable "Accept" / "Go" / "Accept Order" node in the hierarchy using Breadth-First Search (BFS).
+     * Finds and returns an actionable "Accept" / "Auto Accept" / "Confirm" node in the hierarchy using Breadth-First Search (BFS).
      * The node or one of its parents must be clickable or actionable to qualify as a valid offer acceptance component.
      * The caller is responsible for recycling the returned node when done.
      */
     fun findAcceptNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
+        @Suppress("DEPRECATION")
         queue.add(AccessibilityNodeInfo.obtain(root))
 
+        val startTime = System.currentTimeMillis()
+        val timeoutMs = 150L
+
         while (queue.isNotEmpty()) {
+            if (System.currentTimeMillis() - startTime > timeoutMs) {
+                while (queue.isNotEmpty()) {
+                    recycleNode(queue.removeFirst())
+                }
+                break
+            }
+
             val node = queue.removeFirst()
 
             val text = node.text?.toString() ?: ""
@@ -356,18 +488,22 @@ open class MyAccessibilityService : AccessibilityService() {
 
     /**
      * Strict verification that text corresponds to an interactive order acceptance action
-     * (e.g. "Accept", "Accept Order", "Accept Ride", "Go", "Swipe to Accept").
+     * (e.g. "Accept", "Auto Accept", "Confirm", "Accept Order", "Accept Ride", "Go", "Swipe to Accept", "Take Ride").
      */
     fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
 
         return trimmed.equals("Accept", ignoreCase = true) ||
+                trimmed.equals("Auto Accept", ignoreCase = true) ||
+                trimmed.equals("Confirm", ignoreCase = true) ||
                 trimmed.equals("Accept Order", ignoreCase = true) ||
                 trimmed.equals("Accept Ride", ignoreCase = true) ||
                 trimmed.equals("Go", ignoreCase = true) ||
                 trimmed.contains("Swipe to Accept", ignoreCase = true) ||
-                trimmed.equals("Take Ride", ignoreCase = true)
+                trimmed.equals("Take Ride", ignoreCase = true) ||
+                trimmed.equals("Confirm Order", ignoreCase = true) ||
+                trimmed.equals("Confirm Ride", ignoreCase = true)
     }
 
     private fun isRapidoAcceptId(viewId: String): Boolean {
@@ -377,7 +513,9 @@ open class MyAccessibilityService : AccessibilityService() {
                 lower.contains("accept_order") ||
                 lower.contains("accept_button") ||
                 lower.contains("accept_ride") ||
-                lower.contains("action_accept")
+                lower.contains("action_accept") ||
+                lower.contains("btn_confirm") ||
+                lower.contains("auto_accept")
     }
 
     /**
@@ -390,7 +528,7 @@ open class MyAccessibilityService : AccessibilityService() {
         // Check parent container
         var current: AccessibilityNodeInfo? = node.parent
         var depth = 0
-        while (current != null && depth < 3) {
+        while (current != null && depth < 5) {
             if (current.isClickable && current.isEnabled) {
                 recycleNode(current)
                 return true

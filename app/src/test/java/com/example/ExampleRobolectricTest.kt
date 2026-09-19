@@ -240,12 +240,18 @@ class ExampleRobolectricTest {
 
         // Valid actionable strings
         assertTrue(service.isAcceptAction("Accept"))
+        assertTrue(service.isAcceptAction("Auto Accept"))
+        assertTrue(service.isAcceptAction("Confirm"))
+        assertTrue(service.isAcceptAction("Confirm Order"))
+        assertTrue(service.isAcceptAction("Confirm Ride"))
         assertTrue(service.isAcceptAction("Accept Order"))
         assertTrue(service.isAcceptAction("Accept Ride"))
         assertTrue(service.isAcceptAction("Go"))
         assertTrue(service.isAcceptAction("Swipe to Accept"))
         assertTrue(service.isAcceptAction("Take Ride"))
         assertTrue(service.isAcceptAction("  accept  "))
+        assertTrue(service.isAcceptAction("  auto accept  "))
+        assertTrue(service.isAcceptAction("  CONFIRM  "))
 
         // Static or irrelevant strings that should NOT trigger evaluation
         assertFalse(service.isAcceptAction("Total Earnings: ₹1,500"))
@@ -254,5 +260,18 @@ class ExampleRobolectricTest {
         assertFalse(service.isAcceptAction("Good Morning"))
         assertFalse(service.isAcceptAction("Gold Captain"))
         assertFalse(service.isAcceptAction(""))
+    }
+
+    @Test
+    fun `test extractAllText and findAndClickAcceptButton null safety`() {
+        val service = MyAccessibilityService()
+
+        // Null node returns empty string safely
+        val text = service.extractAllText(null)
+        assertEquals("", text)
+
+        // findAndClickAcceptButton with null root safely executes without exception
+        val clicked = service.findAndClickAcceptButton(null)
+        assertFalse(clicked)
     }
 }
