@@ -186,4 +186,27 @@ class ExampleRobolectricTest {
         assertEquals(200.0, evalResult.totalCurrency ?: 0.0, 0.001)
         assertEquals(4.2, evalResult.distanceKm ?: 0.0, 0.001)
     }
+
+    @Test
+    fun `test permission status list and permission utils`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val permissionList = PermissionUtils.getPermissionStatusList(context)
+        assertNotNull(permissionList)
+        assertTrue(permissionList.isNotEmpty())
+
+        val criticalItems = permissionList.filter { it.isCritical }
+        assertEquals(3, criticalItems.size) // Accessibility, Overlay, Battery
+        assertTrue(criticalItems.any { it.id == "accessibility" })
+        assertTrue(criticalItems.any { it.id == "overlay" })
+        assertTrue(criticalItems.any { it.id == "battery" })
+
+        // Check helper checkers do not crash
+        assertNotNull(PermissionUtils.areNotificationsEnabled(context))
+        assertNotNull(PermissionUtils.canScheduleExactAlarms(context))
+    }
+
+    @Test
+    fun `test accessibility service target package constant`() {
+        assertEquals("com.rapido.rider", MyAccessibilityService.TARGET_PACKAGE)
+    }
 }

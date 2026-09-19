@@ -8,6 +8,8 @@
 -keep class com.example.SettingsState { *; }
 -keep class com.example.ActivityLogEntry { *; }
 -keep class com.example.LogSeverity { *; }
+-keep class com.example.AppPermissionItem { *; }
+-keep class com.example.PermissionCategory { *; }
 
 # Keep Accessibility Services so Android system can instantiate them via reflection
 -keep class com.example.MyAccessibilityService { *; }

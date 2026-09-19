@@ -11,7 +11,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 
 /**
  * Production-ready Android Accessibility Service that monitors on-screen ride/order requests
- * from driver apps (specifically Rapido Captain: com.rapido.passenger.driver) and automatically
+ * from driver apps (specifically Rapido Captain: com.rapido.rider) and automatically
  * executes an "Accept" action when user-configured criteria (Min Fare, Max Pickup Distance) are met.
  *
  * Maintains BFS tree traversal, clickable parent discovery, event debouncing, duplicate suppression,
@@ -21,6 +21,7 @@ open class MyAccessibilityService : AccessibilityService() {
 
     companion object {
         const val TAG = "MyAccessibilityService"
+        const val TARGET_PACKAGE = "com.rapido.rider"
         const val COOLDOWN_MS = 2000L // 2 seconds delay between checks
 
         @Volatile
@@ -80,9 +81,12 @@ open class MyAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        // 1. Strict Package Check: Trigger on Rapido Captain App or in-app simulation testing
+        // 1. Strict Package Check: Trigger on Rapido Captain App (com.rapido.rider) or in-app simulation testing
         val eventPackage = event.packageName?.toString() ?: ""
-        if (!eventPackage.contains("rapido", ignoreCase = true) && eventPackage != packageName) {
+        if (eventPackage != TARGET_PACKAGE &&
+            !eventPackage.contains("rapido", ignoreCase = true) &&
+            eventPackage != packageName
+        ) {
             return
         }
 

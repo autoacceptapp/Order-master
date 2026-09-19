@@ -31,6 +31,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.ElectricBolt
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -117,11 +119,20 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             CaptainAutoAcceptTheme {
+                var currentScreen by remember { mutableStateOf("dashboard") }
                 val isServiceActive by isServiceActiveFlow.collectAsState()
-                DashboardScreen(
-                    isServiceActive = isServiceActive,
-                    onRefreshStatus = { refreshServiceStatus() }
-                )
+
+                if (currentScreen == "permissions") {
+                    AppSettingsScreen(
+                        onNavigateBack = { currentScreen = "dashboard" }
+                    )
+                } else {
+                    DashboardScreen(
+                        isServiceActive = isServiceActive,
+                        onRefreshStatus = { refreshServiceStatus() },
+                        onNavigateToPermissions = { currentScreen = "permissions" }
+                    )
+                }
             }
         }
     }
@@ -160,12 +171,18 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun DashboardScreen(
     isServiceActive: Boolean,
-    onRefreshStatus: () -> Unit
+    onRefreshStatus: () -> Unit,
+    onNavigateToPermissions: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val settingsState by AppSettings.settingsState.collectAsState()
     val logs by AppSettings.logsFlow.collectAsState()
+
+    // Dynamic check for overlay and battery optimization
+    val isOverlayGranted = remember(isServiceActive) { PermissionUtils.canDrawOverlays(context) }
+    val isBatteryIgnored = remember(isServiceActive) { PermissionUtils.isIgnoringBatteryOptimizations(context) }
+    val isReadyForAutoAccept = isServiceActive && isOverlayGranted && isBatteryIgnored
 
     // Lifecycle observer to trigger refresh whenever ON_RESUME occurs
     DisposableEffect(lifecycleOwner) {
@@ -220,6 +237,16 @@ fun DashboardScreen(
                 },
                 actions = {
                     IconButton(
+                        onClick = onNavigateToPermissions,
+                        modifier = Modifier.testTag("open_permissions_screen_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = "Permissions & System Setup",
+                            tint = if (isReadyForAutoAccept) PrimaryEmerald else MaterialTheme.colorScheme.error
+                        )
+                    }
+                    IconButton(
                         onClick = {
                             onRefreshStatus()
                             Toast.makeText(context, "Status refreshed", Toast.LENGTH_SHORT).show()
@@ -254,6 +281,17 @@ fun DashboardScreen(
                             Toast.makeText(context, "Unable to open Settings: ${e.message}", Toast.LENGTH_SHORT).show()
                         }
                     }
+                )
+            }
+
+            // Quick Permission Overview Card with direct shortcut to Permissions Screen
+            item {
+                PermissionSummaryCard(
+                    isReady = isReadyForAutoAccept,
+                    isA11y = isServiceActive,
+                    isOverlay = isOverlayGranted,
+                    isBattery = isBatteryIgnored,
+                    onManagePermissions = onNavigateToPermissions
                 )
             }
 
@@ -391,6 +429,132 @@ fun AccessibilityStatusBanner(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+    }
+}
+
+@Composable
+fun PermissionSummaryCard(
+    isReady: Boolean,
+    isA11y: Boolean,
+    isOverlay: Boolean,
+    isBattery: Boolean,
+    onManagePermissions: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("permission_summary_card"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Security,
+                        contentDescription = null,
+                        tint = if (isReady) PrimaryEmerald else MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Background Readiness",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+
+                Text(
+                    text = if (isReady) "READY" else "ATTENTION",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        color = if (isReady) PrimaryEmerald else MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Three status badges
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // A11y Badge
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isA11y) PrimaryEmerald.copy(alpha = 0.15f) else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f))
+                        .padding(8.dp)
+                ) {
+                    Column {
+                        Text("Accessibility", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = if (isA11y) "Active" else "Missing",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = if (isA11y) PrimaryEmerald else MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+
+                // Overlay Badge
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isOverlay) PrimaryEmerald.copy(alpha = 0.15f) else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f))
+                        .padding(8.dp)
+                ) {
+                    Column {
+                        Text("Overlay", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = if (isOverlay) "Granted" else "Missing",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = if (isOverlay) PrimaryEmerald else MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+
+                // Battery Badge
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (isBattery) PrimaryEmerald.copy(alpha = 0.15f) else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f))
+                        .padding(8.dp)
+                ) {
+                    Column {
+                        Text("Battery Saver", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            text = if (isBattery) "Ignored" else "Restricted",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = if (isBattery) PrimaryEmerald else MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedButton(
+                onClick = onManagePermissions,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("manage_all_permissions_button"),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Manage All Permissions & Auto-Start", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
         }
     }
 }
