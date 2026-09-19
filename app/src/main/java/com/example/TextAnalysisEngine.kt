@@ -44,37 +44,56 @@ data class AnalysisResult(
  * Dedicated parsing and business logic engine for analyzing ride requests
  * (e.g. Rapido Captain, Uber Driver, Ola Captain overlay cards) and evaluating
  * user decision criteria.
+ *
+ * Regex patterns are strictly optimized with word boundaries and non-greedy matching
+ * to prevent catastrophic backtracking and stack overflow errors.
  */
 object TextAnalysisEngine {
 
+    // Supported distance units: km, kms, kilometer(s), m, meter(s)
+    private const val DISTANCE_UNIT_PATTERN = """(?:km|kms|kilometers?|meters?|m)"""
+
     // Regex for currency: matches ₹, Rs., Rs, $, €, £, INR followed by numeric values
-    // Handles decimal values and multi-component expressions like "₹56 + ₹13" or "₹95 + 23"
     private val currencyRegex = Regex(
-        """(?:[₹\$€£]|Rs\.?|INR)\s*([0-9]+(?:\.[0-9]+)?)""",
+        """(?:[₹\$€£]|Rs\.?|INR)\s*(\d+(?:\.\d+)?)""",
         RegexOption.IGNORE_CASE
     )
 
     // Regex for plus component numbers (e.g. "+ ₹15" or "+ 20" following a fare)
     private val plusBonusRegex = Regex(
-        """\+\s*(?:[₹\$€£]|Rs\.?|INR)?\s*([0-9]+(?:\.[0-9]+)?)""",
+        """\+\s*(?:[₹\$€£]|Rs\.?|INR)?\s*(\d+(?:\.\d+)?)""",
         RegexOption.IGNORE_CASE
     )
 
-    // General distance regex (e.g., "1.2 km", "4.5 KM", "600 m")
+    // General distance regex with boundary protection (prevents matching "10 am" or "15 min")
     private val generalDistanceRegex = Regex(
-        """([0-9]+(?:\.[0-9]+)?)\s*(km|KM|meters?|m(?![a-zA-Z]))""",
+        """\b(\d+(?:\.\d+)?)\s*($DISTANCE_UNIT_PATTERN)(?![a-zA-Z])""",
         RegexOption.IGNORE_CASE
     )
 
-    // Specific labeled pickup regex
-    private val pickupRegex = Regex(
-        """(?:pickup|pick\s*up|away|to\s*rider)[^\d]{0,25}([0-9]+(?:\.[0-9]+)?)\s*(km|KM|meters?|m(?![a-zA-Z]))""",
+    // Optimized pickup regex:
+    // Pattern 1: Label first (e.g., "Pickup: 0.5 km", "away 1.2km")
+    private val pickupLabelFirstRegex = Regex(
+        """\b(?:pickup|pick\s*up|away|to\s*rider)\b[^\d\r\n]{0,20}?(\d+(?:\.\d+)?)\s*($DISTANCE_UNIT_PATTERN)(?![a-zA-Z])""",
         RegexOption.IGNORE_CASE
     )
 
-    // Specific labeled drop/trip regex
-    private val dropRegex = Regex(
-        """(?:drop|dropoff|drop\s*off|trip|destination|travel)[^\d]{0,25}([0-9]+(?:\.[0-9]+)?)\s*(km|KM|meters?|m(?![a-zA-Z]))""",
+    // Pattern 2: Distance first (e.g., "0.5 km pickup", "1.2 km away")
+    private val pickupDistanceFirstRegex = Regex(
+        """\b(\d+(?:\.\d+)?)\s*($DISTANCE_UNIT_PATTERN)(?![a-zA-Z])[^\d\r\n]{0,15}?\b(?:pickup|pick\s*up|away)\b""",
+        RegexOption.IGNORE_CASE
+    )
+
+    // Optimized drop/trip regex:
+    // Pattern 1: Label first (e.g., "Drop: 3.4 km", "Trip: 6.2 km")
+    private val dropLabelFirstRegex = Regex(
+        """\b(?:drop|dropoff|drop\s*off|destination|to\s*drop|trip|travel)\b[^\d\r\n]{0,20}?(\d+(?:\.\d+)?)\s*($DISTANCE_UNIT_PATTERN)(?![a-zA-Z])""",
+        RegexOption.IGNORE_CASE
+    )
+
+    // Pattern 2: Distance first (e.g., "3.4 km drop", "6.2 km trip")
+    private val dropDistanceFirstRegex = Regex(
+        """\b(\d+(?:\.\d+)?)\s*($DISTANCE_UNIT_PATTERN)(?![a-zA-Z])[^\d\r\n]{0,15}?\b(?:drop|dropoff|drop\s*off|destination|trip)\b""",
         RegexOption.IGNORE_CASE
     )
 
@@ -93,7 +112,6 @@ object TextAnalysisEngine {
 
         // 2. If no direct matches, or if there are plus bonuses not captured above
         if (breakdown.isNotEmpty()) {
-            // Check if there are '+' bonus terms that omitted currency symbol (e.g. "₹56 + 13")
             val plusMatches = plusBonusRegex.findAll(text).toList()
             for (pm in plusMatches) {
                 val bonusVal = pm.groups[1]?.value?.toDoubleOrNull()
@@ -119,8 +137,8 @@ object TextAnalysisEngine {
         var pickup: Double? = null
         var drop: Double? = null
 
-        // 1. Check for explicitly labeled pickup
-        val pickupMatch = pickupRegex.find(text)
+        // 1. Check for labeled pickup (label first, or distance first)
+        val pickupMatch = pickupLabelFirstRegex.find(text) ?: pickupDistanceFirstRegex.find(text)
         if (pickupMatch != null) {
             val rawNum = pickupMatch.groups[1]?.value?.toDoubleOrNull()
             val unit = pickupMatch.groups[2]?.value?.lowercase(Locale.ROOT) ?: "km"
@@ -129,8 +147,8 @@ object TextAnalysisEngine {
             }
         }
 
-        // 2. Check for explicitly labeled drop/trip
-        val dropMatch = dropRegex.find(text)
+        // 2. Check for labeled drop/trip (label first, or distance first)
+        val dropMatch = dropLabelFirstRegex.find(text) ?: dropDistanceFirstRegex.find(text)
         if (dropMatch != null) {
             val rawNum = dropMatch.groups[1]?.value?.toDoubleOrNull()
             val unit = dropMatch.groups[2]?.value?.lowercase(Locale.ROOT) ?: "km"
@@ -139,7 +157,7 @@ object TextAnalysisEngine {
             }
         }
 
-        // 3. Fallback: Parse sequential distances if labels were not explicitly present
+        // 3. Fallback: Parse sequential distances if labels were not explicitly matched
         if (pickup == null || drop == null) {
             val allDistances = generalDistanceRegex.findAll(text).mapNotNull { match ->
                 val num = match.groups[1]?.value?.toDoubleOrNull()

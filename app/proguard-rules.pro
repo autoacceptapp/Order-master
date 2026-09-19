@@ -1,21 +1,26 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# ProGuard Rules for Captain Auto-Accept / Smart Text Analyzer
+# Ensures release builds compile without syntax errors or junk tokens.
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Keep application data classes and state models used across coroutines and flows
+-keep class com.example.ParsedRideOffer { *; }
+-keep class com.example.RideEvaluation { *; }
+-keep class com.example.AnalysisResult { *; }
+-keep class com.example.SettingsState { *; }
+-keep class com.example.ActivityLogEntry { *; }
+-keep class com.example.LogSeverity { *; }
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Keep Accessibility Services so Android system can instantiate them via reflection
+-keep class com.example.MyAccessibilityService { *; }
+-keep class com.example.SmartTextService { *; }
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Preserve LineNumberTable and SourceFile for actionable production stack traces
+-keepattributes SourceFile,LineNumberTable
+
+# Kotlin Coroutines & Flow reflection rules
+-keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
+-keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
+
+# Android Architecture Components / Jetpack Compose
+-keepclassmembers class * extends androidx.lifecycle.ViewModel {
+    <init>(...);
+}

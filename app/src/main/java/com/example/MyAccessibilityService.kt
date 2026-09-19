@@ -14,8 +14,8 @@ import android.view.accessibility.AccessibilityNodeInfo
  * from driver apps (specifically Rapido Captain: com.rapido.passenger.driver) and automatically
  * executes an "Accept" action when user-configured criteria (Min Fare, Max Pickup Distance) are met.
  *
- * Includes strict package filtering, event debounce (COOLDOWN_MS), and duplicate offer checking
- * (lastEvaluatedText) to prevent repeated processing and logging during scrolling or screen updates.
+ * Maintains BFS tree traversal, clickable parent discovery, event debouncing, duplicate suppression,
+ * and thread-safe volatile execution guards.
  */
 open class MyAccessibilityService : AccessibilityService() {
 
@@ -33,8 +33,14 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    @Volatile
     private var isPendingExecution: Boolean = false
+
+    @Volatile
     private var lastProcessTime: Long = 0L
+
+    @Volatile
     private var lastEvaluatedText: String = ""
 
     override fun onServiceConnected() {
@@ -67,12 +73,14 @@ open class MyAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         Log.w(TAG, "Accessibility Service interrupted.")
+        isPendingExecution = false
+        mainHandler.removeCallbacksAndMessages(null)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        // 1. Strict Package Check: Trigger on Rapido Captain App or in-app testing
+        // 1. Strict Package Check: Trigger on Rapido Captain App or in-app simulation testing
         val eventPackage = event.packageName?.toString() ?: ""
         if (!eventPackage.contains("rapido", ignoreCase = true) && eventPackage != packageName) {
             return
@@ -100,7 +108,7 @@ open class MyAccessibilityService : AccessibilityService() {
         val rootNode = rootInActiveWindow ?: return
         val extractedText = extractAllText(rootNode)
 
-        // 2. Duplicate Offer Check: Agar same content hai toh re-evaluate na karein
+        // 2. Duplicate Offer Check: Skip if exact same content was already evaluated
         if (extractedText == lastEvaluatedText || extractedText.isBlank()) {
             recycleNode(rootNode)
             return
@@ -265,7 +273,7 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Finds and returns the first Accept node in the hierarchy.
+     * Finds and returns the first Accept node in the hierarchy using Breadth-First Search (BFS).
      * The caller is responsible for recycling the returned node when done.
      */
     private fun findAcceptNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {

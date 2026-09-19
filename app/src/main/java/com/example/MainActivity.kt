@@ -10,13 +10,9 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,18 +28,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -73,7 +65,6 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -84,22 +75,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.ui.theme.CaptainAutoAcceptTheme
 import com.example.ui.theme.PrimaryEmerald
 import com.example.ui.theme.SurfaceStroke
+import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.Locale
 import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
+
+    // Reactive state flow to reflect accessibility service state dynamically
+    private val isServiceActiveFlow = MutableStateFlow(false)
 
     private val logReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -118,12 +113,28 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         AppSettings.init(this)
+        refreshServiceStatus()
 
         setContent {
             CaptainAutoAcceptTheme {
-                DashboardScreen()
+                val isServiceActive by isServiceActiveFlow.collectAsState()
+                DashboardScreen(
+                    isServiceActive = isServiceActive,
+                    onRefreshStatus = { refreshServiceStatus() }
+                )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Automatically refreshes the accessibility service status when the user
+        // navigates back to the app from the system Accessibility Settings screen.
+        refreshServiceStatus()
+    }
+
+    private fun refreshServiceStatus() {
+        isServiceActiveFlow.value = AppSettings.isAccessibilityServiceEnabled(this)
     }
 
     override fun onStart() {
@@ -147,19 +158,26 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DashboardScreen() {
+fun DashboardScreen(
+    isServiceActive: Boolean,
+    onRefreshStatus: () -> Unit
+) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val settingsState by AppSettings.settingsState.collectAsState()
     val logs by AppSettings.logsFlow.collectAsState()
 
-    var isServiceActive by remember {
-        mutableStateOf(AppSettings.isAccessibilityServiceEnabled(context))
-    }
-
-    // Refresh status on focus
-    DisposableEffect(Unit) {
-        isServiceActive = AppSettings.isAccessibilityServiceEnabled(context)
-        onDispose { }
+    // Lifecycle observer to trigger refresh whenever ON_RESUME occurs
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                onRefreshStatus()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     Scaffold(
@@ -203,7 +221,7 @@ fun DashboardScreen() {
                 actions = {
                     IconButton(
                         onClick = {
-                            isServiceActive = AppSettings.isAccessibilityServiceEnabled(context)
+                            onRefreshStatus()
                             Toast.makeText(context, "Status refreshed", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.testTag("refresh_status_button")
@@ -225,7 +243,7 @@ fun DashboardScreen() {
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 1. Accessibility Service Status Banner
+            // 1. Accessibility Service Status Banner (refreshes dynamically on resume)
             item {
                 AccessibilityStatusBanner(
                     isActive = isServiceActive,
@@ -366,7 +384,7 @@ fun AccessibilityStatusBanner(
 
             Text(
                 text = if (isActive) {
-                    "Background service is listening for ride request overlay cards (Rapido, Uber, Ola) to evaluate fares and pickup distances."
+                    "Background service is listening for ride request overlay cards (Rapido Captain) to evaluate fares and pickup distances."
                 } else {
                     "Tap 'Enable' to open Android Accessibility settings and toggle 'Smart Text Notification & Analysis Service' to ON."
                 },
@@ -443,8 +461,6 @@ fun DecisionThresholdsCard(
     onMaxDistanceChanged: (Float) -> Unit,
     onDelayChanged: (Long) -> Unit
 ) {
-    val focusManager = LocalFocusManager.current
-
     OutlinedCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -506,7 +522,7 @@ fun DecisionThresholdsCard(
                 value = settings.minFare,
                 onValueChange = onMinFareChanged,
                 valueRange = 20f..300f,
-                steps = 27, // increments of 10
+                steps = 27,
                 colors = SliderDefaults.colors(
                     thumbColor = PrimaryEmerald,
                     activeTrackColor = PrimaryEmerald
@@ -630,7 +646,6 @@ fun RideSimulatorCard(
         mutableStateOf("Rapido Ride: ₹65 + ₹15 • Pickup: 1.2 km • Drop: 5.8 km [Accept]")
     }
 
-    // Real-time evaluation of the typed offer
     val parsedOffer = remember(offerInput) {
         TextAnalysisEngine.parseRideOffer(offerInput)
     }
