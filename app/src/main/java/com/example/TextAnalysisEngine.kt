@@ -190,11 +190,15 @@ object TextAnalysisEngine {
     }
 
     /**
-     * Detects if the screen hierarchy includes an "Accept" action.
+     * Detects if the screen hierarchy includes an interactive "Accept" / "Go" action.
      */
     fun hasAcceptAction(text: String): Boolean {
         return text.contains("Accept", ignoreCase = true) ||
-                text.contains("Swipe to Accept", ignoreCase = true)
+                text.contains("Accept Order", ignoreCase = true) ||
+                text.contains("Accept Ride", ignoreCase = true) ||
+                text.contains("Swipe to Accept", ignoreCase = true) ||
+                text.contains("Go", ignoreCase = false) || // Case sensitive to avoid matching random words containing 'go'
+                text.contains("Take Ride", ignoreCase = true)
     }
 
     /**

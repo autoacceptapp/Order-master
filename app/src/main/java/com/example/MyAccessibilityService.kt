@@ -124,15 +124,34 @@ open class MyAccessibilityService : AccessibilityService() {
         }
 
         val rootNode = rootInActiveWindow ?: return
+
+        // =========================================================================
+        // STRICT ACCEPT BUTTON PRE-CHECK:
+        // Before running Regex parsers for fare (₹) or distance (km), perform a strict
+        // check to verify that an actual clickable/actionable "Accept" / "Go" / "Accept Order"
+        // button (or popup action node) exists on the screen.
+        // If no actionable button/popup node is present, immediately return early
+        // WITHOUT running Regex parsers or logging any "Skipped/Rejected" events.
+        // =========================================================================
+        val acceptNode = findAcceptNode(rootNode)
+        if (acceptNode == null) {
+            // Not an active ride popup / offer screen (e.g. earnings history, profile, static text).
+            // Return early silently - NO regex execution, NO log spam.
+            recycleNode(rootNode)
+            return
+        }
+        // Recycle the pre-check node as rootNode is still held and will be evaluated
+        recycleNode(acceptNode)
+
         val extractedText = extractAllText(rootNode)
 
-        // 2. Duplicate Offer Check: Skip if exact same content was already evaluated
+        // Duplicate Offer Check: Skip if exact same content was already evaluated
         if (extractedText == lastEvaluatedText || extractedText.isBlank()) {
             recycleNode(rootNode)
             return
         }
 
-        // Processing Logic
+        // Processing Logic: Now safe to parse and evaluate because an actionable Accept button is confirmed
         val offer = TextAnalysisEngine.parse(extractedText)
         lastEvaluatedText = extractedText
         lastProcessTime = currentTime
@@ -143,10 +162,11 @@ open class MyAccessibilityService : AccessibilityService() {
     /**
      * Evaluates parsed ride offer parameters against configured thresholds
      * and triggers automatic acceptance if criteria are satisfied.
+     * Only called when an active ride request popup with an Accept action has been strictly verified.
      */
     private fun evaluateAndAction(offer: ParsedRideOffer, rootNode: AccessibilityNodeInfo) {
         try {
-            // If offer has no detectable fare or distance, skip action
+            // Verify offer has detectable fare and distance indicators
             if (offer.totalFare == null && offer.pickupDistanceKm == null) {
                 return
             }
@@ -185,9 +205,9 @@ open class MyAccessibilityService : AccessibilityService() {
                     executeAcceptClick(evaluation)
                 }, delayMs)
             } else {
-                // Log and announce rejected/skipped offer without re-triggering
+                // Log and announce evaluated offer (filtered out by fare or distance criteria)
                 AppSettings.addLog(
-                    title = "Offer Evaluated (Skipped)",
+                    title = "Offer Evaluated (Filtered)",
                     message = evaluation.decisionReason,
                     severity = LogSeverity.REJECTED,
                     evaluation = evaluation
@@ -234,9 +254,6 @@ open class MyAccessibilityService : AccessibilityService() {
         }
     }
 
-    /**
-     * Traverses the active window hierarchy to locate and trigger ACTION_CLICK on the Accept button.
-     */
     private fun executeAcceptClick(evaluation: RideEvaluation) {
         isPendingExecution = false
         lastProcessTime = System.currentTimeMillis()
@@ -299,10 +316,12 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Finds and returns the first Accept node in the hierarchy using Breadth-First Search (BFS).
+     * Strict Accept Button Detection:
+     * Finds and returns an actionable "Accept" / "Go" / "Accept Order" node in the hierarchy using Breadth-First Search (BFS).
+     * The node or one of its parents must be clickable or actionable to qualify as a valid offer acceptance component.
      * The caller is responsible for recycling the returned node when done.
      */
-    private fun findAcceptNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    fun findAcceptNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(AccessibilityNodeInfo.obtain(root))
 
@@ -311,12 +330,16 @@ open class MyAccessibilityService : AccessibilityService() {
 
             val text = node.text?.toString() ?: ""
             val desc = node.contentDescription?.toString() ?: ""
+            val viewId = node.viewIdResourceName ?: ""
 
-            if (isAcceptAction(text) || isAcceptAction(desc)) {
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
+            if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
+                // Verify actionable status: the node itself or an ancestor should be clickable/enabled
+                if (isActionableNodeOrChild(node)) {
+                    while (queue.isNotEmpty()) {
+                        recycleNode(queue.removeFirst())
+                    }
+                    return node
                 }
-                return node
             }
 
             val childCount = node.childCount
@@ -331,13 +354,56 @@ open class MyAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun isAcceptAction(content: String): Boolean {
+    /**
+     * Strict verification that text corresponds to an interactive order acceptance action
+     * (e.g. "Accept", "Accept Order", "Accept Ride", "Go", "Swipe to Accept").
+     */
+    fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
+        if (trimmed.isEmpty()) return false
+
         return trimmed.equals("Accept", ignoreCase = true) ||
                 trimmed.equals("Accept Order", ignoreCase = true) ||
                 trimmed.equals("Accept Ride", ignoreCase = true) ||
+                trimmed.equals("Go", ignoreCase = true) ||
                 trimmed.contains("Swipe to Accept", ignoreCase = true) ||
-                trimmed.contains("Accept", ignoreCase = true)
+                trimmed.equals("Take Ride", ignoreCase = true)
+    }
+
+    private fun isRapidoAcceptId(viewId: String): Boolean {
+        if (viewId.isEmpty()) return false
+        val lower = viewId.lowercase(Locale.ROOT)
+        return lower.contains("btn_accept") ||
+                lower.contains("accept_order") ||
+                lower.contains("accept_button") ||
+                lower.contains("accept_ride") ||
+                lower.contains("action_accept")
+    }
+
+    /**
+     * Verifies that the node or its immediate container is enabled and either clickable
+     * or contains an actionable gesture target.
+     */
+    private fun isActionableNodeOrChild(node: AccessibilityNodeInfo): Boolean {
+        if (node.isClickable && node.isEnabled) return true
+
+        // Check parent container
+        var current: AccessibilityNodeInfo? = node.parent
+        var depth = 0
+        while (current != null && depth < 3) {
+            if (current.isClickable && current.isEnabled) {
+                recycleNode(current)
+                return true
+            }
+            val parent = current.parent
+            recycleNode(current)
+            current = parent
+            depth++
+        }
+        current?.let { recycleNode(it) }
+
+        // Fallback: If node has the exact text and is enabled, accept as actionable
+        return node.isEnabled
     }
 
     /**

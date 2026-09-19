@@ -233,4 +233,26 @@ class ExampleRobolectricTest {
         assertTrue(AppSettings.isVoiceAnnouncerEnabled(context))
         assertEquals("en", AppSettings.getVoiceLanguage(context))
     }
+
+    @Test
+    fun `test strict accept action detection in accessibility service`() {
+        val service = MyAccessibilityService()
+
+        // Valid actionable strings
+        assertTrue(service.isAcceptAction("Accept"))
+        assertTrue(service.isAcceptAction("Accept Order"))
+        assertTrue(service.isAcceptAction("Accept Ride"))
+        assertTrue(service.isAcceptAction("Go"))
+        assertTrue(service.isAcceptAction("Swipe to Accept"))
+        assertTrue(service.isAcceptAction("Take Ride"))
+        assertTrue(service.isAcceptAction("  accept  "))
+
+        // Static or irrelevant strings that should NOT trigger evaluation
+        assertFalse(service.isAcceptAction("Total Earnings: ₹1,500"))
+        assertFalse(service.isAcceptAction("Weekly History 24.5 km"))
+        assertFalse(service.isAcceptAction("Profile Settings"))
+        assertFalse(service.isAcceptAction("Good Morning"))
+        assertFalse(service.isAcceptAction("Gold Captain"))
+        assertFalse(service.isAcceptAction(""))
+    }
 }
