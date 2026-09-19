@@ -5,9 +5,11 @@ import android.content.Intent
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import java.util.Locale
 
 /**
  * Production-ready Android Accessibility Service that monitors on-screen ride/order requests
@@ -15,7 +17,7 @@ import android.view.accessibility.AccessibilityNodeInfo
  * executes an "Accept" action when user-configured criteria (Min Fare, Max Pickup Distance) are met.
  *
  * Maintains BFS tree traversal, clickable parent discovery, event debouncing, duplicate suppression,
- * and thread-safe volatile execution guards.
+ * native Text-to-Speech voice announcements, and thread-safe volatile execution guards.
  */
 open class MyAccessibilityService : AccessibilityService() {
 
@@ -44,10 +46,21 @@ open class MyAccessibilityService : AccessibilityService() {
     @Volatile
     private var lastEvaluatedText: String = ""
 
+    private var textToSpeech: TextToSpeech? = null
+
+    @Volatile
+    private var isTtsReady: Boolean = false
+
+    override fun onCreate() {
+        super.onCreate()
+        initTextToSpeech()
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         isServiceRunning = true
         instance = this
+        initTextToSpeech()
         Log.d(TAG, "Accessibility Service connected and operational.")
         AppSettings.addLog(
             title = "Service Connected",
@@ -64,6 +77,7 @@ open class MyAccessibilityService : AccessibilityService() {
             instance = null
         }
         mainHandler.removeCallbacksAndMessages(null)
+        cleanupTextToSpeech()
         Log.d(TAG, "Accessibility Service stopped.")
         AppSettings.addLog(
             title = "Service Stopped",
@@ -148,6 +162,9 @@ open class MyAccessibilityService : AccessibilityService() {
                 isAutoAcceptEnabled = isEnabled
             )
 
+            // Voice announcement of incoming ride request (QUEUE_FLUSH to cancel any older speech)
+            announceNewRide(offer)
+
             if (evaluation.isAccepted) {
                 isPendingExecution = true
 
@@ -168,13 +185,14 @@ open class MyAccessibilityService : AccessibilityService() {
                     executeAcceptClick(evaluation)
                 }, delayMs)
             } else {
-                // Log rejected offer without re-triggering
+                // Log and announce rejected/skipped offer without re-triggering
                 AppSettings.addLog(
                     title = "Offer Evaluated (Skipped)",
                     message = evaluation.decisionReason,
                     severity = LogSeverity.REJECTED,
                     evaluation = evaluation
                 )
+                announceRideSkipped(evaluation.decisionReason)
             }
         } finally {
             recycleNode(rootNode)
@@ -263,6 +281,10 @@ open class MyAccessibilityService : AccessibilityService() {
                 evaluation = evaluation
             )
             broadcastLog("ACTION_CLICK executed on Accept node! Success: $clickSucceeded")
+
+            if (clickSucceeded) {
+                announceRideAccepted(evaluation.totalCurrency, evaluation.distanceKm)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Exception while executing accept click", e)
         } finally {
@@ -344,5 +366,183 @@ open class MyAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send log broadcast", e)
         }
+    }
+
+    // =========================================================================================
+    // TEXT-TO-SPEECH (TTS) ENGINE & ANNOUNCEMENTS
+    // =========================================================================================
+
+    /**
+     * Safely initializes the native Android TextToSpeech engine with OnInitListener.
+     */
+    private fun initTextToSpeech() {
+        if (textToSpeech != null) return
+        try {
+            textToSpeech = TextToSpeech(applicationContext) { status ->
+                if (status == TextToSpeech.SUCCESS) {
+                    isTtsReady = true
+                    applyTtsLanguage()
+                    Log.i(TAG, "Native TextToSpeech engine initialized successfully.")
+                } else {
+                    isTtsReady = false
+                    Log.w(TAG, "Native TextToSpeech initialization failed with status: $status")
+                }
+            }
+        } catch (e: Exception) {
+            isTtsReady = false
+            Log.e(TAG, "Exception while instantiating TextToSpeech", e)
+        }
+    }
+
+    /**
+     * Sets speech language to localized Hindi or English based on user settings,
+     * with graceful fallbacks if language data is missing.
+     */
+    fun applyTtsLanguage() {
+        val tts = textToSpeech ?: return
+        val lang = AppSettings.getVoiceLanguage(this)
+        val targetLocale = if (lang.equals("hi", ignoreCase = true)) {
+            Locale("hi", "IN")
+        } else {
+            Locale("en", "IN")
+        }
+
+        try {
+            val result = tts.setLanguage(targetLocale)
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                Log.w(TAG, "Language $targetLocale not supported/missing data (code $result), falling back to English.")
+                tts.setLanguage(Locale.ENGLISH)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error applying TTS language to $targetLocale", e)
+            try {
+                tts.setLanguage(Locale.getDefault())
+            } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Shuts down and cleans up the native TextToSpeech engine instance.
+     */
+    private fun cleanupTextToSpeech() {
+        try {
+            textToSpeech?.stop()
+            textToSpeech?.shutdown()
+            textToSpeech = null
+            isTtsReady = false
+            Log.d(TAG, "TextToSpeech engine released and cleaned up.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cleaning up TextToSpeech instance", e)
+        }
+    }
+
+    /**
+     * Speaks the given text using the configured queue management mode.
+     * QUEUE_FLUSH cancels any current speech immediately for new high-priority offers.
+     * QUEUE_ADD appends to speech queue for sequential alerts.
+     */
+    fun speak(text: String, queueMode: Int = TextToSpeech.QUEUE_FLUSH) {
+        if (!AppSettings.isVoiceAnnouncerEnabled(this)) {
+            return
+        }
+
+        if (!isTtsReady || textToSpeech == null) {
+            Log.w(TAG, "TextToSpeech engine is not ready, skipping speech: $text")
+            return
+        }
+
+        try {
+            applyTtsLanguage()
+            val utteranceId = "tts_ride_${System.currentTimeMillis()}"
+            textToSpeech?.speak(text, queueMode, null, utteranceId)
+            Log.d(TAG, "TTS announced [queue=$queueMode]: $text")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to speak TTS announcement", e)
+        }
+    }
+
+    /**
+     * Announces a newly detected ride offer with fare and distance details.
+     */
+    fun announceNewRide(offer: ParsedRideOffer) {
+        if (!AppSettings.isVoiceAnnouncerEnabled(this)) return
+
+        val lang = AppSettings.getVoiceLanguage(this)
+        val fare = offer.totalFare?.toInt()
+        val dist = offer.pickupDistanceKm ?: offer.dropDistanceKm
+
+        val message = if (lang.equals("hi", ignoreCase = true)) {
+            when {
+                fare != null && dist != null -> "नया राइड मिला! किराया $fare रुपये, दूरी $dist किलोमीटर।"
+                fare != null -> "नया राइड मिला! किराया $fare रुपये।"
+                dist != null -> "नया राइड मिला! दूरी $dist किलोमीटर।"
+                else -> "नया राइड मिला!"
+            }
+        } else {
+            when {
+                fare != null && dist != null -> "New ride received! Fare is $fare rupees, distance $dist kilometers."
+                fare != null -> "New ride received! Fare is $fare rupees."
+                dist != null -> "New ride received! Distance $dist kilometers."
+                else -> "New ride received!"
+            }
+        }
+
+        speak(message, TextToSpeech.QUEUE_FLUSH)
+    }
+
+    /**
+     * Announces an order acceptance confirmation.
+     */
+    fun announceRideAccepted(fare: Double?, distance: Double?) {
+        if (!AppSettings.isVoiceAnnouncerEnabled(this)) return
+
+        val lang = AppSettings.getVoiceLanguage(this)
+        val fareInt = fare?.toInt()
+
+        val message = if (lang.equals("hi", ignoreCase = true)) {
+            if (fareInt != null) {
+                "राइड स्वीकार कर लिया गया! किराया $fareInt रुपये।"
+            } else {
+                "राइड स्वीकार कर लिया गया!"
+            }
+        } else {
+            if (fareInt != null) {
+                "Ride accepted! Fare is $fareInt rupees."
+            } else {
+                "Ride accepted!"
+            }
+        }
+
+        // QUEUE_ADD allows confirmation to follow the new ride announcement smoothly
+        speak(message, TextToSpeech.QUEUE_ADD)
+    }
+
+    /**
+     * Announces when an offer does not meet captain criteria.
+     */
+    fun announceRideSkipped(reason: String) {
+        if (!AppSettings.isVoiceAnnouncerEnabled(this)) return
+
+        val lang = AppSettings.getVoiceLanguage(this)
+        val message = if (lang.equals("hi", ignoreCase = true)) {
+            "राइड छोड़ दिया गया।"
+        } else {
+            "Ride skipped."
+        }
+
+        speak(message, TextToSpeech.QUEUE_ADD)
+    }
+
+    /**
+     * Public helper to test the voice announcer from UI.
+     */
+    fun testAnnouncement(customMessage: String? = null) {
+        val lang = AppSettings.getVoiceLanguage(this)
+        val message = customMessage ?: if (lang.equals("hi", ignoreCase = true)) {
+            "आवाज़ उद्घोषक चालू है! किराया 120 रुपये, दूरी 3 किलोमीटर।"
+        } else {
+            "Voice announcer is active! Fare is 120 rupees, distance 3 kilometers."
+        }
+        speak(message, TextToSpeech.QUEUE_FLUSH)
     }
 }

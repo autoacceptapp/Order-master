@@ -25,7 +25,10 @@ data class RideEvaluation(
     val isAccepted: Boolean,
     val decisionReason: String,
     val timestamp: Long = System.currentTimeMillis()
-)
+) {
+    val totalCurrency: Double? get() = offer.totalFare
+    val distanceKm: Double? get() = offer.pickupDistanceKm ?: offer.dropDistanceKm
+}
 
 /**
  * Backward-compatible analysis result class for general text analysis.

@@ -34,7 +34,9 @@ data class SettingsState(
     val isAutoAcceptEnabled: Boolean = true,
     val minFare: Float = 60.0f,
     val maxPickupDistance: Float = 3.0f,
-    val clickDelayMs: Long = 500L
+    val clickDelayMs: Long = 500L,
+    val isVoiceAnnouncerEnabled: Boolean = true,
+    val voiceLanguage: String = "en"
 )
 
 object AppSettings {
@@ -45,6 +47,8 @@ object AppSettings {
     const val KEY_MIN_FARE = "key_min_fare"
     const val KEY_MAX_PICKUP_DISTANCE = "key_max_pickup_distance"
     const val KEY_CLICK_DELAY_MS = "key_click_delay_ms"
+    const val KEY_VOICE_ANNOUNCER_ENABLED = "key_voice_announcer_enabled"
+    const val KEY_VOICE_LANGUAGE = "key_voice_language"
 
     // Backward-compatibility keys
     const val KEY_SERVICE_ENABLED = "key_service_enabled"
@@ -60,6 +64,8 @@ object AppSettings {
     const val DEFAULT_MAX_PICKUP_DISTANCE = 3.0f
     const val DEFAULT_AUTO_ACCEPT_ENABLED = true
     const val DEFAULT_CLICK_DELAY_MS = 500L
+    const val DEFAULT_VOICE_ANNOUNCER_ENABLED = true
+    const val DEFAULT_VOICE_LANGUAGE = "en"
 
     // In-memory properties for legacy access
     var minCurrencyThreshold: Double = 60.0
@@ -73,7 +79,9 @@ object AppSettings {
             isAutoAcceptEnabled = DEFAULT_AUTO_ACCEPT_ENABLED,
             minFare = DEFAULT_MIN_FARE,
             maxPickupDistance = DEFAULT_MAX_PICKUP_DISTANCE,
-            clickDelayMs = DEFAULT_CLICK_DELAY_MS
+            clickDelayMs = DEFAULT_CLICK_DELAY_MS,
+            isVoiceAnnouncerEnabled = DEFAULT_VOICE_ANNOUNCER_ENABLED,
+            voiceLanguage = DEFAULT_VOICE_LANGUAGE
         )
     )
     val settingsState: StateFlow<SettingsState> = _settingsState.asStateFlow()
@@ -103,6 +111,8 @@ object AppSettings {
         val minFare = prefs.getFloat(KEY_MIN_FARE, prefs.getFloat(KEY_MIN_VALUE, DEFAULT_MIN_FARE))
         val maxDist = prefs.getFloat(KEY_MAX_PICKUP_DISTANCE, prefs.getFloat(KEY_MAX_DISTANCE, DEFAULT_MAX_PICKUP_DISTANCE))
         val delay = prefs.getLong(KEY_CLICK_DELAY_MS, DEFAULT_CLICK_DELAY_MS)
+        val voiceEnabled = prefs.getBoolean(KEY_VOICE_ANNOUNCER_ENABLED, DEFAULT_VOICE_ANNOUNCER_ENABLED)
+        val voiceLang = prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE) ?: DEFAULT_VOICE_LANGUAGE
 
         minCurrencyThreshold = minFare.toDouble()
         autoAcceptEnabled = enabled
@@ -111,7 +121,9 @@ object AppSettings {
             isAutoAcceptEnabled = enabled,
             minFare = minFare,
             maxPickupDistance = maxDist,
-            clickDelayMs = delay
+            clickDelayMs = delay,
+            isVoiceAnnouncerEnabled = voiceEnabled,
+            voiceLanguage = voiceLang
         )
     }
 
@@ -127,6 +139,26 @@ object AppSettings {
             .apply()
         autoAcceptEnabled = enabled
         _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = enabled)
+    }
+
+    fun isVoiceAnnouncerEnabled(context: Context): Boolean {
+        val prefs = getPrefs(context)
+        return prefs.getBoolean(KEY_VOICE_ANNOUNCER_ENABLED, DEFAULT_VOICE_ANNOUNCER_ENABLED)
+    }
+
+    fun setVoiceAnnouncerEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_VOICE_ANNOUNCER_ENABLED, enabled).apply()
+        _settingsState.value = _settingsState.value.copy(isVoiceAnnouncerEnabled = enabled)
+    }
+
+    fun getVoiceLanguage(context: Context): String {
+        val prefs = getPrefs(context)
+        return prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE) ?: DEFAULT_VOICE_LANGUAGE
+    }
+
+    fun setVoiceLanguage(context: Context, language: String) {
+        getPrefs(context).edit().putString(KEY_VOICE_LANGUAGE, language).apply()
+        _settingsState.value = _settingsState.value.copy(voiceLanguage = language)
     }
 
     fun getMinFare(context: Context): Float {

@@ -38,10 +38,14 @@ import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.VoiceOverOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -320,7 +324,45 @@ fun DashboardScreen(
                 )
             }
 
-            // 4. Interactive Ride Request Sandbox / Simulator
+            // 4. Voice Announcer (Text-to-Speech) Settings Card
+            item {
+                VoiceAnnouncerCard(
+                    isEnabled = settingsState.isVoiceAnnouncerEnabled,
+                    selectedLanguage = settingsState.voiceLanguage,
+                    onToggle = { enabled ->
+                        AppSettings.setVoiceAnnouncerEnabled(context, enabled)
+                        AppSettings.addLog(
+                            title = "Voice Announcer",
+                            message = if (enabled) "Voice announcements activated." else "Voice announcements paused.",
+                            severity = LogSeverity.INFO
+                        )
+                    },
+                    onSelectLanguage = { lang ->
+                        AppSettings.setVoiceLanguage(context, lang)
+                        MyAccessibilityService.instance?.applyTtsLanguage()
+                        AppSettings.addLog(
+                            title = "Voice Language Updated",
+                            message = "Voice announcer set to ${if (lang == "hi") "Hindi (हिन्दी)" else "English"}.",
+                            severity = LogSeverity.INFO
+                        )
+                    },
+                    onTestVoice = {
+                        val activeService = MyAccessibilityService.instance
+                        if (activeService != null) {
+                            activeService.testAnnouncement()
+                            Toast.makeText(context, "Speaking test announcement...", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(
+                                context,
+                                "Enable Accessibility Service in system settings to hear live voice announcements.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                )
+            }
+
+            // 5. Interactive Ride Request Sandbox / Simulator
             item {
                 RideSimulatorCard(
                     settings = settingsState,
@@ -332,6 +374,19 @@ fun DashboardScreen(
                             maxPickupDistance = settingsState.maxPickupDistance,
                             isAutoAcceptEnabled = settingsState.isAutoAcceptEnabled
                         )
+
+                        // Trigger voice announcement in simulator if service is connected and voice is enabled
+                        MyAccessibilityService.instance?.let { service ->
+                            if (settingsState.isVoiceAnnouncerEnabled) {
+                                service.announceNewRide(parsed)
+                                if (eval.isAccepted) {
+                                    service.announceRideAccepted(eval.totalCurrency, eval.distanceKm)
+                                } else {
+                                    service.announceRideSkipped(eval.decisionReason)
+                                }
+                            }
+                        }
+
                         if (eval.isAccepted) {
                             AppSettings.addLog(
                                 title = "Simulation: Auto-Accepted!",
@@ -351,7 +406,7 @@ fun DashboardScreen(
                 )
             }
 
-            // 5. Real-Time Activity Log Feed
+            // 6. Real-Time Activity Log Feed
             item {
                 ActivityLogsSection(
                     logs = logs,
@@ -793,6 +848,153 @@ fun DecisionThresholdsCard(
                         selected = isSelected,
                         onClick = { onDelayChanged(delay) },
                         label = { Text(label, fontSize = 11.sp) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun VoiceAnnouncerCard(
+    isEnabled: Boolean,
+    selectedLanguage: String,
+    onToggle: (Boolean) -> Unit,
+    onSelectLanguage: (String) -> Unit,
+    onTestVoice: () -> Unit
+) {
+    OutlinedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("voice_announcer_card"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.outlinedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(SurfaceStroke))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (isEnabled) PrimaryEmerald.copy(alpha = 0.15f)
+                                else MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (isEnabled) Icons.Default.RecordVoiceOver else Icons.Default.VoiceOverOff,
+                            contentDescription = "Voice Announcer Status Icon",
+                            tint = if (isEnabled) PrimaryEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "Voice Announcer (TTS)",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Speaks ride fare, pickup distance & status",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Switch(
+                    checked = isEnabled,
+                    onCheckedChange = onToggle,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = PrimaryEmerald
+                    ),
+                    modifier = Modifier.testTag("voice_announcer_switch")
+                )
+            }
+
+            if (isEnabled) {
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = "Announcer Language",
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = selectedLanguage.equals("en", ignoreCase = true),
+                        onClick = { onSelectLanguage("en") },
+                        label = { Text("English (en-IN)", fontSize = 12.sp) },
+                        leadingIcon = if (selectedLanguage.equals("en", ignoreCase = true)) {
+                            { Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        } else null,
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = PrimaryEmerald,
+                            selectedLabelColor = Color.Black,
+                            selectedLeadingIconColor = Color.Black
+                        ),
+                        modifier = Modifier.testTag("voice_lang_english_chip")
+                    )
+
+                    FilterChip(
+                        selected = selectedLanguage.equals("hi", ignoreCase = true),
+                        onClick = { onSelectLanguage("hi") },
+                        label = { Text("Hindi (हिन्दी)", fontSize = 12.sp) },
+                        leadingIcon = if (selectedLanguage.equals("hi", ignoreCase = true)) {
+                            { Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        } else null,
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = PrimaryEmerald,
+                            selectedLabelColor = Color.Black,
+                            selectedLeadingIconColor = Color.Black
+                        ),
+                        modifier = Modifier.testTag("voice_lang_hindi_chip")
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                OutlinedButton(
+                    onClick = onTestVoice,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("test_voice_announcement_button"),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.VolumeUp,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = if (selectedLanguage.equals("hi", ignoreCase = true)) {
+                            "Test Speech (परीक्षण आवाज़ सुनें)"
+                        } else {
+                            "Test Voice Announcement"
+                        },
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }

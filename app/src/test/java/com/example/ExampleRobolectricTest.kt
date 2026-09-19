@@ -209,4 +209,28 @@ class ExampleRobolectricTest {
     fun `test accessibility service target package constant`() {
         assertEquals("com.rapido.rider", MyAccessibilityService.TARGET_PACKAGE)
     }
+
+    @Test
+    fun `test voice announcer app settings and state persistence`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // Check defaults
+        assertTrue(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertEquals("en", AppSettings.getVoiceLanguage(context))
+
+        // Update settings
+        AppSettings.setVoiceAnnouncerEnabled(context, false)
+        assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertFalse(AppSettings.settingsState.value.isVoiceAnnouncerEnabled)
+
+        AppSettings.setVoiceLanguage(context, "hi")
+        assertEquals("hi", AppSettings.getVoiceLanguage(context))
+        assertEquals("hi", AppSettings.settingsState.value.voiceLanguage)
+
+        // Reset
+        AppSettings.setVoiceAnnouncerEnabled(context, true)
+        AppSettings.setVoiceLanguage(context, "en")
+        assertTrue(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertEquals("en", AppSettings.getVoiceLanguage(context))
+    }
 }
