@@ -60,6 +60,13 @@ object PermissionUtils {
     }
 
     /**
+     * Checks if a specific Accessibility Service class is currently active in the Android system.
+     */
+    fun isAccessibilityServiceEnabled(context: Context, serviceClass: Class<*>): Boolean {
+        return AppSettings.isAccessibilityServiceEnabled(context, serviceClass)
+    }
+
+    /**
      * Checks if the app has permission to draw overlay windows (SYSTEM_ALERT_WINDOW).
      */
     fun canDrawOverlays(context: Context): Boolean {

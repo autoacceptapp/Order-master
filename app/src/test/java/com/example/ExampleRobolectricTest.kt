@@ -242,6 +242,7 @@ class ExampleRobolectricTest {
         assertTrue(service.isAcceptAction("Accept"))
         assertTrue(service.isAcceptAction("Auto Accept"))
         assertTrue(service.isAcceptAction("Confirm"))
+        assertTrue(service.isAcceptAction("Select"))
         assertTrue(service.isAcceptAction("Confirm Order"))
         assertTrue(service.isAcceptAction("Confirm Ride"))
         assertTrue(service.isAcceptAction("Accept Order"))
@@ -270,8 +271,11 @@ class ExampleRobolectricTest {
         val text = service.extractAllText(null)
         assertEquals("", text)
 
-        // findAndClickAcceptButton with null root safely executes without exception
+        // findAndClickAcceptButton and executeAssistiveClick with null root safely execute without exception
         val clicked = service.findAndClickAcceptButton(null)
         assertFalse(clicked)
+
+        val assistiveClicked = service.executeAssistiveClick(null)
+        assertFalse(assistiveClicked)
     }
 }

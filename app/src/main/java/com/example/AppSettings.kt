@@ -36,8 +36,15 @@ data class SettingsState(
     val maxPickupDistance: Float = 3.0f,
     val clickDelayMs: Long = 500L,
     val isVoiceAnnouncerEnabled: Boolean = true,
-    val voiceLanguage: String = "en"
-)
+    val voiceLanguage: String = "en",
+    val speechRate: Float = 1.0f,
+    val speechPitch: Float = 1.0f
+) {
+    val autoAcceptEnabled: Boolean get() = isAutoAcceptEnabled
+    val minPrice: Float get() = minFare
+    val maxDistance: Float get() = maxPickupDistance
+    val selectedLanguage: String get() = voiceLanguage
+}
 
 object AppSettings {
     const val PREFS_NAME = "captain_auto_accept_prefs"
@@ -49,6 +56,8 @@ object AppSettings {
     const val KEY_CLICK_DELAY_MS = "key_click_delay_ms"
     const val KEY_VOICE_ANNOUNCER_ENABLED = "key_voice_announcer_enabled"
     const val KEY_VOICE_LANGUAGE = "key_voice_language"
+    const val KEY_SPEECH_RATE = "key_speech_rate"
+    const val KEY_SPEECH_PITCH = "key_speech_pitch"
 
     // Backward-compatibility keys
     const val KEY_SERVICE_ENABLED = "key_service_enabled"
@@ -66,10 +75,17 @@ object AppSettings {
     const val DEFAULT_CLICK_DELAY_MS = 500L
     const val DEFAULT_VOICE_ANNOUNCER_ENABLED = true
     const val DEFAULT_VOICE_LANGUAGE = "en"
+    const val DEFAULT_SPEECH_RATE = 1.0f
+    const val DEFAULT_SPEECH_PITCH = 1.0f
 
     // In-memory properties for legacy access
     var minCurrencyThreshold: Double = 60.0
     var autoAcceptEnabled: Boolean = true
+    val minPrice: Double get() = minCurrencyThreshold
+    val maxDistance: Double get() = _settingsState.value.maxPickupDistance.toDouble()
+    val speechRate: Float get() = _settingsState.value.speechRate
+    val speechPitch: Float get() = _settingsState.value.speechPitch
+    val selectedLanguage: String get() = _settingsState.value.voiceLanguage
 
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
@@ -113,6 +129,8 @@ object AppSettings {
         val delay = prefs.getLong(KEY_CLICK_DELAY_MS, DEFAULT_CLICK_DELAY_MS)
         val voiceEnabled = prefs.getBoolean(KEY_VOICE_ANNOUNCER_ENABLED, DEFAULT_VOICE_ANNOUNCER_ENABLED)
         val voiceLang = prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE) ?: DEFAULT_VOICE_LANGUAGE
+        val speechRate = prefs.getFloat(KEY_SPEECH_RATE, DEFAULT_SPEECH_RATE)
+        val speechPitch = prefs.getFloat(KEY_SPEECH_PITCH, DEFAULT_SPEECH_PITCH)
 
         minCurrencyThreshold = minFare.toDouble()
         autoAcceptEnabled = enabled
@@ -123,7 +141,9 @@ object AppSettings {
             maxPickupDistance = maxDist,
             clickDelayMs = delay,
             isVoiceAnnouncerEnabled = voiceEnabled,
-            voiceLanguage = voiceLang
+            voiceLanguage = voiceLang,
+            speechRate = speechRate,
+            speechPitch = speechPitch
         )
     }
 
@@ -197,6 +217,24 @@ object AppSettings {
         _settingsState.value = _settingsState.value.copy(clickDelayMs = delay)
     }
 
+    fun getSpeechRate(context: Context): Float {
+        return getPrefs(context).getFloat(KEY_SPEECH_RATE, DEFAULT_SPEECH_RATE)
+    }
+
+    fun setSpeechRate(context: Context, rate: Float) {
+        getPrefs(context).edit().putFloat(KEY_SPEECH_RATE, rate).apply()
+        _settingsState.value = _settingsState.value.copy(speechRate = rate)
+    }
+
+    fun getSpeechPitch(context: Context): Float {
+        return getPrefs(context).getFloat(KEY_SPEECH_PITCH, DEFAULT_SPEECH_PITCH)
+    }
+
+    fun setSpeechPitch(context: Context, pitch: Float) {
+        getPrefs(context).edit().putFloat(KEY_SPEECH_PITCH, pitch).apply()
+        _settingsState.value = _settingsState.value.copy(speechPitch = pitch)
+    }
+
     // Legacy method aliases
     fun isServiceEnabled(context: Context): Boolean = isAutoAcceptEnabled(context)
     fun setServiceEnabled(context: Context, enabled: Boolean) = setAutoAcceptEnabled(context, enabled)
@@ -204,6 +242,10 @@ object AppSettings {
     fun setMinValue(context: Context, value: Float) = setMinFare(context, value)
     fun getMaxDistance(context: Context): Float = getMaxPickupDistance(context)
     fun setMaxDistance(context: Context, value: Float) = setMaxPickupDistance(context, value)
+    fun getMinPrice(context: Context): Float = getMinFare(context)
+    fun setMinPrice(context: Context, value: Float) = setMinFare(context, value)
+    fun getSelectedLanguage(context: Context): String = getVoiceLanguage(context)
+    fun setSelectedLanguage(context: Context, lang: String) = setVoiceLanguage(context, lang)
 
     /**
      * Appends an activity log entry to the reactive live feed.
@@ -262,6 +304,39 @@ object AppSettings {
                     service.equals(expectedService2, ignoreCase = true) ||
                     service.equals(expectedShort1, ignoreCase = true) ||
                     service.equals(expectedShort2, ignoreCase = true)
+                ) {
+                    return true
+                }
+            }
+        } catch (_: Exception) {
+            return false
+        }
+        return false
+    }
+
+    /**
+     * Checks if a specific Accessibility Service class is currently active.
+     */
+    fun isAccessibilityServiceEnabled(context: Context, serviceClass: Class<*>): Boolean {
+        if (serviceClass == MyAccessibilityService::class.java && MyAccessibilityService.isServiceRunning) {
+            return true
+        }
+        val expectedCanonical = "${context.packageName}/${serviceClass.canonicalName}"
+        val expectedShort = "${context.packageName}/.${serviceClass.simpleName}"
+
+        try {
+            val enabledServices = Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: return false
+
+            val colonSplitter = TextUtils.SimpleStringSplitter(':')
+            colonSplitter.setString(enabledServices)
+
+            while (colonSplitter.hasNext()) {
+                val service = colonSplitter.next()
+                if (service.equals(expectedCanonical, ignoreCase = true) ||
+                    service.equals(expectedShort, ignoreCase = true)
                 ) {
                     return true
                 }

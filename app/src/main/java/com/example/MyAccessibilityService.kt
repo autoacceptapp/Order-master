@@ -1,7 +1,10 @@
 package com.example
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.content.Intent
+import android.graphics.Path
+import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -337,6 +340,170 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Hands-Free Action Execution:
+     * Searches for specific UI target labels (e.g. "Confirm", "Accept", "Select").
+     * If a target node is not directly clickable (isClickable == false), recursively traverses up
+     * to find the nearest clickable parent container and performs ACTION_CLICK.
+     * Includes a fallback gesture dispatch using dispatchGesture() for custom-drawn UI components.
+     *
+     * @param root Optional specific root node to search. If null, searches across all active & overlay windows.
+     * @param targetLabels Action labels to locate and click.
+     * @return true if an action was executed successfully (via ACTION_CLICK or gesture dispatch), false otherwise.
+     */
+    fun executeAssistiveClick(
+        root: AccessibilityNodeInfo? = null,
+        targetLabels: List<String> = listOf("Confirm", "Accept", "Select", "Auto Accept")
+    ): Boolean {
+        val rootsToSearch = if (root != null) {
+            listOf(root)
+        } else {
+            getAllRootWindows()
+        }
+
+        var executed = false
+        val shouldRecycleRoots = (root == null)
+
+        try {
+            for (r in rootsToSearch) {
+                val targetNode = findTargetActionNode(r, targetLabels) ?: continue
+                try {
+                    // 1. Try finding nearest clickable parent or self
+                    val clickableNode = findClickableParentOrSelf(targetNode)
+                    if (clickableNode != null) {
+                        executed = clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        Log.i(TAG, "executeAssistiveClick: ACTION_CLICK on '${clickableNode.className}', success=$executed")
+                        recycleNode(clickableNode)
+                        if (executed) break
+                    }
+
+                    // 2. Direct click attempt on the target node if not already attempted
+                    if (!executed && targetNode.isClickable) {
+                        executed = targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        Log.i(TAG, "executeAssistiveClick: Direct ACTION_CLICK on '${targetNode.className}', success=$executed")
+                        if (executed) break
+                    }
+
+                    // 3. Fallback gesture dispatch using dispatchGesture() for custom-drawn UI components
+                    if (!executed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        executed = dispatchTapGesture(targetNode)
+                        Log.i(TAG, "executeAssistiveClick: Fallback dispatchTapGesture executed=$executed")
+                        if (executed) break
+                    }
+                } finally {
+                    recycleNode(targetNode)
+                }
+            }
+        } finally {
+            if (shouldRecycleRoots) {
+                for (r in rootsToSearch) {
+                    recycleNode(r)
+                }
+            }
+        }
+
+        return executed
+    }
+
+    /**
+     * Searches for a target action node matching any of the specified target labels.
+     */
+    fun findTargetActionNode(root: AccessibilityNodeInfo, targetLabels: List<String>): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        @Suppress("DEPRECATION")
+        queue.add(AccessibilityNodeInfo.obtain(root))
+
+        val startTime = System.currentTimeMillis()
+        val timeoutMs = 150L
+
+        while (queue.isNotEmpty()) {
+            if (System.currentTimeMillis() - startTime > timeoutMs) {
+                while (queue.isNotEmpty()) {
+                    recycleNode(queue.removeFirst())
+                }
+                break
+            }
+
+            val node = queue.removeFirst()
+
+            val text = node.text?.toString() ?: ""
+            val desc = node.contentDescription?.toString() ?: ""
+
+            val matchesLabel = targetLabels.any { label ->
+                text.equals(label, ignoreCase = true) ||
+                desc.equals(label, ignoreCase = true) ||
+                text.contains(label, ignoreCase = true) ||
+                desc.contains(label, ignoreCase = true)
+            }
+
+            if (matchesLabel && isActionableNodeOrChild(node)) {
+                while (queue.isNotEmpty()) {
+                    recycleNode(queue.removeFirst())
+                }
+                return node
+            }
+
+            val childCount = node.childCount
+            for (i in 0 until childCount) {
+                val child = node.getChild(i)
+                if (child != null) {
+                    queue.add(child)
+                }
+            }
+            recycleNode(node)
+        }
+        return null
+    }
+
+    /**
+     * Dispatches a tap gesture on the screen center of the given AccessibilityNodeInfo.
+     * Useful as a fallback for custom-drawn or canvas UI components that don't support ACTION_CLICK.
+     */
+    fun dispatchTapGesture(node: AccessibilityNodeInfo): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            return false
+        }
+        return try {
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            if (rect.isEmpty || rect.width() <= 0 || rect.height() <= 0) {
+                return false
+            }
+
+            val x = rect.centerX().toFloat()
+            val y = rect.centerY().toFloat()
+
+            val clickPath = Path().apply {
+                moveTo(x, y)
+            }
+
+            val stroke = GestureDescription.StrokeDescription(
+                clickPath,
+                0L,
+                50L // 50ms tap duration
+            )
+            val gesture = GestureDescription.Builder()
+                .addStroke(stroke)
+                .build()
+
+            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    super.onCompleted(gestureDescription)
+                    Log.d(TAG, "dispatchTapGesture completed at ($x, $y)")
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    super.onCancelled(gestureDescription)
+                    Log.w(TAG, "dispatchTapGesture cancelled at ($x, $y)")
+                }
+            }, null)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in dispatchTapGesture", e)
+            false
+        }
+    }
+
+    /**
      * Generic Click Logic:
      * Robust matching mechanism for target action keywords (e.g. "Accept", "Auto Accept", "Confirm").
      * If the matching AccessibilityNodeInfo is clickable (isClickable == true), triggers ACTION_CLICK on that node.
@@ -364,6 +531,10 @@ open class MyAccessibilityService : AccessibilityService() {
                     val targetToClick = findClickableParentOrSelf(acceptNode) ?: acceptNode
                     clicked = targetToClick.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     Log.i(TAG, "findAndClickAcceptButton: Clicked on '${targetToClick.className}', success=$clicked")
+                    if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        clicked = dispatchTapGesture(targetToClick)
+                        Log.i(TAG, "findAndClickAcceptButton: Fallback dispatchTapGesture executed=$clicked")
+                    }
                     if (targetToClick !== acceptNode) {
                         recycleNode(targetToClick)
                     }
@@ -497,6 +668,7 @@ open class MyAccessibilityService : AccessibilityService() {
         return trimmed.equals("Accept", ignoreCase = true) ||
                 trimmed.equals("Auto Accept", ignoreCase = true) ||
                 trimmed.equals("Confirm", ignoreCase = true) ||
+                trimmed.equals("Select", ignoreCase = true) ||
                 trimmed.equals("Accept Order", ignoreCase = true) ||
                 trimmed.equals("Accept Ride", ignoreCase = true) ||
                 trimmed.equals("Go", ignoreCase = true) ||
@@ -622,6 +794,15 @@ open class MyAccessibilityService : AccessibilityService() {
             try {
                 tts.setLanguage(Locale.getDefault())
             } catch (_: Exception) {}
+        }
+
+        try {
+            val rate = AppSettings.getSpeechRate(this)
+            val pitch = AppSettings.getSpeechPitch(this)
+            tts.setSpeechRate(rate)
+            tts.setPitch(pitch)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error applying TTS rate/pitch", e)
         }
     }
 

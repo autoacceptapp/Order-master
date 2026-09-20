@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- DownloadManager or external downloads folder: Context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) -->
+    <external-files-path
+        name="external_download_files"
+        path="Download" />
+
+    <!-- External cache directory: Context.externalCacheDir -->
+    <external-cache-path
+        name="external_cache_files"
+        path="." />
+
+    <!-- Internal cache directory: Context.cacheDir -->
+    <cache-path
+        name="internal_cache_files"
+        path="." />
+
+    <!-- Internal app files directory: Context.filesDir -->
+    <files-path
+        name="internal_files"
+        path="." />
+</paths>

@@ -42,10 +42,10 @@ import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.VoiceOverOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -75,6 +75,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -91,10 +92,12 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import com.example.ui.theme.CaptainAutoAcceptTheme
 import com.example.ui.theme.PrimaryEmerald
 import com.example.ui.theme.SurfaceStroke
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -122,10 +125,34 @@ class MainActivity : ComponentActivity() {
         AppSettings.init(this)
         refreshServiceStatus()
 
+        // Automatically check for new releases in the background when app launches
+        lifecycleScope.launch {
+            GitHubUpdateManager.checkForUpdates(
+                context = applicationContext,
+                currentVersion = BuildConfig.VERSION_NAME,
+                ignoreSkipped = false
+            )
+        }
+
         setContent {
             CaptainAutoAcceptTheme {
                 var currentScreen by rememberSaveable { mutableStateOf("dashboard") }
                 val isServiceActive by isServiceActiveFlow.collectAsState()
+                val updateState by GitHubUpdateManager.updateState.collectAsState()
+
+                // Display In-App Auto Update Dialog when a new release is available
+                if (updateState is UpdateResult.UpdateAvailable) {
+                    val updateInfo = updateState as UpdateResult.UpdateAvailable
+                    UpdateDialog(
+                        updateInfo = updateInfo,
+                        onDismissRequest = {
+                            GitHubUpdateManager.resetState()
+                        },
+                        onSkipVersion = { versionTag ->
+                            GitHubUpdateManager.skipVersion(applicationContext, versionTag)
+                        }
+                    )
+                }
 
                 if (currentScreen == "permissions") {
                     AppSettingsScreen(
@@ -188,6 +215,7 @@ fun DashboardScreen(
     val isOverlayGranted = remember(isServiceActive) { PermissionUtils.canDrawOverlays(context) }
     val isBatteryIgnored = remember(isServiceActive) { PermissionUtils.isIgnoringBatteryOptimizations(context) }
     val isReadyForAutoAccept = isServiceActive && isOverlayGranted && isBatteryIgnored
+    val coroutineScope = rememberCoroutineScope()
 
     // Lifecycle observer to trigger refresh whenever ON_RESUME occurs
     DisposableEffect(lifecycleOwner) {
@@ -241,6 +269,34 @@ fun DashboardScreen(
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = {
+                            Toast.makeText(context, "Checking for updates...", Toast.LENGTH_SHORT).show()
+                            coroutineScope.launch {
+                                val result = GitHubUpdateManager.checkForUpdates(
+                                    context = context,
+                                    currentVersion = BuildConfig.VERSION_NAME,
+                                    ignoreSkipped = true
+                                )
+                                when (result) {
+                                    is UpdateResult.NoUpdate -> {
+                                        Toast.makeText(context, "App is up to date (v${result.currentVersion})", Toast.LENGTH_SHORT).show()
+                                    }
+                                    is UpdateResult.Error -> {
+                                        Toast.makeText(context, "Update check failed: ${result.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                    else -> Unit
+                                }
+                            }
+                        },
+                        modifier = Modifier.testTag("check_for_updates_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SystemUpdate,
+                            contentDescription = "Check for Updates",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     IconButton(
                         onClick = onNavigateToPermissions,
                         modifier = Modifier.testTag("open_permissions_screen_button")
@@ -856,6 +912,7 @@ fun DecisionThresholdsCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun VoiceAnnouncerCard(
     isEnabled: Boolean,
