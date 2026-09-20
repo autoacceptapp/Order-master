@@ -227,12 +227,13 @@ object TextAnalysisEngine {
      * Criteria:
      * 1. Auto-Accept must be enabled in settings.
      * 2. Accept action/button must be detected on screen.
-     * 3. Total Fare must be >= User Min Fare limit.
+     * 3. Total Fare must be >= User Min Fare limit AND <= User Max Fare limit (minFare <= offer.fare <= maxFare).
      * 4. Pickup Distance must be <= User Max Pickup Distance limit.
      */
     fun evaluateRideOffer(
         offer: ParsedRideOffer,
         minFare: Float,
+        maxFare: Float = 5000.0f,
         maxPickupDistance: Float,
         isAutoAcceptEnabled: Boolean
     ): RideEvaluation {
@@ -269,7 +270,9 @@ object TextAnalysisEngine {
             )
         }
 
-        val passesFare = offer.totalFare >= minFare
+        val isAboveMinFare = offer.totalFare >= minFare
+        val isBelowMaxFare = offer.totalFare <= maxFare
+        val passesFare = isAboveMinFare && isBelowMaxFare
         val passesPickup = offer.pickupDistanceKm != null && offer.pickupDistanceKm <= maxPickupDistance
 
         val breakdownStr = if (offer.fareBreakdown.size > 1) {
@@ -279,10 +282,13 @@ object TextAnalysisEngine {
         val reason = when {
             passesFare && passesPickup -> {
                 val dropStr = offer.dropDistanceKm?.let { ", Drop: ${String.format(Locale.US, "%.1f", it)}km" } ?: ""
-                "MATCHED: Fare ₹${String.format(Locale.US, "%.1f", offer.totalFare)}$breakdownStr >= ₹$minFare and Pickup ${String.format(Locale.US, "%.1f", offer.pickupDistanceKm!!)}km <= ${maxPickupDistance}km$dropStr"
+                "MATCHED: Fare ₹${String.format(Locale.US, "%.1f", offer.totalFare)}$breakdownStr is within ₹$minFare - ₹$maxFare and Pickup ${String.format(Locale.US, "%.1f", offer.pickupDistanceKm!!)}km <= ${maxPickupDistance}km$dropStr"
             }
-            !passesFare -> {
+            !isAboveMinFare -> {
                 "REJECTED: Fare ₹${String.format(Locale.US, "%.1f", offer.totalFare)}$breakdownStr < Min Limit ₹$minFare"
+            }
+            !isBelowMaxFare -> {
+                "REJECTED: Fare ₹${String.format(Locale.US, "%.1f", offer.totalFare)}$breakdownStr > Max Limit ₹$maxFare"
             }
             offer.pickupDistanceKm == null -> {
                 "REJECTED: Pickup distance could not be determined"
@@ -301,6 +307,22 @@ object TextAnalysisEngine {
             passesPickupDistance = passesPickup,
             isAccepted = isAccepted,
             decisionReason = reason
+        )
+    }
+
+    /**
+     * Convenience overload accepting AppSettings object or SettingsState directly.
+     */
+    fun evaluateRideOffer(
+        offer: ParsedRideOffer,
+        settings: SettingsState
+    ): RideEvaluation {
+        return evaluateRideOffer(
+            offer = offer,
+            minFare = settings.minFare,
+            maxFare = settings.maxFare,
+            maxPickupDistance = settings.maxPickupDistance,
+            isAutoAcceptEnabled = settings.isAutoAcceptEnabled
         )
     }
 

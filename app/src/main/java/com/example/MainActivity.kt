@@ -61,6 +61,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -84,6 +85,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -376,6 +379,7 @@ fun DashboardScreen(
                 DecisionThresholdsCard(
                     settings = settingsState,
                     onMinFareChanged = { AppSettings.setMinFare(context, it) },
+                    onMaxFareChanged = { AppSettings.setMaxFare(context, it) },
                     onMaxDistanceChanged = { AppSettings.setMaxPickupDistance(context, it) },
                     onDelayChanged = { AppSettings.setClickDelayMs(context, it) }
                 )
@@ -428,6 +432,7 @@ fun DashboardScreen(
                         val eval = TextAnalysisEngine.evaluateRideOffer(
                             offer = parsed,
                             minFare = settingsState.minFare,
+                            maxFare = settingsState.maxFare,
                             maxPickupDistance = settingsState.maxPickupDistance,
                             isAutoAcceptEnabled = settingsState.isAutoAcceptEnabled
                         )
@@ -734,9 +739,17 @@ fun MasterSwitchCard(
 fun DecisionThresholdsCard(
     settings: SettingsState,
     onMinFareChanged: (Float) -> Unit,
+    onMaxFareChanged: (Float) -> Unit = {},
     onMaxDistanceChanged: (Float) -> Unit,
     onDelayChanged: (Long) -> Unit
 ) {
+    var minPriceInput by remember(settings.minFare) {
+        mutableStateOf(settings.minFare.roundToInt().toString())
+    }
+    var maxPriceInput by remember(settings.maxFare) {
+        mutableStateOf(settings.maxFare.roundToInt().toString())
+    }
+
     OutlinedCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -768,7 +781,7 @@ fun DecisionThresholdsCard(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // --- MINIMUM FARE SETTING ---
+            // --- PRICE RANGE FILTER HEADER & TEXT INPUTS ---
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -776,52 +789,134 @@ fun DecisionThresholdsCard(
             ) {
                 Column {
                     Text(
-                        text = "Minimum Total Fare",
+                        text = "Price Range Filter (₹)",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
                     Text(
-                        text = "Base fare + tips (e.g. ₹56 + ₹13)",
+                        text = "Filter: Min Price ≤ Fare ≤ Max Price",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Text(
-                    text = "₹${settings.minFare.roundToInt()}",
-                    style = MaterialTheme.typography.titleLarge.copy(
+                    text = "₹${settings.minFare.roundToInt()} - ₹${settings.maxFare.roundToInt()}",
+                    style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.ExtraBold,
                         color = PrimaryEmerald
                     )
                 )
             }
 
-            Slider(
-                value = settings.minFare,
-                onValueChange = onMinFareChanged,
-                valueRange = 20f..300f,
-                steps = 27,
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Dual Numeric OutlinedTextFields for Exact Minimum and Maximum Price
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = minPriceInput,
+                    onValueChange = { input ->
+                        minPriceInput = input.filter { it.isDigit() }
+                        minPriceInput.toFloatOrNull()?.let { newVal ->
+                            if (newVal <= settings.maxFare) {
+                                onMinFareChanged(newVal)
+                            }
+                        }
+                    },
+                    label = { Text("Min Price (₹)", fontSize = 12.sp) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = PrimaryEmerald,
+                        cursorColor = PrimaryEmerald
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("min_price_input")
+                )
+
+                OutlinedTextField(
+                    value = maxPriceInput,
+                    onValueChange = { input ->
+                        maxPriceInput = input.filter { it.isDigit() }
+                        maxPriceInput.toFloatOrNull()?.let { newVal ->
+                            if (newVal >= settings.minFare) {
+                                onMaxFareChanged(newVal)
+                            }
+                        }
+                    },
+                    label = { Text("Max Price (₹)", fontSize = 12.sp) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = PrimaryEmerald,
+                        cursorColor = PrimaryEmerald
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("max_price_input")
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Compose RangeSlider for visual dual-bound control
+            val currentRange = (settings.minFare.coerceIn(0f, 1000f))..(settings.maxFare.coerceIn(0f, 1000f))
+            RangeSlider(
+                value = currentRange,
+                onValueChange = { range ->
+                    val newMin = range.start.roundToInt().toFloat()
+                    val newMax = range.endInclusive.roundToInt().toFloat()
+                    onMinFareChanged(newMin)
+                    onMaxFareChanged(newMax)
+                },
+                valueRange = 0f..1000f,
+                steps = 99,
                 colors = SliderDefaults.colors(
                     thumbColor = PrimaryEmerald,
-                    activeTrackColor = PrimaryEmerald
+                    activeTrackColor = PrimaryEmerald,
+                    activeTickColor = Color.Transparent,
+                    inactiveTickColor = Color.Transparent
                 ),
-                modifier = Modifier.testTag("min_fare_slider")
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("price_range_slider")
             )
 
-            // Quick Preset Chips for Fare
+            // Quick Preset Chips for Min & Max Price Ranges
+            Text(
+                text = "Quick Presets:",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+            )
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                val farePresets = listOf(40f, 60f, 80f, 100f, 150f, 200f)
-                farePresets.forEach { preset ->
-                    val isSelected = (settings.minFare.roundToInt() == preset.toInt())
+                val presets = listOf(
+                    Triple("₹40 - ₹200", 40f, 200f),
+                    Triple("₹60 - ₹500", 60f, 500f),
+                    Triple("₹80 - ₹1000", 80f, 1000f),
+                    Triple("₹100 - ₹5000", 100f, 5000f),
+                    Triple("₹50+ (No Max)", 50f, 10000f)
+                )
+                presets.forEach { (label, minVal, maxVal) ->
+                    val isSelected = (settings.minFare.roundToInt() == minVal.toInt() && settings.maxFare.roundToInt() == maxVal.toInt())
                     FilterChip(
                         selected = isSelected,
-                        onClick = { onMinFareChanged(preset) },
-                        label = { Text("₹${preset.toInt()}", fontSize = 12.sp) },
+                        onClick = {
+                            onMinFareChanged(minVal)
+                            onMaxFareChanged(maxVal)
+                        },
+                        label = { Text(label, fontSize = 11.sp) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = PrimaryEmerald,
                             selectedLabelColor = Color.Black
-                        )
+                        ),
+                        modifier = Modifier.testTag("price_preset_${minVal.toInt()}_${maxVal.toInt()}")
                     )
                 }
             }
@@ -1078,6 +1173,7 @@ fun RideSimulatorCard(
         TextAnalysisEngine.evaluateRideOffer(
             offer = parsedOffer,
             minFare = settings.minFare,
+            maxFare = settings.maxFare,
             maxPickupDistance = settings.maxPickupDistance,
             isAutoAcceptEnabled = settings.isAutoAcceptEnabled
         )
@@ -1136,6 +1232,7 @@ fun RideSimulatorCard(
                     "Standard (₹80)" to "Rapido Ride: ₹65 + ₹15 • Pickup: 1.2 km • Drop: 5.8 km [Accept]",
                     "High Fare (₹118)" to "Captain Offer: ₹95 + ₹23 • Pickup 2.1 km • Drop 8.0 km [Accept]",
                     "Low Fare (₹35)" to "Order Offer: ₹35 • Pickup 0.8 km • Drop 2.0 km [Accept]",
+                    "Exceeds Max (₹650)" to "Luxury Trip: ₹650 • Pickup 1.5 km • Drop 22.0 km [Accept]",
                     "Far Pickup (6.5km)" to "Offer: ₹120 • Pickup 6.5 km • Drop 14.0 km [Accept]"
                 )
 

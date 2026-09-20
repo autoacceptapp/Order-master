@@ -211,12 +211,14 @@ open class MyAccessibilityService : AccessibilityService() {
             }
 
             val minFare = AppSettings.getMinFare(this)
+            val maxFare = AppSettings.getMaxFare(this)
             val maxPickupDist = AppSettings.getMaxPickupDistance(this)
             val isEnabled = AppSettings.isAutoAcceptEnabled(this)
 
             val evaluation = TextAnalysisEngine.evaluateRideOffer(
                 offer = offer,
                 minFare = minFare,
+                maxFare = maxFare,
                 maxPickupDistance = maxPickupDist,
                 isAutoAcceptEnabled = isEnabled
             )
@@ -904,15 +906,31 @@ open class MyAccessibilityService : AccessibilityService() {
 
     /**
      * Announces when an offer does not meet captain criteria.
+     * Articulates specific threshold reason (e.g. fare too low, fare exceeds maximum, or pickup too far).
      */
     fun announceRideSkipped(reason: String) {
         if (!AppSettings.isVoiceAnnouncerEnabled(this)) return
 
         val lang = AppSettings.getVoiceLanguage(this)
-        val message = if (lang.equals("hi", ignoreCase = true)) {
-            "राइड छोड़ दिया गया।"
-        } else {
-            "Ride skipped."
+        val isHindi = lang.equals("hi", ignoreCase = true)
+
+        val message = when {
+            reason.contains("< Min Limit", ignoreCase = true) || reason.contains("below minimum", ignoreCase = true) -> {
+                if (isHindi) "राइड छोड़ दिया गया: किराया न्यूनतम से कम है।"
+                else "Ride skipped: fare is below minimum."
+            }
+            reason.contains("> Max Limit", ignoreCase = true) || reason.contains("exceeds maximum", ignoreCase = true) -> {
+                if (isHindi) "राइड छोड़ दिया गया: किराया अधिकतम सीमा से अधिक है।"
+                else "Ride skipped: fare exceeds maximum limit."
+            }
+            reason.contains("Pickup distance", ignoreCase = true) -> {
+                if (isHindi) "राइड छोड़ दिया गया: पिकअप बहुत दूर है।"
+                else "Ride skipped: pickup is too far."
+            }
+            else -> {
+                if (isHindi) "राइड छोड़ दिया गया।"
+                else "Ride skipped."
+            }
         }
 
         speak(message, TextToSpeech.QUEUE_ADD)

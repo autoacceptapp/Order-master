@@ -35,6 +35,7 @@ class ExampleRobolectricTest {
         // Default values
         assertTrue(AppSettings.isAutoAcceptEnabled(context))
         assertEquals(60.0f, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(5000.0f, AppSettings.getMaxFare(context), 0.01f)
         assertEquals(3.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
         // Update values
@@ -43,6 +44,11 @@ class ExampleRobolectricTest {
 
         AppSettings.setMinFare(context, 75.0f)
         assertEquals(75.0f, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(75.0f, AppSettings.getMinPrice(context), 0.01f)
+
+        AppSettings.setMaxFare(context, 800.0f)
+        assertEquals(800.0f, AppSettings.getMaxFare(context), 0.01f)
+        assertEquals(800.0f, AppSettings.getMaxPrice(context), 0.01f)
 
         AppSettings.setMaxPickupDistance(context, 2.5f)
         assertEquals(2.5f, AppSettings.getMaxPickupDistance(context), 0.01f)
@@ -50,6 +56,7 @@ class ExampleRobolectricTest {
         // Reset for subsequent tests
         AppSettings.setAutoAcceptEnabled(context, true)
         AppSettings.setMinFare(context, 60.0f)
+        AppSettings.setMaxFare(context, 5000.0f)
         AppSettings.setMaxPickupDistance(context, 3.0f)
     }
 
@@ -167,6 +174,33 @@ class ExampleRobolectricTest {
         )
         assertFalse(evalNoAccept.isAccepted)
         assertTrue(evalNoAccept.decisionReason.contains("No 'Accept' button"))
+
+        // Case 6: Rejected because fare exceeds maximum price (₹350 > ₹250)
+        val offerHighFare = TextAnalysisEngine.parseRideOffer("Ride: ₹350 • Pickup 1.5 km • Drop 18.0 km [Accept]")
+        val evalHighFare = TextAnalysisEngine.evaluateRideOffer(
+            offer = offerHighFare,
+            minFare = 50.0f,
+            maxFare = 250.0f,
+            maxPickupDistance = maxPickup,
+            isAutoAcceptEnabled = true
+        )
+        assertFalse(evalHighFare.isAccepted)
+        assertFalse(evalHighFare.passesFare)
+        assertTrue(evalHighFare.decisionReason.contains("> Max Limit ₹250"))
+
+        // Case 7: Evaluated with SettingsState containing custom minFare and maxFare
+        val settingsState = SettingsState(
+            minFare = 50.0f,
+            maxFare = 200.0f,
+            maxPickupDistance = 4.0f,
+            isAutoAcceptEnabled = true
+        )
+        val evalSettingsState = TextAnalysisEngine.evaluateRideOffer(
+            offer = offerPass, // ₹69
+            settings = settingsState
+        )
+        assertTrue(evalSettingsState.isAccepted)
+        assertTrue(evalSettingsState.passesFare)
     }
 
     @Test

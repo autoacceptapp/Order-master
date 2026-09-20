@@ -33,6 +33,7 @@ data class ActivityLogEntry(
 data class SettingsState(
     val isAutoAcceptEnabled: Boolean = true,
     val minFare: Float = 60.0f,
+    val maxFare: Float = 5000.0f,
     val maxPickupDistance: Float = 3.0f,
     val clickDelayMs: Long = 500L,
     val isVoiceAnnouncerEnabled: Boolean = true,
@@ -42,6 +43,7 @@ data class SettingsState(
 ) {
     val autoAcceptEnabled: Boolean get() = isAutoAcceptEnabled
     val minPrice: Float get() = minFare
+    val maxPrice: Float get() = maxFare
     val maxDistance: Float get() = maxPickupDistance
     val selectedLanguage: String get() = voiceLanguage
 }
@@ -52,6 +54,7 @@ object AppSettings {
     // Primary preference keys
     const val KEY_AUTO_ACCEPT_ENABLED = "key_auto_accept_enabled"
     const val KEY_MIN_FARE = "key_min_fare"
+    const val KEY_MAX_FARE = "key_max_fare"
     const val KEY_MAX_PICKUP_DISTANCE = "key_max_pickup_distance"
     const val KEY_CLICK_DELAY_MS = "key_click_delay_ms"
     const val KEY_VOICE_ANNOUNCER_ENABLED = "key_voice_announcer_enabled"
@@ -62,6 +65,7 @@ object AppSettings {
     // Backward-compatibility keys
     const val KEY_SERVICE_ENABLED = "key_service_enabled"
     const val KEY_MIN_VALUE = "key_min_value"
+    const val KEY_MAX_VALUE = "key_max_value"
     const val KEY_MAX_DISTANCE = "key_max_distance"
 
     // Broadcast actions for service logging
@@ -70,6 +74,7 @@ object AppSettings {
 
     // Default configuration values
     const val DEFAULT_MIN_FARE = 60.0f
+    const val DEFAULT_MAX_FARE = 5000.0f
     const val DEFAULT_MAX_PICKUP_DISTANCE = 3.0f
     const val DEFAULT_AUTO_ACCEPT_ENABLED = true
     const val DEFAULT_CLICK_DELAY_MS = 500L
@@ -80,8 +85,10 @@ object AppSettings {
 
     // In-memory properties for legacy access
     var minCurrencyThreshold: Double = 60.0
+    var maxCurrencyThreshold: Double = 5000.0
     var autoAcceptEnabled: Boolean = true
     val minPrice: Double get() = minCurrencyThreshold
+    val maxPrice: Double get() = maxCurrencyThreshold
     val maxDistance: Double get() = _settingsState.value.maxPickupDistance.toDouble()
     val speechRate: Float get() = _settingsState.value.speechRate
     val speechPitch: Float get() = _settingsState.value.speechPitch
@@ -94,6 +101,7 @@ object AppSettings {
         SettingsState(
             isAutoAcceptEnabled = DEFAULT_AUTO_ACCEPT_ENABLED,
             minFare = DEFAULT_MIN_FARE,
+            maxFare = DEFAULT_MAX_FARE,
             maxPickupDistance = DEFAULT_MAX_PICKUP_DISTANCE,
             clickDelayMs = DEFAULT_CLICK_DELAY_MS,
             isVoiceAnnouncerEnabled = DEFAULT_VOICE_ANNOUNCER_ENABLED,
@@ -125,6 +133,7 @@ object AppSettings {
         val prefs = getPrefs(context)
         val enabled = prefs.getBoolean(KEY_AUTO_ACCEPT_ENABLED, prefs.getBoolean(KEY_SERVICE_ENABLED, DEFAULT_AUTO_ACCEPT_ENABLED))
         val minFare = prefs.getFloat(KEY_MIN_FARE, prefs.getFloat(KEY_MIN_VALUE, DEFAULT_MIN_FARE))
+        val maxFare = prefs.getFloat(KEY_MAX_FARE, prefs.getFloat(KEY_MAX_VALUE, DEFAULT_MAX_FARE))
         val maxDist = prefs.getFloat(KEY_MAX_PICKUP_DISTANCE, prefs.getFloat(KEY_MAX_DISTANCE, DEFAULT_MAX_PICKUP_DISTANCE))
         val delay = prefs.getLong(KEY_CLICK_DELAY_MS, DEFAULT_CLICK_DELAY_MS)
         val voiceEnabled = prefs.getBoolean(KEY_VOICE_ANNOUNCER_ENABLED, DEFAULT_VOICE_ANNOUNCER_ENABLED)
@@ -133,11 +142,13 @@ object AppSettings {
         val speechPitch = prefs.getFloat(KEY_SPEECH_PITCH, DEFAULT_SPEECH_PITCH)
 
         minCurrencyThreshold = minFare.toDouble()
+        maxCurrencyThreshold = maxFare.toDouble()
         autoAcceptEnabled = enabled
 
         _settingsState.value = SettingsState(
             isAutoAcceptEnabled = enabled,
             minFare = minFare,
+            maxFare = maxFare,
             maxPickupDistance = maxDist,
             clickDelayMs = delay,
             isVoiceAnnouncerEnabled = voiceEnabled,
@@ -195,6 +206,20 @@ object AppSettings {
         _settingsState.value = _settingsState.value.copy(minFare = value)
     }
 
+    fun getMaxFare(context: Context): Float {
+        val prefs = getPrefs(context)
+        return prefs.getFloat(KEY_MAX_FARE, prefs.getFloat(KEY_MAX_VALUE, DEFAULT_MAX_FARE))
+    }
+
+    fun setMaxFare(context: Context, value: Float) {
+        getPrefs(context).edit()
+            .putFloat(KEY_MAX_FARE, value)
+            .putFloat(KEY_MAX_VALUE, value)
+            .apply()
+        maxCurrencyThreshold = value.toDouble()
+        _settingsState.value = _settingsState.value.copy(maxFare = value)
+    }
+
     fun getMaxPickupDistance(context: Context): Float {
         val prefs = getPrefs(context)
         return prefs.getFloat(KEY_MAX_PICKUP_DISTANCE, prefs.getFloat(KEY_MAX_DISTANCE, DEFAULT_MAX_PICKUP_DISTANCE))
@@ -244,6 +269,8 @@ object AppSettings {
     fun setMaxDistance(context: Context, value: Float) = setMaxPickupDistance(context, value)
     fun getMinPrice(context: Context): Float = getMinFare(context)
     fun setMinPrice(context: Context, value: Float) = setMinFare(context, value)
+    fun getMaxPrice(context: Context): Float = getMaxFare(context)
+    fun setMaxPrice(context: Context, value: Float) = setMaxFare(context, value)
     fun getSelectedLanguage(context: Context): String = getVoiceLanguage(context)
     fun setSelectedLanguage(context: Context, lang: String) = setVoiceLanguage(context, lang)
 
