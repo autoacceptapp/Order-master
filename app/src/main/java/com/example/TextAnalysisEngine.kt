@@ -237,6 +237,8 @@ object TextAnalysisEngine {
         maxPickupDistance: Float,
         isAutoAcceptEnabled: Boolean
     ): RideEvaluation {
+        val effectiveMaxPickup = maxPickupDistance.coerceIn(0.0f, 3.0f)
+
         if (!isAutoAcceptEnabled) {
             return RideEvaluation(
                 offer = offer,
@@ -273,7 +275,7 @@ object TextAnalysisEngine {
         val isAboveMinFare = offer.totalFare >= minFare
         val isBelowMaxFare = offer.totalFare <= maxFare
         val passesFare = isAboveMinFare && isBelowMaxFare
-        val passesPickup = offer.pickupDistanceKm != null && offer.pickupDistanceKm <= maxPickupDistance
+        val passesPickup = offer.pickupDistanceKm != null && offer.pickupDistanceKm <= effectiveMaxPickup
 
         val breakdownStr = if (offer.fareBreakdown.size > 1) {
             " (${offer.fareBreakdown.joinToString(" + ") { "₹$it" }})"
@@ -282,7 +284,7 @@ object TextAnalysisEngine {
         val reason = when {
             passesFare && passesPickup -> {
                 val dropStr = offer.dropDistanceKm?.let { ", Drop: ${String.format(Locale.US, "%.1f", it)}km" } ?: ""
-                "MATCHED: Fare ₹${String.format(Locale.US, "%.1f", offer.totalFare)}$breakdownStr is within ₹$minFare - ₹$maxFare and Pickup ${String.format(Locale.US, "%.1f", offer.pickupDistanceKm!!)}km <= ${maxPickupDistance}km$dropStr"
+                "MATCHED: Fare ₹${String.format(Locale.US, "%.1f", offer.totalFare)}$breakdownStr is within ₹$minFare - ₹$maxFare and Pickup ${String.format(Locale.US, "%.1f", offer.pickupDistanceKm!!)}km <= ${effectiveMaxPickup}km$dropStr"
             }
             !isAboveMinFare -> {
                 "REJECTED: Fare ₹${String.format(Locale.US, "%.1f", offer.totalFare)}$breakdownStr < Min Limit ₹$minFare"
@@ -294,7 +296,7 @@ object TextAnalysisEngine {
                 "REJECTED: Pickup distance could not be determined"
             }
             else -> {
-                "REJECTED: Pickup distance ${String.format(Locale.US, "%.1f", offer.pickupDistanceKm)}km > Max Limit ${maxPickupDistance}km"
+                "REJECTED: Pickup distance (${String.format(Locale.US, "%.1f", offer.pickupDistanceKm)} km) exceeds set maximum limit (${String.format(Locale.US, "%.1f", effectiveMaxPickup)} km)"
             }
         }
 

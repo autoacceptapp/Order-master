@@ -923,9 +923,9 @@ open class MyAccessibilityService : AccessibilityService() {
                 if (isHindi) "राइड छोड़ दिया गया: किराया अधिकतम सीमा से अधिक है।"
                 else "Ride skipped: fare exceeds maximum limit."
             }
-            reason.contains("Pickup distance", ignoreCase = true) -> {
-                if (isHindi) "राइड छोड़ दिया गया: पिकअप बहुत दूर है।"
-                else "Ride skipped: pickup is too far."
+            reason.contains("Pickup distance", ignoreCase = true) || reason.contains("exceeds set maximum limit", ignoreCase = true) -> {
+                if (isHindi) "राइड छोड़ दिया गया: पिकअप दूरी सीमा से अधिक है।"
+                else "Ride skipped: pickup distance exceeds maximum limit threshold."
             }
             else -> {
                 if (isHindi) "राइड छोड़ दिया गया।"

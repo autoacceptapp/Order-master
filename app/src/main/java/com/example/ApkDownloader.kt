@@ -1,15 +1,10 @@
 package com.example
 
-import android.app.DownloadManager
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
-import android.os.Handler
-import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
@@ -21,7 +16,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -46,10 +40,11 @@ sealed class DownloadState {
  *
  * Features:
  * - Streams APK download with real-time percentage progress (0% - 100%).
+ * - Syncs download progress to System Notification bar via UpdateNotificationManager.
  * - Stores downloaded APK in app-specific external files dir: Context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS).
  * - Generates secure content:// URI via FileProvider (${applicationId}.fileprovider).
  * - Checks and requests REQUEST_INSTALL_PACKAGES permission on Android 8.0+ (API 26+).
- * - Triggers Android package installer with FLAG_GRANT_READ_URI_PERMISSION.
+ * - Auto-triggers Android package installer upon successful download.
  */
 object ApkDownloader {
 
@@ -61,7 +56,7 @@ object ApkDownloader {
     private var activeDownloadJob: Job? = null
 
     /**
-     * Checks if the app has permission to install packages (Android 8.0+ / API 26+).
+     * Checks if the app has permission to install unknown packages (Android 8.0+ / API 26+).
      */
     fun canRequestPackageInstalls(context: Context): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -88,11 +83,26 @@ object ApkDownloader {
     }
 
     /**
-     * Downloads an APK file asynchronously from the provided URL, tracking progress in real-time.
+     * Builds the Intent to launch the system package installer for the specified APK file.
+     */
+    fun getInstallIntent(context: Context, apkFile: File): Intent {
+        val authority = "${context.packageName}.fileprovider"
+        val apkUri: Uri = FileProvider.getUriForFile(context, authority, apkFile)
+
+        return Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(apkUri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
+    /**
+     * Downloads an APK file asynchronously from the provided URL, tracking progress in real-time
+     * and updating both in-app StateFlow and System Status Bar Notification.
      *
      * @param context Application context
      * @param downloadUrl Direct URL to the compiled .apk asset
-     * @param fileName Target filename on disk (e.g. "OrderMaster_v2.0.apk")
+     * @param fileName Target filename on disk (e.g. "OrderMaster_update.apk")
      */
     fun startDownload(
         context: Context,
@@ -105,6 +115,12 @@ object ApkDownloader {
 
         activeDownloadJob = coroutineScope.launch {
             _downloadState.value = DownloadState.Downloading(
+                progressPercent = 0,
+                downloadedBytes = 0L,
+                totalBytes = -1L
+            )
+            UpdateNotificationManager.showDownloadProgressNotification(
+                context = context,
                 progressPercent = 0,
                 downloadedBytes = 0L,
                 totalBytes = -1L
@@ -161,6 +177,7 @@ object ApkDownloader {
                 if (redirectCode != HttpURLConnection.HTTP_OK) {
                     val err = DownloadState.Error("Server returned HTTP $redirectCode when downloading APK.")
                     _downloadState.value = err
+                    UpdateNotificationManager.dismissNotification(context, UpdateNotificationManager.NOTIFICATION_ID_DOWNLOAD_PROGRESS)
                     return@launch
                 }
 
@@ -175,6 +192,7 @@ object ApkDownloader {
                         while (input.read(buffer).also { bytesRead = it } != -1) {
                             if (!isActive) {
                                 destinationFile.delete()
+                                UpdateNotificationManager.dismissNotification(context, UpdateNotificationManager.NOTIFICATION_ID_DOWNLOAD_PROGRESS)
                                 return@launch
                             }
 
@@ -194,6 +212,15 @@ object ApkDownloader {
                                     downloadedBytes = downloaded,
                                     totalBytes = totalLength
                                 )
+                                // Sync to System Notification status bar every 2% to avoid excessive binder IPC
+                                if (percent % 2 == 0 || percent == 100) {
+                                    UpdateNotificationManager.showDownloadProgressNotification(
+                                        context = context,
+                                        progressPercent = percent,
+                                        downloadedBytes = downloaded,
+                                        totalBytes = totalLength
+                                    )
+                                }
                             }
                         }
                         output.flush()
@@ -204,12 +231,19 @@ object ApkDownloader {
                 val readyState = DownloadState.ReadyToInstall(destinationFile)
                 _downloadState.value = readyState
 
+                // Notify completion in system notification bar
+                UpdateNotificationManager.showDownloadCompleteNotification(context, destinationFile)
+
+                // Auto-trigger installation prompt
+                promptInstall(context, destinationFile)
+
             } catch (e: Exception) {
                 Log.e(TAG, "Exception during APK download", e)
                 _downloadState.value = DownloadState.Error(
                     message = "Download failed: ${e.localizedMessage ?: "Unknown error"}",
                     throwable = e
                 )
+                UpdateNotificationManager.dismissNotification(context, UpdateNotificationManager.NOTIFICATION_ID_DOWNLOAD_PROGRESS)
             } finally {
                 connection?.disconnect()
             }
@@ -219,10 +253,13 @@ object ApkDownloader {
     /**
      * Cancels any active download and resets the state to Idle.
      */
-    fun cancelDownload() {
+    fun cancelDownload(context: Context? = null) {
         activeDownloadJob?.cancel()
         activeDownloadJob = null
         _downloadState.value = DownloadState.Idle
+        if (context != null) {
+            UpdateNotificationManager.dismissNotification(context, UpdateNotificationManager.NOTIFICATION_ID_DOWNLOAD_PROGRESS)
+        }
     }
 
     /**
@@ -259,17 +296,9 @@ object ApkDownloader {
         }
 
         return try {
-            val authority = "${context.packageName}.fileprovider"
-            val apkUri: Uri = FileProvider.getUriForFile(context, authority, apkFile)
-
-            val installIntent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(apkUri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-
+            val installIntent = getInstallIntent(context, apkFile)
             context.startActivity(installIntent)
-            Log.i(TAG, "Package installer intent dispatched for URI: $apkUri")
+            Log.i(TAG, "Package installer intent dispatched for APK: ${apkFile.absolutePath}")
             true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to launch package installer", e)

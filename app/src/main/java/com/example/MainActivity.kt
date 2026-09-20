@@ -106,6 +106,11 @@ import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        const val EXTRA_SHOW_UPDATE_DIALOG = "extra_show_update_dialog"
+        const val EXTRA_LATEST_VERSION = "extra_latest_version"
+    }
+
     // Reactive state flow to reflect accessibility service state dynamically
     private val isServiceActiveFlow = MutableStateFlow(false)
 
@@ -128,31 +133,33 @@ class MainActivity : ComponentActivity() {
         AppSettings.init(this)
         refreshServiceStatus()
 
+        // Ensure update notification channel is registered
+        UpdateNotificationManager.createNotificationChannel(this)
+        handleUpdateIntent(intent)
+
         // Automatically check for new releases in the background when app launches
-        lifecycleScope.launch {
-            GitHubUpdateManager.checkForUpdates(
-                context = applicationContext,
-                currentVersion = BuildConfig.VERSION_NAME,
-                ignoreSkipped = false
-            )
-        }
+        GitHubUpdateManager.autoCheckForUpdates(this, lifecycleScope)
 
         setContent {
             CaptainAutoAcceptTheme {
                 var currentScreen by rememberSaveable { mutableStateOf("dashboard") }
                 val isServiceActive by isServiceActiveFlow.collectAsState()
                 val updateState by GitHubUpdateManager.updateState.collectAsState()
+                val isUpdateDialogVisible by GitHubUpdateManager.isDialogVisible.collectAsState()
 
                 // Display In-App Auto Update Dialog when a new release is available
-                if (updateState is UpdateResult.UpdateAvailable) {
+                if (isUpdateDialogVisible && updateState is UpdateResult.UpdateAvailable) {
                     val updateInfo = updateState as UpdateResult.UpdateAvailable
                     UpdateDialog(
                         updateInfo = updateInfo,
                         onDismissRequest = {
-                            GitHubUpdateManager.resetState()
+                            GitHubUpdateManager.dismissDialog()
                         },
-                        onSkipVersion = { versionTag ->
-                            GitHubUpdateManager.skipVersion(applicationContext, versionTag)
+                        onLater = {
+                            GitHubUpdateManager.dismissDialog()
+                        },
+                        onIgnore = { versionTag ->
+                            GitHubUpdateManager.ignoreVersion(applicationContext, versionTag)
                         }
                     )
                 }
@@ -177,6 +184,18 @@ class MainActivity : ComponentActivity() {
         // Automatically refreshes the accessibility service status when the user
         // navigates back to the app from the system Accessibility Settings screen.
         refreshServiceStatus()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleUpdateIntent(intent)
+    }
+
+    private fun handleUpdateIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_SHOW_UPDATE_DIALOG, false) == true) {
+            GitHubUpdateManager.showDialog()
+        }
     }
 
     private fun refreshServiceStatus() {
@@ -279,7 +298,9 @@ fun DashboardScreen(
                                 val result = GitHubUpdateManager.checkForUpdates(
                                     context = context,
                                     currentVersion = BuildConfig.VERSION_NAME,
-                                    ignoreSkipped = true
+                                    currentVersionCode = BuildConfig.VERSION_CODE,
+                                    ignoreSkipped = true,
+                                    notifySystem = true
                                 )
                                 when (result) {
                                     is UpdateResult.NoUpdate -> {
@@ -923,19 +944,23 @@ fun DecisionThresholdsCard(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // --- MAXIMUM PICKUP DISTANCE ---
+            // --- MAXIMUM PICKUP DISTANCE (0.0 km - 3.0 km) ---
+            var pickupDistanceInput by remember(settings.maxPickupDistance) {
+                mutableStateOf(String.format(Locale.US, "%.1f", settings.maxPickupDistance))
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Maximum Pickup Distance",
+                        text = "Maximum Pickup Distance (0.0 km - 3.0 km)",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
                     Text(
-                        text = "Ignore rides further than this",
+                        text = "Ignore rides further than this (Max threshold: 3.0 km)",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -949,34 +974,66 @@ fun DecisionThresholdsCard(
                 )
             }
 
-            Slider(
-                value = settings.maxPickupDistance,
-                onValueChange = onMaxDistanceChanged,
-                valueRange = 0.5f..10.0f,
-                steps = 18,
-                colors = SliderDefaults.colors(
-                    thumbColor = MaterialTheme.colorScheme.secondary,
-                    activeTrackColor = MaterialTheme.colorScheme.secondary
-                ),
-                modifier = Modifier.testTag("max_distance_slider")
-            )
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // Quick Preset Chips for Distance
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Slider(
+                    value = settings.maxPickupDistance.coerceIn(0.0f, 3.0f),
+                    onValueChange = { newVal ->
+                        val rounded = (Math.round(newVal * 10.0f) / 10.0f).coerceIn(0.0f, 3.0f)
+                        onMaxDistanceChanged(rounded)
+                    },
+                    valueRange = 0.0f..3.0f,
+                    steps = 29, // 0.1km steps from 0.0 to 3.0
+                    colors = SliderDefaults.colors(
+                        thumbColor = MaterialTheme.colorScheme.secondary,
+                        activeTrackColor = MaterialTheme.colorScheme.secondary
+                    ),
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("max_distance_slider")
+                )
+
+                OutlinedTextField(
+                    value = pickupDistanceInput,
+                    onValueChange = { input ->
+                        pickupDistanceInput = input
+                        input.toFloatOrNull()?.let { parsed ->
+                            if (parsed in 0.0f..3.0f) {
+                                onMaxDistanceChanged(parsed)
+                            }
+                        }
+                    },
+                    label = { Text("km", fontSize = 12.sp) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier
+                        .width(90.dp)
+                        .testTag("pickup_distance_input")
+                )
+            }
+
+            // Quick Preset Chips for Distance (within 0.0 - 3.0 km)
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                val distancePresets = listOf(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 7.0f)
+                val distancePresets = listOf(0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f)
                 distancePresets.forEach { preset ->
                     val isSelected = (String.format(Locale.US, "%.1f", settings.maxPickupDistance) == String.format(Locale.US, "%.1f", preset))
                     FilterChip(
                         selected = isSelected,
                         onClick = { onMaxDistanceChanged(preset) },
-                        label = { Text("${preset}km", fontSize = 12.sp) },
+                        label = { Text("${preset} km", fontSize = 12.sp) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = MaterialTheme.colorScheme.secondary,
                             selectedLabelColor = Color.Black
-                        )
+                        ),
+                        modifier = Modifier.testTag("pickup_preset_${(preset * 10).toInt()}")
                     )
                 }
             }

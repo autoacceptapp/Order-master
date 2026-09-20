@@ -76,6 +76,8 @@ object AppSettings {
     const val DEFAULT_MIN_FARE = 60.0f
     const val DEFAULT_MAX_FARE = 5000.0f
     const val DEFAULT_MAX_PICKUP_DISTANCE = 3.0f
+    const val MIN_PICKUP_DISTANCE_KM = 0.0f
+    const val MAX_PICKUP_DISTANCE_KM = 3.0f
     const val DEFAULT_AUTO_ACCEPT_ENABLED = true
     const val DEFAULT_CLICK_DELAY_MS = 500L
     const val DEFAULT_VOICE_ANNOUNCER_ENABLED = true
@@ -134,7 +136,8 @@ object AppSettings {
         val enabled = prefs.getBoolean(KEY_AUTO_ACCEPT_ENABLED, prefs.getBoolean(KEY_SERVICE_ENABLED, DEFAULT_AUTO_ACCEPT_ENABLED))
         val minFare = prefs.getFloat(KEY_MIN_FARE, prefs.getFloat(KEY_MIN_VALUE, DEFAULT_MIN_FARE))
         val maxFare = prefs.getFloat(KEY_MAX_FARE, prefs.getFloat(KEY_MAX_VALUE, DEFAULT_MAX_FARE))
-        val maxDist = prefs.getFloat(KEY_MAX_PICKUP_DISTANCE, prefs.getFloat(KEY_MAX_DISTANCE, DEFAULT_MAX_PICKUP_DISTANCE))
+        val rawMaxDist = prefs.getFloat(KEY_MAX_PICKUP_DISTANCE, prefs.getFloat(KEY_MAX_DISTANCE, DEFAULT_MAX_PICKUP_DISTANCE))
+        val maxDist = rawMaxDist.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM)
         val delay = prefs.getLong(KEY_CLICK_DELAY_MS, DEFAULT_CLICK_DELAY_MS)
         val voiceEnabled = prefs.getBoolean(KEY_VOICE_ANNOUNCER_ENABLED, DEFAULT_VOICE_ANNOUNCER_ENABLED)
         val voiceLang = prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE) ?: DEFAULT_VOICE_LANGUAGE
@@ -222,15 +225,17 @@ object AppSettings {
 
     fun getMaxPickupDistance(context: Context): Float {
         val prefs = getPrefs(context)
-        return prefs.getFloat(KEY_MAX_PICKUP_DISTANCE, prefs.getFloat(KEY_MAX_DISTANCE, DEFAULT_MAX_PICKUP_DISTANCE))
+        val raw = prefs.getFloat(KEY_MAX_PICKUP_DISTANCE, prefs.getFloat(KEY_MAX_DISTANCE, DEFAULT_MAX_PICKUP_DISTANCE))
+        return raw.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM)
     }
 
     fun setMaxPickupDistance(context: Context, value: Float) {
+        val clampedValue = value.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM)
         getPrefs(context).edit()
-            .putFloat(KEY_MAX_PICKUP_DISTANCE, value)
-            .putFloat(KEY_MAX_DISTANCE, value)
+            .putFloat(KEY_MAX_PICKUP_DISTANCE, clampedValue)
+            .putFloat(KEY_MAX_DISTANCE, clampedValue)
             .apply()
-        _settingsState.value = _settingsState.value.copy(maxPickupDistance = value)
+        _settingsState.value = _settingsState.value.copy(maxPickupDistance = clampedValue)
     }
 
     fun getClickDelayMs(context: Context): Long {

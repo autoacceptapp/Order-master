@@ -21,7 +21,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.InstallMobile
-import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
@@ -29,7 +28,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -55,26 +53,25 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.launch
-import java.io.File
 import java.text.DecimalFormat
 
 /**
  * In-App Update Dialog (Material3).
  *
- * Displays:
- * - Update announcement badge & version tag
- * - Current vs New Version comparison
- * - Formatted Changelog / Release Notes inside a scrollable box
- * - Real-time animated progress bar during download
- * - Action buttons: "Update Now", "Remind Me Later", "Skip This Version"
- * - Handles REQUEST_INSTALL_PACKAGES permission redirection if needed
+ * UI elements:
+ * - Release tag & update badge
+ * - Current installed version vs New Version tag
+ * - Changelog / Release Notes with smooth scrollable box
+ * - "Update Now", "Later", and "Ignore" actions
+ * - Real-time non-blocking progress indicator (0% - 100%) during download
+ * - Direct prompt for package installer with FileProvider on completion
  */
 @Composable
 fun UpdateDialog(
     updateInfo: UpdateResult.UpdateAvailable,
     onDismissRequest: () -> Unit,
-    onSkipVersion: (String) -> Unit
+    onLater: () -> Unit = onDismissRequest,
+    onIgnore: (String) -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -130,7 +127,7 @@ fun UpdateDialog(
 
                 Column {
                     Text(
-                        text = "New Update Available",
+                        text = "New Order Master Update!",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp
@@ -138,7 +135,7 @@ fun UpdateDialog(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Version ${updateInfo.latestVersion}",
+                        text = "Release ${updateInfo.latestVersion}",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFF00C853),
                         fontWeight = FontWeight.SemiBold
@@ -166,7 +163,7 @@ fun UpdateDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Installed: v${BuildConfig.VERSION_NAME}",
+                            text = "Installed: v${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -180,9 +177,9 @@ fun UpdateDialog(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Release notes section
+                // Release notes / Changelog section
                 Text(
-                    text = "What's New:",
+                    text = "Changelog / Release Notes:",
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -200,7 +197,7 @@ fun UpdateDialog(
                         .padding(10.dp)
                 ) {
                     Text(
-                        text = updateInfo.releaseNotes.ifBlank { "Performance enhancements and stability updates." },
+                        text = updateInfo.releaseNotes.ifBlank { "Performance enhancements and stability fixes." },
                         style = MaterialTheme.typography.bodySmall.copy(
                             fontFamily = FontFamily.SansSerif,
                             lineHeight = 18.sp
@@ -220,7 +217,7 @@ fun UpdateDialog(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = if (state.progressPercent >= 0) "Downloading update..." else "Connecting...",
+                                    text = if (state.progressPercent >= 0) "Downloading update..." else "Connecting to GitHub...",
                                     style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
@@ -328,7 +325,7 @@ fun UpdateDialog(
                     else -> Unit
                 }
 
-                // Permission warning if unknown sources not enabled
+                // Permission warning if unknown sources is not enabled
                 AnimatedVisibility(visible = needsInstallPermission && downloadState is DownloadState.ReadyToInstall) {
                     Spacer(modifier = Modifier.height(10.dp))
                     Card(
@@ -347,14 +344,14 @@ fun UpdateDialog(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Permission Required",
+                                    text = "Installation Permission Required",
                                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                     color = Color(0xFFFFA000)
                                 )
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Please enable 'Allow from this source' in Android Settings to proceed with installation.",
+                                text = "Please toggle 'Allow from this source' in Android Settings to proceed with installation.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -367,7 +364,7 @@ fun UpdateDialog(
             when (val state = downloadState) {
                 is DownloadState.Downloading -> {
                     OutlinedButton(
-                        onClick = { ApkDownloader.cancelDownload() },
+                        onClick = { ApkDownloader.cancelDownload(context) },
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                         modifier = Modifier.testTag("cancel_download_button")
                     ) {
@@ -422,24 +419,26 @@ fun UpdateDialog(
         },
         dismissButton = {
             if (downloadState !is DownloadState.Downloading) {
-                Row {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(
                         onClick = {
-                            onSkipVersion(updateInfo.latestVersion)
+                            onIgnore(updateInfo.latestVersion)
                         },
-                        modifier = Modifier.testTag("skip_version_button")
+                        modifier = Modifier.testTag("ignore_version_button")
                     ) {
-                        Text("Skip Version", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Ignore", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+
+                    Spacer(modifier = Modifier.width(4.dp))
 
                     TextButton(
                         onClick = {
                             ApkDownloader.resetState()
-                            onDismissRequest()
+                            onLater()
                         },
-                        modifier = Modifier.testTag("remind_later_button")
+                        modifier = Modifier.testTag("later_button")
                     ) {
-                        Text("Later", color = MaterialTheme.colorScheme.primary)
+                        Text("Later", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
                     }
                 }
             }

@@ -53,6 +53,13 @@ class ExampleRobolectricTest {
         AppSettings.setMaxPickupDistance(context, 2.5f)
         assertEquals(2.5f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
+        // Enforce 0.0 to 3.0 km clamp
+        AppSettings.setMaxPickupDistance(context, 7.5f)
+        assertEquals(3.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
+
+        AppSettings.setMaxPickupDistance(context, -1.0f)
+        assertEquals(0.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
+
         // Reset for subsequent tests
         AppSettings.setAutoAcceptEnabled(context, true)
         AppSettings.setMinFare(context, 60.0f)
@@ -152,7 +159,7 @@ class ExampleRobolectricTest {
         assertFalse(evalFarPickup.isAccepted)
         assertTrue(evalFarPickup.passesFare)
         assertFalse(evalFarPickup.passesPickupDistance)
-        assertTrue(evalFarPickup.decisionReason.contains("REJECTED"))
+        assertTrue(evalFarPickup.decisionReason.contains("Pickup distance (4.5 km) exceeds set maximum limit (3.0 km)"))
 
         // Case 4: Rejected if master switch is disabled
         val evalDisabled = TextAnalysisEngine.evaluateRideOffer(
@@ -192,7 +199,7 @@ class ExampleRobolectricTest {
         val settingsState = SettingsState(
             minFare = 50.0f,
             maxFare = 200.0f,
-            maxPickupDistance = 4.0f,
+            maxPickupDistance = 3.0f,
             isAutoAcceptEnabled = true
         )
         val evalSettingsState = TextAnalysisEngine.evaluateRideOffer(
@@ -209,16 +216,16 @@ class ExampleRobolectricTest {
         assertEquals(200.0, result.totalCurrency ?: 0.0, 0.001)
         assertTrue(result.conditionsPassed)
 
-        val passText = "Order ₹120 + ₹80 • Distance 4.2 km"
+        val passText = "Order ₹120 + ₹80 • Distance 2.2 km"
         val evalResult = TextAnalysisEngine.evaluate(
             text = passText,
             hasAcceptButton = true,
             minFilter = 150.0f,
-            maxFilter = 8.0f
+            maxFilter = 3.0f
         )
         assertTrue(evalResult.conditionsPassed)
         assertEquals(200.0, evalResult.totalCurrency ?: 0.0, 0.001)
-        assertEquals(4.2, evalResult.distanceKm ?: 0.0, 0.001)
+        assertEquals(2.2, evalResult.distanceKm ?: 0.0, 0.001)
     }
 
     @Test
@@ -311,5 +318,47 @@ class ExampleRobolectricTest {
 
         val assistiveClicked = service.executeAssistiveClick(null)
         assertFalse(assistiveClicked)
+    }
+
+    @Test
+    fun `test GitHubUpdateManager version parsing and comparison`() {
+        // Tag with build number pattern e.g. debug-apk-build-7-1
+        assertTrue(GitHubUpdateManager.isVersionNewer("debug-apk-build-7-1", "1.0", 1))
+        assertEquals(listOf(7, 1), GitHubUpdateManager.extractVersionNumbers("debug-apk-build-7-1"))
+
+        // Standard SemVer tags
+        assertTrue(GitHubUpdateManager.isVersionNewer("v1.2.0", "1.0", 1))
+        assertTrue(GitHubUpdateManager.isVersionNewer("2.0", "1.0", 1))
+        assertTrue(GitHubUpdateManager.isVersionNewer("v2.1.5", "1.0", 1))
+        assertEquals(listOf(1, 2, 0), GitHubUpdateManager.extractVersionNumbers("v1.2.0"))
+
+        // Same version or older
+        assertFalse(GitHubUpdateManager.isVersionNewer("1.0", "1.0", 1))
+        assertFalse(GitHubUpdateManager.isVersionNewer("v1.0", "1.0", 1))
+        assertFalse(GitHubUpdateManager.isVersionNewer("v0.9.0", "1.0", 1))
+    }
+
+    @Test
+    fun `test GitHubUpdateManager SharedPreferences skip and cache handling`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // Initially no skipped version
+        assertEquals("", GitHubUpdateManager.getSkippedVersion(context))
+
+        // Skip a version
+        GitHubUpdateManager.skipVersion(context, "debug-apk-build-7-1")
+        assertEquals("debug-apk-build-7-1", GitHubUpdateManager.getSkippedVersion(context))
+
+        // Clear skipped version
+        GitHubUpdateManager.clearSkippedVersion(context)
+        assertEquals("", GitHubUpdateManager.getSkippedVersion(context))
+    }
+
+    @Test
+    fun `test UpdateNotificationManager channel registration does not throw`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        UpdateNotificationManager.createNotificationChannel(context)
+        // Verify channel creation succeeded without exceptions
+        assertTrue(UpdateNotificationManager.CHANNEL_ID == "APP_UPDATE_CHANNEL")
     }
 }
