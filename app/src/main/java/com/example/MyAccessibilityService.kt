@@ -194,6 +194,11 @@ open class MyAccessibilityService : AccessibilityService() {
         val maxFare = AppSettings.getMaxFare(this)
         val maxPickupDist = AppSettings.getMaxPickupDistance(this)
         val isAutoAccept = AppSettings.isAutoAcceptEnabled(this)
+        val isMinFareEnabled = AppSettings.isMinFareEnabled(this)
+        val isMaxFareEnabled = AppSettings.isMaxFareEnabled(this)
+        val isMaxPickupDistEnabled = AppSettings.isMaxPickupDistanceEnabled(this)
+        val isMaxDropDistEnabled = AppSettings.isMaxDropDistanceEnabled(this)
+        val maxDropDist = AppSettings.getMaxDropDistance(this)
 
         // UI Logging Requirement: Log total distinct order cards detected
         AppSettings.addLog(
@@ -222,10 +227,16 @@ open class MyAccessibilityService : AccessibilityService() {
                 minFare = minFare,
                 maxFare = maxFare,
                 maxPickupDistance = maxPickupDist,
-                isAutoAcceptEnabled = isAutoAccept
+                isAutoAcceptEnabled = isAutoAccept,
+                isMinFareEnabled = isMinFareEnabled,
+                isMaxFareEnabled = isMaxFareEnabled,
+                isMaxPickupDistanceEnabled = isMaxPickupDistEnabled,
+                isMaxDropDistanceEnabled = isMaxDropDistEnabled,
+                maxDropDistance = maxDropDist
             )
 
             evaluatedOffers.add(offer to evaluation)
+            AppSettings.recordEvaluation(this, evaluation)
 
             val cardNum = index + 1
             val fareVal = offer.totalFare?.toInt() ?: 0

@@ -27,7 +27,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -41,6 +43,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -49,15 +52,21 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -276,6 +285,23 @@ fun AppSettingsScreen(
                     }
                 )
             }
+
+            // 5. Section Header: In-App Updater & Releases
+            item {
+                Text(
+                    text = "IN-APP UPDATER & RELEASES",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp, top = 8.dp)
+                )
+            }
+
+            item {
+                InAppUpdaterSettingsCard()
+            }
         }
     }
 
@@ -302,6 +328,7 @@ private fun handlePermissionAction(context: android.content.Context, permissionI
         "battery" -> PermissionUtils.openBatteryOptimizationSettings(context)
         "autostart" -> PermissionUtils.openOemAutoStartSettings(context)
         "notifications" -> PermissionUtils.openNotificationSettings(context)
+        "installer" -> PermissionUtils.openInstallUnknownAppsSettings(context)
         "exact_alarm" -> PermissionUtils.openExactAlarmSettings(context)
         else -> PermissionUtils.openAppDetailsSettings(context)
     }
@@ -395,6 +422,7 @@ fun PermissionItemCard(
         "battery" -> Icons.Default.BatteryChargingFull
         "autostart" -> Icons.Default.PowerSettingsNew
         "notifications" -> Icons.Default.Notifications
+        "installer" -> Icons.Default.SystemUpdate
         "exact_alarm" -> Icons.Default.Timer
         else -> Icons.Default.Security
     }
@@ -560,3 +588,190 @@ fun OemGuidanceCard(
         }
     }
 }
+
+@Composable
+fun InAppUpdaterSettingsCard() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val updateState by GitHubUpdateManager.updateState.collectAsState()
+    var isAutoUpdate by remember { mutableStateOf(GitHubUpdateManager.isAutoUpdateEnabled(context)) }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("in_app_updater_card"),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = CardDefaults.outlinedCardBorder().copy(
+            brush = androidx.compose.ui.graphics.SolidColor(SurfaceStroke)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SystemUpdate,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = "Release Updates",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Text(
+                            text = "v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        )
+                    }
+                }
+
+                // Check for updates button
+                FilledTonalButton(
+                    onClick = {
+                        scope.launch {
+                            GitHubUpdateManager.checkForUpdates(
+                                context = context,
+                                currentVersion = BuildConfig.VERSION_NAME,
+                                currentVersionCode = BuildConfig.VERSION_CODE,
+                                ignoreSkipped = true
+                            )
+                        }
+                    },
+                    enabled = updateState !is UpdateResult.Checking,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.testTag("check_updates_button")
+                ) {
+                    if (updateState is UpdateResult.Checking) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Checking...", fontSize = 12.sp)
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Check Now", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+
+            // Update status message
+            when (val state = updateState) {
+                is UpdateResult.UpdateAvailable -> {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = PrimaryEmerald.copy(alpha = 0.15f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Download,
+                                contentDescription = null,
+                                tint = PrimaryEmerald,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "New Version ${state.latestVersion} Available!",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = PrimaryEmerald
+                                )
+                            )
+                        }
+                    }
+                }
+                is UpdateResult.NoUpdate -> {
+                    Text(
+                        text = "✓ Order Master is up to date (${state.currentVersion})",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = PrimaryEmerald,
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
+                }
+                is UpdateResult.Error -> {
+                    Text(
+                        text = "Unable to check updates: ${state.message}",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    )
+                }
+                else -> {
+                    // Idle state
+                }
+            }
+
+            // Auto-check toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Automatic Update Check",
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                    )
+                    Text(
+                        text = "Silently check for newer captain builds on app launch",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Switch(
+                    checked = isAutoUpdate,
+                    onCheckedChange = { checked ->
+                        isAutoUpdate = checked
+                        GitHubUpdateManager.setAutoUpdateEnabled(context, checked)
+                    },
+                    modifier = Modifier.testTag("auto_update_toggle"),
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = PrimaryEmerald
+                    )
+                )
+            }
+        }
+    }
+}
+

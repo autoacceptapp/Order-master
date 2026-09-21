@@ -5,9 +5,12 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.provider.Settings
 import android.text.TextUtils
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -32,9 +35,14 @@ data class ActivityLogEntry(
 
 data class SettingsState(
     val isAutoAcceptEnabled: Boolean = true,
+    val isMinFareEnabled: Boolean = true,
     val minFare: Float = 60.0f,
+    val isMaxFareEnabled: Boolean = true,
     val maxFare: Float = 5000.0f,
+    val isMaxPickupDistanceEnabled: Boolean = true,
     val maxPickupDistance: Float = 3.0f,
+    val isMaxDropDistanceEnabled: Boolean = false,
+    val maxDropDistance: Float = 15.0f,
     val clickDelayMs: Long = 500L,
     val isVoiceAnnouncerEnabled: Boolean = true,
     val voiceLanguage: String = "en",
@@ -53,9 +61,14 @@ object AppSettings {
 
     // Primary preference keys
     const val KEY_AUTO_ACCEPT_ENABLED = "key_auto_accept_enabled"
+    const val KEY_MIN_FARE_ENABLED = "key_min_fare_enabled"
     const val KEY_MIN_FARE = "key_min_fare"
+    const val KEY_MAX_FARE_ENABLED = "key_max_fare_enabled"
     const val KEY_MAX_FARE = "key_max_fare"
+    const val KEY_MAX_PICKUP_DIST_ENABLED = "key_max_pickup_dist_enabled"
     const val KEY_MAX_PICKUP_DISTANCE = "key_max_pickup_distance"
+    const val KEY_MAX_DROP_DIST_ENABLED = "key_max_drop_dist_enabled"
+    const val KEY_MAX_DROP_DISTANCE = "key_max_drop_distance"
     const val KEY_CLICK_DELAY_MS = "key_click_delay_ms"
     const val KEY_VOICE_ANNOUNCER_ENABLED = "key_voice_announcer_enabled"
     const val KEY_VOICE_LANGUAGE = "key_voice_language"
@@ -76,9 +89,14 @@ object AppSettings {
     const val DEFAULT_MIN_FARE = 60.0f
     const val DEFAULT_MAX_FARE = 5000.0f
     const val DEFAULT_MAX_PICKUP_DISTANCE = 3.0f
+    const val DEFAULT_MAX_DROP_DISTANCE = 15.0f
     const val MIN_PICKUP_DISTANCE_KM = 0.0f
     const val MAX_PICKUP_DISTANCE_KM = 3.0f
     const val DEFAULT_AUTO_ACCEPT_ENABLED = true
+    const val DEFAULT_MIN_FARE_ENABLED = true
+    const val DEFAULT_MAX_FARE_ENABLED = true
+    const val DEFAULT_MAX_PICKUP_DIST_ENABLED = true
+    const val DEFAULT_MAX_DROP_DIST_ENABLED = false
     const val DEFAULT_CLICK_DELAY_MS = 500L
     const val DEFAULT_VOICE_ANNOUNCER_ENABLED = true
     const val DEFAULT_VOICE_LANGUAGE = "en"
@@ -134,10 +152,15 @@ object AppSettings {
     fun init(context: Context) {
         val prefs = getPrefs(context)
         val enabled = prefs.getBoolean(KEY_AUTO_ACCEPT_ENABLED, prefs.getBoolean(KEY_SERVICE_ENABLED, DEFAULT_AUTO_ACCEPT_ENABLED))
+        val minFareEnabled = prefs.getBoolean(KEY_MIN_FARE_ENABLED, DEFAULT_MIN_FARE_ENABLED)
         val minFare = prefs.getFloat(KEY_MIN_FARE, prefs.getFloat(KEY_MIN_VALUE, DEFAULT_MIN_FARE))
+        val maxFareEnabled = prefs.getBoolean(KEY_MAX_FARE_ENABLED, DEFAULT_MAX_FARE_ENABLED)
         val maxFare = prefs.getFloat(KEY_MAX_FARE, prefs.getFloat(KEY_MAX_VALUE, DEFAULT_MAX_FARE))
+        val pickupDistEnabled = prefs.getBoolean(KEY_MAX_PICKUP_DIST_ENABLED, DEFAULT_MAX_PICKUP_DIST_ENABLED)
         val rawMaxDist = prefs.getFloat(KEY_MAX_PICKUP_DISTANCE, prefs.getFloat(KEY_MAX_DISTANCE, DEFAULT_MAX_PICKUP_DISTANCE))
         val maxDist = rawMaxDist.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM)
+        val dropDistEnabled = prefs.getBoolean(KEY_MAX_DROP_DIST_ENABLED, DEFAULT_MAX_DROP_DIST_ENABLED)
+        val dropDist = prefs.getFloat(KEY_MAX_DROP_DISTANCE, DEFAULT_MAX_DROP_DISTANCE)
         val delay = prefs.getLong(KEY_CLICK_DELAY_MS, DEFAULT_CLICK_DELAY_MS)
         val voiceEnabled = prefs.getBoolean(KEY_VOICE_ANNOUNCER_ENABLED, DEFAULT_VOICE_ANNOUNCER_ENABLED)
         val voiceLang = prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE) ?: DEFAULT_VOICE_LANGUAGE
@@ -150,9 +173,14 @@ object AppSettings {
 
         _settingsState.value = SettingsState(
             isAutoAcceptEnabled = enabled,
+            isMinFareEnabled = minFareEnabled,
             minFare = minFare,
+            isMaxFareEnabled = maxFareEnabled,
             maxFare = maxFare,
+            isMaxPickupDistanceEnabled = pickupDistEnabled,
             maxPickupDistance = maxDist,
+            isMaxDropDistanceEnabled = dropDistEnabled,
+            maxDropDistance = dropDist,
             clickDelayMs = delay,
             isVoiceAnnouncerEnabled = voiceEnabled,
             voiceLanguage = voiceLang,
@@ -193,6 +221,101 @@ object AppSettings {
     fun setVoiceLanguage(context: Context, language: String) {
         getPrefs(context).edit().putString(KEY_VOICE_LANGUAGE, language).apply()
         _settingsState.value = _settingsState.value.copy(voiceLanguage = language)
+    }
+
+    fun isMinFareEnabled(context: Context): Boolean {
+        val prefs = getPrefs(context)
+        return prefs.getBoolean(KEY_MIN_FARE_ENABLED, DEFAULT_MIN_FARE_ENABLED)
+    }
+
+    fun setMinFareEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_MIN_FARE_ENABLED, enabled).apply()
+        _settingsState.value = _settingsState.value.copy(isMinFareEnabled = enabled)
+    }
+
+    fun isMaxFareEnabled(context: Context): Boolean {
+        val prefs = getPrefs(context)
+        return prefs.getBoolean(KEY_MAX_FARE_ENABLED, DEFAULT_MAX_FARE_ENABLED)
+    }
+
+    fun setMaxFareEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_MAX_FARE_ENABLED, enabled).apply()
+        _settingsState.value = _settingsState.value.copy(isMaxFareEnabled = enabled)
+    }
+
+    fun isMaxPickupDistanceEnabled(context: Context): Boolean {
+        val prefs = getPrefs(context)
+        return prefs.getBoolean(KEY_MAX_PICKUP_DIST_ENABLED, DEFAULT_MAX_PICKUP_DIST_ENABLED)
+    }
+
+    fun setMaxPickupDistanceEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_MAX_PICKUP_DIST_ENABLED, enabled).apply()
+        _settingsState.value = _settingsState.value.copy(isMaxPickupDistanceEnabled = enabled)
+    }
+
+    fun isMaxDropDistanceEnabled(context: Context): Boolean {
+        val prefs = getPrefs(context)
+        return prefs.getBoolean(KEY_MAX_DROP_DIST_ENABLED, DEFAULT_MAX_DROP_DIST_ENABLED)
+    }
+
+    fun setMaxDropDistanceEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_MAX_DROP_DIST_ENABLED, enabled).apply()
+        _settingsState.value = _settingsState.value.copy(isMaxDropDistanceEnabled = enabled)
+    }
+
+    fun getMaxDropDistance(context: Context): Float {
+        val prefs = getPrefs(context)
+        return prefs.getFloat(KEY_MAX_DROP_DISTANCE, DEFAULT_MAX_DROP_DISTANCE)
+    }
+
+    fun setMaxDropDistance(context: Context, value: Float) {
+        val clamped = value.coerceIn(1.0f, 50.0f)
+        getPrefs(context).edit().putFloat(KEY_MAX_DROP_DISTANCE, clamped).apply()
+        _settingsState.value = _settingsState.value.copy(maxDropDistance = clamped)
+    }
+
+    fun applyPreset(context: Context, presetName: String) {
+        when (presetName.lowercase(Locale.ROOT)) {
+            "peak", "peak hours" -> {
+                setMinFareEnabled(context, true)
+                setMinFare(context, 80.0f)
+                setMaxFareEnabled(context, true)
+                setMaxFare(context, 5000.0f)
+                setMaxPickupDistanceEnabled(context, true)
+                setMaxPickupDistance(context, 2.0f)
+                setMaxDropDistanceEnabled(context, false)
+            }
+            "short", "short trips" -> {
+                setMinFareEnabled(context, true)
+                setMinFare(context, 40.0f)
+                setMaxFareEnabled(context, true)
+                setMaxFare(context, 150.0f)
+                setMaxPickupDistanceEnabled(context, true)
+                setMaxPickupDistance(context, 1.5f)
+                setMaxDropDistanceEnabled(context, true)
+                setMaxDropDistance(context, 5.0f)
+            }
+            "high", "high value" -> {
+                setMinFareEnabled(context, true)
+                setMinFare(context, 150.0f)
+                setMaxFareEnabled(context, true)
+                setMaxFare(context, 10000.0f)
+                setMaxPickupDistanceEnabled(context, true)
+                setMaxPickupDistance(context, 3.0f)
+                setMaxDropDistanceEnabled(context, false)
+            }
+            else -> {
+                // Default / Reset
+                setMinFareEnabled(context, true)
+                setMinFare(context, DEFAULT_MIN_FARE)
+                setMaxFareEnabled(context, true)
+                setMaxFare(context, DEFAULT_MAX_FARE)
+                setMaxPickupDistanceEnabled(context, true)
+                setMaxPickupDistance(context, DEFAULT_MAX_PICKUP_DISTANCE)
+                setMaxDropDistanceEnabled(context, false)
+                setMaxDropDistance(context, DEFAULT_MAX_DROP_DISTANCE)
+            }
+        }
     }
 
     fun getMinFare(context: Context): Float {
@@ -305,6 +428,38 @@ object AppSettings {
 
     fun clearLogs() {
         _logsFlow.value = emptyList()
+    }
+
+    /**
+     * Persists an evaluated order into the Room database for historical review.
+     */
+    fun recordEvaluation(context: Context, evaluation: RideEvaluation) {
+        try {
+            val repo = com.example.data.OrderRepository.getInstance(context)
+            val offer = evaluation.offer
+            val totalFare = offer.totalFare ?: offer.targetOffer?.fare ?: 0.0
+            val pickupDist = offer.pickupDistanceKm ?: offer.targetOffer?.pickupDistance
+            val dropDist = offer.dropDistanceKm ?: offer.targetOffer?.dropDistance
+            val pickupLoc = offer.pickupLocation
+            val dropLoc = offer.dropLocation
+            CoroutineScope(Dispatchers.IO).launch {
+                repo.insertOrder(
+                    com.example.data.OrderEntity(
+                        timestamp = evaluation.timestamp,
+                        fare = totalFare,
+                        pickupDistanceKm = pickupDist,
+                        dropDistanceKm = dropDist,
+                        pickupLocation = pickupLoc,
+                        dropLocation = dropLoc,
+                        isAccepted = evaluation.isAccepted,
+                        decisionReason = evaluation.decisionReason,
+                        rawText = offer.rawText
+                    )
+                )
+            }
+        } catch (_: Exception) {
+            // Fail gracefully if DB is initializing
+        }
     }
 
     /**

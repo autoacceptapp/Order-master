@@ -49,6 +49,7 @@ object GitHubUpdateManager {
     const val LATEST_RELEASE_API_URL = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
 
     private const val PREFS_NAME = "github_update_prefs"
+    private const val KEY_AUTO_UPDATE_ENABLED = "key_auto_update_enabled"
     private const val KEY_SKIPPED_VERSION = "key_skipped_version"
     private const val KEY_LAST_CHECK_TIME = "key_last_check_time"
     private const val KEY_CACHED_VERSION = "key_cached_version"
@@ -67,6 +68,18 @@ object GitHubUpdateManager {
     private val _isDialogVisible = MutableStateFlow(false)
     val isDialogVisible: StateFlow<Boolean> = _isDialogVisible.asStateFlow()
 
+    fun isAutoUpdateEnabled(context: Context): Boolean {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_AUTO_UPDATE_ENABLED, true)
+    }
+
+    fun setAutoUpdateEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_AUTO_UPDATE_ENABLED, enabled)
+            .apply()
+    }
+
     /**
      * Automatic update checker called directly from MainActivity.onCreate().
      */
@@ -75,6 +88,9 @@ object GitHubUpdateManager {
         scope: CoroutineScope = CoroutineScope(Dispatchers.IO),
         force: Boolean = false
     ) {
+        if (!force && !isAutoUpdateEnabled(context)) {
+            return
+        }
         scope.launch {
             val lastCheck = getLastCheckTime(context)
             val now = System.currentTimeMillis()

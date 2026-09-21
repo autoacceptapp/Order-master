@@ -125,6 +125,17 @@ object PermissionUtils {
     }
 
     /**
+     * Checks if the app can install unknown packages (Android 8.0+).
+     */
+    fun canRequestPackageInstalls(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.packageManager.canRequestPackageInstalls()
+        } else {
+            true
+        }
+    }
+
+    /**
      * Checks if normal install-time permissions (WAKE_LOCK, VIBRATE) are present.
      */
     fun hasNormalPermission(context: Context, permission: String): Boolean {
@@ -140,6 +151,7 @@ object PermissionUtils {
         val isBattery = isIgnoringBatteryOptimizations(context)
         val isNotif = areNotificationsEnabled(context)
         val isAlarm = canScheduleExactAlarms(context)
+        val isInstaller = canRequestPackageInstalls(context)
 
         return listOf(
             AppPermissionItem(
@@ -167,20 +179,28 @@ object PermissionUtils {
                 category = PermissionCategory.BACKGROUND_POWER
             ),
             AppPermissionItem(
-                id = "autostart",
-                title = "OEM Auto-Start / Background Run",
-                description = "Special manufacturer background launch permission (MIUI, ColorOS, Funtouch, EMUI).",
-                isCritical = false,
-                isGranted = false, // Cannot be read directly on Android, user-verified
-                category = PermissionCategory.BACKGROUND_POWER
-            ),
-            AppPermissionItem(
                 id = "notifications",
                 title = "System Notifications",
                 description = "Shows real-time foreground status, match alerts, and accepted ride confirmations.",
                 isCritical = false,
                 isGranted = isNotif,
                 category = PermissionCategory.SYSTEM
+            ),
+            AppPermissionItem(
+                id = "installer",
+                title = "Install Unknown Apps / Auto-Updater",
+                description = "Enables seamless in-app installation of new captain APK updates.",
+                isCritical = false,
+                isGranted = isInstaller,
+                category = PermissionCategory.SYSTEM
+            ),
+            AppPermissionItem(
+                id = "autostart",
+                title = "OEM Auto-Start / Background Run",
+                description = "Special manufacturer background launch permission (MIUI, ColorOS, Funtouch, EMUI).",
+                isCritical = false,
+                isGranted = false, // Cannot be read directly on Android, user-verified
+                category = PermissionCategory.BACKGROUND_POWER
             ),
             AppPermissionItem(
                 id = "exact_alarm",
@@ -286,6 +306,25 @@ object PermissionUtils {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val intent = Intent(
                 Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                Uri.parse("package:${context.packageName}")
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (!safeStartActivity(context, intent)) {
+                openAppDetailsSettings(context)
+            }
+        } else {
+            openAppDetailsSettings(context)
+        }
+    }
+
+    /**
+     * Launches Unknown App Sources (APK installer) permission page for this app.
+     */
+    fun openInstallUnknownAppsSettings(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val intent = Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                 Uri.parse("package:${context.packageName}")
             ).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

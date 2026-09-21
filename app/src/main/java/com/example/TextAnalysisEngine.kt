@@ -877,7 +877,12 @@ object TextAnalysisEngine {
         minFare: Float,
         maxFare: Float = 5000.0f,
         maxPickupDistance: Float,
-        isAutoAcceptEnabled: Boolean
+        isAutoAcceptEnabled: Boolean,
+        isMinFareEnabled: Boolean = true,
+        isMaxFareEnabled: Boolean = true,
+        isMaxPickupDistanceEnabled: Boolean = true,
+        isMaxDropDistanceEnabled: Boolean = false,
+        maxDropDistance: Float = 15.0f
     ): RideEvaluation {
         val effectiveMaxPickup = maxPickupDistance.coerceIn(0.0f, 3.0f)
 
@@ -915,22 +920,35 @@ object TextAnalysisEngine {
             )
         }
 
-        // Apply filters strictly using fare and pickupDistance (ignoring drop distance for accept decision)
+        // Apply filters strictly based on individual filter enabled flags
         val pickupDist = offer.targetOffer?.pickupDistance?.takeIf { it > 0.0 } ?: offer.pickupDistanceKm
+        val dropDist = offer.targetOffer?.dropDistance?.takeIf { it > 0.0 } ?: offer.dropDistanceKm
 
-        val isAboveMinFare = evalFare >= minFare
-        val isBelowMaxFare = evalFare <= maxFare
+        val isAboveMinFare = if (isMinFareEnabled) evalFare >= minFare else true
+        val isBelowMaxFare = if (isMaxFareEnabled) evalFare <= maxFare else true
         val passesFare = isAboveMinFare && isBelowMaxFare
-        val passesPickup = pickupDist != null && pickupDist <= effectiveMaxPickup
+
+        val passesPickup = if (isMaxPickupDistanceEnabled) {
+            pickupDist != null && pickupDist <= effectiveMaxPickup
+        } else {
+            true
+        }
+
+        val passesDrop = if (isMaxDropDistanceEnabled && dropDist != null) {
+            dropDist <= maxDropDistance
+        } else {
+            true
+        }
 
         val breakdownStr = if (offer.fareBreakdown.size > 1) {
             " (${offer.fareBreakdown.joinToString(" + ") { "₹$it" }})"
         } else ""
 
         val reason = when {
-            passesFare && passesPickup -> {
-                val dropStr = offer.dropDistanceKm?.let { ", Drop: ${String.format(Locale.US, "%.1f", it)}km" } ?: ""
-                "MATCHED: Fare ₹${String.format(Locale.US, "%.1f", evalFare)}$breakdownStr is within ₹$minFare - ₹$maxFare and Pickup ${String.format(Locale.US, "%.1f", pickupDist!!)}km <= ${effectiveMaxPickup}km$dropStr"
+            passesFare && passesPickup && passesDrop -> {
+                val dropStr = dropDist?.let { ", Drop: ${String.format(Locale.US, "%.1f", it)}km" } ?: ""
+                val pickupStr = pickupDist?.let { "Pickup ${String.format(Locale.US, "%.1f", it)}km" } ?: ""
+                "MATCHED: Fare ₹${String.format(Locale.US, "%.1f", evalFare)}$breakdownStr $pickupStr$dropStr meets all active criteria"
             }
             !isAboveMinFare -> {
                 "REJECTED: Fare ₹${String.format(Locale.US, "%.1f", evalFare)}$breakdownStr < Min Limit ₹$minFare"
@@ -938,15 +956,21 @@ object TextAnalysisEngine {
             !isBelowMaxFare -> {
                 "REJECTED: Fare ₹${String.format(Locale.US, "%.1f", evalFare)}$breakdownStr > Max Limit ₹$maxFare"
             }
-            pickupDist == null -> {
+            isMaxPickupDistanceEnabled && pickupDist == null -> {
                 "REJECTED: Pickup distance could not be determined"
             }
+            isMaxPickupDistanceEnabled && pickupDist != null && pickupDist > effectiveMaxPickup -> {
+                "REJECTED: Pickup distance (${String.format(Locale.US, "%.1f", pickupDist)} km) exceeds limit (${String.format(Locale.US, "%.1f", effectiveMaxPickup)} km)"
+            }
+            isMaxDropDistanceEnabled && dropDist != null && dropDist > maxDropDistance -> {
+                "REJECTED: Drop distance (${String.format(Locale.US, "%.1f", dropDist)} km) exceeds limit (${String.format(Locale.US, "%.1f", maxDropDistance)} km)"
+            }
             else -> {
-                "REJECTED: Pickup distance (${String.format(Locale.US, "%.1f", pickupDist)} km) exceeds set maximum limit (${String.format(Locale.US, "%.1f", effectiveMaxPickup)} km)"
+                "REJECTED: Evaluation criteria not satisfied"
             }
         }
 
-        val isAccepted = passesFare && passesPickup
+        val isAccepted = passesFare && passesPickup && passesDrop
 
         return RideEvaluation(
             offer = offer,

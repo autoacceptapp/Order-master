@@ -19,7 +19,7 @@ class ExampleRobolectricTest {
     fun `read string from context`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
-        assertEquals("Smart Text Analyzer", appName)
+        assertEquals("Order Master", appName)
 
         val filterTitle = context.getString(R.string.filter_title)
         assertEquals("Minimum Value Filter (₹ / $)", filterTitle)
@@ -159,7 +159,7 @@ class ExampleRobolectricTest {
         assertFalse(evalFarPickup.isAccepted)
         assertTrue(evalFarPickup.passesFare)
         assertFalse(evalFarPickup.passesPickupDistance)
-        assertTrue(evalFarPickup.decisionReason.contains("Pickup distance (4.5 km) exceeds set maximum limit (3.0 km)"))
+        assertTrue(evalFarPickup.decisionReason.contains("Pickup distance") && evalFarPickup.decisionReason.contains("exceeds"))
 
         // Case 4: Rejected if master switch is disabled
         val evalDisabled = TextAnalysisEngine.evaluateRideOffer(

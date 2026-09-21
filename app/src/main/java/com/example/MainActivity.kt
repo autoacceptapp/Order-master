@@ -144,8 +144,6 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             CaptainAutoAcceptTheme {
-                var currentScreen by rememberSaveable { mutableStateOf("dashboard") }
-                val isServiceActive by isServiceActiveFlow.collectAsState()
                 val updateState by GitHubUpdateManager.updateState.collectAsState()
                 val isUpdateDialogVisible by GitHubUpdateManager.isDialogVisible.collectAsState()
 
@@ -166,17 +164,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                if (currentScreen == "permissions") {
-                    AppSettingsScreen(
-                        onNavigateBack = { currentScreen = "dashboard" }
-                    )
-                } else {
-                    DashboardScreen(
-                        isServiceActive = isServiceActive,
-                        onRefreshStatus = { refreshServiceStatus() },
-                        onNavigateToPermissions = { currentScreen = "permissions" }
-                    )
-                }
+                com.example.ui.OrderMasterApp()
             }
         }
     }

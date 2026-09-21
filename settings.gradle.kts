@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Smart Text Analyzer"
+rootProject.name = "Order Master"
 
 include(":app")

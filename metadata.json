@@ -1,6 +1,6 @@
 {
-  "name": "Smart Text Analyzer",
-  "description": "Educational smart notification and text analysis using AccessibilityService",
+  "name": "Order Master",
+  "description": "Order Master - Ultra-fast ride evaluation and auto-accept automation for captains with live feed, filter controls, and order history.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

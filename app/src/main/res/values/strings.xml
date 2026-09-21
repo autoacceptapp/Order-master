@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">Smart Text Analyzer</string>
+    <string name="app_name">Order Master</string>
     <string name="accessibility_service_name">Smart Text Notification &amp; Analysis Service</string>
     <string name="accessibility_service_description">Educational smart accessibility service for notification and on-screen text analysis, evaluating currency values and distance thresholds.</string>
 
