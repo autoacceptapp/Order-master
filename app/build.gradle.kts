@@ -17,8 +17,18 @@ android {
     applicationId = "com.aistudio.smarttext.wkjm"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+
+    val vCode = project.findProperty("VERSION_CODE")?.toString()?.toIntOrNull()
+        ?: project.findProperty("versionCode")?.toString()?.toIntOrNull()
+        ?: System.getenv("VERSION_CODE")?.toIntOrNull()
+        ?: 1
+    val vName = project.findProperty("VERSION_NAME")?.toString()
+        ?: project.findProperty("versionName")?.toString()
+        ?: System.getenv("VERSION_NAME")
+        ?: "1.0.$vCode"
+
+    versionCode = vCode
+    versionName = vName
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

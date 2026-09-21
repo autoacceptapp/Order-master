@@ -60,6 +60,14 @@ object PermissionUtils {
     }
 
     /**
+     * Checks if the device is running Android 13 (Tiramisu, API 33) or higher,
+     * where Android enforces "Restricted Settings" on sideloaded APK accessibility services.
+     */
+    fun isAndroid13OrHigher(): Boolean {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    }
+
+    /**
      * Checks if a specific Accessibility Service class is currently active in the Android system.
      */
     fun isAccessibilityServiceEnabled(context: Context, serviceClass: Class<*>): Boolean {
@@ -416,6 +424,14 @@ object PermissionUtils {
      * Standard Android Application Details Settings fallback.
      */
     fun openAppDetailsSettings(context: Context): Boolean {
+        return openAppInfoSettings(context)
+    }
+
+    /**
+     * Directly triggers Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+     * with Uri.fromParts("package", packageName, null) to open App Info.
+     */
+    fun openAppInfoSettings(context: Context): Boolean {
         val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
             data = Uri.fromParts("package", context.packageName, null)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

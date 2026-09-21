@@ -100,6 +100,8 @@ fun AppSettingsScreen(
         mutableStateOf(PermissionUtils.isReadyForAutoAcceptance(context))
     }
 
+    var showRestrictedSettingsDialog by remember { mutableStateOf(false) }
+
     // Refresh permission statuses
     val refreshPermissions = {
         permissionList = PermissionUtils.getPermissionStatusList(context)
@@ -185,7 +187,11 @@ fun AppSettingsScreen(
                     isReady = isReady,
                     onOpenPrimaryAction = {
                         if (!PermissionUtils.isAccessibilityServiceEnabled(context)) {
-                            PermissionUtils.openAccessibilitySettings(context)
+                            if (PermissionUtils.isAndroid13OrHigher()) {
+                                showRestrictedSettingsDialog = true
+                            } else {
+                                PermissionUtils.openAccessibilitySettings(context)
+                            }
                         } else if (!PermissionUtils.canDrawOverlays(context)) {
                             PermissionUtils.openOverlaySettings(context)
                         } else if (!PermissionUtils.isIgnoringBatteryOptimizations(context)) {
@@ -195,6 +201,15 @@ fun AppSettingsScreen(
                         }
                     }
                 )
+            }
+
+            // Android 13/14+ Restricted Settings Help Notice
+            if (!PermissionUtils.isAccessibilityServiceEnabled(context) && PermissionUtils.isAndroid13OrHigher()) {
+                item {
+                    RestrictedSettingsNoticeBanner(
+                        onClick = { showRestrictedSettingsDialog = true }
+                    )
+                }
             }
 
             // 2. Section Header: Critical Core Permissions
@@ -218,7 +233,11 @@ fun AppSettingsScreen(
                 PermissionItemCard(
                     item = item,
                     onActionClick = {
-                        handlePermissionAction(context, item.id)
+                        if (item.id == "accessibility" && PermissionUtils.isAndroid13OrHigher()) {
+                            showRestrictedSettingsDialog = true
+                        } else {
+                            handlePermissionAction(context, item.id)
+                        }
                     }
                 )
             }
@@ -258,6 +277,18 @@ fun AppSettingsScreen(
                 )
             }
         }
+    }
+
+    if (showRestrictedSettingsDialog) {
+        RestrictedSettingsGuideDialog(
+            onDismiss = { showRestrictedSettingsDialog = false },
+            onOpenAppInfo = {
+                PermissionUtils.openAppInfoSettings(context)
+            },
+            onOpenAccessibility = {
+                PermissionUtils.openAccessibilitySettings(context)
+            }
+        )
     }
 }
 

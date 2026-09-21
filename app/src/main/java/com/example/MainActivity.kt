@@ -13,6 +13,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -97,6 +98,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.example.ui.theme.CaptainAutoAcceptTheme
+import com.example.ui.theme.AmberAccent
 import com.example.ui.theme.PrimaryEmerald
 import com.example.ui.theme.SurfaceStroke
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -238,6 +240,7 @@ fun DashboardScreen(
     val isBatteryIgnored = remember(isServiceActive) { PermissionUtils.isIgnoringBatteryOptimizations(context) }
     val isReadyForAutoAccept = isServiceActive && isOverlayGranted && isBatteryIgnored
     val coroutineScope = rememberCoroutineScope()
+    var showRestrictedSettingsDialog by remember { mutableStateOf(false) }
 
     // Lifecycle observer to trigger refresh whenever ON_RESUME occurs
     DisposableEffect(lifecycleOwner) {
@@ -360,13 +363,29 @@ fun DashboardScreen(
                 AccessibilityStatusBanner(
                     isActive = isServiceActive,
                     onOpenSettings = {
-                        try {
-                            context.startActivity(AppSettings.createAccessibilitySettingsIntent())
-                        } catch (e: Exception) {
-                            Toast.makeText(context, "Unable to open Settings: ${e.message}", Toast.LENGTH_SHORT).show()
+                        if (PermissionUtils.isAndroid13OrHigher()) {
+                            showRestrictedSettingsDialog = true
+                        } else {
+                            try {
+                                context.startActivity(AppSettings.createAccessibilitySettingsIntent())
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Unable to open Settings: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
                         }
+                    },
+                    onShowRestrictedGuide = {
+                        showRestrictedSettingsDialog = true
                     }
                 )
+            }
+
+            // Android 13/14+ Restricted Settings Help Notice
+            if (!isServiceActive && PermissionUtils.isAndroid13OrHigher()) {
+                item {
+                    RestrictedSettingsNoticeBanner(
+                        onClick = { showRestrictedSettingsDialog = true }
+                    )
+                }
             }
 
             // Quick Permission Overview Card with direct shortcut to Permissions Screen
@@ -498,12 +517,29 @@ fun DashboardScreen(
             }
         }
     }
+
+    if (showRestrictedSettingsDialog) {
+        RestrictedSettingsGuideDialog(
+            onDismiss = { showRestrictedSettingsDialog = false },
+            onOpenAppInfo = {
+                PermissionUtils.openAppInfoSettings(context)
+            },
+            onOpenAccessibility = {
+                try {
+                    context.startActivity(AppSettings.createAccessibilitySettingsIntent())
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Unable to open Settings: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
 }
 
 @Composable
 fun AccessibilityStatusBanner(
     isActive: Boolean,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onShowRestrictedGuide: (() -> Unit)? = null
 ) {
     val borderColor by animateColorAsState(
         targetValue = if (isActive) PrimaryEmerald else MaterialTheme.colorScheme.error,
@@ -567,6 +603,33 @@ fun AccessibilityStatusBanner(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
+            if (!isActive && PermissionUtils.isAndroid13OrHigher()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(AmberAccent.copy(alpha = 0.15f))
+                        .clickable { onShowRestrictedGuide?.invoke() ?: onOpenSettings() }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                        .testTag("restricted_setting_hint_link"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Security,
+                        contentDescription = null,
+                        tint = AmberAccent,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "Android 13+ restricted setting alert? Tap for 4-step unlock guide",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = AmberAccent,
+                        fontSize = 11.sp
+                    )
+                }
+            }
         }
     }
 }

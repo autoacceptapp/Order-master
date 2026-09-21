@@ -168,7 +168,7 @@ fun UpdateDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Latest: ${updateInfo.latestVersion}",
+                            text = "Latest: ${updateInfo.latestVersion}${if (updateInfo.latestVersionCode > 0) " (${updateInfo.latestVersionCode})" else ""}",
                             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
                             color = Color(0xFF00C853)
                         )
