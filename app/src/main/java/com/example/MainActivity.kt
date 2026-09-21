@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.ElectricBolt
@@ -44,7 +45,6 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.VoiceOverOff
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -424,7 +424,7 @@ fun DashboardScreen(
                         MyAccessibilityService.instance?.applyTtsLanguage()
                         AppSettings.addLog(
                             title = "Voice Language Updated",
-                            message = "Voice announcer set to ${if (lang == "hi") "Hindi (हिन्दी)" else "English"}.",
+                            message = "Voice announcer set to ${if (lang == "hi") "Hindi (हिंदी)" else "English"}.",
                             severity = LogSeverity.INFO
                         )
                     },
@@ -1169,7 +1169,7 @@ fun VoiceAnnouncerCard(
                     FilterChip(
                         selected = selectedLanguage.equals("hi", ignoreCase = true),
                         onClick = { onSelectLanguage("hi") },
-                        label = { Text("Hindi (हिन्दी)", fontSize = 12.sp) },
+                        label = { Text("Hindi (हिंदी)", fontSize = 12.sp) },
                         leadingIcon = if (selectedLanguage.equals("hi", ignoreCase = true)) {
                             { Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         } else null,
@@ -1192,7 +1192,7 @@ fun VoiceAnnouncerCard(
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.VolumeUp,
+                        imageVector = Icons.AutoMirrored.Filled.VolumeUp,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )

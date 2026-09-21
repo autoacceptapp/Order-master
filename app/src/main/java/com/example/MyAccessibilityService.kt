@@ -865,9 +865,9 @@ open class MyAccessibilityService : AccessibilityService() {
         val tts = textToSpeech ?: return
         val lang = AppSettings.getVoiceLanguage(this)
         val targetLocale = if (lang.equals("hi", ignoreCase = true)) {
-            Locale("hi", "IN")
+            Locale.Builder().setLanguage("hi").setRegion("IN").build()
         } else {
-            Locale("en", "IN")
+            Locale.Builder().setLanguage("en").setRegion("IN").build()
         }
 
         try {

@@ -1,25 +1,54 @@
 <resources>
     <string name="app_name">Smart Text Analyzer</string>
-    <string name="filter_title">Minimum Value Filter (₹ / $)</string>
-    <string name="filter_desc">Extracts ₹, Rs., $ patterns (e.g. ₹100 + ₹50, Rs. 150, $75)</string>
-    <string name="filter_condition">requires sum &gt;= this value</string>
-    
     <string name="accessibility_service_name">Smart Text Notification &amp; Analysis Service</string>
     <string name="accessibility_service_description">Educational smart accessibility service for notification and on-screen text analysis, evaluating currency values and distance thresholds.</string>
-    
+
+    <!-- Language Identifiers in UTF-8 -->
+    <string name="language_english">English (en-IN)</string>
+    <string name="language_hindi">Hindi (हिंदी)</string>
+    <string name="test_voice_announcement_en">Test Voice Announcement</string>
+    <string name="test_voice_announcement_hi">Test Speech (परीक्षण आवाज़ सुनें)</string>
+
+    <!-- Dashboard Headers and Titles -->
+    <string name="app_header_title">Captain Auto-Accept</string>
+    <string name="app_header_subtitle">Ride Request Automation</string>
     <string name="title_filter_settings">Decision Thresholds</string>
+    <string name="title_acceptance_criteria">Acceptance Criteria</string>
+    <string name="title_voice_announcer">Voice Announcer (TTS)</string>
+    <string name="subtitle_voice_announcer">Speaks ride fare, pickup distance &amp; status</string>
+    <string name="title_ride_simulator">Ride Request Sandbox</string>
+    <string name="subtitle_ride_simulator">Test live string parsing and validation without waiting for an actual on-road ride request:</string>
+    <string name="title_activity_logs">Live Activity &amp; Action Feed</string>
+    <string name="no_events_logged">No events logged yet. Screen activity and evaluations will appear here.</string>
+
+    <!-- Permissions and Readiness -->
+    <string name="status_service_active">● Accessibility Service is ACTIVE</string>
+    <string name="status_service_inactive">○ Accessibility Service is INACTIVE (Tap button below to grant permission)</string>
+    <string name="background_readiness_title">Background Readiness</string>
+    <string name="badge_ready">READY</string>
+    <string name="badge_attention">ATTENTION</string>
+    <string name="perm_accessibility_title">Accessibility</string>
+    <string name="perm_overlay_title">Overlay</string>
+    <string name="perm_battery_title">Battery Saver</string>
+    <string name="btn_manage_all_permissions">Manage All Permissions &amp; Auto-Start</string>
+    <string name="btn_enable">Enable</string>
+
+    <!-- Automation Controls -->
+    <string name="label_enable_service_switch">Auto-Accept Automation</string>
+    <string name="desc_enable_service_switch_on">Automated click triggers automatically when offer criteria are satisfied.</string>
+    <string name="desc_enable_service_switch_off">Automation is paused. Screen requests will be evaluated and logged only.</string>
+    <string name="btn_open_accessibility_settings">Open Accessibility Settings</string>
+
+    <!-- Filter Labels & Hints -->
     <string name="label_min_value_filter">Minimum Value Filter (₹ / $)</string>
     <string name="hint_min_value_filter">e.g. 150</string>
     <string name="label_max_distance_filter">Maximum Distance Filter (km)</string>
     <string name="hint_max_distance_filter">e.g. 8.5</string>
-    
-    <string name="label_enable_service_switch">Enable Service Automation</string>
-    <string name="desc_enable_service_switch">Master switch to toggle evaluation and auto-click execution</string>
-    <string name="btn_open_accessibility_settings">Open Accessibility Settings</string>
-    
-    <string name="status_service_active">● Accessibility Service is ACTIVE</string>
-    <string name="status_service_inactive">○ Accessibility Service is INACTIVE (Tap button below to grant permission)</string>
-    
+    <string name="filter_title">Minimum Value Filter (₹ / $)</string>
+    <string name="filter_desc">Extracts ₹, Rs., $ patterns (e.g. ₹100 + ₹50, Rs. 150, $75)</string>
+    <string name="filter_condition">requires sum &gt;= this value</string>
+
+    <!-- Educational Live Demo -->
     <string name="educational_demo_title">Educational Live Sandbox</string>
     <string name="educational_demo_desc">Test on-screen regex parsing and auto-action directly:</string>
     <string name="demo_order_text">New Offer: ₹180 + ₹40 • Distance: 4.2 km</string>
