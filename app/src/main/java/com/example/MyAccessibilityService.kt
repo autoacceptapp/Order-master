@@ -19,8 +19,9 @@ import java.util.Locale
  * from driver apps (specifically Rapido Captain: com.rapido.rider) and automatically
  * executes an "Accept" action when user-configured criteria (Min Fare, Max Pickup Distance) are met.
  *
- * Maintains BFS tree traversal, clickable parent discovery, event debouncing, duplicate suppression,
- * native Text-to-Speech voice announcements, and thread-safe volatile execution guards.
+ * Implements isolated UI Tree Parsing and Grouping to prevent text cross-contamination between
+ * simultaneous offers, a sequential multi-order evaluation queue, bounds-targeted click execution,
+ * duplicate suppression via offer hashing, and sequential Text-to-Speech voice announcements (QUEUE_ADD).
  */
 open class MyAccessibilityService : AccessibilityService() {
 
@@ -46,8 +47,9 @@ open class MyAccessibilityService : AccessibilityService() {
     @Volatile
     private var lastProcessTime: Long = 0L
 
-    @Volatile
-    private var lastEvaluatedText: String = ""
+    // Cache of recently processed offer hashes to prevent re-evaluating the same order repeatedly
+    private val processedOfferIds = LinkedHashSet<String>()
+    private val maxProcessedHistory = 50
 
     private var textToSpeech: TextToSpeech? = null
 
@@ -122,44 +124,294 @@ open class MyAccessibilityService : AccessibilityService() {
         val rootWindows = getAllRootWindows()
         if (rootWindows.isEmpty()) return
 
-        var activeTargetRoot: AccessibilityNodeInfo? = null
         try {
-            // Check across all active windows and system overlays for an actionable accept button
+            // 5. Node Tree Grouping: Extract distinct order card containers across windows
+            val allRawCards = mutableListOf<RawOrderCard>()
             for (root in rootWindows) {
-                val acceptNode = findAcceptNode(root)
-                if (acceptNode != null) {
-                    recycleNode(acceptNode)
-                    activeTargetRoot = root
-                    break
+                val cards = TextAnalysisEngine.extractOrderCards(root)
+                allRawCards.addAll(cards)
+            }
+
+            // 6. Order Separation & Unique Parsing: Parse each card into a distinct RideOffer
+            val parsedOffers = TextAnalysisEngine.parseAllOrderCards(allRawCards)
+
+            if (parsedOffers.isEmpty()) {
+                // Fallback check: If no structured cards matched, check if an accept node exists with single offer
+                val singleAcceptRoot = rootWindows.firstOrNull { findAcceptNode(it) != null }
+                if (singleAcceptRoot != null) {
+                    val extractedText = extractAllText(singleAcceptRoot)
+                    val fallbackOffer = TextAnalysisEngine.parse(extractedText)
+                    if (fallbackOffer.totalFare != null && (fallbackOffer.pickupDistanceKm != null || fallbackOffer.dropDistanceKm != null)) {
+                        val cardBounds = Rect()
+                        singleAcceptRoot.getBoundsInScreen(cardBounds)
+                        val rawCard = RawOrderCard(
+                            id = "fallback_card",
+                            nodeTexts = listOf(extractedText),
+                            bounds = cardBounds,
+                            hasAcceptButton = true
+                        )
+                        val offer = RideOffer(
+                            id = TextAnalysisEngine.generateOfferId(fallbackOffer.totalFare, fallbackOffer.pickupDistanceKm, ""),
+                            rawCard = rawCard,
+                            totalFare = fallbackOffer.totalFare,
+                            fareBreakdown = fallbackOffer.fareBreakdown,
+                            pickupDistanceKm = fallbackOffer.pickupDistanceKm,
+                            dropDistanceKm = fallbackOffer.dropDistanceKm,
+                            hasAcceptButton = true
+                        )
+                        processOrderQueue(listOf(offer), rootWindows)
+                    }
                 }
-            }
-
-            // If no actionable button is present on any screen or overlay, return early silently
-            if (activeTargetRoot == null) {
                 return
             }
 
-            // 5. Recursive DFS text extraction across node hierarchy
-            val extractedText = extractAllText(activeTargetRoot)
-
-            // Duplicate Offer Check: Skip if exact same content was already evaluated
-            if (extractedText == lastEvaluatedText || extractedText.isBlank()) {
+            // Deduplication Check: Check if all detected offers have already been processed in current cycle
+            val newOffers = parsedOffers.filter { !processedOfferIds.contains(it.id) }
+            if (newOffers.isEmpty()) {
                 return
             }
 
-            // Processing Logic: Parse offer parameters from extracted screen text
-            val offer = TextAnalysisEngine.parse(extractedText)
-            lastEvaluatedText = extractedText
+            // Update timestamp
             lastProcessTime = currentTime
 
-            @Suppress("DEPRECATION")
-            val rootToPreserve = AccessibilityNodeInfo.obtain(activeTargetRoot)
-            evaluateAndAction(offer, rootToPreserve)
+            // 7. Multi-Order Processing Queue
+            processOrderQueue(parsedOffers, rootWindows)
+
         } finally {
             for (root in rootWindows) {
                 recycleNode(root)
             }
         }
+    }
+
+    /**
+     * Sequential multi-order processing queue.
+     * Evaluates multiple simultaneous order offers isolated by tree grouping, logs card-level validation,
+     * speaks announcements in order (QUEUE_ADD), and executes ACTION_CLICK strictly within the bounds of the best offer.
+     */
+    private fun processOrderQueue(offers: List<RideOffer>, rootWindows: List<AccessibilityNodeInfo>) {
+        val minFare = AppSettings.getMinFare(this)
+        val maxFare = AppSettings.getMaxFare(this)
+        val maxPickupDist = AppSettings.getMaxPickupDistance(this)
+        val isAutoAccept = AppSettings.isAutoAcceptEnabled(this)
+
+        // UI Logging Requirement: Log total distinct order cards detected
+        AppSettings.addLog(
+            title = "Orders Detected",
+            message = "Detected ${offers.size} distinct order card${if (offers.size > 1) "s" else ""} on screen.",
+            severity = LogSeverity.INFO
+        )
+        broadcastLog("Detected ${offers.size} distinct order card${if (offers.size > 1) "s" else ""}")
+
+        val evaluatedOffers = mutableListOf<Pair<RideOffer, RideEvaluation>>()
+
+        // Sequential Queue Evaluation
+        offers.forEachIndexed { index, offer ->
+            // Record in deduplication set
+            synchronized(processedOfferIds) {
+                if (processedOfferIds.size >= maxProcessedHistory) {
+                    val firstKey = processedOfferIds.iterator().next()
+                    processedOfferIds.remove(firstKey)
+                }
+                processedOfferIds.add(offer.id)
+            }
+
+            val parsedOffer = offer.toParsedRideOffer()
+            val evaluation = TextAnalysisEngine.evaluateRideOffer(
+                offer = parsedOffer,
+                minFare = minFare,
+                maxFare = maxFare,
+                maxPickupDistance = maxPickupDist,
+                isAutoAcceptEnabled = isAutoAccept
+            )
+
+            evaluatedOffers.add(offer to evaluation)
+
+            val cardNum = index + 1
+            val fareVal = offer.totalFare?.toInt() ?: 0
+            val distVal = String.format(Locale.US, "%.1f", offer.pickupDistanceKm ?: offer.dropDistanceKm ?: 0.0)
+
+            // UI Logging Requirement: Card 1: ₹120, 1.5km - VALID / INVALID
+            if (evaluation.isAccepted) {
+                AppSettings.addLog(
+                    title = "Card $cardNum Valid",
+                    message = "Card $cardNum: ₹$fareVal, ${distVal}km - VALID",
+                    severity = LogSeverity.MATCH_ACCEPTED,
+                    evaluation = evaluation
+                )
+                broadcastLog("Card $cardNum: ₹$fareVal, ${distVal}km - VALID")
+            } else {
+                AppSettings.addLog(
+                    title = "Card $cardNum Filtered",
+                    message = "Card $cardNum: ₹$fareVal, ${distVal}km - INVALID (${evaluation.decisionReason})",
+                    severity = LogSeverity.REJECTED,
+                    evaluation = evaluation
+                )
+                broadcastLog("Card $cardNum: ₹$fareVal, ${distVal}km - INVALID")
+            }
+
+            // Sequential TTS Requirement: Use QUEUE_ADD so multiple order readouts do not interrupt each other
+            announceNewRide(parsedOffer, queueMode = TextToSpeech.QUEUE_ADD)
+            if (!evaluation.isAccepted) {
+                announceRideSkipped(evaluation.decisionReason, queueMode = TextToSpeech.QUEUE_ADD)
+            }
+        }
+
+        // Find best matching valid offer for auto-accept
+        val matchingOffers = evaluatedOffers.filter { it.second.isAccepted }
+        if (matchingOffers.isNotEmpty() && isAutoAccept) {
+            // Select the highest fare offer among matching valid offers
+            val bestCandidate = matchingOffers.maxByOrNull { it.first.totalFare ?: 0.0 } ?: matchingOffers.first()
+            val bestOffer = bestCandidate.first
+            val bestEvaluation = bestCandidate.second
+
+            isPendingExecution = true
+            val delayMs = AppSettings.getClickDelayMs(this)
+
+            AppSettings.addLog(
+                title = "Auto-Accept Scheduled",
+                message = "Selected best offer: ₹${bestOffer.totalFare?.toInt()}, ${bestOffer.pickupDistanceKm}km. Auto-clicking Accept in ${delayMs}ms...",
+                severity = LogSeverity.MATCH_ACCEPTED,
+                evaluation = bestEvaluation
+            )
+            broadcastLog("Auto-clicking Accept for best offer (₹${bestOffer.totalFare?.toInt()}) in ${delayMs}ms...")
+
+            mainHandler.postDelayed({
+                executeCardAcceptClick(bestOffer, bestEvaluation)
+            }, delayMs)
+        }
+    }
+
+    /**
+     * Executes the ACTION_CLICK strictly targeting the Accept button node
+     * located inside the spatial bounds of the selected best matching order card.
+     */
+    private fun executeCardAcceptClick(offer: RideOffer, evaluation: RideEvaluation) {
+        isPendingExecution = false
+        lastProcessTime = System.currentTimeMillis()
+
+        var clicked = false
+        val cardBounds = offer.rawCard.bounds
+
+        try {
+            // 1. If the isolated raw card already has an acceptNode reference, try clicking that first
+            val initialNode = offer.acceptNode ?: offer.rawCard.acceptNode
+            if (initialNode != null) {
+                try {
+                    val clickableTarget = findClickableParentOrSelf(initialNode) ?: initialNode
+                    clicked = clickableTarget.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    Log.i(TAG, "executeCardAcceptClick: direct acceptNode click success=$clicked")
+                    if (clickableTarget !== initialNode) {
+                        recycleNode(clickableTarget)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "executeCardAcceptClick: direct acceptNode click failed, trying search in bounds", e)
+                }
+            }
+
+            // 2. Search strictly within card bounds across active windows
+            if (!clicked) {
+                val rootWindows = getAllRootWindows()
+                try {
+                    for (root in rootWindows) {
+                        val targetNode = findAcceptNodeInBounds(root, cardBounds) ?: continue
+                        try {
+                            val clickable = findClickableParentOrSelf(targetNode) ?: targetNode
+                            clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            Log.i(TAG, "executeCardAcceptClick: in-bounds ACTION_CLICK success=$clicked")
+                            if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                clicked = dispatchTapGesture(clickable)
+                                Log.i(TAG, "executeCardAcceptClick: fallback gesture success=$clicked")
+                            }
+                            if (clickable !== targetNode) {
+                                recycleNode(clickable)
+                            }
+                            if (clicked) break
+                        } finally {
+                            recycleNode(targetNode)
+                        }
+                    }
+                } finally {
+                    for (root in rootWindows) {
+                        recycleNode(root)
+                    }
+                }
+            }
+
+            // 3. Fallback gesture dispatch centered directly on the card's action area or accept button center
+            if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !cardBounds.isEmpty) {
+                val tapX = cardBounds.centerX().toFloat()
+                val tapY = (cardBounds.bottom - (cardBounds.height() * 0.2f)).coerceAtLeast(cardBounds.top.toFloat())
+                clicked = dispatchTapAtCoordinates(tapX, tapY)
+                Log.i(TAG, "executeCardAcceptClick: coordinate fallback tap at ($tapX, $tapY) success=$clicked")
+            }
+
+            AppSettings.addLog(
+                title = if (clicked) "Order Accepted!" else "Click Attempted",
+                message = if (clicked) "ACTION_CLICK delivered strictly to Accept button for ₹${offer.totalFare?.toInt()} order."
+                else "Accept button could not be clicked within card boundaries.",
+                severity = if (clicked) LogSeverity.CLICK_EXECUTED else LogSeverity.WARNING,
+                evaluation = evaluation
+            )
+            broadcastLog("Order Accepted! Click executed: $clicked")
+
+            if (clicked) {
+                announceRideAccepted(evaluation.totalCurrency, evaluation.distanceKm)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error executing card accept click", e)
+        }
+    }
+
+    /**
+     * Finds an actionable accept node strictly located inside the provided screen bounding box.
+     */
+    fun findAcceptNodeInBounds(root: AccessibilityNodeInfo, bounds: Rect): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        @Suppress("DEPRECATION")
+        queue.add(AccessibilityNodeInfo.obtain(root))
+
+        val startTime = System.currentTimeMillis()
+        val timeoutMs = 150L
+
+        while (queue.isNotEmpty()) {
+            if (System.currentTimeMillis() - startTime > timeoutMs) {
+                while (queue.isNotEmpty()) {
+                    recycleNode(queue.removeFirst())
+                }
+                break
+            }
+
+            val node = queue.removeFirst()
+
+            val text = node.text?.toString() ?: ""
+            val desc = node.contentDescription?.toString() ?: ""
+            val viewId = node.viewIdResourceName ?: ""
+
+            if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
+                val nodeBounds = Rect()
+                node.getBoundsInScreen(nodeBounds)
+
+                // Verify that the node lies inside the card's vertical and horizontal range
+                val isInBounds = bounds.contains(nodeBounds.centerX(), nodeBounds.centerY()) ||
+                        (nodeBounds.top >= bounds.top - 20 && nodeBounds.bottom <= bounds.bottom + 20)
+
+                if (isInBounds && isActionableNodeOrChild(node)) {
+                    while (queue.isNotEmpty()) {
+                        recycleNode(queue.removeFirst())
+                    }
+                    return node
+                }
+            }
+
+            val childCount = node.childCount
+            for (i in 0 until childCount) {
+                val child = node.getChild(i) ?: continue
+                queue.add(child)
+            }
+            recycleNode(node)
+        }
+        return null
     }
 
     /**
@@ -199,83 +451,14 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Evaluates parsed ride offer parameters against configured thresholds
-     * and triggers automatic acceptance if criteria are satisfied.
-     * Only called when an active ride request popup with an Accept action has been strictly verified.
-     */
-    private fun evaluateAndAction(offer: ParsedRideOffer, rootNode: AccessibilityNodeInfo) {
-        try {
-            // Verify offer has detectable fare or distance indicators
-            if (offer.totalFare == null && offer.pickupDistanceKm == null) {
-                return
-            }
-
-            val minFare = AppSettings.getMinFare(this)
-            val maxFare = AppSettings.getMaxFare(this)
-            val maxPickupDist = AppSettings.getMaxPickupDistance(this)
-            val isEnabled = AppSettings.isAutoAcceptEnabled(this)
-
-            val evaluation = TextAnalysisEngine.evaluateRideOffer(
-                offer = offer,
-                minFare = minFare,
-                maxFare = maxFare,
-                maxPickupDistance = maxPickupDist,
-                isAutoAcceptEnabled = isEnabled
-            )
-
-            // Voice announcement of incoming ride request (QUEUE_FLUSH to cancel any older speech)
-            announceNewRide(offer)
-
-            if (evaluation.isAccepted) {
-                isPendingExecution = true
-
-                val delayMs = AppSettings.getClickDelayMs(this)
-                val breakdownText = if (offer.fareBreakdown.size > 1) {
-                    " (${offer.fareBreakdown.joinToString(" + ") { "₹$it" }})"
-                } else ""
-
-                AppSettings.addLog(
-                    title = "Ride Match Found!",
-                    message = "Fare: ₹${offer.totalFare}$breakdownText, Pickup: ${offer.pickupDistanceKm}km. Auto-clicking Accept in ${delayMs}ms...",
-                    severity = LogSeverity.MATCH_ACCEPTED,
-                    evaluation = evaluation
-                )
-                broadcastLog("Matched: Fare ₹${offer.totalFare}, Pickup ${offer.pickupDistanceKm}km. Accepting in ${delayMs}ms...")
-
-                mainHandler.postDelayed({
-                    executeAcceptClick(evaluation)
-                }, delayMs)
-            } else {
-                // Log and announce evaluated offer (filtered out by fare or distance criteria)
-                AppSettings.addLog(
-                    title = "Offer Evaluated (Filtered)",
-                    message = evaluation.decisionReason,
-                    severity = LogSeverity.REJECTED,
-                    evaluation = evaluation
-                )
-                announceRideSkipped(evaluation.decisionReason)
-            }
-        } finally {
-            recycleNode(rootNode)
-        }
-    }
-
-    /**
-     * Recursive Depth-First Search (DFS) function that traverses the entire AccessibilityNodeInfo hierarchy.
-     * Retrieves text from both node.text and node.contentDescription fields to ensure no hidden labels
-     * or custom UI elements are missed.
-     * Aggregates all extracted text into a clean string format for downstream logic processing.
-     *
-     * Features:
-     * - DFS tree traversal with depth limit (max 50) and time budget (150ms) to prevent UI thread blocking.
-     * - Extracts both node.text and node.contentDescription cleanly.
-     * - Null-safe child navigation with proper node recycling.
+     * Recursive Depth-First Search (DFS) function that traverses the AccessibilityNodeInfo hierarchy.
+     * Retrieves text from both node.text and node.contentDescription fields.
      */
     fun extractAllText(node: AccessibilityNodeInfo?): String {
         if (node == null) return ""
         val sb = StringBuilder()
         val startTime = System.currentTimeMillis()
-        val timeoutMs = 150L // Prevents UI thread blocking during rapid windowContentChanged events
+        val timeoutMs = 150L
 
         fun dfs(current: AccessibilityNodeInfo?, depth: Int) {
             if (current == null || depth > 50) return
@@ -284,7 +467,6 @@ open class MyAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // 1. Retrieve text from node.text
             val text = current.text
             if (!text.isNullOrBlank()) {
                 val cleanText = text.toString().trim()
@@ -293,17 +475,14 @@ open class MyAccessibilityService : AccessibilityService() {
                 }
             }
 
-            // 2. Retrieve text from node.contentDescription
             val desc = current.contentDescription
             if (!desc.isNullOrBlank()) {
                 val cleanDesc = desc.toString().trim()
-                // Avoid duplicate tokens when text and contentDescription are identical
                 if (cleanDesc.isNotEmpty() && !cleanDesc.equals(text?.toString()?.trim(), ignoreCase = true)) {
                     sb.append(cleanDesc).append(" ")
                 }
             }
 
-            // 3. Recurse through children (Depth-First Search)
             val childCount = current.childCount
             for (i in 0 until childCount) {
                 val child = current.getChild(i) ?: continue
@@ -320,8 +499,7 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Traverses all active and overlay windows, extracting and aggregating all text
-     * across system overlays, floating dialogs, and active app screens.
+     * Traverses all active and overlay windows, extracting and aggregating all text.
      */
     fun extractAllTextFromAllWindows(): String {
         val rootWindows = getAllRootWindows()
@@ -342,15 +520,7 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Hands-Free Action Execution:
-     * Searches for specific UI target labels (e.g. "Confirm", "Accept", "Select").
-     * If a target node is not directly clickable (isClickable == false), recursively traverses up
-     * to find the nearest clickable parent container and performs ACTION_CLICK.
-     * Includes a fallback gesture dispatch using dispatchGesture() for custom-drawn UI components.
-     *
-     * @param root Optional specific root node to search. If null, searches across all active & overlay windows.
-     * @param targetLabels Action labels to locate and click.
-     * @return true if an action was executed successfully (via ACTION_CLICK or gesture dispatch), false otherwise.
+     * Searches for specific UI target labels and executes click on nearest clickable container.
      */
     fun executeAssistiveClick(
         root: AccessibilityNodeInfo? = null,
@@ -369,26 +539,20 @@ open class MyAccessibilityService : AccessibilityService() {
             for (r in rootsToSearch) {
                 val targetNode = findTargetActionNode(r, targetLabels) ?: continue
                 try {
-                    // 1. Try finding nearest clickable parent or self
                     val clickableNode = findClickableParentOrSelf(targetNode)
                     if (clickableNode != null) {
                         executed = clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        Log.i(TAG, "executeAssistiveClick: ACTION_CLICK on '${clickableNode.className}', success=$executed")
                         recycleNode(clickableNode)
                         if (executed) break
                     }
 
-                    // 2. Direct click attempt on the target node if not already attempted
                     if (!executed && targetNode.isClickable) {
                         executed = targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        Log.i(TAG, "executeAssistiveClick: Direct ACTION_CLICK on '${targetNode.className}', success=$executed")
                         if (executed) break
                     }
 
-                    // 3. Fallback gesture dispatch using dispatchGesture() for custom-drawn UI components
                     if (!executed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                         executed = dispatchTapGesture(targetNode)
-                        Log.i(TAG, "executeAssistiveClick: Fallback dispatchTapGesture executed=$executed")
                         if (executed) break
                     }
                 } finally {
@@ -406,9 +570,6 @@ open class MyAccessibilityService : AccessibilityService() {
         return executed
     }
 
-    /**
-     * Searches for a target action node matching any of the specified target labels.
-     */
     fun findTargetActionNode(root: AccessibilityNodeInfo, targetLabels: List<String>): AccessibilityNodeInfo? {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         @Suppress("DEPRECATION")
@@ -456,10 +617,6 @@ open class MyAccessibilityService : AccessibilityService() {
         return null
     }
 
-    /**
-     * Dispatches a tap gesture on the screen center of the given AccessibilityNodeInfo.
-     * Useful as a fallback for custom-drawn or canvas UI components that don't support ACTION_CLICK.
-     */
     fun dispatchTapGesture(node: AccessibilityNodeInfo): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
             return false
@@ -470,52 +627,40 @@ open class MyAccessibilityService : AccessibilityService() {
             if (rect.isEmpty || rect.width() <= 0 || rect.height() <= 0) {
                 return false
             }
-
-            val x = rect.centerX().toFloat()
-            val y = rect.centerY().toFloat()
-
-            val clickPath = Path().apply {
-                moveTo(x, y)
-            }
-
-            val stroke = GestureDescription.StrokeDescription(
-                clickPath,
-                0L,
-                50L // 50ms tap duration
-            )
-            val gesture = GestureDescription.Builder()
-                .addStroke(stroke)
-                .build()
-
-            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    super.onCompleted(gestureDescription)
-                    Log.d(TAG, "dispatchTapGesture completed at ($x, $y)")
-                }
-
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    super.onCancelled(gestureDescription)
-                    Log.w(TAG, "dispatchTapGesture cancelled at ($x, $y)")
-                }
-            }, null)
-            true
+            dispatchTapAtCoordinates(rect.centerX().toFloat(), rect.centerY().toFloat())
         } catch (e: Exception) {
             Log.e(TAG, "Error in dispatchTapGesture", e)
             false
         }
     }
 
-    /**
-     * Generic Click Logic:
-     * Robust matching mechanism for target action keywords (e.g. "Accept", "Auto Accept", "Confirm").
-     * If the matching AccessibilityNodeInfo is clickable (isClickable == true), triggers ACTION_CLICK on that node.
-     * If the node itself is not clickable, recursively walks up the view hierarchy to locate the nearest
-     * clickable parent container and executes ACTION_CLICK on it.
-     *
-     * @param root Optional specific root node to search. If null, searches across rootInActiveWindow
-     *             and all multi-window overlays (window.root).
-     * @return true if an accept button was found and clicked successfully, false otherwise.
-     */
+    private fun dispatchTapAtCoordinates(x: Float, y: Float): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        return try {
+            val clickPath = Path().apply {
+                moveTo(x, y)
+            }
+            val stroke = GestureDescription.StrokeDescription(clickPath, 0L, 50L)
+            val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    super.onCompleted(gestureDescription)
+                    Log.d(TAG, "dispatchTapAtCoordinates completed at ($x, $y)")
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    super.onCancelled(gestureDescription)
+                    Log.w(TAG, "dispatchTapAtCoordinates cancelled at ($x, $y)")
+                }
+            }, null)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in dispatchTapAtCoordinates", e)
+            false
+        }
+    }
+
     fun findAndClickAcceptButton(root: AccessibilityNodeInfo? = null): Boolean {
         val rootsToSearch = if (root != null) {
             listOf(root)
@@ -532,10 +677,8 @@ open class MyAccessibilityService : AccessibilityService() {
                 try {
                     val targetToClick = findClickableParentOrSelf(acceptNode) ?: acceptNode
                     clicked = targetToClick.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    Log.i(TAG, "findAndClickAcceptButton: Clicked on '${targetToClick.className}', success=$clicked")
                     if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                         clicked = dispatchTapGesture(targetToClick)
-                        Log.i(TAG, "findAndClickAcceptButton: Fallback dispatchTapGesture executed=$clicked")
                     }
                     if (targetToClick !== acceptNode) {
                         recycleNode(targetToClick)
@@ -557,10 +700,6 @@ open class MyAccessibilityService : AccessibilityService() {
         return clicked
     }
 
-    /**
-     * If the node itself is clickable and enabled, returns a reference.
-     * If not clickable, recursively walks up the view hierarchy to locate the nearest clickable parent container.
-     */
     fun findClickableParentOrSelf(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         if (node.isClickable && node.isEnabled) {
             @Suppress("DEPRECATION")
@@ -584,37 +723,6 @@ open class MyAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun executeAcceptClick(evaluation: RideEvaluation) {
-        isPendingExecution = false
-        lastProcessTime = System.currentTimeMillis()
-
-        try {
-            val clickSucceeded = findAndClickAcceptButton()
-
-            Log.i(TAG, "Executed accept click via findAndClickAcceptButton. Success = $clickSucceeded")
-            AppSettings.addLog(
-                title = if (clickSucceeded) "Order Accepted!" else "Click Attempted",
-                message = if (clickSucceeded) "ACTION_CLICK delivered successfully to Accept button/container."
-                else "Accept button could not be clicked or disappeared.",
-                severity = if (clickSucceeded) LogSeverity.CLICK_EXECUTED else LogSeverity.WARNING,
-                evaluation = evaluation
-            )
-            broadcastLog("ACTION_CLICK executed on Accept node! Success: $clickSucceeded")
-
-            if (clickSucceeded) {
-                announceRideAccepted(evaluation.totalCurrency, evaluation.distanceKm)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception while executing accept click", e)
-        }
-    }
-
-    /**
-     * Strict Accept Button Detection:
-     * Finds and returns an actionable "Accept" / "Auto Accept" / "Confirm" node in the hierarchy using Breadth-First Search (BFS).
-     * The node or one of its parents must be clickable or actionable to qualify as a valid offer acceptance component.
-     * The caller is responsible for recycling the returned node when done.
-     */
     fun findAcceptNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         @Suppress("DEPRECATION")
@@ -638,7 +746,6 @@ open class MyAccessibilityService : AccessibilityService() {
             val viewId = node.viewIdResourceName ?: ""
 
             if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
-                // Verify actionable status: the node itself or an ancestor should be clickable/enabled
                 if (isActionableNodeOrChild(node)) {
                     while (queue.isNotEmpty()) {
                         recycleNode(queue.removeFirst())
@@ -659,10 +766,6 @@ open class MyAccessibilityService : AccessibilityService() {
         return null
     }
 
-    /**
-     * Strict verification that text corresponds to an interactive order acceptance action
-     * (e.g. "Accept", "Auto Accept", "Confirm", "Accept Order", "Accept Ride", "Go", "Swipe to Accept", "Take Ride").
-     */
     fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
@@ -692,14 +795,9 @@ open class MyAccessibilityService : AccessibilityService() {
                 lower.contains("auto_accept")
     }
 
-    /**
-     * Verifies that the node or its immediate container is enabled and either clickable
-     * or contains an actionable gesture target.
-     */
     private fun isActionableNodeOrChild(node: AccessibilityNodeInfo): Boolean {
         if (node.isClickable && node.isEnabled) return true
 
-        // Check parent container
         var current: AccessibilityNodeInfo? = node.parent
         var depth = 0
         while (current != null && depth < 5) {
@@ -714,14 +812,9 @@ open class MyAccessibilityService : AccessibilityService() {
         }
         current?.let { recycleNode(it) }
 
-        // Fallback: If node has the exact text and is enabled, accept as actionable
         return node.isEnabled
     }
 
-    /**
-     * Recycles an AccessibilityNodeInfo instance on Android versions < 14 (API 34).
-     * On Android 14+, node recycling is handled automatically by the system.
-     */
     protected fun recycleNode(node: AccessibilityNodeInfo?) {
         if (node == null) return
         try {
@@ -730,7 +823,6 @@ open class MyAccessibilityService : AccessibilityService() {
                 node.recycle()
             }
         } catch (_: IllegalStateException) {
-            // Already recycled or invalid instance
         }
     }
 
@@ -750,9 +842,6 @@ open class MyAccessibilityService : AccessibilityService() {
     // TEXT-TO-SPEECH (TTS) ENGINE & ANNOUNCEMENTS
     // =========================================================================================
 
-    /**
-     * Safely initializes the native Android TextToSpeech engine with OnInitListener.
-     */
     private fun initTextToSpeech() {
         if (textToSpeech != null) return
         try {
@@ -772,10 +861,6 @@ open class MyAccessibilityService : AccessibilityService() {
         }
     }
 
-    /**
-     * Sets speech language to localized Hindi or English based on user settings,
-     * with graceful fallbacks if language data is missing.
-     */
     fun applyTtsLanguage() {
         val tts = textToSpeech ?: return
         val lang = AppSettings.getVoiceLanguage(this)
@@ -808,9 +893,6 @@ open class MyAccessibilityService : AccessibilityService() {
         }
     }
 
-    /**
-     * Shuts down and cleans up the native TextToSpeech engine instance.
-     */
     private fun cleanupTextToSpeech() {
         try {
             textToSpeech?.stop()
@@ -825,10 +907,9 @@ open class MyAccessibilityService : AccessibilityService() {
 
     /**
      * Speaks the given text using the configured queue management mode.
-     * QUEUE_FLUSH cancels any current speech immediately for new high-priority offers.
-     * QUEUE_ADD appends to speech queue for sequential alerts.
+     * Default queue mode is TextToSpeech.QUEUE_ADD to allow sequential announcements without interrupting.
      */
-    fun speak(text: String, queueMode: Int = TextToSpeech.QUEUE_FLUSH) {
+    fun speak(text: String, queueMode: Int = TextToSpeech.QUEUE_ADD) {
         if (!AppSettings.isVoiceAnnouncerEnabled(this)) {
             return
         }
@@ -849,32 +930,54 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Announces a newly detected ride offer with fare and distance details.
+     * Formats the voice announcement to speak strictly the 5 extracted clean fields in natural spoken Hindi/Hinglish:
+     * "Kiraya {fare} rupaye. Pickup {pickupDistance} kilometer {pickupLocation}. Drop {dropDistance} kilometer {dropLocation}."
      */
-    fun announceNewRide(offer: ParsedRideOffer) {
-        if (!AppSettings.isVoiceAnnouncerEnabled(this)) return
+    fun formatCleanVoiceAnnouncement(target: TargetRideOffer): String {
+        val fareStr = if (target.fare % 1.0 == 0.0) target.fare.toInt().toString() else String.format(Locale.US, "%.1f", target.fare)
+        val pickupDistStr = if (target.pickupDistance % 1.0 == 0.0) target.pickupDistance.toInt().toString() else String.format(Locale.US, "%.1f", target.pickupDistance)
+        val dropDistStr = if (target.dropDistance % 1.0 == 0.0) target.dropDistance.toInt().toString() else String.format(Locale.US, "%.1f", target.dropDistance)
 
-        val lang = AppSettings.getVoiceLanguage(this)
-        val fare = offer.totalFare?.toInt()
-        val dist = offer.pickupDistanceKm ?: offer.dropDistanceKm
+        val pickupLoc = target.pickupLocation.trim()
+        val dropLoc = target.dropLocation.trim()
 
-        val message = if (lang.equals("hi", ignoreCase = true)) {
-            when {
-                fare != null && dist != null -> "नया राइड मिला! किराया $fare रुपये, दूरी $dist किलोमीटर।"
-                fare != null -> "नया राइड मिला! किराया $fare रुपये।"
-                dist != null -> "नया राइड मिला! दूरी $dist किलोमीटर।"
-                else -> "नया राइड मिला!"
-            }
+        val sb = StringBuilder()
+        sb.append("Kiraya $fareStr rupaye.")
+
+        if (pickupLoc.isNotEmpty()) {
+            sb.append(" Pickup $pickupDistStr kilometer $pickupLoc.")
         } else {
-            when {
-                fare != null && dist != null -> "New ride received! Fare is $fare rupees, distance $dist kilometers."
-                fare != null -> "New ride received! Fare is $fare rupees."
-                dist != null -> "New ride received! Distance $dist kilometers."
-                else -> "New ride received!"
-            }
+            sb.append(" Pickup $pickupDistStr kilometer.")
         }
 
-        speak(message, TextToSpeech.QUEUE_FLUSH)
+        if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) {
+            sb.append(" Drop $dropDistStr kilometer $dropLoc.")
+        } else if (target.dropDistance > 0.0) {
+            sb.append(" Drop $dropDistStr kilometer.")
+        } else if (dropLoc.isNotEmpty()) {
+            sb.append(" Drop $dropLoc.")
+        }
+
+        return sb.toString().trim()
+    }
+
+    /**
+     * Announces a newly detected ride offer with fare and distance details in natural spoken Hindi/Hinglish.
+     * Uses QUEUE_ADD to sequence announcements without cutting off previous speech.
+     */
+    fun announceNewRide(offer: ParsedRideOffer, queueMode: Int = TextToSpeech.QUEUE_ADD) {
+        if (!AppSettings.isVoiceAnnouncerEnabled(this)) return
+
+        val target = offer.targetOffer ?: TextAnalysisEngine.parseTargetOffer(offer.rawText)
+        val message = if (target != null && target.fare > 0.0) {
+            formatCleanVoiceAnnouncement(target)
+        } else {
+            val fare = offer.totalFare?.let { if (it % 1.0 == 0.0) it.toInt().toString() else String.format(Locale.US, "%.1f", it) } ?: "0"
+            val dist = (offer.pickupDistanceKm ?: offer.dropDistanceKm)?.let { if (it % 1.0 == 0.0) it.toInt().toString() else String.format(Locale.US, "%.1f", it) } ?: "0"
+            "Kiraya $fare rupaye. Pickup $dist kilometer."
+        }
+
+        speak(message, queueMode)
     }
 
     /**
@@ -900,15 +1003,13 @@ open class MyAccessibilityService : AccessibilityService() {
             }
         }
 
-        // QUEUE_ADD allows confirmation to follow the new ride announcement smoothly
         speak(message, TextToSpeech.QUEUE_ADD)
     }
 
     /**
      * Announces when an offer does not meet captain criteria.
-     * Articulates specific threshold reason (e.g. fare too low, fare exceeds maximum, or pickup too far).
      */
-    fun announceRideSkipped(reason: String) {
+    fun announceRideSkipped(reason: String, queueMode: Int = TextToSpeech.QUEUE_ADD) {
         if (!AppSettings.isVoiceAnnouncerEnabled(this)) return
 
         val lang = AppSettings.getVoiceLanguage(this)
@@ -933,7 +1034,7 @@ open class MyAccessibilityService : AccessibilityService() {
             }
         }
 
-        speak(message, TextToSpeech.QUEUE_ADD)
+        speak(message, queueMode)
     }
 
     /**

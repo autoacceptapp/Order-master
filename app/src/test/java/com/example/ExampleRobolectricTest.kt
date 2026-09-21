@@ -361,4 +361,226 @@ class ExampleRobolectricTest {
         // Verify channel creation succeeded without exceptions
         assertTrue(UpdateNotificationManager.CHANNEL_ID == "APP_UPDATE_CHANNEL")
     }
+
+    @Test
+    fun `test RawOrderCard and isolated RideOffer parsing`() {
+        // Card 1: Valid offer
+        val card1 = RawOrderCard(
+            id = "card_1",
+            nodeTexts = listOf("Rapido Captain", "₹120", "Pickup: 1.5 km", "Koramangala 4th Block", "Accept"),
+            bounds = android.graphics.Rect(0, 100, 1080, 500),
+            hasAcceptButton = true
+        )
+
+        val offer1 = TextAnalysisEngine.parseOrderCard(card1)
+        assertNotNull(offer1)
+        assertEquals(120.0, offer1?.totalFare ?: 0.0, 0.001)
+        assertEquals(1.5, offer1?.pickupDistanceKm ?: 0.0, 0.001)
+        assertTrue(offer1?.hasAcceptButton == true)
+        assertTrue(offer1?.id?.startsWith("offer_") == true)
+        assertTrue(offer1?.location?.contains("Koramangala", ignoreCase = true) == true)
+
+        // Card 2: Valid offer with bonus tip
+        val card2 = RawOrderCard(
+            id = "card_2",
+            nodeTexts = listOf("New Ride", "₹56 + ₹14", "1.2 km away", "Indiranagar", "Accept Ride"),
+            bounds = android.graphics.Rect(0, 550, 1080, 950),
+            hasAcceptButton = true
+        )
+
+        val offer2 = TextAnalysisEngine.parseOrderCard(card2)
+        assertNotNull(offer2)
+        assertEquals(70.0, offer2?.totalFare ?: 0.0, 0.001)
+        assertEquals(1.2, offer2?.pickupDistanceKm ?: 0.0, 0.001)
+        assertEquals(listOf(56.0, 14.0), offer2?.fareBreakdown)
+
+        // Verify no text cross-contamination between card1 and card2
+        assertFalse(offer1?.rawCard?.nodeTexts?.contains("Indiranagar") == true)
+        assertFalse(offer2?.rawCard?.nodeTexts?.contains("Koramangala 4th Block") == true)
+    }
+
+    @Test
+    fun `test incomplete or malformed cards are ignored`() {
+        // Missing fare (only distance and button)
+        val missingFareCard = RawOrderCard(
+            id = "malformed_1",
+            nodeTexts = listOf("Pickup: 2.0 km", "HSR Layout", "Accept"),
+            bounds = android.graphics.Rect(0, 0, 100, 100)
+        )
+        val result1 = TextAnalysisEngine.parseOrderCard(missingFareCard)
+        assertEquals(null, result1)
+
+        // Missing distance (only fare and button)
+        val missingDistCard = RawOrderCard(
+            id = "malformed_2",
+            nodeTexts = listOf("₹85", "Whitefield", "Accept"),
+            bounds = android.graphics.Rect(0, 0, 100, 100)
+        )
+        val result2 = TextAnalysisEngine.parseOrderCard(missingDistCard)
+        assertEquals(null, result2)
+
+        // Empty card
+        val emptyCard = RawOrderCard(
+            id = "empty",
+            nodeTexts = emptyList(),
+            bounds = android.graphics.Rect()
+        )
+        val result3 = TextAnalysisEngine.parseOrderCard(emptyCard)
+        assertEquals(null, result3)
+    }
+
+    @Test
+    fun `test unique offer id hash generation`() {
+        val hash1 = TextAnalysisEngine.generateOfferId(120.0, 1.5, "Koramangala")
+        val hash2 = TextAnalysisEngine.generateOfferId(120.0, 1.5, "Koramangala")
+        val hash3 = TextAnalysisEngine.generateOfferId(120.0, 1.5, "Indiranagar")
+        val hash4 = TextAnalysisEngine.generateOfferId(40.0, 4.0, "Koramangala")
+
+        // Identical parameters produce the exact same hash
+        assertEquals(hash1, hash2)
+
+        // Different location produces distinct hash
+        assertFalse(hash1 == hash3)
+
+        // Different fare/distance produces distinct hash
+        assertFalse(hash1 == hash4)
+    }
+
+    @Test
+    fun `test multi-order evaluation logic with isolated cards`() {
+        val validCard = RawOrderCard(
+            id = "card_valid",
+            nodeTexts = listOf("₹120", "Pickup: 1.5 km", "Koramangala", "Accept"),
+            bounds = android.graphics.Rect(0, 100, 1080, 500),
+            hasAcceptButton = true
+        )
+        val invalidCard = RawOrderCard(
+            id = "card_invalid",
+            nodeTexts = listOf("₹40", "Pickup: 4.0 km", "HSR Layout", "Accept"),
+            bounds = android.graphics.Rect(0, 550, 1080, 950),
+            hasAcceptButton = true
+        )
+
+        val offers = TextAnalysisEngine.parseAllOrderCards(listOf(validCard, invalidCard))
+        assertEquals(2, offers.size)
+
+        val eval1 = TextAnalysisEngine.evaluateRideOffer(
+            offer = offers[0].toParsedRideOffer(),
+            minFare = 60.0f,
+            maxFare = 5000.0f,
+            maxPickupDistance = 3.0f,
+            isAutoAcceptEnabled = true
+        )
+        assertTrue(eval1.isAccepted)
+        assertTrue(eval1.decisionReason.contains("MATCHED"))
+
+        val eval2 = TextAnalysisEngine.evaluateRideOffer(
+            offer = offers[1].toParsedRideOffer(),
+            minFare = 60.0f,
+            maxFare = 5000.0f,
+            maxPickupDistance = 3.0f,
+            isAutoAcceptEnabled = true
+        )
+        assertFalse(eval2.isAccepted)
+        assertTrue(eval2.decisionReason.contains("REJECTED"))
+    }
+
+    @Test
+    fun `test locationCleaner extracts primary landmark and strips addresses and pincodes`() {
+        val loc1 = TextAnalysisEngine.locationCleaner("Lalpari River - 22-24-2, Shree Ram Society, 360003")
+        assertEquals("Lalpari River", loc1)
+
+        val loc2 = TextAnalysisEngine.locationCleaner("City Centre - Shop 14, Main Road")
+        assertEquals("City Centre", loc2)
+
+        val loc3 = TextAnalysisEngine.locationCleaner("Race Course\nNear Jubilee Garden, 360001")
+        assertEquals("Race Course", loc3)
+
+        val loc4 = TextAnalysisEngine.locationCleaner("Rail Nagar - Street 2")
+        assertEquals("Rail Nagar", loc4)
+    }
+
+    @Test
+    fun `test targeted 5-field extraction from Rapido Captain card nodes`() {
+        val nodeTexts = listOf(
+            "Rapido Captain",
+            "₹95",
+            "+ ₹23",
+            "2.8 km",
+            "Lalpari River - 22-24-2, Shree Ram Society",
+            "6.2 km",
+            "Race Course - Near Jubilee Garden",
+            "Accept"
+        )
+
+        val target = TextAnalysisEngine.parseTargetOfferFromNodes(nodeTexts)
+        assertNotNull(target)
+        assertEquals(95.0, target!!.fare, 0.001)
+        assertEquals(2.8, target.pickupDistance, 0.001)
+        assertEquals("Lalpari River", target.pickupLocation)
+        assertEquals(6.2, target.dropDistance, 0.001)
+        assertEquals("Race Course", target.dropLocation)
+    }
+
+    @Test
+    fun `test targeted 5-field extraction from flat text string`() {
+        val rawText = "₹55 0.5 km City Centre - Shop 14, Main Road 3.4 km Rail Nagar - Street 2 Accept"
+        val target = TextAnalysisEngine.parseTargetOffer(rawText)
+        assertNotNull(target)
+        assertEquals(55.0, target!!.fare, 0.001)
+        assertEquals(0.5, target.pickupDistance, 0.001)
+        assertEquals("City Centre", target.pickupLocation)
+        assertEquals(3.4, target.dropDistance, 0.001)
+        assertEquals("Rail Nagar", target.dropLocation)
+    }
+
+    @Test
+    fun `test natural spoken Hindi Hinglish TTS announcement format`() {
+        val target = TargetRideOffer(
+            fare = 95.0,
+            pickupDistance = 2.8,
+            pickupLocation = "Lalpari River",
+            dropDistance = 6.2,
+            dropLocation = "Race Course"
+        )
+
+        val service = MyAccessibilityService()
+        val speech = service.formatCleanVoiceAnnouncement(target)
+        assertEquals(
+            "Kiraya 95 rupaye. Pickup 2.8 kilometer Lalpari River. Drop 6.2 kilometer Race Course.",
+            speech
+        )
+    }
+
+    @Test
+    fun `test evaluation uses strictly fare and pickup distance ignoring drop distance`() {
+        val offerWithLongDrop = ParsedRideOffer(
+            rawText = "₹95 2.5 km Lalpari River 25.0 km Distant Town Accept",
+            totalFare = 95.0,
+            fareBreakdown = listOf(95.0),
+            pickupDistanceKm = 2.5,
+            dropDistanceKm = 25.0,
+            hasAcceptButton = true,
+            targetOffer = TargetRideOffer(
+                fare = 95.0,
+                pickupDistance = 2.5,
+                pickupLocation = "Lalpari River",
+                dropDistance = 25.0,
+                dropLocation = "Distant Town"
+            )
+        )
+
+        val eval = TextAnalysisEngine.evaluateRideOffer(
+            offer = offerWithLongDrop,
+            minFare = 60.0f,
+            maxFare = 5000.0f,
+            maxPickupDistance = 3.0f,
+            isAutoAcceptEnabled = true
+        )
+
+        // Pickup is 2.5 km <= 3.0 km max limit, fare 95 >= 60 -> Must be ACCEPTED even though drop is 25 km
+        assertTrue(eval.isAccepted)
+        assertTrue(eval.passesPickupDistance)
+        assertTrue(eval.passesFare)
+    }
 }
