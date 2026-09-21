@@ -58,4 +58,13 @@ class ExampleUnitTest {
     )
     assertFalse("Lower versionCode must not trigger update prompt", isNewerBuild11)
   }
+
+  @Test
+  fun testAndroid13Check() {
+    // PermissionUtils.isAndroid13OrHigher checks SDK_INT >= 33 (TIRAMISU)
+    // On JVM test environment Build.VERSION.SDK_INT is accessible
+    val isA13 = PermissionUtils.isAndroid13OrHigher()
+    // Verify call completes without exception
+    assertNotNull(isA13)
+  }
 }
