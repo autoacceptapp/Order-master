@@ -60,7 +60,13 @@ data class RideOffer(
             pickupDistanceKm = pickupDistanceKm,
             dropDistanceKm = dropDistanceKm,
             hasAcceptButton = hasAcceptButton,
-            targetOffer = targetOffer
+            targetOffer = targetOffer,
+            fareText = totalFare?.let { "₹${it.toInt()}" } ?: "",
+            pickupText = pickupDistanceKm?.let { "$it km" } ?: "",
+            dropText = dropDistanceKm?.let { "$it km" } ?: "",
+            acceptButton = acceptNode ?: rawCard.acceptNode,
+            cardId = id,
+            bounds = rawCard.bounds
         )
     }
 }
@@ -69,14 +75,21 @@ data class RideOffer(
  * Structured data class representing parsed ride offer details from screen text.
  */
 data class ParsedRideOffer(
-    val rawText: String,
-    val totalFare: Double?,
-    val fareBreakdown: List<Double>,
-    val pickupDistanceKm: Double?,
-    val dropDistanceKm: Double?,
-    val hasAcceptButton: Boolean,
-    val targetOffer: TargetRideOffer? = null
+    val rawText: String = "",
+    val totalFare: Double? = null,
+    val fareBreakdown: List<Double> = emptyList(),
+    val pickupDistanceKm: Double? = null,
+    val dropDistanceKm: Double? = null,
+    val hasAcceptButton: Boolean = false,
+    val targetOffer: TargetRideOffer? = null,
+    val fareText: String = "",
+    val pickupText: String = "",
+    val dropText: String = "",
+    val acceptButton: AccessibilityNodeInfo? = null,
+    val cardId: String = "",
+    val bounds: Rect = Rect()
 ) {
+    val id: String get() = cardId.ifEmpty { "offer_${totalFare?.toInt() ?: 0}_${pickupDistanceKm ?: 0.0}" }
     val baseFare: Double? get() = targetOffer?.fare ?: fareBreakdown.firstOrNull() ?: totalFare
     val pickupLocation: String get() = targetOffer?.pickupLocation ?: ""
     val dropLocation: String get() = targetOffer?.dropLocation ?: ""

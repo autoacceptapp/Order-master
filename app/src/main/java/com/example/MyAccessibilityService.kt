@@ -163,46 +163,12 @@ open class MyAccessibilityService : AccessibilityService() {
         }
 
         try {
-            // 6. Node Tree Grouping: Extract distinct order card containers across candidate windows
-            val allRawCards = mutableListOf<RawOrderCard>()
-            for (root in candidateWindows) {
-                val cards = TextAnalysisEngine.extractOrderCards(root)
-                allRawCards.addAll(cards)
-            }
-
-            // 7. Order Separation & Unique Parsing: Parse each card into a distinct RideOffer
-            val parsedOffers = TextAnalysisEngine.parseAllOrderCards(allRawCards)
+            // 1. Card-Level Layout Isolation: Extract distinct order card containers across candidate windows
+            // and parse each container independently into a strictly isolated ParsedRideOffer.
+            // Texts from different cards are NEVER merged.
+            val parsedOffers = RideOfferParser.parseCards(candidateWindows)
 
             if (parsedOffers.isEmpty()) {
-                // Fallback check: If no structured cards matched, check if an accept node exists with single offer
-                val singleAcceptRoot = candidateWindows.firstOrNull { findAcceptNode(it) != null }
-                if (singleAcceptRoot != null) {
-                    val extractedText = extractAllText(singleAcceptRoot)
-                    val fallbackOffer = TextAnalysisEngine.parse(extractedText)
-                    if (fallbackOffer.totalFare != null &&
-                        TextAnalysisEngine.isValidRapidoFare(fallbackOffer.totalFare) &&
-                        (fallbackOffer.pickupDistanceKm != null || fallbackOffer.dropDistanceKm != null)
-                    ) {
-                        val cardBounds = Rect()
-                        singleAcceptRoot.getBoundsInScreen(cardBounds)
-                        val rawCard = RawOrderCard(
-                            id = "fallback_card",
-                            nodeTexts = listOf(extractedText),
-                            bounds = cardBounds,
-                            hasAcceptButton = true
-                        )
-                        val offer = RideOffer(
-                            id = TextAnalysisEngine.generateOfferId(fallbackOffer.totalFare, fallbackOffer.pickupDistanceKm, ""),
-                            rawCard = rawCard,
-                            totalFare = fallbackOffer.totalFare,
-                            fareBreakdown = fallbackOffer.fareBreakdown,
-                            pickupDistanceKm = fallbackOffer.pickupDistanceKm,
-                            dropDistanceKm = fallbackOffer.dropDistanceKm,
-                            hasAcceptButton = true
-                        )
-                        processOrderQueue(listOf(offer), candidateWindows)
-                    }
-                }
                 return
             }
 
@@ -212,7 +178,7 @@ open class MyAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // 8. Multi-Order Processing Queue
+            // 2. Multi-Order Processing Queue
             processOrderQueue(parsedOffers, candidateWindows)
 
         } finally {
@@ -227,7 +193,7 @@ open class MyAccessibilityService : AccessibilityService() {
      * Evaluates multiple simultaneous order offers isolated by tree grouping, logs card-level validation,
      * speaks announcements in order (QUEUE_ADD), and executes ACTION_CLICK strictly within the bounds of the best offer.
      */
-    private fun processOrderQueue(offers: List<RideOffer>, rootWindows: List<AccessibilityNodeInfo>) {
+    private fun processOrderQueue(offers: List<ParsedRideOffer>, rootWindows: List<AccessibilityNodeInfo>) {
         val minFare = AppSettings.getMinFare(this)
         val maxFare = AppSettings.getMaxFare(this)
         val maxPickupDist = AppSettings.getMaxPickupDistance(this)
@@ -246,7 +212,7 @@ open class MyAccessibilityService : AccessibilityService() {
         )
         broadcastLog("Detected ${offers.size} distinct order card${if (offers.size > 1) "s" else ""}")
 
-        val evaluatedOffers = mutableListOf<Pair<RideOffer, RideEvaluation>>()
+        val evaluatedOffers = mutableListOf<Pair<ParsedRideOffer, RideEvaluation>>()
 
         // Sequential Queue Evaluation
         offers.forEachIndexed { index, offer ->
@@ -259,9 +225,8 @@ open class MyAccessibilityService : AccessibilityService() {
                 processedOfferIds.add(offer.id)
             }
 
-            val parsedOffer = offer.toParsedRideOffer()
             val evaluation = TextAnalysisEngine.evaluateRideOffer(
-                offer = parsedOffer,
+                offer = offer,
                 minFare = minFare,
                 maxFare = maxFare,
                 maxPickupDistance = maxPickupDist,
@@ -301,7 +266,7 @@ open class MyAccessibilityService : AccessibilityService() {
 
             // TTS Announcer Debounce & Duplicate Cooldown (Fix 4x Repeat Speech)
             // Uses TTSManager.announceNewRide which enforces the 10-second deduplication cooldown per unique offer
-            val spoke = announceNewRide(parsedOffer, queueMode = TextToSpeech.QUEUE_ADD)
+            val spoke = announceNewRide(offer, queueMode = TextToSpeech.QUEUE_ADD)
             if (!evaluation.isAccepted && spoke) {
                 announceRideSkipped(evaluation.decisionReason, queueMode = TextToSpeech.QUEUE_ADD)
             }
@@ -349,26 +314,26 @@ open class MyAccessibilityService : AccessibilityService() {
      * Executes the ACTION_CLICK strictly targeting the Accept button node
      * located inside the spatial bounds of the selected best matching order card.
      */
-    private fun executeCardAcceptClick(offer: RideOffer, evaluation: RideEvaluation) {
+    private fun executeCardAcceptClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
         isPendingExecution = false
         lastProcessTime = System.currentTimeMillis()
 
         var clicked = false
-        val cardBounds = offer.rawCard.bounds
+        val cardBounds = offer.bounds
 
         try {
-            // 1. If the isolated raw card already has an acceptNode reference, try clicking that first
-            val initialNode = offer.acceptNode ?: offer.rawCard.acceptNode
+            // 1. If the isolated raw card already has an acceptButton reference, try clicking that first
+            val initialNode = offer.acceptButton
             if (initialNode != null) {
                 try {
                     val clickableTarget = findClickableParentOrSelf(initialNode) ?: initialNode
                     clicked = clickableTarget.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    Log.i(TAG, "executeCardAcceptClick: direct acceptNode click success=$clicked")
+                    Log.i(TAG, "executeCardAcceptClick: direct acceptButton click success=$clicked")
                     if (clickableTarget !== initialNode) {
                         recycleNode(clickableTarget)
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "executeCardAcceptClick: direct acceptNode click failed, trying search in bounds", e)
+                    Log.w(TAG, "executeCardAcceptClick: direct acceptButton click failed, trying search in bounds", e)
                 }
             }
 
