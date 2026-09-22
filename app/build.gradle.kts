@@ -18,17 +18,32 @@ android {
     minSdk = 24
     targetSdk = 36
 
-    val vCode = project.findProperty("VERSION_CODE")?.toString()?.toIntOrNull()
+    // --- Version Management (Semantic Versioning) ---
+    // versionMajor: Breaking changes or architecture re-writes
+    // versionMinor: Feature additions or major enhancements
+    // versionPatch: Bug fixes, UI polish, and maintenance
+    val versionMajor = 1
+    val versionMinor = 0
+    val versionPatch = 2
+
+    // Version Code: Numeric counter for Google Play / system package manager
+    // Supports CI environment override (e.g., GitHub Actions run_number via -PVERSION_CODE)
+    val appVersionCode = project.findProperty("VERSION_CODE")?.toString()?.toIntOrNull()
         ?: project.findProperty("versionCode")?.toString()?.toIntOrNull()
         ?: System.getenv("VERSION_CODE")?.toIntOrNull()
-        ?: 1
-    val vName = project.findProperty("VERSION_NAME")?.toString()
+        ?: (versionMajor * 10000 + versionMinor * 100 + versionPatch)
+
+    // Version Name: Human-readable SemVer string (e.g., "1.0.2")
+    val appVersionName = project.findProperty("VERSION_NAME")?.toString()
         ?: project.findProperty("versionName")?.toString()
         ?: System.getenv("VERSION_NAME")
-        ?: "1.0.$vCode"
+        ?: "$versionMajor.$versionMinor.$versionPatch"
 
-    versionCode = vCode
-    versionName = vName
+    versionCode = appVersionCode
+    versionName = appVersionName
+
+    buildConfigField("String", "APP_VERSION_NAME", "\"$appVersionName\"")
+    buildConfigField("int", "APP_VERSION_CODE", "$appVersionCode")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

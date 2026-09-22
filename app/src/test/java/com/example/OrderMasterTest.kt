@@ -144,4 +144,31 @@ class OrderMasterTest {
         assertEquals(250.0, inserted!!.fare, 0.01)
         assertTrue(inserted.isAccepted)
     }
+
+    @Test
+    fun testSemanticVersioningComparison() {
+        // Direct SemVer checks
+        assertTrue(isUpdateAvailable(currentVersion = "1.0.2", latestVersion = "1.1.0"))
+        assertTrue(isUpdateAvailable(currentVersion = "1.0.2", latestVersion = "1.0.3"))
+        assertTrue(isUpdateAvailable(currentVersion = "1.0.2", latestVersion = "2.0.0"))
+
+        // Exact match -> false
+        assertFalse(isUpdateAvailable(currentVersion = "1.0.2", latestVersion = "1.0.2"))
+        assertFalse(isUpdateAvailable(currentVersion = "v1.0.2", latestVersion = "1.0.2"))
+        assertFalse(isUpdateAvailable(currentVersion = "1.0.2", latestVersion = "v1.0.2"))
+
+        // Server is older (downgrade / lag) -> false
+        assertFalse(isUpdateAvailable(currentVersion = "1.1.0", latestVersion = "1.0.2"))
+        assertFalse(isUpdateAvailable(currentVersion = "2.0.0", latestVersion = "1.9.9"))
+
+        // Handling 'v' prefix and release tags
+        assertTrue(isUpdateAvailable(currentVersion = "v1.0.0", latestVersion = "v1.0.1"))
+        assertTrue(isUpdateAvailable(currentVersion = "1.0.0", latestVersion = "release-1.0.5"))
+
+        // Pre-release versions
+        // 1.0.0 stable is newer than 1.0.0-rc.1
+        assertFalse(isUpdateAvailable(currentVersion = "1.0.0", latestVersion = "1.0.0-rc.1"))
+        // 1.0.1-rc.1 is newer than 1.0.0
+        assertTrue(isUpdateAvailable(currentVersion = "1.0.0", latestVersion = "1.0.1-rc.1"))
+    }
 }

@@ -246,18 +246,21 @@ object GitHubUpdateManager {
                 "GitHub Release parsed: tag='$tagName', title='$releaseTitle', latestVersionCode=$latestVersionCode, currentVersionCode=$currentVersionCode"
             )
 
-            // Compare latest release's versionCode against BuildConfig.VERSION_CODE
-            // Trigger update UI ONLY if latestVersionCode > currentVersionCode
-            val hasNewVersion = if (latestVersionCode > 0) {
-                latestVersionCode > currentVersionCode
-            } else {
-                isVersionNewer(
-                    remoteVersion = tagName,
-                    currentVersion = currentVersion,
-                    currentVersionCode = currentVersionCode,
-                    releaseTitle = releaseTitle
-                )
-            }
+            // Compare latest release against current installed version:
+            // 1. Semantic Version check (tag_name vs BuildConfig.VERSION_NAME)
+            // 2. Numeric versionCode check if explicitly tagged or titled
+            val isSemVerNewer = VersionUtils.isUpdateAvailable(
+                currentVersion = currentVersion,
+                latestVersion = tagName
+            )
+            val isCodeNewer = latestVersionCode > 0 && latestVersionCode > currentVersionCode
+
+            val hasNewVersion = isSemVerNewer || isCodeNewer || isVersionNewer(
+                remoteVersion = tagName,
+                currentVersion = currentVersion,
+                currentVersionCode = currentVersionCode,
+                releaseTitle = releaseTitle
+            )
 
             if (!hasNewVersion) {
                 Log.i(TAG, "No update available: latestVersionCode ($latestVersionCode) <= currentVersionCode ($currentVersionCode)")

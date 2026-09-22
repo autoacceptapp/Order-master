@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.BuildConfig
 import com.example.ui.OrderMasterViewModel
+import com.example.ui.components.AppVersionInfoCard
 import com.example.ui.theme.AmberAccent
 import com.example.ui.theme.PrimaryEmerald
 
@@ -467,67 +468,9 @@ fun ProfileScreen(
 
         // 5. App Version & Build Information
         item {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("app_version_card"),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                border = CardDefaults.outlinedCardBorder()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Info,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Text(
-                            text = "Application & Build Info",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                    }
-
-                    InfoRow(
-                        icon = Icons.Default.Info,
-                        label = "Application Name",
-                        value = "Order Master"
-                    )
-                    InfoRow(
-                        icon = Icons.Default.Info,
-                        label = "Version Name",
-                        value = BuildConfig.VERSION_NAME
-                    )
-                    InfoRow(
-                        icon = Icons.Default.Info,
-                        label = "Build Number",
-                        value = "${BuildConfig.VERSION_CODE}"
-                    )
-                    InfoRow(
-                        icon = Icons.Default.Security,
-                        label = "Package Name",
-                        value = "com.example"
-                    )
-                    InfoRow(
-                        icon = Icons.Default.CheckCircle,
-                        label = "Automation Engine",
-                        value = "Native Accessibility + Jetpack M3"
-                    )
-                }
-            }
+            AppVersionInfoCard(
+                modifier = Modifier.testTag("app_version_card")
+            )
         }
 
         item {
