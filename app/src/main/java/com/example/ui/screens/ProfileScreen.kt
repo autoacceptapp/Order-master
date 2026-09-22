@@ -233,14 +233,7 @@ fun ProfileScreen(
             }
         }
 
-        // 2. Permanent Device Hardware ID Card
-        item {
-            com.example.HardwareIdCard(
-                modifier = Modifier.testTag("profile_hardware_id_card")
-            )
-        }
-
-        // 3. Refer & Earn Card
+        // 2. Refer & Earn Card
         item {
             val context = LocalContext.current
             val profileState by UserReferralRepository.observeUserProfile(context).collectAsState(

@@ -53,14 +53,9 @@ open class MyAccessibilityService : AccessibilityService() {
     private val processedOfferIds = LinkedHashSet<String>()
     private val maxProcessedHistory = 50
 
-    private var textToSpeech: TextToSpeech? = null
-
-    @Volatile
-    private var isTtsReady: Boolean = false
-
     override fun onCreate() {
         super.onCreate()
-        initTextToSpeech()
+        TTSManager.init(this)
     }
 
     override fun onServiceConnected() {
@@ -80,7 +75,7 @@ open class MyAccessibilityService : AccessibilityService() {
                 AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
         serviceInfo = info
 
-        initTextToSpeech()
+        TTSManager.init(this)
         Log.d(TAG, "Accessibility Service connected and operational for package: $TARGET_PACKAGE.")
         AppSettings.addLog(
             title = "Service Connected",
@@ -97,7 +92,7 @@ open class MyAccessibilityService : AccessibilityService() {
             instance = null
         }
         mainHandler.removeCallbacksAndMessages(null)
-        cleanupTextToSpeech()
+        TTSManager.shutdown()
         Log.d(TAG, "Accessibility Service stopped.")
         AppSettings.addLog(
             title = "Service Stopped",
@@ -145,13 +140,32 @@ open class MyAccessibilityService : AccessibilityService() {
         lastProcessTime = currentTime
 
         // 5. Multi-Window & Overlay Support: Retrieve root nodes strictly belonging to target driver app
-        val rootWindows = getAllRootWindows()
-        if (rootWindows.isEmpty()) return
+        val rawRootWindows = getAllRootWindows()
+        if (rawRootWindows.isEmpty()) return
+
+        // 1. Strict Rapido Overlay Popup Window Detection:
+        // Filter out floating overlay widget bubble background node trees (which contain stored history values)
+        val candidateWindows = rawRootWindows.filter { !isFloatingWidgetOrBubble(it) }
+        if (candidateWindows.isEmpty()) {
+            for (root in rawRootWindows) {
+                recycleNode(root)
+            }
+            return
+        }
+
+        // STRICT REQUIREMENT: If no valid "Accept", "Reject", or "Order Offer" view ID/text node is found on screen,
+        // immediately exit node evaluation.
+        if (!hasActiveRideOfferOnScreen(candidateWindows)) {
+            for (root in rawRootWindows) {
+                recycleNode(root)
+            }
+            return
+        }
 
         try {
-            // 6. Node Tree Grouping: Extract distinct order card containers across windows
+            // 6. Node Tree Grouping: Extract distinct order card containers across candidate windows
             val allRawCards = mutableListOf<RawOrderCard>()
-            for (root in rootWindows) {
+            for (root in candidateWindows) {
                 val cards = TextAnalysisEngine.extractOrderCards(root)
                 allRawCards.addAll(cards)
             }
@@ -161,7 +175,7 @@ open class MyAccessibilityService : AccessibilityService() {
 
             if (parsedOffers.isEmpty()) {
                 // Fallback check: If no structured cards matched, check if an accept node exists with single offer
-                val singleAcceptRoot = rootWindows.firstOrNull { findAcceptNode(it) != null }
+                val singleAcceptRoot = candidateWindows.firstOrNull { findAcceptNode(it) != null }
                 if (singleAcceptRoot != null) {
                     val extractedText = extractAllText(singleAcceptRoot)
                     val fallbackOffer = TextAnalysisEngine.parse(extractedText)
@@ -186,7 +200,7 @@ open class MyAccessibilityService : AccessibilityService() {
                             dropDistanceKm = fallbackOffer.dropDistanceKm,
                             hasAcceptButton = true
                         )
-                        processOrderQueue(listOf(offer), rootWindows)
+                        processOrderQueue(listOf(offer), candidateWindows)
                     }
                 }
                 return
@@ -199,10 +213,10 @@ open class MyAccessibilityService : AccessibilityService() {
             }
 
             // 8. Multi-Order Processing Queue
-            processOrderQueue(parsedOffers, rootWindows)
+            processOrderQueue(parsedOffers, candidateWindows)
 
         } finally {
-            for (root in rootWindows) {
+            for (root in rawRootWindows) {
                 recycleNode(root)
             }
         }
@@ -285,9 +299,10 @@ open class MyAccessibilityService : AccessibilityService() {
                 broadcastLog("Card $cardNum: ₹$fareVal, ${distVal}km - INVALID")
             }
 
-            // Sequential TTS Requirement: Use QUEUE_ADD so multiple order readouts do not interrupt each other
-            announceNewRide(parsedOffer, queueMode = TextToSpeech.QUEUE_ADD)
-            if (!evaluation.isAccepted) {
+            // TTS Announcer Debounce & Duplicate Cooldown (Fix 4x Repeat Speech)
+            // Uses TTSManager.announceNewRide which enforces the 10-second deduplication cooldown per unique offer
+            val spoke = announceNewRide(parsedOffer, queueMode = TextToSpeech.QUEUE_ADD)
+            if (!evaluation.isAccepted && spoke) {
                 announceRideSkipped(evaluation.decisionReason, queueMode = TextToSpeech.QUEUE_ADD)
             }
         }
@@ -857,6 +872,160 @@ open class MyAccessibilityService : AccessibilityService() {
                 lower.contains("auto_accept")
     }
 
+    fun isRejectAction(content: String): Boolean {
+        val trimmed = content.trim()
+        if (trimmed.isEmpty()) return false
+
+        return trimmed.equals("Reject", ignoreCase = true) ||
+                trimmed.equals("Decline", ignoreCase = true) ||
+                trimmed.equals("Skip", ignoreCase = true) ||
+                trimmed.equals("Cancel", ignoreCase = true) ||
+                trimmed.equals("Pass", ignoreCase = true) ||
+                trimmed.equals("Reject Order", ignoreCase = true) ||
+                trimmed.equals("Reject Ride", ignoreCase = true) ||
+                trimmed.equals("Decline Order", ignoreCase = true) ||
+                trimmed.equals("Decline Ride", ignoreCase = true) ||
+                trimmed.contains("अस्वीकार", ignoreCase = true) ||
+                trimmed.contains("छोड़ें", ignoreCase = true)
+    }
+
+    private fun isRapidoRejectId(viewId: String): Boolean {
+        if (viewId.isEmpty()) return false
+        val lower = viewId.lowercase(Locale.ROOT)
+        return lower.contains("btn_reject") ||
+                lower.contains("reject_order") ||
+                lower.contains("btn_decline") ||
+                lower.contains("decline_order") ||
+                lower.contains("btn_cancel") ||
+                lower.contains("action_reject") ||
+                lower.contains("action_decline") ||
+                lower.contains("btn_skip")
+    }
+
+    fun findRejectNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        @Suppress("DEPRECATION")
+        queue.add(AccessibilityNodeInfo.obtain(root))
+
+        val startTime = System.currentTimeMillis()
+        val timeoutMs = 120L
+
+        while (queue.isNotEmpty()) {
+            if (System.currentTimeMillis() - startTime > timeoutMs) {
+                while (queue.isNotEmpty()) {
+                    recycleNode(queue.removeFirst())
+                }
+                break
+            }
+
+            val node = queue.removeFirst()
+
+            val text = node.text?.toString() ?: ""
+            val desc = node.contentDescription?.toString() ?: ""
+            val viewId = node.viewIdResourceName ?: ""
+
+            if (isRejectAction(text) || isRejectAction(desc) || isRapidoRejectId(viewId)) {
+                if (isActionableNodeOrChild(node)) {
+                    while (queue.isNotEmpty()) {
+                        recycleNode(queue.removeFirst())
+                    }
+                    return node
+                }
+            }
+
+            val childCount = node.childCount
+            for (i in 0 until childCount) {
+                val child = node.getChild(i)
+                if (child != null) {
+                    queue.add(child)
+                }
+            }
+            recycleNode(node)
+        }
+        return null
+    }
+
+    /**
+     * Identifies background floating overlay widgets, chatheads, and history mini-views
+     * that do not represent active incoming order cards.
+     */
+    fun isFloatingWidgetOrBubble(node: AccessibilityNodeInfo): Boolean {
+        val viewId = (node.viewIdResourceName ?: "").lowercase(Locale.ROOT)
+        val className = (node.className?.toString() ?: "").lowercase(Locale.ROOT)
+
+        val widgetKeywords = listOf(
+            "bubble",
+            "floating",
+            "chathead",
+            "chat_head",
+            "overlay_head",
+            "widget_layout",
+            "floating_view",
+            "overlay_bubble",
+            "mini_widget",
+            "pip_layout",
+            "bubble_root"
+        )
+
+        val matchesWidget = widgetKeywords.any { viewId.contains(it) || className.contains(it) }
+        if (matchesWidget) {
+            val accept = findAcceptNode(node)
+            if (accept != null) {
+                recycleNode(accept)
+                return false
+            }
+            return true
+        }
+
+        // Small floating bubble dimensions check (e.g., chatheads are usually small pills/circles)
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        if (!bounds.isEmpty && bounds.width() in 1..320 && bounds.height() in 1..320) {
+            val accept = findAcceptNode(node)
+            if (accept != null) {
+                recycleNode(accept)
+                return false
+            }
+            val reject = findRejectNode(node)
+            if (reject != null) {
+                recycleNode(reject)
+                return false
+            }
+            return true
+        }
+
+        return false
+    }
+
+    /**
+     * Strict Check: Returns true ONLY if any candidate window contains an active Accept button,
+     * Reject button, or explicit ride request popup card container.
+     */
+    fun hasActiveRideOfferOnScreen(rootWindows: List<AccessibilityNodeInfo>): Boolean {
+        for (root in rootWindows) {
+            // 1. Check for Accept button
+            val accept = findAcceptNode(root)
+            if (accept != null) {
+                recycleNode(accept)
+                return true
+            }
+
+            // 2. Check for Reject button
+            val reject = findRejectNode(root)
+            if (reject != null) {
+                recycleNode(reject)
+                return true
+            }
+
+            // 3. Check for explicit Ride Request Popup container
+            val viewId = root.viewIdResourceName ?: ""
+            if (TextAnalysisEngine.isExplicitRideRequest(viewId)) {
+                return true
+            }
+        }
+        return false
+    }
+
     private fun isActionableNodeOrChild(node: AccessibilityNodeInfo): Boolean {
         if (node.isClickable && node.isEnabled) return true
 
@@ -901,70 +1070,11 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     // =========================================================================================
-    // TEXT-TO-SPEECH (TTS) ENGINE & ANNOUNCEMENTS
+    // TEXT-TO-SPEECH (TTS) ENGINE & ANNOUNCEMENTS (DELEGATING TO TTSManager)
     // =========================================================================================
 
-    private fun initTextToSpeech() {
-        if (textToSpeech != null) return
-        try {
-            textToSpeech = TextToSpeech(applicationContext) { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    isTtsReady = true
-                    applyTtsLanguage()
-                    Log.i(TAG, "Native TextToSpeech engine initialized successfully.")
-                } else {
-                    isTtsReady = false
-                    Log.w(TAG, "Native TextToSpeech initialization failed with status: $status")
-                }
-            }
-        } catch (e: Exception) {
-            isTtsReady = false
-            Log.e(TAG, "Exception while instantiating TextToSpeech", e)
-        }
-    }
-
     fun applyTtsLanguage() {
-        val tts = textToSpeech ?: return
-        val lang = AppSettings.getVoiceLanguage(this)
-        val targetLocale = if (lang.equals("hi", ignoreCase = true)) {
-            Locale.Builder().setLanguage("hi").setRegion("IN").build()
-        } else {
-            Locale.Builder().setLanguage("en").setRegion("IN").build()
-        }
-
-        try {
-            val result = tts.setLanguage(targetLocale)
-            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                Log.w(TAG, "Language $targetLocale not supported/missing data (code $result), falling back to English.")
-                tts.setLanguage(Locale.ENGLISH)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error applying TTS language to $targetLocale", e)
-            try {
-                tts.setLanguage(Locale.getDefault())
-            } catch (_: Exception) {}
-        }
-
-        try {
-            val rate = AppSettings.getSpeechRate(this)
-            val pitch = AppSettings.getSpeechPitch(this)
-            tts.setSpeechRate(rate)
-            tts.setPitch(pitch)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error applying TTS rate/pitch", e)
-        }
-    }
-
-    private fun cleanupTextToSpeech() {
-        try {
-            textToSpeech?.stop()
-            textToSpeech?.shutdown()
-            textToSpeech = null
-            isTtsReady = false
-            Log.d(TAG, "TextToSpeech engine released and cleaned up.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error cleaning up TextToSpeech instance", e)
-        }
+        TTSManager.applySettings(this)
     }
 
     /**
@@ -972,23 +1082,7 @@ open class MyAccessibilityService : AccessibilityService() {
      * Default queue mode is TextToSpeech.QUEUE_ADD to allow sequential announcements without interrupting.
      */
     fun speak(text: String, queueMode: Int = TextToSpeech.QUEUE_ADD) {
-        if (!AppSettings.isVoiceAnnouncerEnabled(this)) {
-            return
-        }
-
-        if (!isTtsReady || textToSpeech == null) {
-            Log.w(TAG, "TextToSpeech engine is not ready, skipping speech: $text")
-            return
-        }
-
-        try {
-            applyTtsLanguage()
-            val utteranceId = "tts_ride_${System.currentTimeMillis()}"
-            textToSpeech?.speak(text, queueMode, null, utteranceId)
-            Log.d(TAG, "TTS announced [queue=$queueMode]: $text")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to speak TTS announcement", e)
-        }
+        TTSManager.speak(this, text, queueMode)
     }
 
     /**
@@ -996,119 +1090,37 @@ open class MyAccessibilityService : AccessibilityService() {
      * "Kiraya {fare} rupaye. Pickup {pickupDistance} kilometer {pickupLocation}. Drop {dropDistance} kilometer {dropLocation}."
      */
     fun formatCleanVoiceAnnouncement(target: TargetRideOffer): String {
-        val fareStr = if (target.fare % 1.0 == 0.0) target.fare.toInt().toString() else String.format(Locale.US, "%.1f", target.fare)
-        val pickupDistStr = if (target.pickupDistance % 1.0 == 0.0) target.pickupDistance.toInt().toString() else String.format(Locale.US, "%.1f", target.pickupDistance)
-        val dropDistStr = if (target.dropDistance % 1.0 == 0.0) target.dropDistance.toInt().toString() else String.format(Locale.US, "%.1f", target.dropDistance)
-
-        val pickupLoc = target.pickupLocation.trim()
-        val dropLoc = target.dropLocation.trim()
-
-        val sb = StringBuilder()
-        sb.append("Kiraya $fareStr rupaye.")
-
-        if (pickupLoc.isNotEmpty()) {
-            sb.append(" Pickup $pickupDistStr kilometer $pickupLoc.")
-        } else {
-            sb.append(" Pickup $pickupDistStr kilometer.")
-        }
-
-        if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) {
-            sb.append(" Drop $dropDistStr kilometer $dropLoc.")
-        } else if (target.dropDistance > 0.0) {
-            sb.append(" Drop $dropDistStr kilometer.")
-        } else if (dropLoc.isNotEmpty()) {
-            sb.append(" Drop $dropLoc.")
-        }
-
-        return sb.toString().trim()
+        return TTSManager.formatCleanVoiceAnnouncement(target)
     }
 
     /**
      * Announces a newly detected ride offer with fare and distance details in natural spoken Hindi/Hinglish.
-     * Uses QUEUE_ADD to sequence announcements without cutting off previous speech.
+     * Enforces strict 10-second deduplication cooldown per unique offer key to prevent 4x repeat speech.
+     *
+     * @return true if spoken; false if suppressed by deduplication cooldown.
      */
-    fun announceNewRide(offer: ParsedRideOffer, queueMode: Int = TextToSpeech.QUEUE_ADD) {
-        if (!AppSettings.isVoiceAnnouncerEnabled(this)) return
-
-        val target = offer.targetOffer ?: TextAnalysisEngine.parseTargetOffer(offer.rawText)
-        val message = if (target != null && target.fare > 0.0) {
-            formatCleanVoiceAnnouncement(target)
-        } else {
-            val fare = offer.totalFare?.let { if (it % 1.0 == 0.0) it.toInt().toString() else String.format(Locale.US, "%.1f", it) } ?: "0"
-            val dist = (offer.pickupDistanceKm ?: offer.dropDistanceKm)?.let { if (it % 1.0 == 0.0) it.toInt().toString() else String.format(Locale.US, "%.1f", it) } ?: "0"
-            "Kiraya $fare rupaye. Pickup $dist kilometer."
-        }
-
-        speak(message, queueMode)
+    fun announceNewRide(offer: ParsedRideOffer, queueMode: Int = TextToSpeech.QUEUE_ADD): Boolean {
+        return TTSManager.announceNewRide(this, offer, queueMode)
     }
 
     /**
      * Announces an order acceptance confirmation.
      */
     fun announceRideAccepted(fare: Double?, distance: Double?) {
-        if (!AppSettings.isVoiceAnnouncerEnabled(this)) return
-
-        val lang = AppSettings.getVoiceLanguage(this)
-        val fareInt = fare?.toInt()
-
-        val message = if (lang.equals("hi", ignoreCase = true)) {
-            if (fareInt != null) {
-                "राइड स्वीकार कर लिया गया! किराया $fareInt रुपये।"
-            } else {
-                "राइड स्वीकार कर लिया गया!"
-            }
-        } else {
-            if (fareInt != null) {
-                "Ride accepted! Fare is $fareInt rupees."
-            } else {
-                "Ride accepted!"
-            }
-        }
-
-        speak(message, TextToSpeech.QUEUE_ADD)
+        TTSManager.announceRideAccepted(this, fare, distance)
     }
 
     /**
      * Announces when an offer does not meet captain criteria.
      */
     fun announceRideSkipped(reason: String, queueMode: Int = TextToSpeech.QUEUE_ADD) {
-        if (!AppSettings.isVoiceAnnouncerEnabled(this)) return
-
-        val lang = AppSettings.getVoiceLanguage(this)
-        val isHindi = lang.equals("hi", ignoreCase = true)
-
-        val message = when {
-            reason.contains("< Min Limit", ignoreCase = true) || reason.contains("below minimum", ignoreCase = true) -> {
-                if (isHindi) "राइड छोड़ दिया गया: किराया न्यूनतम से कम है।"
-                else "Ride skipped: fare is below minimum."
-            }
-            reason.contains("> Max Limit", ignoreCase = true) || reason.contains("exceeds maximum", ignoreCase = true) -> {
-                if (isHindi) "राइड छोड़ दिया गया: किराया अधिकतम सीमा से अधिक है।"
-                else "Ride skipped: fare exceeds maximum limit."
-            }
-            reason.contains("Pickup distance", ignoreCase = true) || reason.contains("exceeds set maximum limit", ignoreCase = true) -> {
-                if (isHindi) "राइड छोड़ दिया गया: पिकअप दूरी सीमा से अधिक है।"
-                else "Ride skipped: pickup distance exceeds maximum limit threshold."
-            }
-            else -> {
-                if (isHindi) "राइड छोड़ दिया गया।"
-                else "Ride skipped."
-            }
-        }
-
-        speak(message, queueMode)
+        TTSManager.announceRideSkipped(this, reason, queueMode)
     }
 
     /**
      * Public helper to test the voice announcer from UI.
      */
     fun testAnnouncement(customMessage: String? = null) {
-        val lang = AppSettings.getVoiceLanguage(this)
-        val message = customMessage ?: if (lang.equals("hi", ignoreCase = true)) {
-            "आवाज़ उद्घोषक चालू है! किराया 120 रुपये, दूरी 3 किलोमीटर।"
-        } else {
-            "Voice announcer is active! Fare is 120 rupees, distance 3 kilometers."
-        }
-        speak(message, TextToSpeech.QUEUE_FLUSH)
+        TTSManager.testAnnouncement(this, customMessage)
     }
 }

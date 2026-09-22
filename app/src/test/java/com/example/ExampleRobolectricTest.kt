@@ -321,6 +321,56 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun `test TTSManager debounce and duplicate cooldown mechanism`() {
+        val key = "fare_110_dist_2.3"
+        // First announcement allowed
+        assertTrue(TTSManager.shouldAnnounceOffer(key))
+
+        // Immediate subsequent announcements for the exact same offer are strictly suppressed (cooldown active)
+        assertFalse(TTSManager.shouldAnnounceOffer(key))
+        assertFalse(TTSManager.shouldAnnounceOffer(key))
+
+        // Different offer is permitted
+        val differentKey = "fare_180_dist_1.2"
+        assertTrue(TTSManager.shouldAnnounceOffer(differentKey))
+
+        // Verify cooldown state
+        assertTrue(TTSManager.isOfferInCooldown(key))
+        assertTrue(TTSManager.isOfferInCooldown(differentKey))
+        assertFalse(TTSManager.isOfferInCooldown("fare_999_dist_9.9"))
+    }
+
+    @Test
+    fun `test reject action detection in accessibility service`() {
+        val service = MyAccessibilityService()
+
+        assertTrue(service.isRejectAction("Reject"))
+        assertTrue(service.isRejectAction("Decline"))
+        assertTrue(service.isRejectAction("Skip"))
+        assertTrue(service.isRejectAction("Cancel"))
+        assertTrue(service.isRejectAction("Pass"))
+        assertTrue(service.isRejectAction("Reject Order"))
+        assertTrue(service.isRejectAction("Decline Ride"))
+        assertTrue(service.isRejectAction("अस्वीकार"))
+
+        assertFalse(service.isRejectAction("Accept"))
+        assertFalse(service.isRejectAction("Weekly Earnings"))
+        assertFalse(service.isRejectAction(""))
+    }
+
+    @Test
+    fun `test explicit ride request container id detection`() {
+        assertTrue(TextAnalysisEngine.isExplicitRideRequest("com.rapido.rider:id/order_card"))
+        assertTrue(TextAnalysisEngine.isExplicitRideRequest("com.rapido.rider:id/ride_request_dialog"))
+        assertTrue(TextAnalysisEngine.isExplicitRideRequest("bottom_sheet_order_layout"))
+        assertTrue(TextAnalysisEngine.isExplicitRideRequest("incoming_order_notification"))
+
+        assertFalse(TextAnalysisEngine.isExplicitRideRequest("home_dashboard_earnings"))
+        assertFalse(TextAnalysisEngine.isExplicitRideRequest("bubble_floating_view"))
+        assertFalse(TextAnalysisEngine.isExplicitRideRequest(null))
+    }
+
+    @Test
     fun `test GitHubUpdateManager version parsing and comparison`() {
         // Tag with build number pattern e.g. debug-apk-build-7-1
         assertTrue(GitHubUpdateManager.isVersionNewer("debug-apk-build-7-1", "1.0", 1))

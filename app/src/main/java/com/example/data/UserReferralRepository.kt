@@ -8,7 +8,6 @@ import android.util.Log
 import com.example.HardwareIdManager
 import com.google.android.gms.tasks.Task
 import com.google.firebase.FirebaseApp
-import com.google.firebase.FirebaseOptions
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -101,28 +100,10 @@ object UserReferralRepository {
     private fun getFirestore(context: Context): FirebaseFirestore? {
         return try {
             if (FirebaseApp.getApps(context).isEmpty()) {
-                val app = try {
-                    FirebaseApp.initializeApp(context.applicationContext)
-                } catch (_: Exception) {
-                    null
-                }
-
-                if (app == null && FirebaseApp.getApps(context).isEmpty()) {
-                    val options = FirebaseOptions.Builder()
-                        .setApplicationId("1:14592259076:android:9d13a5884a47fa5f337151")
-                        .setProjectId("order-master-1561f")
-                        .setApiKey("AIzaSyDSp3HYnbnuqs-4_cyOq3_u9nbjG04gxzY")
-                        .setStorageBucket("order-master-1561f.firebasestorage.app")
-                        .build()
-                    FirebaseApp.initializeApp(context.applicationContext, options)
-                    Log.i(TAG, "Firebase initialized with project order-master-1561f.")
-                } else {
-                    Log.i(TAG, "Firebase initialized from google-services.json.")
-                }
-                isFirebaseInitialized = true
-            } else {
-                isFirebaseInitialized = true
+                FirebaseApp.initializeApp(context.applicationContext)
+                Log.i(TAG, "Firebase initialized.")
             }
+            isFirebaseInitialized = true
             val firestore = FirebaseFirestore.getInstance()
             try {
                 val settings = FirebaseFirestoreSettings.Builder()

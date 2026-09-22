@@ -37,7 +37,6 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Paid
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stars
@@ -215,11 +214,6 @@ fun ReferAndEarnScreen(
             // 5. How it Works (3-Step Guide)
             item {
                 HowItWorksCard()
-            }
-
-            // 6. Anti-Fraud Security Guarantee Notice
-            item {
-                AntiFraudSecurityCard(hardwareId = profileState.hardwareId)
             }
 
             item {
@@ -1094,66 +1088,6 @@ private fun HowItWorksStep(
                 ),
                 lineHeight = 16.sp
             )
-        }
-    }
-}
-
-/**
- * 6. Anti-Fraud Security Guarantee Card
- */
-@Composable
-private fun AntiFraudSecurityCard(
-    hardwareId: String,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .testTag("anti_fraud_security_card"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Security,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Hardware Anti-Fraud Protection",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                )
-                Text(
-                    text = "Profiles are cryptographically anchored to your physical device DRM enclave ($hardwareId). Factory resets or app re-installs cannot duplicate referral points.",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    ),
-                    lineHeight = 15.sp
-                )
-            }
         }
     }
 }

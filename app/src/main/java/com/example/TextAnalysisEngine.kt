@@ -270,16 +270,43 @@ object TextAnalysisEngine {
         val allTexts = extractTextNodesFromSubtree(root, startTime, timeoutMs)
         val hasAccept = acceptNodes.isNotEmpty() || hasAcceptAction(allTexts.joinToString(" "))
         val primaryAccept = acceptNodes.firstOrNull()
+        val cardId = root.viewIdResourceName ?: "card_${bounds.left}_${bounds.top}"
+
+        // STRICT: Only treat as an order card if an accept button is present or it is an explicit ride request popup.
+        // Floating widget bubbles, driver earnings histories, or background views without an Accept button are ignored.
+        if (!hasAccept && !isExplicitRideRequest(cardId)) {
+            return emptyList()
+        }
 
         return listOf(
             RawOrderCard(
-                id = root.viewIdResourceName ?: "card_${bounds.left}_${bounds.top}",
+                id = cardId,
                 nodeTexts = allTexts,
                 bounds = bounds,
                 hasAcceptButton = hasAccept,
                 acceptNode = primaryAccept
             )
         )
+    }
+
+    /**
+     * Checks if a view ID or resource name denotes an explicit incoming ride request popup/card.
+     */
+    fun isExplicitRideRequest(identifier: String?): Boolean {
+        if (identifier.isNullOrBlank()) return false
+        val lower = identifier.lowercase(Locale.ROOT)
+        return lower.contains("ride_request") ||
+                lower.contains("order_request") ||
+                lower.contains("order_popup") ||
+                lower.contains("order_card") ||
+                lower.contains("incoming_order") ||
+                lower.contains("bottom_sheet_order") ||
+                lower.contains("order_dialog") ||
+                lower.contains("ride_dialog") ||
+                lower.contains("new_order") ||
+                lower.contains("rapido_order") ||
+                lower.contains("order_details") ||
+                lower.contains("request_card")
     }
 
     /**
@@ -457,6 +484,10 @@ object TextAnalysisEngine {
         val (totalFare, breakdown) = extractCurrencies(fullText)
         val (pickupDist, dropDist) = extractRideDistances(fullText)
         val hasAccept = card.hasAcceptButton || hasAcceptAction(fullText)
+        if (!hasAccept && !isExplicitRideRequest(card.id)) {
+            Log.d(TAG, "parseOrderCard: Rejected card without Accept action or ride request container: $fullText")
+            return null
+        }
 
         val targetPickup = targetOffer?.pickupDistance?.takeIf { it > 0.0 }
         val targetDrop = targetOffer?.dropDistance?.takeIf { it > 0.0 }
