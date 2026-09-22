@@ -86,6 +86,16 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
+        <!-- Draggable Floating Overlay Window Service -->
+        <service
+            android:name=".FloatingOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse|dataSync">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Overlay control button for driver ride automation" />
+        </service>
+
         <!-- Secure FileProvider for installing downloaded APK updates -->
         <provider
             android:name="androidx.core.content.FileProvider"

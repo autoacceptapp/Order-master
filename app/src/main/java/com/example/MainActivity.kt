@@ -171,9 +171,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Automatically refreshes the accessibility service status when the user
-        // navigates back to the app from the system Accessibility Settings screen.
+        // Automatically refreshes the accessibility service status and syncs overlay
         refreshServiceStatus()
+        AppSettings.syncOverlayService(this)
     }
 
     override fun onNewIntent(intent: Intent) {

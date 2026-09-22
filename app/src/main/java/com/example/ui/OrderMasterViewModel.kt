@@ -161,6 +161,18 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
         AppSettings.setVoiceAnnouncerEnabled(app, enabled)
     }
 
+    // --- Floating Overlay Controls ---
+    fun toggleFloatingOverlay(enabled: Boolean) {
+        val app = getApplication<Application>()
+        AppSettings.setFloatingOverlayEnabled(app, enabled)
+    }
+
+    // --- Auto Click Controls (Full Automation vs Voice-Only) ---
+    fun toggleAutoClick(enabled: Boolean) {
+        val app = getApplication<Application>()
+        AppSettings.setAutoClickEnabled(app, enabled)
+    }
+
     fun setVoiceLanguage(lang: String) {
         val app = getApplication<Application>()
         AppSettings.setVoiceLanguage(app, lang)
@@ -263,6 +275,11 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
 
         // Persist to Room Database
         AppSettings.recordEvaluation(app, evaluation)
+
+        // Update session last accepted fare for floating overlay badge
+        if (evaluation.isAccepted) {
+            AppSettings.updateLastAcceptedFare(app, fare)
+        }
 
         // Optional speech announcement
         if (state.isVoiceAnnouncerEnabled) {

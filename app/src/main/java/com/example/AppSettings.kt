@@ -47,7 +47,10 @@ data class SettingsState(
     val isVoiceAnnouncerEnabled: Boolean = true,
     val voiceLanguage: String = "en",
     val speechRate: Float = 1.0f,
-    val speechPitch: Float = 1.0f
+    val speechPitch: Float = 1.0f,
+    val isFloatingOverlayEnabled: Boolean = false,
+    val isAutoClickEnabled: Boolean = true,
+    val lastAcceptedFare: Double? = null
 ) {
     val autoAcceptEnabled: Boolean get() = isAutoAcceptEnabled
     val minPrice: Float get() = minFare
@@ -74,6 +77,8 @@ object AppSettings {
     const val KEY_VOICE_LANGUAGE = "key_voice_language"
     const val KEY_SPEECH_RATE = "key_speech_rate"
     const val KEY_SPEECH_PITCH = "key_speech_pitch"
+    const val KEY_FLOATING_OVERLAY_ENABLED = "key_floating_overlay_enabled"
+    const val KEY_AUTO_CLICK_ENABLED = "key_auto_click_enabled"
 
     // Backward-compatibility keys
     const val KEY_SERVICE_ENABLED = "key_service_enabled"
@@ -102,6 +107,8 @@ object AppSettings {
     const val DEFAULT_VOICE_LANGUAGE = "en"
     const val DEFAULT_SPEECH_RATE = 1.0f
     const val DEFAULT_SPEECH_PITCH = 1.0f
+    const val DEFAULT_FLOATING_OVERLAY_ENABLED = false
+    const val DEFAULT_AUTO_CLICK_ENABLED = true
 
     // In-memory properties for legacy access
     var minCurrencyThreshold: Double = 60.0
@@ -125,10 +132,16 @@ object AppSettings {
             maxPickupDistance = DEFAULT_MAX_PICKUP_DISTANCE,
             clickDelayMs = DEFAULT_CLICK_DELAY_MS,
             isVoiceAnnouncerEnabled = DEFAULT_VOICE_ANNOUNCER_ENABLED,
-            voiceLanguage = DEFAULT_VOICE_LANGUAGE
+            voiceLanguage = DEFAULT_VOICE_LANGUAGE,
+            isFloatingOverlayEnabled = DEFAULT_FLOATING_OVERLAY_ENABLED,
+            isAutoClickEnabled = DEFAULT_AUTO_CLICK_ENABLED,
+            lastAcceptedFare = null
         )
     )
     val settingsState: StateFlow<SettingsState> = _settingsState.asStateFlow()
+
+    private val _lastAcceptedFareFlow = MutableStateFlow<Double?>(null)
+    val lastAcceptedFareFlow: StateFlow<Double?> = _lastAcceptedFareFlow.asStateFlow()
 
     private val _logsFlow = MutableStateFlow<List<ActivityLogEntry>>(
         listOf(
@@ -166,6 +179,8 @@ object AppSettings {
         val voiceLang = prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE) ?: DEFAULT_VOICE_LANGUAGE
         val speechRate = prefs.getFloat(KEY_SPEECH_RATE, DEFAULT_SPEECH_RATE)
         val speechPitch = prefs.getFloat(KEY_SPEECH_PITCH, DEFAULT_SPEECH_PITCH)
+        val overlayEnabled = prefs.getBoolean(KEY_FLOATING_OVERLAY_ENABLED, DEFAULT_FLOATING_OVERLAY_ENABLED)
+        val autoClickEnabled = prefs.getBoolean(KEY_AUTO_CLICK_ENABLED, DEFAULT_AUTO_CLICK_ENABLED)
 
         minCurrencyThreshold = minFare.toDouble()
         maxCurrencyThreshold = maxFare.toDouble()
@@ -185,7 +200,10 @@ object AppSettings {
             isVoiceAnnouncerEnabled = voiceEnabled,
             voiceLanguage = voiceLang,
             speechRate = speechRate,
-            speechPitch = speechPitch
+            speechPitch = speechPitch,
+            isFloatingOverlayEnabled = overlayEnabled,
+            isAutoClickEnabled = autoClickEnabled,
+            lastAcceptedFare = _lastAcceptedFareFlow.value
         )
     }
 
@@ -201,6 +219,7 @@ object AppSettings {
             .apply()
         autoAcceptEnabled = enabled
         _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = enabled)
+        syncOverlayService(context)
     }
 
     fun isVoiceAnnouncerEnabled(context: Context): Boolean {
@@ -272,6 +291,69 @@ object AppSettings {
         val clamped = value.coerceIn(1.0f, 50.0f)
         getPrefs(context).edit().putFloat(KEY_MAX_DROP_DISTANCE, clamped).apply()
         _settingsState.value = _settingsState.value.copy(maxDropDistance = clamped)
+    }
+
+    // --- Floating Overlay Button Controls ---
+    fun isFloatingOverlayEnabled(context: Context): Boolean {
+        val prefs = getPrefs(context)
+        return prefs.getBoolean(KEY_FLOATING_OVERLAY_ENABLED, DEFAULT_FLOATING_OVERLAY_ENABLED)
+    }
+
+    fun setFloatingOverlayEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_FLOATING_OVERLAY_ENABLED, enabled).apply()
+        _settingsState.value = _settingsState.value.copy(isFloatingOverlayEnabled = enabled)
+        syncOverlayService(context)
+    }
+
+    // --- Auto Click Controls (Full Automation vs Voice-Only) ---
+    fun isAutoClickEnabled(context: Context): Boolean {
+        val prefs = getPrefs(context)
+        return prefs.getBoolean(KEY_AUTO_CLICK_ENABLED, DEFAULT_AUTO_CLICK_ENABLED)
+    }
+
+    fun setAutoClickEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_AUTO_CLICK_ENABLED, enabled).apply()
+        _settingsState.value = _settingsState.value.copy(isAutoClickEnabled = enabled)
+    }
+
+    fun toggleAutoClick(context: Context): Boolean {
+        val current = isAutoClickEnabled(context)
+        val next = !current
+        setAutoClickEnabled(context, next)
+        return next
+    }
+
+    // --- Last Accepted Fare Communication ---
+    fun getLastAcceptedFare(): Double? = _lastAcceptedFareFlow.value
+
+    fun updateLastAcceptedFare(context: Context, fare: Double) {
+        _lastAcceptedFareFlow.value = fare
+        _settingsState.value = _settingsState.value.copy(lastAcceptedFare = fare)
+        FloatingOverlayService.updateFare(context, fare)
+    }
+
+    fun clearSessionFare() {
+        _lastAcceptedFareFlow.value = null
+        _settingsState.value = _settingsState.value.copy(lastAcceptedFare = null)
+    }
+
+    /**
+     * Synchronizes FloatingOverlayService lifecycle with user settings & overlay permission.
+     * Starts the overlay if and only if:
+     * 1. Master Automation Toggle is ON
+     * 2. Floating Toggle is enabled
+     * 3. System Overlay Permission is granted
+     */
+    fun syncOverlayService(context: Context) {
+        val masterOn = isAutoAcceptEnabled(context)
+        val overlayOn = isFloatingOverlayEnabled(context)
+        val canDraw = PermissionUtils.canDrawOverlays(context)
+
+        if (masterOn && overlayOn && canDraw) {
+            FloatingOverlayService.start(context)
+        } else {
+            FloatingOverlayService.stop(context)
+        }
     }
 
     fun applyPreset(context: Context, presetName: String) {

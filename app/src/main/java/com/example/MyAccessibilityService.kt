@@ -295,6 +295,19 @@ open class MyAccessibilityService : AccessibilityService() {
         // Find best matching valid offer for auto-accept
         val matchingOffers = evaluatedOffers.filter { it.second.isAccepted }
         if (matchingOffers.isNotEmpty() && isAutoAccept) {
+            val isAutoClick = AppSettings.isAutoClickEnabled(this)
+            if (!isAutoClick) {
+                // Voice-Only Mode (Auto Click Disabled / TTS Voice Announcement Only)
+                val topOffer = matchingOffers.first().first
+                AppSettings.addLog(
+                    title = "Voice-Only Mode Active",
+                    message = "Matching ride detected (₹${topOffer.totalFare?.toInt()}). Auto-click disabled; please tap Accept manually.",
+                    severity = LogSeverity.INFO
+                )
+                broadcastLog("Voice-only mode: ride matches filters, auto-click skipped.")
+                return
+            }
+
             // Select the highest fare offer among matching valid offers
             val bestCandidate = matchingOffers.maxByOrNull { it.first.totalFare ?: 0.0 } ?: matchingOffers.first()
             val bestOffer = bestCandidate.first
@@ -391,6 +404,10 @@ open class MyAccessibilityService : AccessibilityService() {
             broadcastLog("Order Accepted! Click executed: $clicked")
 
             if (clicked) {
+                val fare = offer.totalFare ?: evaluation.totalCurrency ?: 0.0
+                if (fare > 0) {
+                    AppSettings.updateLastAcceptedFare(this, fare)
+                }
                 announceRideAccepted(evaluation.totalCurrency, evaluation.distanceKm)
             }
         } catch (e: Exception) {
