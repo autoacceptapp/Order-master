@@ -302,6 +302,23 @@ fun AppSettingsScreen(
             item {
                 InAppUpdaterSettingsCard()
             }
+
+            // 5. Section Header: Permanent Device Hardware ID
+            item {
+                Text(
+                    text = "PERMANENT DEVICE HARDWARE ID",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp, top = 8.dp)
+                )
+            }
+
+            item {
+                HardwareIdCard()
+            }
         }
     }
 

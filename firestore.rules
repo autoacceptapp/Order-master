@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isValidInitialPoints(data) {
+      return data.points == 50;
+    }
+
+    function isAntiFraudHardwareIdValid(docId, data) {
+      return data.hardware_id == docId;
+    }
+
+    // Users Collection (Document ID = DRM Hardware ID)
+    match /users/{hardwareId} {
+      
+      // Allow reading user profiles (needed for verifying referral codes)
+      allow read: if true;
+
+      // Allow creating a new profile only if:
+      // 1. Initial points are exactly 50 (Welcome Bonus)
+      // 2. has_used_referral starts at false
+      // 3. referral_count starts at 0
+      // 4. hardware_id matches the document path
+      allow create: if isAntiFraudHardwareIdValid(hardwareId, request.resource.data)
+                    && isValidInitialPoints(request.resource.data)
+                    && request.resource.data.has_used_referral == false
+                    && request.resource.data.referral_count == 0;
+
+      // Allow updating under strict anti-fraud rules:
+      allow update: if 
+        // Case 1: Referee claiming a referral code
+        (
+          // Cannot re-claim if already used
+          resource.data.has_used_referral == false &&
+          request.resource.data.has_used_referral == true &&
+          // Cannot modify own points in this operation
+          request.resource.data.points == resource.data.points &&
+          // Referral code & hardware ID cannot be modified
+          request.resource.data.hardware_id == resource.data.hardware_id &&
+          request.resource.data.referral_code == resource.data.referral_code
+        )
+        ||
+        // Case 2: Referrer receiving points reward from an atomic transaction
+        (
+          // Points must strictly increment by 20
+          request.resource.data.points == resource.data.points + 20 &&
+          // Referral count must strictly increment by 1
+          request.resource.data.referral_count == resource.data.referral_count + 1 &&
+          // Protected fields remain untouched
+          request.resource.data.hardware_id == resource.data.hardware_id &&
+          request.resource.data.referral_code == resource.data.referral_code &&
+          request.resource.data.has_used_referral == resource.data.has_used_referral
+        );
+
+      // Deletion is prohibited to preserve hardware identity across app uninstalls & factory resets
+      allow delete: if false;
+
+      // Audit Subcollection for Fraud Prevention
+      match /referrals/{refereeHardwareId} {
+        allow read: if true;
+        
+        // Prevent duplicate referral events from the same physical device
+        allow create: if !exists(/databases/$(database)/documents/users/$(hardwareId)/referrals/$(refereeHardwareId))
+                      && request.resource.data.reward_points == 20
+                      && request.resource.data.referee_hardware_id == refereeHardwareId;
+                      
+        allow update, delete: if false;
+      }
+    }
+  }
+}

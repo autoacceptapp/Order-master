@@ -29,7 +29,12 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Verified
-import androidx.compose.material.icons.filled.WorkspacePremium
+import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Stars
+import androidx.compose.ui.platform.LocalContext
+import com.example.data.UserReferralRepository
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
@@ -42,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -62,6 +68,7 @@ import com.example.ui.theme.PrimaryEmerald
 @Composable
 fun ProfileScreen(
     viewModel: OrderMasterViewModel,
+    onNavigateToReferAndEarn: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val totalOrders by viewModel.totalOrdersCount.collectAsState()
@@ -226,121 +233,109 @@ fun ProfileScreen(
             }
         }
 
-        // 2. Subscription / License Status Card
+        // 2. Permanent Device Hardware ID Card
         item {
+            com.example.HardwareIdCard(
+                modifier = Modifier.testTag("profile_hardware_id_card")
+            )
+        }
+
+        // 3. Refer & Earn Card
+        item {
+            val context = LocalContext.current
+            val profileState by UserReferralRepository.observeUserProfile(context).collectAsState(
+                initial = remember {
+                    UserReferralRepository.readLocalProfile(
+                        context,
+                        com.example.HardwareIdManager.getPermanentHardwareId(context)
+                    )
+                }
+            )
+
             Card(
+                onClick = onNavigateToReferAndEarn,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .testTag("license_status_card"),
+                    .testTag("profile_refer_and_earn_card"),
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = Color(0xFF0F172A) // Sleek Dark Slate
+                    containerColor = MaterialTheme.colorScheme.surface
                 ),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                border = CardDefaults.outlinedCardBorder()
             ) {
-                Column(
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                        .padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFF59E0B).copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(AmberAccent.copy(alpha = 0.2f)),
-                                contentAlignment = Alignment.Center
+                            Icon(
+                                imageVector = Icons.Default.Stars,
+                                contentDescription = null,
+                                tint = Color(0xFFF59E0B),
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.WorkspacePremium,
-                                    contentDescription = null,
-                                    tint = AmberAccent,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                            Column {
                                 Text(
-                                    text = "Order Master Pro License",
+                                    text = "Refer & Earn",
                                     style = MaterialTheme.typography.titleMedium.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White
-                                    )
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
-                                Text(
-                                    text = "Enterprise Captain Edition",
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = Color.White.copy(alpha = 0.7f)
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer
+                                ) {
+                                    Text(
+                                        text = "${profileState.points} PTS",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.primary
+                                        ),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
-                                )
+                                }
                             }
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = PrimaryEmerald
-                        ) {
                             Text(
-                                text = "ACTIVE",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = Color.White
-                                ),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-
-                    HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text(
-                                text = "License Validity",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = Color.White.copy(alpha = 0.6f)
-                                )
-                            )
-                            Text(
-                                text = "Lifetime Validated",
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color.White
-                                )
-                            )
-                        }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(
-                                text = "Auto-Tap Engine",
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    color = Color.White.copy(alpha = 0.6f)
-                                )
-                            )
-                            Text(
-                                text = "Unlimited Matches",
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = PrimaryEmerald
+                                text = "Code: ${profileState.referralCode} • Earn 20 pts per invite",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             )
                         }
                     }
+
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = "Open Refer & Earn",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
 
-        // 3. Shift & Automation Performance Summary
+        // 4. Shift & Automation Performance Summary
         item {
             Card(
                 modifier = Modifier

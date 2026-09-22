@@ -51,10 +51,15 @@ jobs:
           cache-read-only: false
 
       # Step 4: Ensure Keystore Exists for APK Signing
-      - name: Generate Debug Keystore if missing
+      - name: Ensure Permanent Keystore Exists for APK Signing
         run: |
-          echo "=== Verifying Debug Keystore ==="
-          if [ ! -f "./debug.keystore" ]; then
+          echo "=== Verifying Permanent Debug Keystore ==="
+          if [ -f "./debug.keystore.base64" ]; then
+            echo "Restoring permanent debug.keystore from debug.keystore.base64..."
+            base64 -d ./debug.keystore.base64 > ./debug.keystore
+          elif [ -f "./debug.keystore" ]; then
+            echo "Found existing debug.keystore."
+          else
             echo "Generating temporary debug keystore..."
             keytool -genkeypair \
               -v \
@@ -66,9 +71,8 @@ jobs:
               -storepass android \
               -keypass android \
               -dname "CN=Android Debug,O=OrderMaster,C=US"
-          else
-            echo "Found existing debug.keystore."
           fi
+          echo "Debug keystore ready."
 
       # Step 5: Calculate Version Info
       - name: Prepare Dynamic Version Metadata

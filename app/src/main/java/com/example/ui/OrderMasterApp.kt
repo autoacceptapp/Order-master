@@ -63,6 +63,7 @@ import com.example.ui.screens.FilterSettingsScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.OrderHistoryScreen
 import com.example.ui.screens.ProfileScreen
+import com.example.ui.screens.ReferAndEarnScreen
 
 sealed class Screen(val route: String, val title: String) {
     data object Home : Screen("home", "Order Master")
@@ -70,6 +71,7 @@ sealed class Screen(val route: String, val title: String) {
     data object History : Screen("history", "Order History")
     data object Profile : Screen("profile", "Captain Profile")
     data object Settings : Screen("settings", "Settings & Permissions")
+    data object ReferAndEarn : Screen("refer_and_earn", "Refer & Earn")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -140,6 +142,7 @@ fun OrderMasterApp(
                                 Screen.History.route -> "Order History"
                                 Screen.Profile.route -> "Captain Profile"
                                 Screen.Settings.route -> "Settings & Permissions"
+                                Screen.ReferAndEarn.route -> "Refer & Earn"
                                 else -> "Order Master"
                             },
                             style = MaterialTheme.typography.titleLarge.copy(
@@ -304,7 +307,19 @@ fun OrderMasterApp(
             }
 
             composable(Screen.Profile.route) {
-                ProfileScreen(viewModel = viewModel)
+                ProfileScreen(
+                    viewModel = viewModel,
+                    onNavigateToReferAndEarn = {
+                        navController.navigate(Screen.ReferAndEarn.route)
+                    }
+                )
+            }
+
+            composable(Screen.ReferAndEarn.route) {
+                ReferAndEarnScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    showTopBar = false
+                )
             }
 
             composable(Screen.Settings.route) {

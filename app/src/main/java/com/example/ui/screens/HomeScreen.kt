@@ -54,6 +54,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -72,6 +73,10 @@ import com.example.PermissionUtils
 import com.example.ui.OrderMasterViewModel
 import java.util.Locale
 
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.ui.text.font.FontFamily
+import com.example.HardwareIdManager
+
 @Composable
 fun HomeScreen(
     viewModel: OrderMasterViewModel,
@@ -86,6 +91,8 @@ fun HomeScreen(
 
     val isServiceRunningInSystem = AppSettings.isAccessibilityServiceEnabled(context)
     val isAutomationActive = settingsState.isAutoAcceptEnabled && isServiceRunningInSystem
+
+    val hardwareId = remember { com.example.HardwareIdManager.getPermanentHardwareId(context) }
 
     // Pulse animation for active radar scanning
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -105,6 +112,57 @@ fun HomeScreen(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Permanent Hardware ID Header Strip
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Security,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "DEVICE ID: $hardwareId",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+                }
+
+                FilledTonalButton(
+                    onClick = {
+                        com.example.HardwareIdManager.copyToClipboard(context, hardwareId, "Device Hardware ID")
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier.height(26.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = "Copy",
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Copy", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
         // =========================================================================================
         // COMPONENT 1: MASTER TOGGLE SWITCH
         // =========================================================================================

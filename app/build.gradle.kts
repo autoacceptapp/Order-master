@@ -120,6 +120,10 @@ dependencies {
   implementation(libs.androidx.room.runtime)
   ksp(libs.androidx.room.compiler)
 
+  // Firebase Firestore & BoM
+  implementation(platform(libs.firebase.bom))
+  implementation(libs.firebase.firestore)
+
   // Coroutines
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
