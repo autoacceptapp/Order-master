@@ -146,46 +146,32 @@ jobs:
 
       - name: Publish APK to GitHub Releases
         id: publish_release
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "=== Publishing APK to GitHub Releases ==="
-          gh --version
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: "v1.0.${{ github.run_number }}"
+          name: "Order Master v1.0.${{ github.run_number }} (Build #${{ github.run_number }})"
+          target_commitish: ${{ github.sha }}
+          draft: false
+          prerelease: false
+          make_latest: "true"
+          generate_release_notes: false
+          body: |
+            ### 🚀 Order Master Update v1.0.${{ github.run_number }}
 
-          ASSET_PATH="${{ steps.prepare_asset.outputs.asset_path }}"
-          ASSET_NAME="${{ steps.prepare_asset.outputs.asset_name }}"
+            - **Version Name**: `1.0.${{ github.run_number }}`
+            - **Version Code**: `${{ github.run_number }}`
+            - **Build Run**: #${{ github.run_number }} (Attempt ${{ github.run_attempt }})
+            - **Commit SHA**: `${{ github.sha }}`
 
-          if [ -z "${ASSET_PATH}" ] || [ ! -f "${ASSET_PATH}" ] || [ ! -s "${ASSET_PATH}" ]; then
-            echo "ERROR: Release asset does not exist or is empty at '${ASSET_PATH}'." >&2
-            exit 1
-          fi
-
-          RELEASE_TAG="v1.0.${{ github.run_number }}"
-          RELEASE_TITLE="Order Master v1.0.${{ github.run_number }} (Build #${{ github.run_number }})"
-
-          echo "Release tag: ${RELEASE_TAG}"
-          echo "Release title: ${RELEASE_TITLE}"
-
-          RELEASE_NOTES=$(cat <<EOF
-          ### Order Master Update v1.0.${{ github.run_number }}
-
-          - **Version Name**: 1.0.${{ github.run_number }}
-          - **Version Code**: ${{ github.run_number }}
-          - **Build Run**: #${{ github.run_number }} (Attempt ${{ github.run_attempt }})
-          - **Commit SHA**: ${{ github.sha }}
-          - **Direct APK Asset**: \`${ASSET_NAME}\`
-          - **Direct Download URL**: https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${ASSET_NAME}
-          EOF
-          )
-
-          # Create or update GitHub Release with direct app-debug.apk asset
-          gh release create "${RELEASE_TAG}" "${ASSET_PATH}#${ASSET_NAME}" \
-            --title "${RELEASE_TITLE}" \
-            --notes "${RELEASE_NOTES}" \
-            --target "${{ github.sha }}" \
-            --latest \
-            --clobber
+            #### 📦 Direct Download
+            - [Download app-debug.apk](https://github.com/${{ github.repository }}/releases/download/v1.0.${{ github.run_number }}/app-debug.apk)
+          files: |
+            ${{ steps.prepare_asset.outputs.asset_path }}
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
+          fail_on_unmatched_files: false
 
       - name: Report APK download result
         if: always()

@@ -1,0 +1,189 @@
+name: Build & Publish APK
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# CRITICAL FIX 1: Explicit workflow-level permissions
+# GitHub Actions requires 'contents: write' to create releases, push git tags, and upload APK assets.
+permissions:
+  contents: write
+  actions: read
+  checks: read
+
+jobs:
+  build-and-release:
+    name: Build & Release APK
+    runs-on: ubuntu-latest
+
+    # Job-level permissions redundancy to ensure token has write access
+    permissions:
+      contents: write
+
+    steps:
+      # Step 1: Checkout repository
+      # Uses actions/checkout@v4 (latest, fully compatible with modern GitHub runners)
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Step 2: Set up Java 17 Development Kit
+      # Uses actions/setup-java@v4 with Temurin distribution for stable Android Gradle Plugin 8.x / 9.x builds
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      # Step 3: Setup Gradle
+      # Uses gradle/actions/setup-gradle@v4 (upgraded to eliminate deprecation warnings)
+      - name: Set up Gradle Build Tool
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+          cache-read-only: false
+
+      # Step 4: Ensure Keystore Exists for APK Signing
+      - name: Generate Debug Keystore if missing
+        run: |
+          echo "=== Verifying Debug Keystore ==="
+          if [ ! -f "./debug.keystore" ]; then
+            echo "Generating temporary debug keystore..."
+            keytool -genkeypair \
+              -v \
+              -keystore ./debug.keystore \
+              -alias androiddebugkey \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass android \
+              -keypass android \
+              -dname "CN=Android Debug,O=OrderMaster,C=US"
+          else
+            echo "Found existing debug.keystore."
+          fi
+
+      # Step 5: Calculate Version Info
+      - name: Prepare Dynamic Version Metadata
+        id: version_meta
+        run: |
+          # Compute SemVer and build numbers
+          BUILD_NUM="${{ github.run_number }}"
+          VERSION_NAME="1.0.${BUILD_NUM}"
+          VERSION_CODE="${BUILD_NUM}"
+          
+          # If triggered by a Git Tag (e.g., v1.1.0), extract version from tag
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            RELEASE_TAG="${GITHUB_REF#refs/tags/}"
+          else
+            RELEASE_TAG="v${VERSION_NAME}"
+          fi
+
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "Computed Tag: ${RELEASE_TAG} (Code: ${VERSION_CODE})"
+
+      # Step 6: Compile and Assemble APK
+      # Compiles debug APK (and release if configured). Dynamic properties are injected cleanly.
+      - name: Build APK with Gradle
+        env:
+          VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
+          VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
+        run: |
+          echo "=== Building APK with Gradle ==="
+          # Execute assembleDebug with dynamic version arguments
+          gradle :app:assembleDebug \
+            -PVERSION_CODE=${{ steps.version_meta.outputs.version_code }} \
+            -PVERSION_NAME=${{ steps.version_meta.outputs.version_name }} \
+            --stacktrace --no-daemon
+
+      # Step 7: Verify and Locate Generated APKs
+      - name: Verify Generated APK Outputs
+        id: verify_apk
+        run: |
+          echo "=== Locating Built APKs ==="
+          mkdir -p release_assets
+
+          # Check standard debug APK path
+          DEBUG_APK="app/build/outputs/apk/debug/app-debug.apk"
+          if [ -f "${DEBUG_APK}" ]; then
+            echo "Found debug APK: ${DEBUG_APK} ($(stat -c%s "${DEBUG_APK}") bytes)"
+            cp "${DEBUG_APK}" release_assets/OrderMaster-${{ steps.version_meta.outputs.release_tag }}-debug.apk
+            cp "${DEBUG_APK}" release_assets/app-debug.apk
+          fi
+
+          # Check standard release APK path if built
+          RELEASE_APK=$(find app/build/outputs/apk -type f -name "*release*.apk" | head -n 1)
+          if [ -n "${RELEASE_APK}" ] && [ -f "${RELEASE_APK}" ]; then
+            echo "Found release APK: ${RELEASE_APK} ($(stat -c%s "${RELEASE_APK}") bytes)"
+            cp "${RELEASE_APK}" release_assets/OrderMaster-${{ steps.version_meta.outputs.release_tag }}-release.apk
+          fi
+
+          # Ensure at least one valid APK exists before proceeding to release step
+          TOTAL_APKS=$(find release_assets/ -type f -name "*.apk" | wc -l)
+          if [ "${TOTAL_APKS}" -eq 0 ]; then
+            echo "ERROR: No APK files found in app/build/outputs/apk!" >&2
+            exit 1
+          fi
+
+          echo "Successfully verified ${TOTAL_APKS} APK file(s) ready for release."
+          ls -lh release_assets/
+
+      # Step 8: Upload Artifact to GitHub Actions Run
+      # Uses actions/upload-artifact@v4 (latest version, resolves Node.js deprecations)
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrderMaster-APKs-${{ steps.version_meta.outputs.release_tag }}
+          path: release_assets/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      # Step 9: Publish APK to GitHub Releases
+      # Uses softprops/action-gh-release@v2 (upgraded to v2; runs natively on Node.js 20+)
+      # Configured with explicit token and fail_on_unmatched_files: false to avoid exit code 1
+      - name: Publish APK to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.version_meta.outputs.release_tag }}
+          name: "Order Master ${{ steps.version_meta.outputs.release_tag }} (Build #${{ steps.version_meta.outputs.version_code }})"
+          target_commitish: ${{ github.sha }}
+          draft: false
+          prerelease: false
+          make_latest: "true"
+          generate_release_notes: false
+          body: |
+            ### 🚀 Order Master ${{ steps.version_meta.outputs.release_tag }}
+
+            - **Version Name**: `${{ steps.version_meta.outputs.version_name }}`
+            - **Version Code**: `${{ steps.version_meta.outputs.version_code }}`
+            - **Commit**: `${{ github.sha }}`
+            - **Build Run**: #${{ github.run_number }}
+
+            #### 📦 Download Assets
+            - Direct APK Download: [`app-debug.apk`](https://github.com/${{ github.repository }}/releases/download/${{ steps.version_meta.outputs.release_tag }}/app-debug.apk)
+          files: |
+            release_assets/*.apk
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
+          fail_on_unmatched_files: false
+
+      # Step 10: Summary Reporting
+      - name: Generate Workflow Step Summary
+        if: always()
+        run: |
+          echo "## 📱 Order Master Build & Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: \`${{ steps.version_meta.outputs.release_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version Code**: \`${{ steps.version_meta.outputs.version_code }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Direct Download**: [Download Latest APK](https://github.com/${{ github.repository }}/releases/latest/download/app-debug.apk)" >> $GITHUB_STEP_SUMMARY
