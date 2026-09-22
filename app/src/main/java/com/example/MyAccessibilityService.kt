@@ -1,6 +1,7 @@
 package com.example
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
 import android.graphics.Path
@@ -28,7 +29,8 @@ open class MyAccessibilityService : AccessibilityService() {
     companion object {
         const val TAG = "MyAccessibilityService"
         const val TARGET_PACKAGE = "com.rapido.rider"
-        const val COOLDOWN_MS = 2000L // 2 seconds delay between checks
+        const val DEBOUNCE_WINDOW_MS = 1000L // Minimum 1000ms delay between processing events
+        const val COOLDOWN_MS = 2000L // 2 seconds delay between order acceptance
 
         @Volatile
         var isServiceRunning: Boolean = false
@@ -65,14 +67,27 @@ open class MyAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         isServiceRunning = true
         instance = this
+
+        // CRITICAL: Explicitly set AccessibilityServiceInfo packageNames to target driver app only
+        val info = serviceInfo ?: AccessibilityServiceInfo()
+        info.packageNames = arrayOf(TARGET_PACKAGE)
+        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                AccessibilityEvent.TYPE_VIEW_CLICKED
+        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+        info.flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+        serviceInfo = info
+
         initTextToSpeech()
-        Log.d(TAG, "Accessibility Service connected and operational.")
+        Log.d(TAG, "Accessibility Service connected and operational for package: $TARGET_PACKAGE.")
         AppSettings.addLog(
             title = "Service Connected",
-            message = "Rapido Captain Auto-Accept Accessibility Service is active and monitoring.",
+            message = "Rapido Captain Auto-Accept Accessibility Service active for $TARGET_PACKAGE.",
             severity = LogSeverity.INFO
         )
-        broadcastLog("Accessibility Service started and monitoring events.")
+        broadcastLog("Accessibility Service started and monitoring $TARGET_PACKAGE.")
     }
 
     override fun onDestroy() {
@@ -100,7 +115,14 @@ open class MyAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        // 1. Monitor specified event types: TYPE_WINDOW_STATE_CHANGED, TYPE_WINDOW_CONTENT_CHANGED, TYPE_VIEW_CLICKED
+        // 1. Strict Target Package Filtering (Prevent Self-Scanning & Infinite Loops)
+        // If event.packageName is null, empty, equals this app's own packageName, or DOES NOT equal "com.rapido.rider", ignore it immediately.
+        val eventPkg = event.packageName?.toString() ?: ""
+        if (eventPkg.isEmpty() || eventPkg == packageName || eventPkg != TARGET_PACKAGE) {
+            return
+        }
+
+        // 2. Monitor specified event types: TYPE_WINDOW_STATE_CHANGED, TYPE_WINDOW_CONTENT_CHANGED, TYPE_VIEW_CLICKED
         val eventType = event.eventType
         if (eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
             eventType != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED &&
@@ -109,30 +131,32 @@ open class MyAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 2. Master switch check: skip if auto-accept is turned off
+        // 3. Master switch check: skip if auto-accept is turned off
         if (!AppSettings.isAutoAcceptEnabled(this)) {
             return
         }
 
-        // 3. Debounce check: skip event spams within cooldown window to protect UI thread
+        // 4. Event Debouncing & Throttle: minimum 1000ms delay between processing events to prevent millisecond spam
         val currentTime = System.currentTimeMillis()
-        if (isPendingExecution || (currentTime - lastProcessTime < COOLDOWN_MS)) {
+        if (isPendingExecution || (currentTime - lastProcessTime < DEBOUNCE_WINDOW_MS)) {
             return
         }
+        // Advance timestamp immediately so subsequent events within the debounce window are discarded
+        lastProcessTime = currentTime
 
-        // 4. Multi-Window & Overlay Support: Retrieve root nodes across active window and overlays
+        // 5. Multi-Window & Overlay Support: Retrieve root nodes strictly belonging to target driver app
         val rootWindows = getAllRootWindows()
         if (rootWindows.isEmpty()) return
 
         try {
-            // 5. Node Tree Grouping: Extract distinct order card containers across windows
+            // 6. Node Tree Grouping: Extract distinct order card containers across windows
             val allRawCards = mutableListOf<RawOrderCard>()
             for (root in rootWindows) {
                 val cards = TextAnalysisEngine.extractOrderCards(root)
                 allRawCards.addAll(cards)
             }
 
-            // 6. Order Separation & Unique Parsing: Parse each card into a distinct RideOffer
+            // 7. Order Separation & Unique Parsing: Parse each card into a distinct RideOffer
             val parsedOffers = TextAnalysisEngine.parseAllOrderCards(allRawCards)
 
             if (parsedOffers.isEmpty()) {
@@ -141,7 +165,10 @@ open class MyAccessibilityService : AccessibilityService() {
                 if (singleAcceptRoot != null) {
                     val extractedText = extractAllText(singleAcceptRoot)
                     val fallbackOffer = TextAnalysisEngine.parse(extractedText)
-                    if (fallbackOffer.totalFare != null && (fallbackOffer.pickupDistanceKm != null || fallbackOffer.dropDistanceKm != null)) {
+                    if (fallbackOffer.totalFare != null &&
+                        TextAnalysisEngine.isValidRapidoFare(fallbackOffer.totalFare) &&
+                        (fallbackOffer.pickupDistanceKm != null || fallbackOffer.dropDistanceKm != null)
+                    ) {
                         val cardBounds = Rect()
                         singleAcceptRoot.getBoundsInScreen(cardBounds)
                         val rawCard = RawOrderCard(
@@ -171,10 +198,7 @@ open class MyAccessibilityService : AccessibilityService() {
                 return
             }
 
-            // Update timestamp
-            lastProcessTime = currentTime
-
-            // 7. Multi-Order Processing Queue
+            // 8. Multi-Order Processing Queue
             processOrderQueue(parsedOffers, rootWindows)
 
         } finally {
@@ -434,11 +458,16 @@ open class MyAccessibilityService : AccessibilityService() {
         val rootList = mutableListOf<AccessibilityNodeInfo>()
         val seenWindowIds = mutableSetOf<Int>()
 
-        // 1. Check primary active window root
+        // 1. Check primary active window root (strictly ignore own app and non-target packages)
         val activeRoot = rootInActiveWindow
         if (activeRoot != null) {
-            rootList.add(activeRoot)
-            seenWindowIds.add(activeRoot.windowId)
+            val rootPkg = activeRoot.packageName?.toString() ?: ""
+            if (rootPkg == packageName || (rootPkg.isNotEmpty() && rootPkg != TARGET_PACKAGE)) {
+                recycleNode(activeRoot)
+            } else {
+                rootList.add(activeRoot)
+                seenWindowIds.add(activeRoot.windowId)
+            }
         }
 
         // 2. Multi-Window & Overlay Support: loop through windows for system overlays and dialogs (API 21+)
@@ -450,6 +479,11 @@ open class MyAccessibilityService : AccessibilityService() {
                         continue
                     }
                     val windowRoot = window.root ?: continue
+                    val winPkg = windowRoot.packageName?.toString() ?: ""
+                    if (winPkg == packageName || (winPkg.isNotEmpty() && winPkg != TARGET_PACKAGE)) {
+                        recycleNode(windowRoot)
+                        continue
+                    }
                     rootList.add(windowRoot)
                     seenWindowIds.add(window.id)
                 }

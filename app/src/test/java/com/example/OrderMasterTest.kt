@@ -171,4 +171,36 @@ class OrderMasterTest {
         // 1.0.1-rc.1 is newer than 1.0.0
         assertTrue(isUpdateAvailable(currentVersion = "1.0.0", latestVersion = "1.0.1-rc.1"))
     }
+
+    @Test
+    fun testRapidoFareValidationAndGarbageFiltering() {
+        // Valid Rapido fares (₹20 to ₹2000)
+        assertTrue(TextAnalysisEngine.isValidRapidoFare(20.0))
+        assertTrue(TextAnalysisEngine.isValidRapidoFare(55.0))
+        assertTrue(TextAnalysisEngine.isValidRapidoFare(250.0))
+        assertTrue(TextAnalysisEngine.isValidRapidoFare(2000.0))
+
+        // Invalid garbage numbers and below-minimum values
+        assertFalse(TextAnalysisEngine.isValidRapidoFare(19.0))
+        assertFalse(TextAnalysisEngine.isValidRapidoFare(0.0))
+        assertFalse(TextAnalysisEngine.isValidRapidoFare(37725.0)) // Garbage order ID or counter
+        assertFalse(TextAnalysisEngine.isValidRapidoFare(99999.0))
+        assertFalse(TextAnalysisEngine.isValidRapidoFare(null))
+
+        // Currency extraction ignoring ₹37725 and timestamps (12:30)
+        val (totalGarbage, _) = TextAnalysisEngine.extractCurrencies("Order #37725 at 12:30 PM with ₹37725")
+        assertEquals(null, totalGarbage)
+
+        // Currency extraction with valid fare
+        val (validTotal, breakdown) = TextAnalysisEngine.extractCurrencies("New Order • 12:30 PM • ₹145 • 1.2 km away")
+        assertEquals(145.0, validTotal ?: 0.0, 0.01)
+        assertEquals(1, breakdown.size)
+        assertEquals(145.0, breakdown[0], 0.01)
+
+        // Parse target offer ignoring garbage numbers and timestamps
+        val parsedGarbage = TextAnalysisEngine.parseTargetOffer("Time 12:30 PM • ID ₹37725 • Accept")
+        // Fare should not be 37725
+        val extractedFare = parsedGarbage?.fare ?: 0.0
+        assertEquals(0.0, extractedFare, 0.01)
+    }
 }

@@ -125,9 +125,18 @@ object TextAnalysisEngine {
     // Supported distance units: km, kms, kilometer(s), m, meter(s)
     private const val DISTANCE_UNIT_PATTERN = """(?:km|kms|kilometers?|meters?|m)"""
 
-    // Target regex: Extracts currency numbers starting with ₹ or INR
+    // Standard Rapido Fare boundaries to filter out garbage numbers (e.g. ₹37725, timestamps, order IDs)
+    const val MIN_RAPIDO_FARE = 20.0
+    const val MAX_RAPIDO_FARE = 2000.0
+
+    fun isValidRapidoFare(amount: Double?): Boolean {
+        if (amount == null) return false
+        return amount in MIN_RAPIDO_FARE..MAX_RAPIDO_FARE
+    }
+
+    // Target regex: Extracts currency numbers starting with ₹, Rs., or INR (2 to 4 digits, ₹20 to ₹2000)
     val fareRegex = Regex(
-        """(?:[₹]|INR|Rs\.?)\s*(\d+(?:\.\d+)?)""",
+        """(?:[₹]|INR|Rs\.?)\s*(\d{2,4}(?:\.\d{1,2})?)(?!\d)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -140,15 +149,15 @@ object TextAnalysisEngine {
     // Location split regex: Splits text by hyphen, dash, or newline to isolate only the bold primary landmark name
     val locationSplitRegex = Regex("""[\n\r\-–—|]""")
 
-    // Regex for currency: matches ₹, Rs., Rs, $, €, £, INR followed by numeric values
+    // Regex for currency: matches ₹, Rs., Rs, $, €, £, INR followed by numeric values (2 to 4 digits)
     private val currencyRegex = Regex(
-        """(?:[₹\$€£]|Rs\.?|INR)\s*(\d+(?:\.\d+)?)""",
+        """(?:[₹\$€£]|Rs\.?|INR)\s*(\d{2,4}(?:\.\d{1,2})?)(?!\d)""",
         RegexOption.IGNORE_CASE
     )
 
     // Regex for plus component numbers (e.g. "+ ₹15" or "+ 20" following a fare)
     private val plusBonusRegex = Regex(
-        """\+\s*(?:[₹\$€£]|Rs\.?|INR)?\s*(\d+(?:\.\d+)?)""",
+        """\+\s*(?:[₹\$€£]|Rs\.?|INR)?\s*(\d{1,3}(?:\.\d{1,2})?)(?!\d)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -566,14 +575,22 @@ object TextAnalysisEngine {
     fun parseTargetOfferFromNodes(nodes: List<String>): TargetRideOffer? {
         if (nodes.isEmpty()) return null
 
-        // 1. Base Price Amount: Extracts currency numbers starting with ₹ or INR (first match ignores bonus tags)
+        // 1. Base Price Amount: Extracts currency numbers starting with ₹ or INR (first match within valid Rapido fare range)
         var baseFare = 0.0
         for (node in nodes) {
-            val match = fareRegex.find(node)
-            if (match != null) {
-                baseFare = match.groups[1]?.value?.toDoubleOrNull() ?: 0.0
-                if (baseFare > 0.0) break
+            // Ignore timestamps (e.g. 12:30, 09:45 PM)
+            if (node.contains(":") && Regex("""\b\d{1,2}:\d{2}\b""").containsMatchIn(node)) {
+                continue
             }
+            val matches = fareRegex.findAll(node)
+            for (match in matches) {
+                val candidate = match.groups[1]?.value?.toDoubleOrNull() ?: 0.0
+                if (isValidRapidoFare(candidate)) {
+                    baseFare = candidate
+                    break
+                }
+            }
+            if (baseFare > 0.0) break
         }
 
         // 2. Distances: First match = Pickup distance, Second match = Drop distance
@@ -659,9 +676,11 @@ object TextAnalysisEngine {
             if (parsed != null) return parsed
         }
 
-        // 1. Base Price Amount: first currency match starting with ₹ or INR
-        val fareMatch = fareRegex.find(text)
-        val baseFare = fareMatch?.groups?.get(1)?.value?.toDoubleOrNull() ?: 0.0
+        // 1. Base Price Amount: first currency match starting with ₹ or INR within valid Rapido range (₹20 to ₹2000)
+        val cleanText = text.replace(Regex("""\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?\b""", RegexOption.IGNORE_CASE), " ")
+        val fareMatches = fareRegex.findAll(cleanText).toList()
+        val baseFare = fareMatches.mapNotNull { it.groups[1]?.value?.toDoubleOrNull() }
+            .firstOrNull { isValidRapidoFare(it) } ?: 0.0
 
         // 2. Distances (First match = Pickup distance, Second match = Drop distance)
         val distMatches = distanceRegex.findAll(text).toList()
@@ -710,28 +729,42 @@ object TextAnalysisEngine {
      * (e.g., "₹55", "₹56 + ₹13", "₹95 + ₹23", "Rs. 70 + Rs. 15").
      */
     fun extractCurrencies(text: String): Pair<Double?, List<Double>> {
+        // Strip timestamps (e.g., 12:30, 09:45 PM) to prevent false-positive currency matches
+        val cleanText = text.replace(Regex("""\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?\b""", RegexOption.IGNORE_CASE), " ")
         val breakdown = mutableListOf<Double>()
 
-        // 1. Direct currency matches
-        val directMatches = currencyRegex.findAll(text).toList()
+        // 1. Direct currency matches (enforce ₹20 to ₹2000 range)
+        val directMatches = currencyRegex.findAll(cleanText).toList()
         for (match in directMatches) {
-            match.groups[1]?.value?.toDoubleOrNull()?.let { breakdown.add(it) }
+            val amount = match.groups[1]?.value?.toDoubleOrNull()
+            if (amount != null && isValidRapidoFare(amount)) {
+                breakdown.add(amount)
+            }
         }
 
-        // 2. Plus component bonuses
+        // 2. Plus component bonuses (e.g. "+ ₹15", "+ ₹30" - valid bonus range is ₹5 to ₹500)
         if (breakdown.isNotEmpty()) {
-            val plusMatches = plusBonusRegex.findAll(text).toList()
+            val plusMatches = plusBonusRegex.findAll(cleanText).toList()
             for (pm in plusMatches) {
                 val bonusVal = pm.groups[1]?.value?.toDoubleOrNull()
-                if (bonusVal != null && !breakdown.contains(bonusVal)) {
-                    breakdown.add(bonusVal)
+                if (bonusVal != null && bonusVal in 5.0..500.0 && !breakdown.contains(bonusVal)) {
+                    val potentialTotal = breakdown.sum() + bonusVal
+                    if (isValidRapidoFare(potentialTotal)) {
+                        breakdown.add(bonusVal)
+                    }
                 }
             }
         }
 
         return if (breakdown.isNotEmpty()) {
             val total = breakdown.sum()
-            total to breakdown
+            if (isValidRapidoFare(total)) {
+                total to breakdown
+            } else if (isValidRapidoFare(breakdown.first())) {
+                breakdown.first() to listOf(breakdown.first())
+            } else {
+                null to emptyList()
+            }
         } else {
             null to emptyList()
         }
