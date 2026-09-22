@@ -29,7 +29,7 @@ open class MyAccessibilityService : AccessibilityService() {
     companion object {
         const val TAG = "MyAccessibilityService"
         const val TARGET_PACKAGE = "com.rapido.rider"
-        const val DEBOUNCE_WINDOW_MS = 1000L // Minimum 1000ms delay between processing events
+        const val DEBOUNCE_WINDOW_MS = 100L // 100ms debounce to balance ultra-fast response with frame rate stability
         const val COOLDOWN_MS = 2000L // 2 seconds delay between order acceptance
 
         @Volatile
@@ -162,26 +162,31 @@ open class MyAccessibilityService : AccessibilityService() {
             return
         }
 
+        var parsedOffers: List<ParsedRideOffer>? = null
         try {
             // 1. Card-Level Layout Isolation: Extract distinct order card containers across candidate windows
             // and parse each container independently into a strictly isolated ParsedRideOffer.
             // Texts from different cards are NEVER merged.
-            val parsedOffers = RideOfferParser.parseCards(candidateWindows)
+            val offers = RideOfferParser.parseCards(candidateWindows)
+            parsedOffers = offers
 
-            if (parsedOffers.isEmpty()) {
+            if (offers.isEmpty()) {
                 return
             }
 
             // Deduplication Check: Check if all detected offers have already been processed in current cycle
-            val newOffers = parsedOffers.filter { !processedOfferIds.contains(it.id) }
+            val newOffers = offers.filter { !processedOfferIds.contains(it.id) }
             if (newOffers.isEmpty()) {
                 return
             }
 
             // 2. Multi-Order Processing Queue
-            processOrderQueue(parsedOffers, candidateWindows)
+            processOrderQueue(offers, candidateWindows)
 
         } finally {
+            parsedOffers?.forEach { offer ->
+                offer.acceptButton?.let { recycleNode(it) }
+            }
             for (root in rawRootWindows) {
                 recycleNode(root)
             }

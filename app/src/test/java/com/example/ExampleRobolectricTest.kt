@@ -34,8 +34,8 @@ class ExampleRobolectricTest {
 
         // Default values
         assertTrue(AppSettings.isAutoAcceptEnabled(context))
-        assertEquals(60.0f, AppSettings.getMinFare(context), 0.01f)
-        assertEquals(5000.0f, AppSettings.getMaxFare(context), 0.01f)
+        assertEquals(AppSettings.DEFAULT_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.getMaxFare(context), 0.01f)
         assertEquals(3.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
         // Update values
@@ -62,8 +62,8 @@ class ExampleRobolectricTest {
 
         // Reset for subsequent tests
         AppSettings.setAutoAcceptEnabled(context, true)
-        AppSettings.setMinFare(context, 60.0f)
-        AppSettings.setMaxFare(context, 5000.0f)
+        AppSettings.setMinFare(context, AppSettings.DEFAULT_MIN_FARE)
+        AppSettings.setMaxFare(context, AppSettings.DEFAULT_MAX_FARE)
         AppSettings.setMaxPickupDistance(context, 3.0f)
     }
 

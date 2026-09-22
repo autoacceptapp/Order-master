@@ -5,12 +5,16 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.provider.Settings
 import android.text.TextUtils
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -23,6 +27,7 @@ enum class LogSeverity {
     WARNING
 }
 
+@Immutable
 data class ActivityLogEntry(
     val id: Long = System.nanoTime(),
     val timestamp: Long = System.currentTimeMillis(),
@@ -33,12 +38,13 @@ data class ActivityLogEntry(
     val evaluation: RideEvaluation? = null
 )
 
+@Immutable
 data class SettingsState(
     val isAutoAcceptEnabled: Boolean = true,
     val isMinFareEnabled: Boolean = true,
-    val minFare: Float = 60.0f,
+    val minFare: Float = AppSettings.DEFAULT_MIN_FARE,
     val isMaxFareEnabled: Boolean = true,
-    val maxFare: Float = 5000.0f,
+    val maxFare: Float = AppSettings.DEFAULT_MAX_FARE,
     val isMaxPickupDistanceEnabled: Boolean = true,
     val maxPickupDistance: Float = 3.0f,
     val isMaxDropDistanceEnabled: Boolean = false,
@@ -90,9 +96,16 @@ object AppSettings {
     const val ACTION_ACCESSIBILITY_LOG = "com.example.ACCESSIBILITY_LOG"
     const val EXTRA_LOG_MESSAGE = "extra_log_message"
 
-    // Default configuration values
-    const val DEFAULT_MIN_FARE = 60.0f
-    const val DEFAULT_MAX_FARE = 5000.0f
+    // Baseline Fare Range Constants
+    const val MIN_FARE_RANGE_START = 20.0f
+    const val MIN_FARE_RANGE_END = 500.0f
+    const val DEFAULT_MIN_FARE = 50.0f
+
+    const val MAX_FARE_RANGE_START = 100.0f
+    const val MAX_FARE_RANGE_END = 2000.0f
+    const val DEFAULT_MAX_FARE = 500.0f
+
+    // Other configuration defaults
     const val DEFAULT_MAX_PICKUP_DISTANCE = 3.0f
     const val DEFAULT_MAX_DROP_DISTANCE = 15.0f
     const val MIN_PICKUP_DISTANCE_KM = 0.0f
@@ -110,9 +123,22 @@ object AppSettings {
     const val DEFAULT_FLOATING_OVERLAY_ENABLED = false
     const val DEFAULT_AUTO_CLICK_ENABLED = true
 
+    // Reactive StateFlows for granular Fare observation
+    private val _minFareFlow = MutableStateFlow(DEFAULT_MIN_FARE)
+    val minFare: StateFlow<Float> = _minFareFlow.asStateFlow()
+
+    private val _isMinFareEnabledFlow = MutableStateFlow(DEFAULT_MIN_FARE_ENABLED)
+    val isMinFareEnabled: StateFlow<Boolean> = _isMinFareEnabledFlow.asStateFlow()
+
+    private val _maxFareFlow = MutableStateFlow(DEFAULT_MAX_FARE)
+    val maxFare: StateFlow<Float> = _maxFareFlow.asStateFlow()
+
+    private val _isMaxFareEnabledFlow = MutableStateFlow(DEFAULT_MAX_FARE_ENABLED)
+    val isMaxFareEnabled: StateFlow<Boolean> = _isMaxFareEnabledFlow.asStateFlow()
+
     // In-memory properties for legacy access
-    var minCurrencyThreshold: Double = 60.0
-    var maxCurrencyThreshold: Double = 5000.0
+    var minCurrencyThreshold: Double = DEFAULT_MIN_FARE.toDouble()
+    var maxCurrencyThreshold: Double = DEFAULT_MAX_FARE.toDouble()
     var autoAcceptEnabled: Boolean = true
     val minPrice: Double get() = minCurrencyThreshold
     val maxPrice: Double get() = maxCurrencyThreshold
@@ -155,6 +181,8 @@ object AppSettings {
     )
     val logsFlow: StateFlow<List<ActivityLogEntry>> = _logsFlow.asStateFlow()
 
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
@@ -186,6 +214,11 @@ object AppSettings {
         maxCurrencyThreshold = maxFare.toDouble()
         autoAcceptEnabled = enabled
 
+        _minFareFlow.value = minFare
+        _isMinFareEnabledFlow.value = minFareEnabled
+        _maxFareFlow.value = maxFare
+        _isMaxFareEnabledFlow.value = maxFareEnabled
+
         _settingsState.value = SettingsState(
             isAutoAcceptEnabled = enabled,
             isMinFareEnabled = minFareEnabled,
@@ -207,18 +240,27 @@ object AppSettings {
         )
     }
 
+    private fun persistAsync(context: Context, action: SharedPreferences.Editor.() -> Unit) {
+        val appContext = context.applicationContext
+        appScope.launch {
+            val editor = getPrefs(appContext).edit()
+            action(editor)
+            editor.apply()
+        }
+    }
+
     fun isAutoAcceptEnabled(context: Context): Boolean {
         val prefs = getPrefs(context)
         return prefs.getBoolean(KEY_AUTO_ACCEPT_ENABLED, prefs.getBoolean(KEY_SERVICE_ENABLED, DEFAULT_AUTO_ACCEPT_ENABLED))
     }
 
     fun setAutoAcceptEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit()
-            .putBoolean(KEY_AUTO_ACCEPT_ENABLED, enabled)
-            .putBoolean(KEY_SERVICE_ENABLED, enabled)
-            .apply()
         autoAcceptEnabled = enabled
         _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = enabled)
+        persistAsync(context) {
+            putBoolean(KEY_AUTO_ACCEPT_ENABLED, enabled)
+            putBoolean(KEY_SERVICE_ENABLED, enabled)
+        }
         syncOverlayService(context)
     }
 
@@ -228,8 +270,10 @@ object AppSettings {
     }
 
     fun setVoiceAnnouncerEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_VOICE_ANNOUNCER_ENABLED, enabled).apply()
         _settingsState.value = _settingsState.value.copy(isVoiceAnnouncerEnabled = enabled)
+        persistAsync(context) {
+            putBoolean(KEY_VOICE_ANNOUNCER_ENABLED, enabled)
+        }
     }
 
     fun getVoiceLanguage(context: Context): String {
@@ -238,8 +282,10 @@ object AppSettings {
     }
 
     fun setVoiceLanguage(context: Context, language: String) {
-        getPrefs(context).edit().putString(KEY_VOICE_LANGUAGE, language).apply()
         _settingsState.value = _settingsState.value.copy(voiceLanguage = language)
+        persistAsync(context) {
+            putString(KEY_VOICE_LANGUAGE, language)
+        }
     }
 
     fun isMinFareEnabled(context: Context): Boolean {
@@ -248,8 +294,11 @@ object AppSettings {
     }
 
     fun setMinFareEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_MIN_FARE_ENABLED, enabled).apply()
+        _isMinFareEnabledFlow.value = enabled
         _settingsState.value = _settingsState.value.copy(isMinFareEnabled = enabled)
+        persistAsync(context) {
+            putBoolean(KEY_MIN_FARE_ENABLED, enabled)
+        }
     }
 
     fun isMaxFareEnabled(context: Context): Boolean {
@@ -258,8 +307,11 @@ object AppSettings {
     }
 
     fun setMaxFareEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_MAX_FARE_ENABLED, enabled).apply()
+        _isMaxFareEnabledFlow.value = enabled
         _settingsState.value = _settingsState.value.copy(isMaxFareEnabled = enabled)
+        persistAsync(context) {
+            putBoolean(KEY_MAX_FARE_ENABLED, enabled)
+        }
     }
 
     fun isMaxPickupDistanceEnabled(context: Context): Boolean {
@@ -268,8 +320,10 @@ object AppSettings {
     }
 
     fun setMaxPickupDistanceEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_MAX_PICKUP_DIST_ENABLED, enabled).apply()
         _settingsState.value = _settingsState.value.copy(isMaxPickupDistanceEnabled = enabled)
+        persistAsync(context) {
+            putBoolean(KEY_MAX_PICKUP_DIST_ENABLED, enabled)
+        }
     }
 
     fun isMaxDropDistanceEnabled(context: Context): Boolean {
@@ -278,8 +332,10 @@ object AppSettings {
     }
 
     fun setMaxDropDistanceEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_MAX_DROP_DIST_ENABLED, enabled).apply()
         _settingsState.value = _settingsState.value.copy(isMaxDropDistanceEnabled = enabled)
+        persistAsync(context) {
+            putBoolean(KEY_MAX_DROP_DIST_ENABLED, enabled)
+        }
     }
 
     fun getMaxDropDistance(context: Context): Float {
@@ -289,8 +345,10 @@ object AppSettings {
 
     fun setMaxDropDistance(context: Context, value: Float) {
         val clamped = value.coerceIn(1.0f, 50.0f)
-        getPrefs(context).edit().putFloat(KEY_MAX_DROP_DISTANCE, clamped).apply()
         _settingsState.value = _settingsState.value.copy(maxDropDistance = clamped)
+        persistAsync(context) {
+            putFloat(KEY_MAX_DROP_DISTANCE, clamped)
+        }
     }
 
     // --- Floating Overlay Button Controls ---
@@ -300,8 +358,10 @@ object AppSettings {
     }
 
     fun setFloatingOverlayEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_FLOATING_OVERLAY_ENABLED, enabled).apply()
         _settingsState.value = _settingsState.value.copy(isFloatingOverlayEnabled = enabled)
+        persistAsync(context) {
+            putBoolean(KEY_FLOATING_OVERLAY_ENABLED, enabled)
+        }
         syncOverlayService(context)
     }
 
@@ -312,8 +372,10 @@ object AppSettings {
     }
 
     fun setAutoClickEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_AUTO_CLICK_ENABLED, enabled).apply()
         _settingsState.value = _settingsState.value.copy(isAutoClickEnabled = enabled)
+        persistAsync(context) {
+            putBoolean(KEY_AUTO_CLICK_ENABLED, enabled)
+        }
     }
 
     fun toggleAutoClick(context: Context): Boolean {
@@ -400,18 +462,64 @@ object AppSettings {
         }
     }
 
+    // --- Fare Range Validation Functions ---
+
+    /**
+     * Checks if a min fare value is valid (within baseline range and <= max fare if max fare is enabled).
+     */
+    fun isValidMinFare(candidateMin: Float, currentMax: Float = _maxFareFlow.value): Boolean {
+        return candidateMin in MIN_FARE_RANGE_START..MIN_FARE_RANGE_END &&
+                (!_isMaxFareEnabledFlow.value || candidateMin <= currentMax)
+    }
+
+    /**
+     * Checks if a max fare value is valid (within baseline range and >= min fare if min fare is enabled).
+     */
+    fun isValidMaxFare(candidateMax: Float, currentMin: Float = _minFareFlow.value): Boolean {
+        return candidateMax in MAX_FARE_RANGE_START..MAX_FARE_RANGE_END &&
+                (!_isMinFareEnabledFlow.value || candidateMax >= currentMin)
+    }
+
+    /**
+     * Clamps and validates minFare so it stays within [MIN_FARE_RANGE_START, MIN_FARE_RANGE_END]
+     * and does not exceed maxFare if maxFare is enabled.
+     */
+    fun validateMinFare(value: Float, currentMax: Float = _maxFareFlow.value): Float {
+        val clamped = value.coerceIn(MIN_FARE_RANGE_START, MIN_FARE_RANGE_END)
+        return if (_isMaxFareEnabledFlow.value && clamped > currentMax) {
+            currentMax.coerceAtLeast(MIN_FARE_RANGE_START)
+        } else {
+            clamped
+        }
+    }
+
+    /**
+     * Clamps and validates maxFare so it stays within [MAX_FARE_RANGE_START, MAX_FARE_RANGE_END]
+     * and is not lower than minFare if minFare is enabled.
+     */
+    fun validateMaxFare(value: Float, currentMin: Float = _minFareFlow.value): Float {
+        val clamped = value.coerceIn(MAX_FARE_RANGE_START, MAX_FARE_RANGE_END)
+        return if (_isMinFareEnabledFlow.value && clamped < currentMin) {
+            currentMin.coerceAtMost(MAX_FARE_RANGE_END)
+        } else {
+            clamped
+        }
+    }
+
     fun getMinFare(context: Context): Float {
         val prefs = getPrefs(context)
         return prefs.getFloat(KEY_MIN_FARE, prefs.getFloat(KEY_MIN_VALUE, DEFAULT_MIN_FARE))
     }
 
     fun setMinFare(context: Context, value: Float) {
-        getPrefs(context).edit()
-            .putFloat(KEY_MIN_FARE, value)
-            .putFloat(KEY_MIN_VALUE, value)
-            .apply()
-        minCurrencyThreshold = value.toDouble()
-        _settingsState.value = _settingsState.value.copy(minFare = value)
+        val validated = validateMinFare(value)
+        minCurrencyThreshold = validated.toDouble()
+        _minFareFlow.value = validated
+        _settingsState.value = _settingsState.value.copy(minFare = validated)
+        persistAsync(context) {
+            putFloat(KEY_MIN_FARE, validated)
+            putFloat(KEY_MIN_VALUE, validated)
+        }
     }
 
     fun getMaxFare(context: Context): Float {
@@ -420,12 +528,14 @@ object AppSettings {
     }
 
     fun setMaxFare(context: Context, value: Float) {
-        getPrefs(context).edit()
-            .putFloat(KEY_MAX_FARE, value)
-            .putFloat(KEY_MAX_VALUE, value)
-            .apply()
-        maxCurrencyThreshold = value.toDouble()
-        _settingsState.value = _settingsState.value.copy(maxFare = value)
+        val validated = validateMaxFare(value)
+        maxCurrencyThreshold = validated.toDouble()
+        _maxFareFlow.value = validated
+        _settingsState.value = _settingsState.value.copy(maxFare = validated)
+        persistAsync(context) {
+            putFloat(KEY_MAX_FARE, validated)
+            putFloat(KEY_MAX_VALUE, validated)
+        }
     }
 
     fun getMaxPickupDistance(context: Context): Float {
@@ -436,11 +546,11 @@ object AppSettings {
 
     fun setMaxPickupDistance(context: Context, value: Float) {
         val clampedValue = value.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM)
-        getPrefs(context).edit()
-            .putFloat(KEY_MAX_PICKUP_DISTANCE, clampedValue)
-            .putFloat(KEY_MAX_DISTANCE, clampedValue)
-            .apply()
         _settingsState.value = _settingsState.value.copy(maxPickupDistance = clampedValue)
+        persistAsync(context) {
+            putFloat(KEY_MAX_PICKUP_DISTANCE, clampedValue)
+            putFloat(KEY_MAX_DISTANCE, clampedValue)
+        }
     }
 
     fun getClickDelayMs(context: Context): Long {
@@ -448,8 +558,10 @@ object AppSettings {
     }
 
     fun setClickDelayMs(context: Context, delay: Long) {
-        getPrefs(context).edit().putLong(KEY_CLICK_DELAY_MS, delay).apply()
         _settingsState.value = _settingsState.value.copy(clickDelayMs = delay)
+        persistAsync(context) {
+            putLong(KEY_CLICK_DELAY_MS, delay)
+        }
     }
 
     fun getSpeechRate(context: Context): Float {
@@ -457,8 +569,10 @@ object AppSettings {
     }
 
     fun setSpeechRate(context: Context, rate: Float) {
-        getPrefs(context).edit().putFloat(KEY_SPEECH_RATE, rate).apply()
         _settingsState.value = _settingsState.value.copy(speechRate = rate)
+        persistAsync(context) {
+            putFloat(KEY_SPEECH_RATE, rate)
+        }
     }
 
     fun getSpeechPitch(context: Context): Float {
@@ -466,8 +580,10 @@ object AppSettings {
     }
 
     fun setSpeechPitch(context: Context, pitch: Float) {
-        getPrefs(context).edit().putFloat(KEY_SPEECH_PITCH, pitch).apply()
         _settingsState.value = _settingsState.value.copy(speechPitch = pitch)
+        persistAsync(context) {
+            putFloat(KEY_SPEECH_PITCH, pitch)
+        }
     }
 
     // Legacy method aliases

@@ -276,6 +276,7 @@ class FloatingOverlayService : Service() {
     @SuppressLint("ClickableViewAccessibility")
     private fun setupDragAndClick(buttonSizePx: Int) {
         val root = overlayRoot ?: return
+        val card = overlayCard ?: return
         val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         var initialX = 0
         var initialY = 0
@@ -299,7 +300,7 @@ class FloatingOverlayService : Service() {
                     downTime = System.currentTimeMillis()
 
                     // Visual touch down feedback
-                    overlayCard?.animate()?.scaleX(0.92f)?.scaleY(0.92f)?.setDuration(100)?.start()
+                    card.animate().scaleX(0.92f).scaleY(0.92f).setDuration(100).start()
 
                     // Schedule long press
                     longPressRunnable = Runnable {
@@ -326,13 +327,18 @@ class FloatingOverlayService : Service() {
                         val maxX = displayMetrics.widthPixels - buttonSizePx
                         val maxY = displayMetrics.heightPixels - buttonSizePx
 
-                        params.x = (initialX + dx).coerceIn(0, maxX)
-                        params.y = (initialY + dy).coerceIn(dpToPx(24f), maxY)
+                        val newX = (initialX + dx).coerceIn(0, maxX)
+                        val newY = (initialY + dy).coerceIn(dpToPx(24f), maxY)
 
-                        try {
-                            windowManager?.updateViewLayout(overlayRoot, params)
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed to update view layout on drag", e)
+                        // Avoid redundant WindowManager updates if coordinates haven't changed
+                        if (params.x != newX || params.y != newY) {
+                            params.x = newX
+                            params.y = newY
+                            try {
+                                windowManager?.updateViewLayout(overlayRoot, params)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to update view layout on drag", e)
+                            }
                         }
                     }
                     true
@@ -340,7 +346,7 @@ class FloatingOverlayService : Service() {
 
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     longPressRunnable?.let { mainHandler.removeCallbacks(it) }
-                    overlayCard?.animate()?.scaleX(1.0f)?.scaleY(1.0f)?.setDuration(150)?.start()
+                    card.animate().scaleX(1.0f).scaleY(1.0f).setDuration(150).start()
 
                     val pressDuration = System.currentTimeMillis() - downTime
                     if (!isDragging && pressDuration < 450) {

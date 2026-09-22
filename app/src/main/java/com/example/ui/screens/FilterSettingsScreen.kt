@@ -72,8 +72,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.AppSettings
 import com.example.PermissionUtils
 import com.example.ui.OrderMasterViewModel
+import com.example.ui.components.FareFilterCard
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -192,141 +194,52 @@ fun FilterSettingsScreen(
             }
 
             // =========================================================================================
-            // 1. MINIMUM FARE FILTER
+            // 1. MINIMUM FARE FILTER (FareFilterCard)
             // =========================================================================================
             item {
-                FilterCard(
+                val minExceedsMax = settingsState.isMinFareEnabled &&
+                        settingsState.isMaxFareEnabled &&
+                        settingsState.minFare > settingsState.maxFare
+
+                FareFilterCard(
                     title = "Minimum Fare Filter",
-                    subtitle = "Ignore rides below threshold price",
+                    description = "Ignore rides paying below this baseline threshold",
                     icon = Icons.Default.CurrencyRupee,
                     isEnabled = settingsState.isMinFareEnabled,
                     onToggle = { viewModel.toggleMinFareFilter(it) },
+                    value = settingsState.minFare,
+                    onValueChange = { viewModel.setMinFare(it) },
+                    valueRange = AppSettings.MIN_FARE_RANGE_START..AppSettings.MIN_FARE_RANGE_END,
+                    presetValues = listOf(40f, 60f, 80f, 100f, 150f),
+                    accentColor = Color(0xFF00E676),
+                    validationWarning = if (minExceedsMax) "Minimum fare cannot exceed maximum fare (₹${settingsState.maxFare.toInt()})" else null,
                     testTag = "min_fare_filter_card"
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Current Minimum Limit:",
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            )
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer
-                            ) {
-                                Text(
-                                    text = "₹${settingsState.minFare.toInt()}",
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                                    ),
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-
-                        Slider(
-                            value = settingsState.minFare,
-                            onValueChange = { viewModel.setMinFare(it.roundToInt().toFloat()) },
-                            valueRange = 30f..300f,
-                            steps = 26, // Step of ~₹10
-                            modifier = Modifier.fillMaxWidth().testTag("min_fare_slider"),
-                            colors = SliderDefaults.colors(
-                                thumbColor = MaterialTheme.colorScheme.primary,
-                                activeTrackColor = MaterialTheme.colorScheme.primary
-                            )
-                        )
-
-                        // Quick Select Chips
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf(40f, 60f, 80f, 100f, 150f).forEach { presetVal ->
-                                OutlinedButton(
-                                    onClick = { viewModel.setMinFare(presetVal) },
-                                    modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(0.dp),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text("₹${presetVal.toInt()}", fontSize = 12.sp)
-                                }
-                            }
-                        }
-                    }
-                }
+                )
             }
 
             // =========================================================================================
-            // 2. MAXIMUM FARE FILTER
+            // 2. MAXIMUM FARE FILTER (FareFilterCard)
             // =========================================================================================
             item {
-                FilterCard(
+                val minExceedsMax = settingsState.isMinFareEnabled &&
+                        settingsState.isMaxFareEnabled &&
+                        settingsState.minFare > settingsState.maxFare
+
+                FareFilterCard(
                     title = "Maximum Fare Filter",
-                    subtitle = "Ceiling limit for long/surge rides",
+                    description = "Ceiling limit for long-distance and surge rides",
                     icon = Icons.Default.CurrencyRupee,
                     isEnabled = settingsState.isMaxFareEnabled,
                     onToggle = { viewModel.toggleMaxFareFilter(it) },
+                    value = settingsState.maxFare,
+                    onValueChange = { viewModel.setMaxFare(it) },
+                    valueRange = AppSettings.MAX_FARE_RANGE_START..AppSettings.MAX_FARE_RANGE_END,
+                    presetValues = listOf(200f, 300f, 500f, 800f, 1000f),
+                    accentColor = Color(0xFF00E676),
+                    secondaryBadgeColor = MaterialTheme.colorScheme.secondaryContainer,
+                    validationWarning = if (minExceedsMax) "Maximum fare must be at least minimum fare (₹${settingsState.minFare.toInt()})" else null,
                     testTag = "max_fare_filter_card"
-                ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Current Maximum Limit:",
-                                style = MaterialTheme.typography.bodyMedium.copy(
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            )
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.secondaryContainer
-                            ) {
-                                Text(
-                                    text = "₹${settingsState.maxFare.toInt()}",
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        fontWeight = FontWeight.ExtraBold,
-                                        color = MaterialTheme.colorScheme.onSecondaryContainer
-                                    ),
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-
-                        Slider(
-                            value = settingsState.maxFare,
-                            onValueChange = { viewModel.setMaxFare(it.roundToInt().toFloat()) },
-                            valueRange = 200f..10000f,
-                            steps = 48,
-                            modifier = Modifier.fillMaxWidth().testTag("max_fare_slider")
-                        )
-
-                        // Quick Select Chips
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf(500f, 1000f, 2500f, 5000f).forEach { presetVal ->
-                                OutlinedButton(
-                                    onClick = { viewModel.setMaxFare(presetVal) },
-                                    modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(0.dp),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text("₹${presetVal.toInt()}", fontSize = 11.sp)
-                                }
-                            }
-                        }
-                    }
-                }
+                )
             }
 
             // =========================================================================================
