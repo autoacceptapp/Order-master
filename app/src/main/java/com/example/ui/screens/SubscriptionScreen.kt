@@ -454,43 +454,30 @@ fun SubscriptionScreen(
                     PassManager.initiateUpiPayment(
                         activity = act,
                         passTier = tier,
-                        onSuccess = { txnId ->
-                            // 1. Double-check with backend before activating
-                            PassManager.onPaymentSuccess(context, txnId) { isSuccess ->
-                                if (isSuccess) {
-                                    selectedPassForUpiPayment = null
-                                }
-                            }
-                        },
                         onFailed = { reason ->
                             errorMessage = reason
                         }
                     )
-                } else {
-                    // Fallback direct payment handler with double-check
-                    coroutineScope.launch {
-                        isProcessing = true
-                        val paymentId = "UPI_${System.currentTimeMillis()}"
-                        PassManager.onPaymentSuccess(context, paymentId) { isSuccess ->
-                            isProcessing = false
-                            if (isSuccess) {
-                                selectedPassForUpiPayment = null
-                            }
-                        }
+                    selectedPassForUpiPayment = null
+                    val intent = android.content.Intent(context, com.example.PaymentActivity::class.java).apply {
+                        putExtra(com.example.PaymentActivity.EXTRA_PASS_TIER_ID, tier.id)
                     }
+                    context.startActivity(intent)
+                } else {
+                    val intent = android.content.Intent(context, com.example.PaymentActivity::class.java).apply {
+                        putExtra(com.example.PaymentActivity.EXTRA_PASS_TIER_ID, tier.id)
+                    }
+                    context.startActivity(intent)
+                    selectedPassForUpiPayment = null
                 }
             },
             onSimulateSuccess = {
-                coroutineScope.launch {
-                    isProcessing = true
-                    val txnId = "SANDBOX_UPI_${System.currentTimeMillis()}"
-                    PassManager.onPaymentSuccess(context, txnId) { isSuccess ->
-                        isProcessing = false
-                        if (isSuccess) {
-                            selectedPassForUpiPayment = null
-                        }
-                    }
+                // Removed simulation: Redirect directly to PaymentActivity for real UTR verification
+                selectedPassForUpiPayment = null
+                val intent = android.content.Intent(context, com.example.PaymentActivity::class.java).apply {
+                    putExtra(com.example.PaymentActivity.EXTRA_PASS_TIER_ID, tier.id)
                 }
+                context.startActivity(intent)
             }
         )
     }
@@ -1290,12 +1277,6 @@ private fun UpiPaymentDialog(
                     enabled = !isProcessing
                 ) {
                     Text("Enter UTR", color = PrimaryEmerald, fontWeight = FontWeight.Bold)
-                }
-                TextButton(
-                    onClick = onSimulateSuccess,
-                    enabled = !isProcessing
-                ) {
-                    Text("Test Pay", color = AmberAccent)
                 }
                 TextButton(onClick = onDismiss, enabled = !isProcessing) {
                     Text("Cancel")

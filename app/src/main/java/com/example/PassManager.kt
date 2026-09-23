@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.tasks.await
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.example.data.PaymentVerificationRepository
 import java.util.Locale
@@ -109,26 +110,35 @@ object PassManager {
     }
 
     /**
-     * 1. Payment Response Double-Check:
+     * Represents the detailed result of payment UTR verification.
+     */
+    sealed class VerificationResult {
+        data class Success(val passTier: PassTier, val expiryTimestamp: Long) : VerificationResult()
+        data class NotFound(val message: String = "Payment not verified yet. Please wait a minute or check your UTR") : VerificationResult()
+        data class AlreadyUsed(val message: String = "This UTR has already been claimed.") : VerificationResult()
+        data class Invalid(val message: String) : VerificationResult()
+        data class Error(val message: String) : VerificationResult()
+    }
+
+    /**
+     * 1. Payment Response Verification (Frontend & Backend):
      * Pass ka status (isPassActive = true) sirf aur sirf tabhi update karein
-     * jab Razorpay / Cashfree / Firebase Backend se Success Signal aaye.
+     * jab Firestore backend se verified Success signal aaye.
      */
     fun onPaymentSuccess(
         context: Context,
         paymentId: String,
+        preferredTier: PassTier? = null,
         onComplete: ((Boolean) -> Unit)? = null
     ) {
-        // 1. Server/Backend se verify karein
-        verifyPaymentWithBackend(context, paymentId) { isSuccess ->
+        verifyPaymentWithBackend(context, paymentId, preferredTier) { isSuccess ->
             if (isSuccess) {
-                // Sirf success aane par pass active karein
                 setPassStatus(context, true)
                 Toast.makeText(context, "Pass Activated!", Toast.LENGTH_SHORT).show()
                 onComplete?.invoke(true)
             } else {
-                // Payment verify nahi hua
                 setPassStatus(context, false)
-                Toast.makeText(context, "Payment Failed/Not Verified", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Payment not verified yet. Please wait a minute or check your UTR", Toast.LENGTH_SHORT).show()
                 onComplete?.invoke(false)
             }
         }
@@ -141,91 +151,171 @@ object PassManager {
     fun verifyPaymentWithBackend(
         context: Context,
         paymentId: String,
+        preferredTier: PassTier? = null,
         onResult: (Boolean) -> Unit
     ) {
         scope.launch {
-            val isSuccess = verifyPaymentWithBackendSuspend(context, paymentId)
+            val isSuccess = verifyPaymentWithBackendSuspend(context, paymentId, preferredTier)
             withContext(Dispatchers.Main) {
                 onResult(isSuccess)
             }
         }
     }
 
+    fun verifyPaymentWithBackend(
+        context: Context,
+        paymentId: String,
+        onResult: (Boolean) -> Unit
+    ) {
+        verifyPaymentWithBackend(context, paymentId, null, onResult)
+    }
+
     /**
-     * Asynchronous suspend verification of paymentId with Firestore backend.
+     * Detailed verification of the user's inputted UTR string with Firestore.
+     * MacroDroid creates document at: received_payments/{UTR} with:
+     * {"utr": "{UTR}", "amount": {Amount}, "status": "Verified", "isUsed": false}
+     */
+    suspend fun verifyPaymentWithBackendDetailed(
+        context: Context,
+        utr: String,
+        preferredTier: PassTier? = null
+    ): VerificationResult = withContext(Dispatchers.IO) {
+        val cleanUtr = utr.trim().filter { it.isDigit() }
+        if (cleanUtr.length != 12) {
+            return@withContext VerificationResult.Invalid("Please enter a valid 12-digit UTR/UPI reference number.")
+        }
+
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
+            val paymentDocRef = firestore.collection(PaymentVerificationRepository.COLL_RECEIVED_PAYMENTS).document(cleanUtr)
+            val userDocRef = firestore.collection("users").document(userId)
+
+            // Step 1: Fetch the document from Firestore: received_payments/{UTR}
+            val snapshot = paymentDocRef.get().await()
+
+            // If the document DOES NOT exist, return false
+            if (!snapshot.exists()) {
+                Log.w(TAG, "Payment document received_payments/$cleanUtr does not exist yet.")
+                return@withContext VerificationResult.NotFound(
+                    "Payment not verified yet. Please wait a minute or check your UTR"
+                )
+            }
+
+            // If the document EXISTS, check if status == "Verified" AND isUsed == false
+            val status = snapshot.getString("status") ?: ""
+            val isUsed = snapshot.getBoolean("isUsed") ?: false
+            val claimedBy = snapshot.getString("claimedBy")
+
+            if (!status.equals("Verified", ignoreCase = true)) {
+                Log.w(TAG, "Payment $cleanUtr status is '$status' (expected 'Verified').")
+                return@withContext VerificationResult.NotFound(
+                    "Payment status is pending verification ($status). Please wait a moment."
+                )
+            }
+
+            if (isUsed && claimedBy != userId) {
+                Log.w(TAG, "Payment $cleanUtr already claimed by another user: '$claimedBy'.")
+                return@withContext VerificationResult.AlreadyUsed(
+                    "This UTR has already been claimed on another account."
+                )
+            }
+
+            // Determine pass tier based on amount in doc or preferred tier
+            val amount = snapshot.getLong("amount") ?: 0L
+            val passTier = preferredTier ?: PaymentVerificationRepository.mapAmountToPassTier(amount)
+
+            var finalExpiryTimestamp = 0L
+
+            // Step 2: If valid, execute a Firestore Transaction to:
+            // 1. Update received_payments/{UTR} -> set isUsed = true and claimedBy = {current_userId}
+            // 2. Update users/{current_userId} -> set payment_status = "SUCCESS", lastVerifiedUtr = {UTR},
+            //    and update pass_expiry_date by adding the PassTier duration to the current timestamp.
+            firestore.runTransaction { transaction ->
+                val transPaymentDoc = transaction.get(paymentDocRef)
+                val transUserDoc = transaction.get(userDocRef)
+
+                val transUsed = transPaymentDoc.getBoolean("isUsed") ?: false
+                val transClaimedBy = transPaymentDoc.getString("claimedBy")
+                if (transUsed && transClaimedBy != userId) {
+                    throw IllegalStateException("Payment already claimed by another user.")
+                }
+
+                val currentTime = System.currentTimeMillis()
+                val existingExpiry = transUserDoc.getLong("pass_expiry_date")
+                    ?: transUserDoc.getLong("passExpiryDate")
+                    ?: 0L
+                val baseTime = if (existingExpiry > currentTime) existingExpiry else currentTime
+                val newExpiryTimestamp = baseTime + passTier.durationMs
+                finalExpiryTimestamp = newExpiryTimestamp
+
+                // 1. Update received_payments/{UTR} -> set isUsed = true and claimedBy = {current_userId}
+                transaction.update(
+                    paymentDocRef,
+                    mapOf(
+                        "isUsed" to true,
+                        "claimedBy" to userId,
+                        "claimedAt" to FieldValue.serverTimestamp(),
+                        "planId" to passTier.id
+                    )
+                )
+
+                // 2. Update users/{current_userId}
+                val userData = mutableMapOf<String, Any>(
+                    "payment_status" to "SUCCESS",
+                    "paymentStatus" to "SUCCESS",
+                    "isPaymentVerified" to true,
+                    "lastVerifiedUtr" to cleanUtr,
+                    "pass_expiry_date" to newExpiryTimestamp,
+                    "passExpiryDate" to newExpiryTimestamp,
+                    "subscriptionExpiryTimestamp" to newExpiryTimestamp,
+                    "subscriptionExpiry" to java.util.Date(newExpiryTimestamp),
+                    "activePassTier" to passTier.id,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+
+                if (transUserDoc.exists()) {
+                    transaction.update(userDocRef, userData)
+                } else {
+                    userData["userId"] = userId
+                    userData["createdAt"] = FieldValue.serverTimestamp()
+                    transaction.set(userDocRef, userData)
+                }
+            }.await()
+
+            // Return true to the UI so it can activate the pass locally using setPassStatus(context, true)
+            withContext(Dispatchers.Main) {
+                setPassStatus(context, true)
+                AppSettings.setPassExpiryTimestamp(context, finalExpiryTimestamp, passTier.id)
+                LicenseManager.activatePassViaPayment(passTier, cleanUtr)
+                AppSettings.addLog(
+                    title = "Pass Activated",
+                    message = "${passTier.title} activated via UTR $cleanUtr. Valid for ${passTier.durationDays} day(s).",
+                    severity = LogSeverity.MATCH_ACCEPTED
+                )
+            }
+
+            VerificationResult.Success(passTier, finalExpiryTimestamp)
+        } catch (e: Exception) {
+            Log.e(TAG, "verifyPaymentWithBackendDetailed failed for $cleanUtr: ${e.message}", e)
+            val msg = e.localizedMessage ?: "Network or verification error. Please retry."
+            VerificationResult.Error("Error verifying payment: $msg")
+        }
+    }
+
+    /**
+     * Asynchronous suspend verification of UTR with Firestore backend.
+     * Returns true if document exists, status == "Verified", isUsed == false,
+     * and transaction completes successfully.
      */
     suspend fun verifyPaymentWithBackendSuspend(
         context: Context,
-        paymentId: String
-    ): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val trimmedId = paymentId.trim()
-            if (trimmedId.isEmpty()) return@withContext false
-
-            val firestore = FirebaseFirestore.getInstance()
-            val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
-
-            // Check 1: Check in /received_payments/{paymentId}
-            val receivedDoc = firestore.collection(PaymentVerificationRepository.COLL_RECEIVED_PAYMENTS)
-                .document(trimmedId)
-                .get()
-                .await()
-
-            if (receivedDoc.exists()) {
-                val status = receivedDoc.getString("status") ?: ""
-                val isUsed = receivedDoc.getBoolean("isUsed") ?: false
-                val claimedBy = receivedDoc.getString("claimedBy")
-                if (status.equals("Verified", ignoreCase = true) || status.equals("SUCCESS", ignoreCase = true)) {
-                    if (!isUsed || claimedBy == userId) {
-                        return@withContext true
-                    }
-                }
-            }
-
-            // Check 2: Check user's profile in /users/{userId}
-            val userDoc = firestore.collection("users")
-                .document(userId)
-                .get()
-                .await()
-
-            if (userDoc.exists()) {
-                val paymentStatus = userDoc.getString("payment_status")
-                    ?: userDoc.getString("paymentStatus")
-                    ?: if (userDoc.getBoolean("isPaymentVerified") == true) "SUCCESS" else "FAILED"
-                val lastVerifiedUtr = userDoc.getString("lastVerifiedUtr")
-                val lastTxnId = userDoc.getString("lastTransactionId")
-
-                val passExpiryDate = userDoc.getLong("pass_expiry_date")
-                    ?: userDoc.getLong("passExpiryDate")
-                    ?: userDoc.getLong("subscriptionExpiryTimestamp")
-                    ?: userDoc.getDate("subscriptionExpiry")?.time
-                    ?: 0L
-
-                val isSuccessStatus = paymentStatus.equals("SUCCESS", ignoreCase = true) || paymentStatus.equals("VERIFIED", ignoreCase = true)
-                val isMatchingId = trimmedId == lastVerifiedUtr || trimmedId == lastTxnId
-
-                if (isSuccessStatus && (isMatchingId || System.currentTimeMillis() < passExpiryDate)) {
-                    return@withContext true
-                }
-            }
-
-            // Check 3: Check in /pending_verifications/{paymentId}
-            val pendingDoc = firestore.collection("pending_verifications")
-                .document(trimmedId)
-                .get()
-                .await()
-
-            if (pendingDoc.exists()) {
-                val status = pendingDoc.getString("status") ?: ""
-                if (status.equals("COMPLETED", ignoreCase = true) || status.equals("VERIFIED", ignoreCase = true)) {
-                    return@withContext true
-                }
-            }
-
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "verifyPaymentWithBackend failed for $paymentId: ${e.message}", e)
-            false
+        paymentId: String,
+        preferredTier: PassTier? = null
+    ): Boolean {
+        return when (verifyPaymentWithBackendDetailed(context, paymentId, preferredTier)) {
+            is VerificationResult.Success -> true
+            else -> false
         }
     }
 
@@ -410,14 +500,18 @@ object PassManager {
     }
 
     /**
-     * Launches UPI Payment Gateway flow with automatic fallback to immediate
-     * test simulation if no UPI apps are present (e.g. testing in simulator / browser).
+     * Launches standard UPI Intent (Google Pay, PhonePe, Paytm, BHIM, etc.) for the user
+     * to complete the payment.
+     *
+     * IMPORTANT: Does NOT auto-verify or simulate payment success.
+     * The user MUST complete payment in their UPI app, then manually input their
+     * 12-digit UTR / UPI Reference Number to be verified against Firestore.
      */
     fun initiateUpiPayment(
         activity: Activity,
         passTier: PassTier,
-        onSuccess: (txnId: String) -> Unit,
-        onFailed: (reason: String) -> Unit
+        onSuccess: (txnId: String) -> Unit = {},
+        onFailed: (reason: String) -> Unit = {}
     ) {
         val intent = createUpiPaymentIntent(passTier)
         val packageManager = activity.packageManager
@@ -427,39 +521,21 @@ object PassManager {
             try {
                 val chooser = Intent.createChooser(intent, "Pay ₹${passTier.priceInInr} for ${passTier.title}")
                 activity.startActivity(chooser)
-                // In production, activity will handle onActivityResult from UPI app.
-                // For instant verification convenience, provide a callback hook.
-                onSuccess("UPI_${System.currentTimeMillis()}")
-            } catch (e: Exception) {
-                Log.w(TAG, "UPI intent launch failed: ${e.message}. Using fallback payment handler.")
-                simulatePaymentSuccess(activity, passTier, onSuccess)
-            }
-        } else {
-            // Simulator or device without UPI app (Google Pay, PhonePe, Paytm, BHIM)
-            Log.i(TAG, "No native UPI app found. Executing payment gateway simulation.")
-            simulatePaymentSuccess(activity, passTier, onSuccess)
-        }
-    }
-
-    /**
-     * Fallback payment gateway simulation stub for instant verification and sandbox testing.
-     */
-    private fun simulatePaymentSuccess(
-        context: Context,
-        passTier: PassTier,
-        onSuccess: (txnId: String) -> Unit
-    ) {
-        val simulatedTxnId = "SIM_UPI_${System.currentTimeMillis()}"
-        scope.launch {
-            val result = activatePassViaPayment(context, passTier, simulatedTxnId)
-            if (result.isSuccess) {
                 Toast.makeText(
-                    context,
-                    "Payment of ₹${passTier.priceInInr} Successful! ${passTier.title} activated.",
+                    activity,
+                    "Complete payment in your UPI app, then enter the 12-digit UTR/Ref number to verify.",
                     Toast.LENGTH_LONG
                 ).show()
-                onSuccess(simulatedTxnId)
+            } catch (e: Exception) {
+                Log.e(TAG, "UPI intent launch failed: ${e.message}", e)
+                val msg = "Failed to launch UPI app: ${e.localizedMessage ?: "Unknown error"}"
+                Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
+                onFailed(msg)
             }
+        } else {
+            val msg = "No UPI apps found (Google Pay, PhonePe, Paytm). Please install a UPI app to pay."
+            Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
+            onFailed(msg)
         }
     }
 
