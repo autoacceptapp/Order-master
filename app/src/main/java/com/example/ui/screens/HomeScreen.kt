@@ -66,16 +66,23 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.AccessStatus
 import com.example.ActivityLogEntry
 import com.example.AppSettings
+import com.example.LicenseManager
 import com.example.LogSeverity
 import com.example.PermissionUtils
 import com.example.R
 import com.example.auth.GoogleAuthManager
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.Lock
 import com.example.ui.OrderMasterViewModel
+import com.example.ui.theme.AmberAccent
+import com.example.ui.theme.PrimaryEmerald
 import java.util.Locale
 
 @Composable
@@ -84,6 +91,7 @@ fun HomeScreen(
     onNavigateToSettings: () -> Unit,
     onOpenRestrictedSettingsGuide: () -> Unit,
     onTriggerGoogleSignIn: () -> Unit = {},
+    onNavigateToSubscription: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -91,6 +99,8 @@ fun HomeScreen(
     val logs by viewModel.liveLogs.collectAsState()
     val ttsStatus by viewModel.ttsStatus.collectAsState()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
+    val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val pointsBalance by LicenseManager.pointsBalance.collectAsState()
 
     val isServiceRunningInSystem = AppSettings.isAccessibilityServiceEnabled(context)
     val isAutomationActive = settingsState.isAutoAcceptEnabled && isServiceRunningInSystem
@@ -149,6 +159,15 @@ fun HomeScreen(
             userName = userAuthState.userName,
             userEmail = userAuthState.userEmail,
             onTriggerSignIn = onTriggerGoogleSignIn
+        )
+
+        // =========================================================================================
+        // COMPONENT 1.6: CAPTAIN PASS & WALLET STATUS
+        // =========================================================================================
+        LicenseStatusHomeCard(
+            accessStatus = accessStatus,
+            pointsBalance = pointsBalance,
+            onOpenStore = onNavigateToSubscription
         )
 
         // =========================================================================================
@@ -890,6 +909,147 @@ private fun GoogleAuthStatusCard(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Compact, interactive card displaying the Captain's Active Pass / Trial countdown and Points Wallet.
+ */
+@Composable
+private fun LicenseStatusHomeCard(
+    accessStatus: AccessStatus,
+    pointsBalance: Int,
+    onOpenStore: () -> Unit
+) {
+    val currentAccess = accessStatus
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("home_license_status_card"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = CardDefaults.outlinedCardBorder().copy(
+            brush = Brush.horizontalGradient(
+                listOf(
+                    when (currentAccess) {
+                        is AccessStatus.PassActive -> PrimaryEmerald.copy(alpha = 0.6f)
+                        is AccessStatus.TrialActive -> Color(0xFF0284C7).copy(alpha = 0.6f)
+                        else -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+                    },
+                    AmberAccent.copy(alpha = 0.3f)
+                )
+            ),
+            width = 1.5.dp
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = when (currentAccess) {
+                        is AccessStatus.PassActive -> PrimaryEmerald.copy(alpha = 0.15f)
+                        is AccessStatus.TrialActive -> Color(0xFF0284C7).copy(alpha = 0.15f)
+                        else -> MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
+                    },
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = when (currentAccess) {
+                                is AccessStatus.PassActive -> Icons.Default.CardGiftcard
+                                is AccessStatus.TrialActive -> Icons.Default.FlashOn
+                                else -> Icons.Default.Lock
+                            },
+                            contentDescription = null,
+                            tint = when (currentAccess) {
+                                is AccessStatus.PassActive -> PrimaryEmerald
+                                is AccessStatus.TrialActive -> Color(0xFF0284C7)
+                                else -> MaterialTheme.colorScheme.error
+                            },
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = when (currentAccess) {
+                                is AccessStatus.PassActive -> currentAccess.passTier.title
+                                is AccessStatus.TrialActive -> "2-Day Free Trial"
+                                is AccessStatus.Expired -> "Access Expired"
+                                AccessStatus.Loading -> "Verifying..."
+                            },
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "• $pointsBalance Pts",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                color = AmberAccent
+                            )
+                        )
+                    }
+                    Text(
+                        text = when (currentAccess) {
+                            is AccessStatus.PassActive -> "Expires in ${currentAccess.formattedRemaining}"
+                            is AccessStatus.TrialActive -> "Remaining: ${currentAccess.formattedRemaining}"
+                            is AccessStatus.Expired -> "Clicks paused • Get a pass"
+                            AccessStatus.Loading -> "Checking cloud license..."
+                        },
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Button(
+                onClick = onOpenStore,
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = when (currentAccess) {
+                        is AccessStatus.PassActive -> MaterialTheme.colorScheme.primaryContainer
+                        is AccessStatus.TrialActive -> MaterialTheme.colorScheme.secondaryContainer
+                        else -> AmberAccent
+                    },
+                    contentColor = when (currentAccess) {
+                        is AccessStatus.PassActive -> MaterialTheme.colorScheme.onPrimaryContainer
+                        is AccessStatus.TrialActive -> MaterialTheme.colorScheme.onSecondaryContainer
+                        else -> Color.Black
+                    }
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier.testTag("home_store_pass_button")
+            ) {
+                Text(
+                    text = when (currentAccess) {
+                        is AccessStatus.PassActive -> "Manage"
+                        is AccessStatus.TrialActive -> "Store"
+                        else -> "Buy Pass"
+                    },
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                )
             }
         }
     }

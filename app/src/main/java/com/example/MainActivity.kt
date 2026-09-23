@@ -133,6 +133,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         AppSettings.init(this)
+        LicenseManager.init(this)
         refreshServiceStatus()
 
         // Ensure update notification channel is registered
@@ -173,6 +174,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Automatically refreshes the accessibility service status and syncs overlay
         refreshServiceStatus()
+        LicenseManager.refreshAccessStatus()
         AppSettings.syncOverlayService(this)
     }
 

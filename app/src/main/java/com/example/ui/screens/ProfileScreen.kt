@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,6 +40,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Button
@@ -62,12 +64,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.BuildConfig
+import com.example.AccessStatus
+import com.example.LicenseManager
 import com.example.R
 import com.example.auth.GoogleAuthManager
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
+import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Logout
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import com.example.ui.OrderMasterViewModel
@@ -80,12 +84,15 @@ import com.example.ui.theme.PrimaryEmerald
 fun ProfileScreen(
     viewModel: OrderMasterViewModel,
     onNavigateToReferAndEarn: () -> Unit = {},
+    onNavigateToSubscription: () -> Unit = {},
     onTriggerGoogleSignIn: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
+    val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val pointsBalance by LicenseManager.pointsBalance.collectAsState()
     val totalOrders by viewModel.totalOrdersCount.collectAsState()
     val acceptedOrders by viewModel.acceptedOrdersCount.collectAsState()
     val acceptanceRate = if (totalOrders > 0) {
@@ -400,6 +407,103 @@ fun ProfileScreen(
                                 )
                             )
                         }
+                    }
+                }
+            }
+        }
+
+        // 1.5. Captain Passes & Points Wallet Card
+        item {
+            ElevatedCard(
+                onClick = onNavigateToSubscription,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("profile_subscription_card"),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        val currentAccess = accessStatus
+                        Surface(
+                            shape = CircleShape,
+                            color = when (currentAccess) {
+                                is AccessStatus.PassActive -> PrimaryEmerald.copy(alpha = 0.15f)
+                                is AccessStatus.TrialActive -> Color(0xFF0284C7).copy(alpha = 0.15f)
+                                else -> MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
+                            },
+                            modifier = Modifier.size(46.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.CardGiftcard,
+                                    contentDescription = null,
+                                    tint = when (currentAccess) {
+                                        is AccessStatus.PassActive -> PrimaryEmerald
+                                        is AccessStatus.TrialActive -> Color(0xFF0284C7)
+                                        else -> AmberAccent
+                                    },
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+                        }
+
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "Pass & Points Wallet",
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = AmberAccent.copy(alpha = 0.2f)
+                                ) {
+                                    Text(
+                                        text = "$pointsBalance Pts",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFB45309)
+                                        ),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = when (currentAccess) {
+                                    is AccessStatus.PassActive -> "${currentAccess.passTier.title} Active • ${currentAccess.formattedRemaining}"
+                                    is AccessStatus.TrialActive -> "2-Day Free Trial • ${currentAccess.formattedRemaining} left"
+                                    is AccessStatus.Expired -> "Trial Ended • Tap to activate a pass"
+                                    AccessStatus.Loading -> "Checking cloud license..."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    FilledTonalButton(
+                        onClick = onNavigateToSubscription,
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        modifier = Modifier.testTag("profile_manage_subscription_button")
+                    ) {
+                        Text("Store", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
                     }
                 }
             }

@@ -366,6 +366,17 @@ class FloatingOverlayService : Service() {
      * Toggles between Full Automation (Green) and Voice-Only (Red) mode.
      */
     private fun toggleMode() {
+        if (!LicenseManager.isAccessGranted()) {
+            Toast.makeText(this, "Subscription/Trial Expired! Tap & hold to open Store.", Toast.LENGTH_LONG).show()
+            AppSettings.addLog(
+                title = "Overlay Blocked - Pass Expired",
+                message = "Automation clicks locked. Please renew pass in the Store.",
+                severity = LogSeverity.WARNING
+            )
+            updateVisualState(false)
+            return
+        }
+
         val nextIsAutoClick = AppSettings.toggleAutoClick(this)
         updateVisualState(nextIsAutoClick)
 
@@ -387,10 +398,14 @@ class FloatingOverlayService : Service() {
      * Updates the button background color and sub-badge:
      * - Green: Full Automation Mode
      * - Red: Voice-Only Mode
+     * - Dark Red/Lock: Expired
      */
     private fun updateVisualState(isAutoClickEnabled: Boolean) {
-        val bgColor = if (isAutoClickEnabled) COLOR_FULL_AUTO_BG else COLOR_VOICE_ONLY_BG
-        val strokeColor = if (isAutoClickEnabled) COLOR_FULL_AUTO_BORDER else COLOR_VOICE_ONLY_BORDER
+        val isLicensed = LicenseManager.isAccessGranted()
+        val effectiveAutoClick = isLicensed && isAutoClickEnabled
+
+        val bgColor = if (effectiveAutoClick) COLOR_FULL_AUTO_BG else COLOR_VOICE_ONLY_BG
+        val strokeColor = if (effectiveAutoClick) COLOR_FULL_AUTO_BORDER else COLOR_VOICE_ONLY_BORDER
 
         val bgDrawable = GradientDrawable().apply {
             shape = GradientDrawable.OVAL
@@ -399,7 +414,11 @@ class FloatingOverlayService : Service() {
         }
 
         overlayCard?.background = bgDrawable
-        tvMode?.text = if (isAutoClickEnabled) "AUTO" else "VOICE"
+        tvMode?.text = when {
+            !isLicensed -> "LOCK"
+            effectiveAutoClick -> "AUTO"
+            else -> "VOICE"
+        }
     }
 
     /**

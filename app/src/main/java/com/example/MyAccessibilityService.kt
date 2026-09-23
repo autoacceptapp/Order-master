@@ -131,6 +131,12 @@ open class MyAccessibilityService : AccessibilityService() {
             return
         }
 
+        // 3b. License Enforcement: Ensure trial or subscription pass is active
+        if (!LicenseManager.isAccessGranted()) {
+            Log.w(TAG, "Access expired: Automation blocked. Active trial or subscription pass required.")
+            return
+        }
+
         // 4. Event Debouncing & Throttle: minimum 1000ms delay between processing events to prevent millisecond spam
         val currentTime = System.currentTimeMillis()
         if (isPendingExecution || (currentTime - lastProcessTime < DEBOUNCE_WINDOW_MS)) {

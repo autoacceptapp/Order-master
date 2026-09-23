@@ -15,11 +15,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.outlined.CardGiftcard
 import androidx.compose.material.icons.outlined.ElectricBolt
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Person
@@ -62,6 +64,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.example.AppSettings
 import com.example.AppSettingsScreen
+import com.example.LicenseManager
 import com.example.RestrictedSettingsGuideDialog
 import com.example.auth.GoogleAuthManager
 import com.example.ui.components.GoogleSignInBottomSheet
@@ -70,6 +73,8 @@ import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.OrderHistoryScreen
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.ReferAndEarnScreen
+import com.example.ui.screens.SubscriptionScreen
+import com.example.ui.theme.AmberAccent
 
 sealed class Screen(val route: String, val title: String) {
     data object Home : Screen("home", "Order Master")
@@ -78,6 +83,7 @@ sealed class Screen(val route: String, val title: String) {
     data object Profile : Screen("profile", "Captain Profile")
     data object Settings : Screen("settings", "Settings & Permissions")
     data object ReferAndEarn : Screen("refer_and_earn", "Refer & Earn")
+    data object Subscription : Screen("subscription", "Pass & Store")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -102,117 +108,146 @@ fun OrderMasterApp(
         }
     }
 
+    // Sync cloud licensing and points whenever Gmail auth state updates
+    LaunchedEffect(userAuthState.userEmail) {
+        LicenseManager.onUserAuthChanged(userAuthState.userEmail, null)
+    }
+
     val isMainTab = currentRoute in listOf(Screen.Home.route, Screen.Filters.route, Screen.History.route)
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
-                ),
-                navigationIcon = {
-                    if (!isMainTab) {
-                        IconButton(
-                            onClick = { navController.popBackStack() },
-                            modifier = Modifier.testTag("top_bar_back_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Navigate Back"
-                            )
-                        }
-                    } else {
-                        // Branding Icon
-                        Box(
-                            modifier = Modifier
-                                .padding(start = 16.dp, end = 4.dp)
-                                .size(36.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    Brush.linearGradient(
-                                        listOf(
-                                            MaterialTheme.colorScheme.primary,
-                                            MaterialTheme.colorScheme.tertiary
+            if (currentRoute != Screen.Subscription.route) {
+                TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        titleContentColor = MaterialTheme.colorScheme.onSurface
+                    ),
+                    navigationIcon = {
+                        if (!isMainTab) {
+                            IconButton(
+                                onClick = { navController.popBackStack() },
+                                modifier = Modifier.testTag("top_bar_back_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = "Navigate Back"
+                                )
+                            }
+                        } else {
+                            // Branding Icon
+                            Box(
+                                modifier = Modifier
+                                    .padding(start = 16.dp, end = 4.dp)
+                                    .size(36.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(
+                                                MaterialTheme.colorScheme.primary,
+                                                MaterialTheme.colorScheme.tertiary
+                                            )
                                         )
-                                    )
-                                ),
-                            contentAlignment = Alignment.Center
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.ElectricBolt,
+                                    contentDescription = "Order Master Brand",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    },
+                    title = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = when (currentRoute) {
+                                    Screen.Home.route -> "Order Master"
+                                    Screen.Filters.route -> "Filter Rules"
+                                    Screen.History.route -> "Order History"
+                                    Screen.Profile.route -> "Captain Profile"
+                                    Screen.Settings.route -> "Settings & Permissions"
+                                    Screen.ReferAndEarn.route -> "Refer & Earn"
+                                    Screen.Subscription.route -> "Captain Store"
+                                    else -> "Order Master"
+                                },
+                                style = MaterialTheme.typography.titleLarge.copy(
+                                    fontWeight = FontWeight.Black,
+                                    letterSpacing = (-0.5).sp
+                                )
+                            )
+                        }
+                    },
+                    actions = {
+                        // Pass & Store Button
+                        IconButton(
+                            onClick = {
+                                if (currentRoute != Screen.Subscription.route) {
+                                    navController.navigate(Screen.Subscription.route) {
+                                        launchSingleTop = true
+                                    }
+                                }
+                            },
+                            modifier = Modifier.testTag("top_bar_store_button")
                         ) {
                             Icon(
-                                imageVector = Icons.Outlined.ElectricBolt,
-                                contentDescription = "Order Master Brand",
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
+                                imageVector = if (currentRoute == Screen.Subscription.route) Icons.Filled.CardGiftcard else Icons.Outlined.CardGiftcard,
+                                contentDescription = "Pass & Store",
+                                tint = if (currentRoute == Screen.Subscription.route)
+                                    AmberAccent
+                                else
+                                    MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        // Profile Icon Button
+                        IconButton(
+                            onClick = {
+                                if (currentRoute != Screen.Profile.route) {
+                                    navController.navigate(Screen.Profile.route) {
+                                        launchSingleTop = true
+                                    }
+                                }
+                            },
+                            modifier = Modifier.testTag("top_bar_profile_button")
+                        ) {
+                            Icon(
+                                imageVector = if (currentRoute == Screen.Profile.route) Icons.Filled.Person else Icons.Outlined.Person,
+                                contentDescription = "Profile",
+                                tint = if (currentRoute == Screen.Profile.route)
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // Settings Icon Button
+                        IconButton(
+                            onClick = {
+                                if (currentRoute != Screen.Settings.route) {
+                                    navController.navigate(Screen.Settings.route) {
+                                        launchSingleTop = true
+                                    }
+                                }
+                            },
+                            modifier = Modifier.testTag("top_bar_settings_button")
+                        ) {
+                            Icon(
+                                imageVector = if (currentRoute == Screen.Settings.route) Icons.Filled.Settings else Icons.Outlined.Settings,
+                                contentDescription = "Settings",
+                                tint = if (currentRoute == Screen.Settings.route)
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
-                },
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = when (currentRoute) {
-                                Screen.Home.route -> "Order Master"
-                                Screen.Filters.route -> "Filter Rules"
-                                Screen.History.route -> "Order History"
-                                Screen.Profile.route -> "Captain Profile"
-                                Screen.Settings.route -> "Settings & Permissions"
-                                Screen.ReferAndEarn.route -> "Refer & Earn"
-                                else -> "Order Master"
-                            },
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = FontWeight.Black,
-                                letterSpacing = (-0.5).sp
-                            )
-                        )
-                    }
-                },
-                actions = {
-                    // Profile Icon Button
-                    IconButton(
-                        onClick = {
-                            if (currentRoute != Screen.Profile.route) {
-                                navController.navigate(Screen.Profile.route) {
-                                    launchSingleTop = true
-                                }
-                            }
-                        },
-                        modifier = Modifier.testTag("top_bar_profile_button")
-                    ) {
-                        Icon(
-                            imageVector = if (currentRoute == Screen.Profile.route) Icons.Filled.Person else Icons.Outlined.Person,
-                            contentDescription = "Profile",
-                            tint = if (currentRoute == Screen.Profile.route)
-                                MaterialTheme.colorScheme.primary
-                            else
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    // Settings Icon Button
-                    IconButton(
-                        onClick = {
-                            if (currentRoute != Screen.Settings.route) {
-                                navController.navigate(Screen.Settings.route) {
-                                    launchSingleTop = true
-                                }
-                            }
-                        },
-                        modifier = Modifier.testTag("top_bar_settings_button")
-                    ) {
-                        Icon(
-                            imageVector = if (currentRoute == Screen.Settings.route) Icons.Filled.Settings else Icons.Outlined.Settings,
-                            contentDescription = "Settings",
-                            tint = if (currentRoute == Screen.Settings.route)
-                                MaterialTheme.colorScheme.primary
-                            else
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            )
+                )
+            }
         },
         bottomBar = {
             AnimatedVisibility(
@@ -311,6 +346,7 @@ fun OrderMasterApp(
                 HomeScreen(
                     viewModel = viewModel,
                     onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
+                    onNavigateToSubscription = { navController.navigate(Screen.Subscription.route) },
                     onOpenRestrictedSettingsGuide = { showRestrictedSettingsGuide = true },
                     onTriggerGoogleSignIn = { showGoogleSignInSheet = true }
                 )
@@ -330,6 +366,16 @@ fun OrderMasterApp(
                     onNavigateToReferAndEarn = {
                         navController.navigate(Screen.ReferAndEarn.route)
                     },
+                    onNavigateToSubscription = {
+                        navController.navigate(Screen.Subscription.route)
+                    },
+                    onTriggerGoogleSignIn = { showGoogleSignInSheet = true }
+                )
+            }
+
+            composable(Screen.Subscription.route) {
+                SubscriptionScreen(
+                    onNavigateBack = { navController.popBackStack() },
                     onTriggerGoogleSignIn = { showGoogleSignInSheet = true }
                 )
             }
