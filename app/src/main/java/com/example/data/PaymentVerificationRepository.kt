@@ -1,6 +1,8 @@
 package com.example.data
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
 import com.example.AppSettings
 import com.example.DeviceUtils
@@ -10,6 +12,7 @@ import com.example.PassTier
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.CoroutineScope
@@ -119,12 +122,31 @@ class PaymentVerificationRepository(
     }
 
     /**
+     * Checks if active network connectivity is available.
+     */
+    fun isNetworkAvailable(context: Context): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+            val activeNetwork = cm.activeNetwork ?: return false
+            val capabilities = cm.getNetworkCapabilities(activeNetwork) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
      * Checks Firestore user profile `/users/{userId}` for active pass status:
      * if (currentTime < passExpiryDate && paymentStatus == "SUCCESS") -> Pass Active.
      * else -> Pass Expired / Inactive.
      */
     suspend fun checkIsPaymentVerified(context: Context): Boolean {
         val userId = resolveUserId(context)
+        if (!isNetworkAvailable(context)) {
+            Log.d(TAG, "Device is offline. Keeping cached pass status for user $userId")
+            return PassManager.isPassActive(context)
+        }
+
         return try {
             val doc = firestore.collection(COLL_USERS).document(userId).get().await()
             if (doc.exists()) {
@@ -158,8 +180,17 @@ class PaymentVerificationRepository(
                 AppSettings.setPassExpiryTimestamp(context, 0L)
                 false
             }
+        } catch (e: FirebaseFirestoreException) {
+            if (e.code == FirebaseFirestoreException.Code.UNAVAILABLE ||
+                e.message?.contains("offline", ignoreCase = true) == true
+            ) {
+                Log.w(TAG, "Firestore unavailable or client offline: ${e.message}. Using cached pass status.")
+            } else {
+                Log.w(TAG, "Firestore exception in checkIsPaymentVerified: ${e.message}")
+            }
+            PassManager.isPassActive(context)
         } catch (e: Exception) {
-            Log.e(TAG, "checkIsPaymentVerified query failed: ${e.message}", e)
+            Log.w(TAG, "checkIsPaymentVerified query failed: ${e.message}")
             PassManager.isPassActive(context)
         }
     }

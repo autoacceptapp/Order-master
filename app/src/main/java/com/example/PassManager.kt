@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -20,6 +22,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.tasks.await
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.example.data.PaymentVerificationRepository
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -320,6 +323,20 @@ object PassManager {
     }
 
     /**
+     * Checks if active network connectivity is available.
+     */
+    fun isNetworkAvailable(context: Context): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+            val activeNetwork = cm.activeNetwork ?: return false
+            val capabilities = cm.getNetworkCapabilities(activeNetwork) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
      * 3. Server-Side / Expiry Date Check:
      * User ID ke saath payment_status aur pass_expiry_date store karein.
      * Jab user app khole (chahe Accessibility ON ho ya OFF), Server check karein:
@@ -327,6 +344,11 @@ object PassManager {
      * else -> Pass Expired / Inactive.
      */
     suspend fun verifyServerPassStatus(context: Context): Boolean = withContext(Dispatchers.IO) {
+        if (!isNetworkAvailable(context)) {
+            Log.d(TAG, "Device is offline. Keeping cached local pass status.")
+            return@withContext isPassActive(context)
+        }
+
         try {
             val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
             val doc = FirebaseFirestore.getInstance()
@@ -369,8 +391,19 @@ object PassManager {
                 }
                 false
             }
+        } catch (e: FirebaseFirestoreException) {
+            if (e.code == FirebaseFirestoreException.Code.UNAVAILABLE ||
+                e.message?.contains("offline", ignoreCase = true) == true
+            ) {
+                Log.w(TAG, "Firestore unavailable or client offline: ${e.message}. Using cached pass status.")
+            } else {
+                Log.w(TAG, "Firestore exception in verifyServerPassStatus: ${e.message}")
+            }
+            withContext(Dispatchers.Main) {
+                isPassActive(context)
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "verifyServerPassStatus error: ${e.message}", e)
+            Log.w(TAG, "verifyServerPassStatus error: ${e.message}")
             withContext(Dispatchers.Main) {
                 isPassActive(context)
             }
