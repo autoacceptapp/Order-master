@@ -333,10 +333,16 @@ object ApkDownloader {
         } catch (e: Exception) {
             Log.e(TAG, "Exception handling download complete", e)
             _downloadState.value = DownloadState.Error("Error finalizing downloaded file: ${e.localizedMessage}")
+        } finally {
+            // Cleanly unregister receiver when download reaches a terminal state to prevent leaks
+            unregisterReceiver(context)
         }
     }
 
+    private var registeredContext: Context? = null
+
     private fun registerReceiver(context: Context) {
+        val appContext = context.applicationContext
         if (downloadCompleteReceiver != null) return
 
         val receiver = object : BroadcastReceiver() {
@@ -344,29 +350,40 @@ object ApkDownloader {
                 if (intent?.action == DownloadManager.ACTION_DOWNLOAD_COMPLETE) {
                     val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
                     if (id > 0) {
-                        handleExternalDownloadComplete(recvContext ?: context, id)
+                        handleExternalDownloadComplete(recvContext ?: appContext, id)
                     }
                 }
             }
         }
 
         downloadCompleteReceiver = receiver
+        registeredContext = appContext
         val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
-        } else {
-            context.registerReceiver(receiver, filter)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                appContext.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                appContext.registerReceiver(receiver, filter)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register download receiver", e)
         }
     }
 
-    private fun unregisterReceiver(context: Context) {
-        downloadCompleteReceiver?.let {
+    /**
+     * Safely unregisters the dynamic broadcast receiver avoiding Activity/Context leaks.
+     */
+    fun unregisterReceiver(context: Context? = null) {
+        val targetContext = context?.applicationContext ?: registeredContext
+        downloadCompleteReceiver?.let { receiver ->
             try {
-                context.unregisterReceiver(it)
-            } catch (_: Exception) {
+                targetContext?.unregisterReceiver(receiver)
+            } catch (e: Exception) {
+                Log.w(TAG, "Safe unregister receiver suppressed exception: ${e.message}")
             }
             downloadCompleteReceiver = null
+            registeredContext = null
         }
     }
 
@@ -377,21 +394,32 @@ object ApkDownloader {
         progressPollingJob?.cancel()
         progressPollingJob = null
 
-        if (activeDownloadId > 0 && context != null) {
-            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+        val targetContext = context?.applicationContext ?: registeredContext
+
+        if (activeDownloadId > 0 && targetContext != null) {
+            val dm = targetContext.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
             try {
                 dm?.remove(activeDownloadId)
             } catch (_: Exception) {
             }
         }
 
-        if (context != null) {
-            unregisterReceiver(context)
-            clearSavedDownload(context)
+        unregisterReceiver(targetContext)
+        if (targetContext != null) {
+            clearSavedDownload(targetContext)
         }
 
         activeDownloadId = -1L
         _downloadState.value = DownloadState.Idle
+    }
+
+    /**
+     * Public cleanup method invoked during app lifecycle end or dialog dismissal.
+     */
+    fun cleanup(context: Context? = null) {
+        progressPollingJob?.cancel()
+        progressPollingJob = null
+        unregisterReceiver(context)
     }
 
     fun resetState() {

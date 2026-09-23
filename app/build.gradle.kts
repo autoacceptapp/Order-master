@@ -11,29 +11,22 @@ plugins {
 
 android {
   namespace = "com.example"
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
+  compileSdk = 36
 
   defaultConfig {
     applicationId = "com.aistudio.smarttext.wkjm"
     minSdk = 24
     targetSdk = 36
 
-    // --- Version Management (Semantic Versioning) ---
-    // versionMajor: Breaking changes or architecture re-writes
-    // versionMinor: Feature additions or major enhancements
-    // versionPatch: Bug fixes, UI polish, and maintenance
     val versionMajor = 1
     val versionMinor = 0
     val versionPatch = 2
 
-    // Version Code: Numeric counter for Google Play / system package manager
-    // Supports CI environment override (e.g., GitHub Actions run_number via -PVERSION_CODE)
     val appVersionCode = project.findProperty("VERSION_CODE")?.toString()?.toIntOrNull()
         ?: project.findProperty("versionCode")?.toString()?.toIntOrNull()
         ?: System.getenv("VERSION_CODE")?.toIntOrNull()
         ?: (versionMajor * 10000 + versionMinor * 100 + versionPatch)
 
-    // Version Name: Human-readable SemVer string (e.g., "1.0.2")
     val appVersionName = project.findProperty("VERSION_NAME")?.toString()
         ?: project.findProperty("versionName")?.toString()
         ?: System.getenv("VERSION_NAME")

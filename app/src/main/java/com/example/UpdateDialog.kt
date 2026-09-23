@@ -36,6 +36,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -79,6 +80,15 @@ fun UpdateDialog(
 
     var needsInstallPermission by remember {
         mutableStateOf(!ApkDownloader.canRequestPackageInstalls(context))
+    }
+
+    // Safe lifecycle cleanup: ensures broadcast receiver is unregistered if user closes/navigates away
+    DisposableEffect(Unit) {
+        onDispose {
+            if (ApkDownloader.downloadState.value !is DownloadState.Downloading) {
+                ApkDownloader.cleanup(context)
+            }
+        }
     }
 
     // Auto-prompt installation once the APK is ready

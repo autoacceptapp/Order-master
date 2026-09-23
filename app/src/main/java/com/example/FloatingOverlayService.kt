@@ -170,7 +170,9 @@ class FloatingOverlayService : Service() {
         if (intent?.hasExtra(EXTRA_FARE) == true) {
             val fare = intent.getDoubleExtra(EXTRA_FARE, -1.0)
             if (fare >= 0) {
+                AppSettings.updateLastAcceptedFare(this, fare)
                 updateFareText(fare)
+                Log.d(TAG, "Floating overlay updated fare to: ₹$fare and refreshed tvFare UI")
             }
         }
 
