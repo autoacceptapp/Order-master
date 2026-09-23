@@ -62,11 +62,7 @@ android {
         keyAlias = System.getenv("KEY_ALIAS") ?: "androiddebugkey"
         keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: "android"
       } else {
-        // Fallback to debug keystore credentials so the APK build process never crashes
-        storeFile = file("${rootDir}/debug.keystore")
-        storePassword = "android"
-        keyAlias = "androiddebugkey"
-        keyPassword = "android"
+        throw GradleException("Release keystore missing! Please provide KEYSTORE_BASE64 in GitHub Secrets.")
       }
     }
   }
@@ -111,7 +107,7 @@ secrets {
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
 }
 
-googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
+googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.ERROR }
 
 dependencies {
   // Core Android & View Architecture

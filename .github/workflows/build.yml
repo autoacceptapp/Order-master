@@ -57,8 +57,23 @@ jobs:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
           echo "=== Setting up Keystore & Google Services Secrets ==="
+          
+          # STRICT CHECK 1: Firebase Google Services JSON
+          if [ -n "${GOOGLE_SERVICES_JSON}" ]; then
+            echo "Writing GOOGLE_SERVICES_JSON directly into app/google-services.json..."
+            echo "${GOOGLE_SERVICES_JSON}" > app/google-services.json
+            if [ -s "app/google-services.json" ]; then
+              echo "✅ app/google-services.json written successfully ($(stat -c%s app/google-services.json) bytes)."
+            else
+              echo "❌ ERROR: Decoded app/google-services.json is empty!" >&2
+              exit 1
+            fi
+          else
+            echo "❌ ERROR: GOOGLE_SERVICES_JSON secret is missing from repository secrets! Aborting build." >&2
+            exit 1
+          fi
 
-          # Decode secrets.KEYSTORE_BASE64 into app/release.jks
+          # STRICT CHECK 2: Release Keystore
           if [ -n "${KEYSTORE_BASE64}" ]; then
             echo "Decoding KEYSTORE_BASE64 into app/release.jks..."
             echo "${KEYSTORE_BASE64}" | base64 -d > app/release.jks
@@ -69,25 +84,8 @@ jobs:
               exit 1
             fi
           else
-            echo "⚠️ Notice: KEYSTORE_BASE64 secret not found in repository secrets."
-          fi
-
-          # Write secrets.GOOGLE_SERVICES_JSON directly into app/google-services.json
-          if [ -n "${GOOGLE_SERVICES_JSON}" ]; then
-            echo "Writing GOOGLE_SERVICES_JSON directly into app/google-services.json..."
-            echo "${GOOGLE_SERVICES_JSON}" > app/google-services.json
-            echo "✅ app/google-services.json written successfully ($(stat -c%s app/google-services.json) bytes)."
-          else
-            echo "⚠️ Notice: GOOGLE_SERVICES_JSON secret not found in repository secrets."
-          fi
-
-          # Restore fallback debug.keystore from repository base64 if present
-          if [ -f "./debug.keystore.base64" ] && [ ! -f "./debug.keystore" ]; then
-            echo "Restoring permanent debug.keystore from ./debug.keystore.base64..."
-            base64 -d ./debug.keystore.base64 > ./debug.keystore
-            echo "✅ Permanent debug.keystore restored ($(stat -c%s ./debug.keystore) bytes)."
-          elif [ -f "./debug.keystore" ]; then
-            echo "Found existing ./debug.keystore."
+            echo "❌ ERROR: KEYSTORE_BASE64 secret is missing from repository secrets! Aborting build." >&2
+            exit 1
           fi
 
       # Step 5: Verify Static SHA-1 Fingerprints of the Keystores
