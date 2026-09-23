@@ -368,13 +368,14 @@ class FloatingOverlayService : Service() {
      * Toggles between Full Automation (Green) and Voice-Only (Red) mode.
      */
     private fun toggleMode() {
-        if (!LicenseManager.isAccessGranted()) {
-            Toast.makeText(this, "Subscription/Trial Expired! Tap & hold to open Store.", Toast.LENGTH_LONG).show()
+        if (!PassManager.isAccessGranted(this)) {
+            Toast.makeText(this, "Subscription Expired! Opening Captain Store...", Toast.LENGTH_LONG).show()
             AppSettings.addLog(
                 title = "Overlay Blocked - Pass Expired",
                 message = "Automation clicks locked. Please renew pass in the Store.",
                 severity = LogSeverity.WARNING
             )
+            PassManager.openStore(this)
             updateVisualState(false)
             return
         }

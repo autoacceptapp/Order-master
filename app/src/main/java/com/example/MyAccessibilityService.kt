@@ -131,9 +131,10 @@ open class MyAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 3b. License Enforcement: Ensure trial or subscription pass is active
-        if (!LicenseManager.isAccessGranted()) {
-            Log.w(TAG, "Access expired: Automation blocked. Active trial or subscription pass required.")
+        // 3b. Pass & License Enforcement: Ensure active pass or active trial
+        if (!PassManager.isAccessGranted(this)) {
+            Log.w(TAG, "Access expired: Automation blocked. Active subscription pass required.")
+            PassManager.notifyAccessExpired(this)
             return
         }
 

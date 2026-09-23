@@ -1,8 +1,8 @@
 package com.example.ui.screens
 
+import android.app.Activity
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -11,9 +11,6 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,17 +29,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountBalanceWallet
-import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ElectricBolt
-import androidx.compose.material.icons.filled.Fingerprint
-import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Payment
+import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material3.AlertDialog
@@ -75,37 +72,50 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import com.example.AccessStatus
 import com.example.DeviceUtils
 import com.example.LicenseManager
+import com.example.PassManager
 import com.example.PassTier
 import com.example.R
 import com.example.auth.GoogleAuthManager
 import com.example.ui.theme.AmberAccent
 import com.example.ui.theme.PrimaryEmerald
-import com.example.ui.theme.PrimaryEmeraldDark
-import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
+/**
+ * SubscriptionScreen - Captain Store, Pass Management & Smart Dynamic Buttons.
+ *
+ * Requirements:
+ * 1. Points Recharge completely removed (no top-up dialogs).
+ * 2. Pricing & Conversion:
+ *    - Daily: ₹9 INR OR 100 Points (24 Hours)
+ *    - Weekly: ₹49 INR OR 500 Points (7 Days)
+ *    - Monthly: ₹179 INR OR 1500 Points (28 Days)
+ * 3. Smart Button UI Logic:
+ *    - userPoints >= pass.pointsCost:
+ *      * Primary: "Buy with X Points"
+ *      * Secondary: "Or Pay ₹X via UPI"
+ *    - userPoints < pass.pointsCost:
+ *      * Primary: "Pay ₹X via UPI"
+ *      * Status: "X Points Required (You have Y pts)"
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SubscriptionScreen(
     onNavigateBack: () -> Unit,
-    onTriggerGoogleSignIn: () -> Unit = {},
+    onTriggerGoogleSignIn: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -115,8 +125,8 @@ fun SubscriptionScreen(
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
 
-    var showTopUpDialog by remember { mutableStateOf(false) }
-    var selectedPassForPurchase by remember { mutableStateOf<PassTier?>(null) }
+    var selectedPassForPointsPurchase by remember { mutableStateOf<PassTier?>(null) }
+    var selectedPassForUpiPayment by remember { mutableStateOf<PassTier?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isProcessing by remember { mutableStateOf(false) }
 
@@ -149,7 +159,7 @@ fun SubscriptionScreen(
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Points Wallet & Cloud Licensing",
+                            text = "Points Conversion & UPI Licensing",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -157,9 +167,8 @@ fun SubscriptionScreen(
                     }
                 },
                 actions = {
-                    // Quick Points Pill in TopAppBar
+                    // Points Balance Pill in TopAppBar (Read-only badge)
                     Surface(
-                        onClick = { showTopUpDialog = true },
                         shape = RoundedCornerShape(12.dp),
                         color = AmberAccent.copy(alpha = 0.18f),
                         border = BorderStroke(1.dp, AmberAccent.copy(alpha = 0.4f)),
@@ -185,13 +194,6 @@ fun SubscriptionScreen(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = "Add Points",
-                                tint = AmberAccent,
-                                modifier = Modifier.size(14.dp)
-                            )
                         }
                     }
                 }
@@ -205,14 +207,13 @@ fun SubscriptionScreen(
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 1. User Gmail Profile & Wallet Card
+            // 1. User Account & Wallet Summary Card
             item {
                 WalletHeaderCard(
                     pointsBalance = pointsBalance,
                     isLoggedIn = userAuthState.isLoggedIn,
                     userName = userAuthState.userName,
                     userEmail = userAuthState.userEmail,
-                    onTopUp = { showTopUpDialog = true },
                     onSignIn = onTriggerGoogleSignIn
                 )
             }
@@ -221,8 +222,7 @@ fun SubscriptionScreen(
             item {
                 AccessStatusBanner(
                     accessStatus = accessStatus,
-                    hardwareId = hardwareId,
-                    onRechargeClick = { showTopUpDialog = true }
+                    hardwareId = hardwareId
                 )
             }
 
@@ -243,7 +243,7 @@ fun SubscriptionScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "1 Point = ₹1 • Instant activation with Points",
+                            text = "Smart Conversion: Pay with Points or direct UPI",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -251,19 +251,20 @@ fun SubscriptionScreen(
                 }
             }
 
-            // 4. Pass Cards (Daily, Weekly, Monthly)
+            // 4. Pass Cards (Daily, Weekly, Monthly) with Smart Dynamic Buttons
             PassTier.entries.forEach { tier ->
                 item(key = tier.id) {
                     PassCard(
                         passTier = tier,
                         pointsBalance = pointsBalance,
                         isProcessing = isProcessing,
-                        onBuyClick = {
-                            if (pointsBalance < tier.pointsCost) {
-                                errorMessage = "Insufficient points! You need ${tier.pointsCost} points for ${tier.title}. Tap 'Recharge' to add points."
-                            } else {
-                                selectedPassForPurchase = tier
+                        onBuyWithPoints = {
+                            if (pointsBalance >= tier.pointsCost) {
+                                selectedPassForPointsPurchase = tier
                             }
+                        },
+                        onPayViaUpi = {
+                            selectedPassForUpiPayment = tier
                         }
                     )
                 }
@@ -276,31 +277,10 @@ fun SubscriptionScreen(
         }
     }
 
-    // Top-Up Points Recharge Dialog
-    if (showTopUpDialog) {
-        TopUpPointsDialog(
-            currentBalance = pointsBalance,
-            onDismiss = { showTopUpDialog = false },
-            onAddPoints = { amount ->
-                coroutineScope.launch {
-                    isProcessing = true
-                    val result = LicenseManager.addPoints(amount)
-                    isProcessing = false
-                    showTopUpDialog = false
-                    if (result.isSuccess) {
-                        Toast.makeText(context, "Added $amount Points successfully!", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "Failed to add points: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        )
-    }
-
-    // Confirm Pass Purchase Dialog
-    selectedPassForPurchase?.let { tier ->
+    // Confirm Pass Purchase with Points Dialog
+    selectedPassForPointsPurchase?.let { tier ->
         AlertDialog(
-            onDismissRequest = { if (!isProcessing) selectedPassForPurchase = null },
+            onDismissRequest = { if (!isProcessing) selectedPassForPointsPurchase = null },
             icon = {
                 Icon(
                     imageVector = Icons.Default.WorkspacePremium,
@@ -319,7 +299,7 @@ fun SubscriptionScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "Are you sure you want to purchase this pass using your Points Wallet?",
+                        text = "Redeem your reward points to activate unlimited auto-acceptance:",
                         style = MaterialTheme.typography.bodyMedium
                     )
 
@@ -334,7 +314,7 @@ fun SubscriptionScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text("Pass Cost:", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${tier.pointsCost} Points (₹${tier.priceInInr})", fontWeight = FontWeight.Bold)
+                                Text("${tier.pointsCost} Points", fontWeight = FontWeight.Bold, color = AmberAccent)
                             }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -348,14 +328,14 @@ fun SubscriptionScreen(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("Balance After Purchase:", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Balance After:", color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text("${pointsBalance - tier.pointsCost} Points", fontWeight = FontWeight.Bold, color = PrimaryEmerald)
                             }
                         }
                     }
 
                     Text(
-                        text = "• Pass extends automatically if another pass is currently active.\n• Access works on any phone when logged in with this Gmail.",
+                        text = "• Active validity: ${tier.durationDays} Day(s)\n• Stacks onto any existing active pass\n• Instant cloud & local activation",
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -364,15 +344,15 @@ fun SubscriptionScreen(
             confirmButton = {
                 Button(
                     onClick = {
+                        isProcessing = true
                         coroutineScope.launch {
-                            isProcessing = true
-                            val res = LicenseManager.purchasePassWithPoints(tier)
+                            val res = PassManager.activatePassWithPoints(context, tier)
                             isProcessing = false
-                            selectedPassForPurchase = null
+                            selectedPassForPointsPurchase = null
                             if (res.isSuccess) {
-                                Toast.makeText(context, "${tier.title} Activated! Unlimited auto-accept enabled.", Toast.LENGTH_LONG).show()
+                                Toast.makeText(context, "🎉 ${tier.title} Activated! Unlimited auto-accept enabled.", Toast.LENGTH_LONG).show()
                             } else {
-                                errorMessage = res.exceptionOrNull()?.message ?: "Purchase failed."
+                                errorMessage = res.exceptionOrNull()?.message ?: "Points activation failed."
                             }
                         }
                     },
@@ -383,15 +363,66 @@ fun SubscriptionScreen(
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
                         Spacer(modifier = Modifier.width(8.dp))
                     }
-                    Text("Activate Now", fontWeight = FontWeight.Bold)
+                    Text("Redeem ${tier.pointsCost} Points", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(
-                    onClick = { selectedPassForPurchase = null },
+                    onClick = { selectedPassForPointsPurchase = null },
                     enabled = !isProcessing
                 ) {
                     Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Direct UPI Payment Dialog
+    selectedPassForUpiPayment?.let { tier ->
+        UpiPaymentDialog(
+            passTier = tier,
+            isProcessing = isProcessing,
+            onDismiss = { if (!isProcessing) selectedPassForUpiPayment = null },
+            onLaunchUpi = {
+                val act = context as? Activity
+                if (act != null) {
+                    PassManager.initiateUpiPayment(
+                        activity = act,
+                        passTier = tier,
+                        onSuccess = { txnId ->
+                            selectedPassForUpiPayment = null
+                            Toast.makeText(context, "✅ Payment Verified! ${tier.title} activated.", Toast.LENGTH_LONG).show()
+                        },
+                        onFailed = { reason ->
+                            errorMessage = reason
+                        }
+                    )
+                } else {
+                    // Fallback direct payment handler
+                    coroutineScope.launch {
+                        isProcessing = true
+                        val res = PassManager.activatePassViaPayment(context, tier)
+                        isProcessing = false
+                        selectedPassForUpiPayment = null
+                        if (res.isSuccess) {
+                            Toast.makeText(context, "✅ Payment Verified! ${tier.title} activated.", Toast.LENGTH_LONG).show()
+                        } else {
+                            errorMessage = res.exceptionOrNull()?.message ?: "Payment failed."
+                        }
+                    }
+                }
+            },
+            onSimulateSuccess = {
+                coroutineScope.launch {
+                    isProcessing = true
+                    val res = PassManager.activatePassViaPayment(context, tier, "SANDBOX_UPI_${System.currentTimeMillis()}")
+                    isProcessing = false
+                    selectedPassForUpiPayment = null
+                    if (res.isSuccess) {
+                        Toast.makeText(context, "🎉 ${tier.title} activated successfully!", Toast.LENGTH_LONG).show()
+                    } else {
+                        errorMessage = res.exceptionOrNull()?.message ?: "Activation failed."
+                    }
                 }
             }
         )
@@ -416,18 +447,8 @@ fun SubscriptionScreen(
                 Text(text = msg, style = MaterialTheme.typography.bodyMedium)
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        errorMessage = null
-                        showTopUpDialog = true
-                    }
-                ) {
-                    Text("Recharge Points")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { errorMessage = null }) {
-                    Text("Close")
+                Button(onClick = { errorMessage = null }) {
+                    Text("OK")
                 }
             }
         )
@@ -435,7 +456,7 @@ fun SubscriptionScreen(
 }
 
 /**
- * 1. User Header & Points Wallet Card
+ * 1. User Header & Points Wallet Status Card (Recharge option removed)
  */
 @Composable
 private fun WalletHeaderCard(
@@ -443,7 +464,6 @@ private fun WalletHeaderCard(
     isLoggedIn: Boolean,
     userName: String?,
     userEmail: String?,
-    onTopUp: () -> Unit,
     onSignIn: () -> Unit
 ) {
     ElevatedCard(
@@ -536,7 +556,7 @@ private fun WalletHeaderCard(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
-            // Wallet Points Display & Top-up Button
+            // Wallet Points Display & System Rewards Information
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -569,37 +589,33 @@ private fun WalletHeaderCard(
                             ),
                             modifier = Modifier.padding(bottom = 4.dp)
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "(₹$pointsBalance Value)",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            ),
-                            modifier = Modifier.padding(bottom = 4.dp)
-                        )
                     }
                 }
 
-                Button(
-                    onClick = onTopUp,
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = AmberAccent,
-                        contentColor = Color.Black
-                    ),
-                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
-                    modifier = Modifier.testTag("top_up_points_button")
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = AmberAccent.copy(alpha = 0.15f),
+                    border = BorderStroke(1.dp, AmberAccent.copy(alpha = 0.35f))
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Add Points",
-                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CardGiftcard,
+                            contentDescription = null,
+                            tint = Color(0xFFB45309),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Referrals & Rewards",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFB45309)
+                            )
+                        )
+                    }
                 }
             }
         }
@@ -612,8 +628,7 @@ private fun WalletHeaderCard(
 @Composable
 private fun AccessStatusBanner(
     accessStatus: AccessStatus,
-    hardwareId: String,
-    onRechargeClick: () -> Unit
+    hardwareId: String
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val pulseScale by infiniteTransition.animateFloat(
@@ -652,7 +667,7 @@ private fun AccessStatusBanner(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                imageVector = Icons.Default.WorkspacePremium,
+                                imageVector = Icons.Default.CheckCircle,
                                 contentDescription = null,
                                 tint = Color.White,
                                 modifier = Modifier.size(26.dp)
@@ -663,7 +678,7 @@ private fun AccessStatusBanner(
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                text = "${accessStatus.passTier.title} Active",
+                                text = "Active Pass: ${accessStatus.passTier.title}",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -673,7 +688,7 @@ private fun AccessStatusBanner(
                                 color = PrimaryEmerald
                             ) {
                                 Text(
-                                    text = "VIP UNLOCKED",
+                                    text = "ACTIVE",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontSize = 9.sp,
                                         fontWeight = FontWeight.Bold,
@@ -685,14 +700,14 @@ private fun AccessStatusBanner(
                         }
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Expires in: ${accessStatus.formattedRemaining}",
+                            text = "Remaining: ${accessStatus.formattedRemaining}",
                             style = MaterialTheme.typography.bodyMedium.copy(
-                                fontWeight = FontWeight.SemiBold,
-                                color = PrimaryEmeraldDark
+                                fontWeight = FontWeight.Bold,
+                                color = PrimaryEmerald
                             )
                         )
                         Text(
-                            text = "Valid until: " + SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(accessStatus.expiryTimestamp)),
+                            text = "Auto-accept is active with zero points deduction per ride.",
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -705,7 +720,6 @@ private fun AccessStatusBanner(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .scale(pulseScale)
                     .testTag("status_trial_active_card"),
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(
@@ -814,7 +828,7 @@ private fun AccessStatusBanner(
 
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (accessStatus.hasHadPreviousPass) "Subscription Expired" else "2-Day Free Trial Ended",
+                                text = if (accessStatus.hasHadPreviousPass) "Subscription Pass Expired" else "2-Day Free Trial Ended",
                                 style = MaterialTheme.typography.titleMedium.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.error
@@ -848,7 +862,7 @@ private fun AccessStatusBanner(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                    Text("Verifying cloud license & trial status...", style = MaterialTheme.typography.bodyMedium)
+                    Text("Verifying cloud license & pass status...", style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }
@@ -856,16 +870,17 @@ private fun AccessStatusBanner(
 }
 
 /**
- * 3. Individual Subscription Pass Card
+ * 3. Individual Subscription Pass Card with SMART DYNAMIC ACTION BUTTONS
  */
 @Composable
 private fun PassCard(
     passTier: PassTier,
     pointsBalance: Int,
     isProcessing: Boolean,
-    onBuyClick: () -> Unit
+    onBuyWithPoints: () -> Unit,
+    onPayViaUpi: () -> Unit
 ) {
-    val isAffordable = pointsBalance >= passTier.pointsCost
+    val hasEnoughPoints = pointsBalance >= passTier.pointsCost
     val isWeekly = passTier == PassTier.WEEKLY
     val isMonthly = passTier == PassTier.MONTHLY
 
@@ -892,7 +907,7 @@ private fun PassCard(
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Header Row
+            // Header Row: Title, Tag, and Price
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -929,7 +944,7 @@ private fun PassCard(
                     }
                 }
 
-                // Price Badge
+                // Dual Price Display: INR & Points
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
                         text = "₹${passTier.priceInInr}",
@@ -956,10 +971,11 @@ private fun PassCard(
 
             // Features Checklist
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                PassFeatureItem("Instant high-speed overlay automation clicks")
+                PassFeatureItem("Unlimited high-speed auto-acceptance (${passTier.durationDays} Day${if (passTier.durationDays > 1) "s" else ""})")
+                PassFeatureItem("Zero point deduction per accepted ride")
                 PassFeatureItem("Surge radar & minimum fare filter evaluation")
                 if (isWeekly || isMonthly) {
-                    PassFeatureItem("High-priority voice text-to-speech alerts")
+                    PassFeatureItem("High-priority voice text-to-speech announcer")
                 }
                 if (isMonthly) {
                     PassFeatureItem("Cross-device sync & hardware transfer support")
@@ -968,50 +984,120 @@ private fun PassCard(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Action Button
-            Button(
-                onClick = onBuyClick,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("buy_pass_${passTier.id}"),
-                shape = RoundedCornerShape(12.dp),
-                enabled = !isProcessing,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isAffordable) {
-                        if (isMonthly) PrimaryEmerald else MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant
-                    },
-                    contentColor = if (isAffordable) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            ) {
-                if (isAffordable) {
-                    Icon(
-                        imageVector = Icons.Default.LockOpen,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Buy with ${passTier.pointsCost} Points",
-                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.AccountBalanceWallet,
-                        contentDescription = null,
-                        tint = AmberAccent,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Need ${passTier.pointsCost - pointsBalance} More Pts (Tap to Buy)",
-                        style = MaterialTheme.typography.labelLarge.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
+            // SMART DYNAMIC BUTTONS UI
+            if (hasEnoughPoints) {
+                // CASE 1: User has sufficient Points balance
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Primary Action: Buy with Points
+                    Button(
+                        onClick = onBuyWithPoints,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("buy_points_${passTier.id}"),
+                        shape = RoundedCornerShape(12.dp),
+                        enabled = !isProcessing,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isMonthly) PrimaryEmerald else MaterialTheme.colorScheme.primary,
+                            contentColor = Color.White
                         )
-                    )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LockOpen,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Buy with ${passTier.pointsCost} Points",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+
+                    // Secondary Action: Or Pay ₹X via UPI
+                    OutlinedButton(
+                        onClick = onPayViaUpi,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(42.dp)
+                            .testTag("pay_upi_alt_${passTier.id}"),
+                        shape = RoundedCornerShape(12.dp),
+                        enabled = !isProcessing,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Payment,
+                            contentDescription = null,
+                            tint = PrimaryEmerald,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Or Pay ₹${passTier.priceInInr} via UPI",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        )
+                    }
+                }
+            } else {
+                // CASE 2: User has insufficient Points balance
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Primary Action: Pay via UPI
+                    Button(
+                        onClick = onPayViaUpi,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("pay_upi_${passTier.id}"),
+                        shape = RoundedCornerShape(12.dp),
+                        enabled = !isProcessing,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PrimaryEmerald,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FlashOn,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Pay ₹${passTier.priceInInr} via UPI",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+
+                    // Status Information: Points Required
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("points_status_${passTier.id}"),
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AccountBalanceWallet,
+                                contentDescription = null,
+                                tint = AmberAccent,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "${passTier.pointsCost} Points Required (You have $pointsBalance pts)",
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1039,19 +1125,125 @@ private fun PassFeatureItem(text: String) {
 }
 
 /**
- * 4. Hardware ID & Security Info Card
+ * 4. UPI Payment Dialog with native UPI intent trigger & Sandbox instant test option
+ */
+@Composable
+private fun UpiPaymentDialog(
+    passTier: PassTier,
+    isProcessing: Boolean,
+    onDismiss: () -> Unit,
+    onLaunchUpi: () -> Unit,
+    onSimulateSuccess: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.FlashOn,
+                contentDescription = null,
+                tint = PrimaryEmerald,
+                modifier = Modifier.size(36.dp)
+            )
+        },
+        title = {
+            Text(
+                text = "Pay ₹${passTier.priceInInr} via UPI",
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "Activate ${passTier.title} (${passTier.durationDays} Days) directly through your preferred UPI app.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Pass Plan:", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(passTier.title, fontWeight = FontWeight.Bold)
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Amount to Pay:", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("₹${passTier.priceInInr} INR", fontWeight = FontWeight.ExtraBold, color = PrimaryEmerald)
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Validity:", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("${passTier.durationDays} Day(s)", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+
+                Text(
+                    text = "Supported: Google Pay, PhonePe, Paytm, BHIM, and any Indian bank UPI app.",
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onLaunchUpi,
+                enabled = !isProcessing,
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryEmerald)
+            ) {
+                if (isProcessing) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text("Open UPI App", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(
+                    onClick = onSimulateSuccess,
+                    enabled = !isProcessing
+                ) {
+                    Text("Instant Test Pay", color = AmberAccent)
+                }
+                TextButton(onClick = onDismiss, enabled = !isProcessing) {
+                    Text("Cancel")
+                }
+            }
+        }
+    )
+}
+
+/**
+ * 5. Hardware ID & Security Info Card
  */
 @Composable
 private fun HardwareSecurityCard(hardwareId: String) {
+    val clipboardManager = LocalClipboardManager.current
+
     OutlinedCard(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("subscription_security_card"),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.outlinedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+            containerColor = MaterialTheme.colorScheme.surface
         ),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
     ) {
         Column(
             modifier = Modifier
@@ -1064,147 +1256,62 @@ private fun HardwareSecurityCard(hardwareId: String) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Default.Security,
+                    imageVector = Icons.Default.Shield,
                     contentDescription = null,
                     tint = PrimaryEmerald,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(18.dp)
                 )
                 Text(
-                    text = "Hardware Security & Cloud Sync",
+                    text = "Hardware Lock & Anti-Reset Policy",
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                 )
             }
 
             Text(
-                text = "• 2-Day Free Trial is locked permanently to your physical hardware ID: $hardwareId. It cannot be reset by reinstalling or clearing app storage.\n• Paid passes & points are bound to your Gmail UID, allowing you to restore your subscription when switching devices.",
-                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                text = "Each physical phone receives exactly one 2-day free trial locked to its hardware signature. Reinstalling or clearing data does not grant additional trials. Subscriptions sync automatically to your Gmail account.",
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-    }
-}
 
-/**
- * 5. Top-Up Points Dialog
- */
-@Composable
-private fun TopUpPointsDialog(
-    currentBalance: Int,
-    onDismiss: () -> Unit,
-    onAddPoints: (Int) -> Unit
-) {
-    val pointPacks = listOf(
-        PointPack(points = 25, price = 25, bonusText = "Starter Pack"),
-        PointPack(points = 50, price = 50, bonusText = "Weekly Pass Pack"),
-        PointPack(points = 100, price = 100, bonusText = "+10 Bonus Pts!"),
-        PointPack(points = 180, price = 179, bonusText = "Monthly Pass Pack")
-    )
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text(
+                            text = "DEVICE HARDWARE ID",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = hardwareId,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
 
-    var selectedPack by remember { mutableStateOf(pointPacks[1]) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(
-                imageVector = Icons.Default.AccountBalanceWallet,
-                contentDescription = null,
-                tint = AmberAccent,
-                modifier = Modifier.size(36.dp)
-            )
-        },
-        title = {
-            Text(
-                text = "Recharge Points Wallet",
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center
-            )
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    text = "Choose a points bundle. 1 Point = ₹1. Points are deposited immediately into your cloud wallet.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-
-                pointPacks.forEach { pack ->
-                    val isSelected = selectedPack == pack
-                    Surface(
-                        onClick = { selectedPack = pack },
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (isSelected) AmberAccent.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surface,
-                        border = BorderStroke(
-                            width = if (isSelected) 2.dp else 1.dp,
-                            color = if (isSelected) AmberAccent else MaterialTheme.colorScheme.outlineVariant
-                        ),
-                        modifier = Modifier.fillMaxWidth()
+                    IconButton(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(hardwareId))
+                        },
+                        modifier = Modifier.size(32.dp)
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = "${pack.points} Points",
-                                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Surface(
-                                        shape = RoundedCornerShape(4.dp),
-                                        color = AmberAccent.copy(alpha = 0.2f)
-                                    ) {
-                                        Text(
-                                            text = pack.bonusText,
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color(0xFFB45309)
-                                            ),
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
-                                Text(
-                                    text = "₹${pack.price} via UPI / Instant Wallet",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-
-                            if (isSelected) {
-                                Icon(
-                                    imageVector = Icons.Default.CheckCircle,
-                                    contentDescription = "Selected",
-                                    tint = AmberAccent,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "Copy Hardware ID",
+                            modifier = Modifier.size(16.dp)
+                        )
                     }
                 }
             }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onAddPoints(selectedPack.points) },
-                colors = ButtonDefaults.buttonColors(containerColor = AmberAccent, contentColor = Color.Black)
-            ) {
-                Text("Recharge ${selectedPack.points} Pts (₹${selectedPack.price})", fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
         }
-    )
+    }
 }
-
-private data class PointPack(
-    val points: Int,
-    val price: Int,
-    val bonusText: String
-)

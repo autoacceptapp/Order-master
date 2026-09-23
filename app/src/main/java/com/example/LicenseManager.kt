@@ -23,9 +23,9 @@ import java.util.concurrent.TimeUnit
 
 /**
  * Pass Tiers Configuration:
- * - Daily Pass: ₹9 (Valid 24 hours) - 9 Points
- * - Weekly Pass: ₹49 (Valid 7 days) - 49 Points
- * - Monthly Pass: ₹179 (Valid 28 days) - 179 Points
+ * - Daily Pass: ₹9 INR OR 100 Points (Valid 24 hours / 1 Day)
+ * - Weekly Pass: ₹49 INR OR 500 Points (Valid 7 days)
+ * - Monthly Pass: ₹179 INR OR 1500 Points (Valid 28 days)
  */
 enum class PassTier(
     val id: String,
@@ -41,7 +41,7 @@ enum class PassTier(
         id = "daily_pass",
         title = "Daily Pass",
         priceInInr = 9,
-        pointsCost = 9,
+        pointsCost = 100,
         durationDays = 1,
         durationMs = 24L * 3600L * 1000L,
         tag = "Short Shift",
@@ -51,7 +51,7 @@ enum class PassTier(
         id = "weekly_pass",
         title = "Weekly Pass",
         priceInInr = 49,
-        pointsCost = 49,
+        pointsCost = 500,
         durationDays = 7,
         durationMs = 7L * 24L * 3600L * 1000L,
         tag = "Most Popular",
@@ -61,7 +61,7 @@ enum class PassTier(
         id = "monthly_pass",
         title = "Monthly Pass",
         priceInInr = 179,
-        pointsCost = 179,
+        pointsCost = 1500,
         durationDays = 28,
         durationMs = 28L * 24L * 3600L * 1000L,
         tag = "Best Value",
@@ -337,6 +337,52 @@ object LicenseManager {
     }
 
     /**
+     * Activates a Pass directly via UPI or Payment Gateway without deducting points.
+     * Instantly sets / extends pass expiry and synchronizes with AppSettings and Firestore.
+     */
+    suspend fun activatePassViaPayment(
+        passTier: PassTier,
+        transactionId: String? = null
+    ): Result<Unit> {
+        val ctx = appContext ?: return Result.failure(IllegalStateException("LicenseManager not initialized"))
+        val userKey = currentUserKey ?: resolveUserKey(ctx, null, null)
+        val now = System.currentTimeMillis()
+
+        val currentLocalExpiry = _activePassInfo.value?.expiryTimestamp ?: 0L
+        val baseTime = if (currentLocalExpiry > now) currentLocalExpiry else now
+        val newLocalExpiry = baseTime + passTier.durationMs
+
+        // 1. Immediately update local pass storage & AppSettings
+        saveLocalPass(ctx, passTier.id, newLocalExpiry)
+        AppSettings.setPassExpiryTimestamp(ctx, newLocalExpiry, passTier.id)
+        refreshAccessStatus()
+
+        // 2. Cloud Firestore synchronization (async)
+        return try {
+            val db = FirebaseFirestore.getInstance()
+            val userDocRef = db.collection(COLL_USERS_LICENSING).document(userKey)
+            userDocRef.set(
+                mapOf(
+                    "activePassType" to passTier.id,
+                    "passExpiryTimestamp" to newLocalExpiry,
+                    "lastPurchasedTier" to passTier.id,
+                    "lastPaymentMethod" to "UPI",
+                    "lastTransactionId" to (transactionId ?: "DIRECT_UPI_${System.currentTimeMillis()}"),
+                    "updatedAt" to now
+                ),
+                SetOptions.merge()
+            ).await()
+
+            Log.i(TAG, "Successfully activated ${passTier.title} via UPI payment. Expiry: $newLocalExpiry")
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Log.w(TAG, "Cloud sync for UPI pass activation failed (offline fallback active): ${e.message}")
+            // Local activation already completed successfully!
+            Result.success(Unit)
+        }
+    }
+
+    /**
      * Performs cloud sync for hardware trial and user licensing.
      */
     private suspend fun syncHardwareTrialAndLicensing() {
@@ -509,7 +555,7 @@ object LicenseManager {
         // 3. Both Pass & Trial Expired
         val hasHadPreviousPass = tier != null || passExpiry > 0L
         val msg = if (hasHadPreviousPass) {
-            "Your ${tier?.title ?: "subscription"} has expired. Recharge with Points to resume auto-acceptance."
+            "Your ${tier?.title ?: "subscription"} has expired. Renew your pass to resume auto-acceptance."
         } else {
             "Your 2-Day Free Trial has ended. Choose a Pass to continue enjoying high-speed auto-acceptance."
         }
@@ -540,6 +586,8 @@ object LicenseManager {
             .putString(KEY_LOCAL_PASS_TYPE, passType)
             .putLong(KEY_LOCAL_PASS_EXPIRY, expiry)
             .apply()
+        // Synchronize with AppSettings for instant access across services and StateFlows
+        AppSettings.setPassExpiryTimestamp(context, expiry, passType)
     }
 
     private fun saveLocalTrial(context: Context, claimed: Long, expiry: Long, isUsed: Boolean) {

@@ -58,6 +58,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".CaptainStoreActivity"
+            android:exported="false"
+            android:label="Captain Store"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Primary Accessibility Service: MyAccessibilityService -->
         <service
             android:name=".MyAccessibilityService"

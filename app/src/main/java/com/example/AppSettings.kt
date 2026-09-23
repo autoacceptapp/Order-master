@@ -103,6 +103,10 @@ object AppSettings {
     const val KEY_USER_ID_TOKEN = "key_user_id_token"
     const val KEY_LOGIN_DISMISSED = "key_login_dismissed"
 
+    // Subscription & Pass Management Keys
+    const val KEY_PASS_EXPIRY_TIMESTAMP = "pass_expiry_timestamp"
+    const val KEY_ACTIVE_PASS_TIER_ID = "key_active_pass_tier_id"
+
     // Backward-compatibility keys
     const val KEY_SERVICE_ENABLED = "key_service_enabled"
     const val KEY_MIN_VALUE = "key_min_value"
@@ -201,6 +205,13 @@ object AppSettings {
     private val _userAuthState = MutableStateFlow(UserAuthState())
     val userAuthState: StateFlow<UserAuthState> = _userAuthState.asStateFlow()
 
+    // Reactive StateFlows for Subscription Pass Expiry
+    private val _passExpiryTimestampFlow = MutableStateFlow(0L)
+    val passExpiryTimestampFlow: StateFlow<Long> = _passExpiryTimestampFlow.asStateFlow()
+
+    private val _isPassActiveFlow = MutableStateFlow(false)
+    val isPassActiveFlow: StateFlow<Boolean> = _isPassActiveFlow.asStateFlow()
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private fun getPrefs(context: Context): SharedPreferences {
@@ -271,6 +282,11 @@ object AppSettings {
             isAutoClickEnabled = autoClickEnabled,
             lastAcceptedFare = _lastAcceptedFareFlow.value
         )
+
+        // Read and initialize Pass Expiry StateFlow
+        val passExpiry = prefs.getLong(KEY_PASS_EXPIRY_TIMESTAMP, 0L)
+        _passExpiryTimestampFlow.value = passExpiry
+        _isPassActiveFlow.value = passExpiry > System.currentTimeMillis()
     }
 
     fun updateUserAuth(
@@ -309,6 +325,48 @@ object AppSettings {
 
     fun isLoginDismissed(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_LOGIN_DISMISSED, false)
+    }
+
+    // --- Subscription & Pass Expiry Management ---
+
+    fun getPassExpiryTimestamp(context: Context): Long {
+        val ts = getPrefs(context).getLong(KEY_PASS_EXPIRY_TIMESTAMP, 0L)
+        _passExpiryTimestampFlow.value = ts
+        _isPassActiveFlow.value = ts > System.currentTimeMillis()
+        return ts
+    }
+
+    fun setPassExpiryTimestamp(context: Context, expiryTimestamp: Long, tierId: String? = null) {
+        persistAsync(context) {
+            putLong(KEY_PASS_EXPIRY_TIMESTAMP, expiryTimestamp)
+            if (tierId != null) {
+                putString(KEY_ACTIVE_PASS_TIER_ID, tierId)
+            }
+        }
+        _passExpiryTimestampFlow.value = expiryTimestamp
+        _isPassActiveFlow.value = expiryTimestamp > System.currentTimeMillis()
+    }
+
+    fun isPassActive(context: Context): Boolean {
+        val expiry = getPassExpiryTimestamp(context)
+        return System.currentTimeMillis() < expiry
+    }
+
+    fun extendPass(context: Context, durationMs: Long, tierId: String? = null): Long {
+        val now = System.currentTimeMillis()
+        val currentExpiry = getPassExpiryTimestamp(context)
+        val baseTime = if (currentExpiry > now) currentExpiry else now
+        val newExpiry = baseTime + durationMs
+        setPassExpiryTimestamp(context, newExpiry, tierId)
+        return newExpiry
+    }
+
+    fun getActivePassTierId(context: Context): String? {
+        return getPrefs(context).getString(KEY_ACTIVE_PASS_TIER_ID, null)
+    }
+
+    fun clearPass(context: Context) {
+        setPassExpiryTimestamp(context, 0L, null)
     }
 
     private fun persistAsync(context: Context, action: SharedPreferences.Editor.() -> Unit) {
