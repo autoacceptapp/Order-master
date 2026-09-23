@@ -241,12 +241,9 @@ object AppSettings {
     }
 
     private fun persistAsync(context: Context, action: SharedPreferences.Editor.() -> Unit) {
-        val appContext = context.applicationContext
-        appScope.launch {
-            val editor = getPrefs(appContext).edit()
-            action(editor)
-            editor.apply()
-        }
+        val editor = getPrefs(context).edit()
+        action(editor)
+        editor.apply()
     }
 
     fun isAutoAcceptEnabled(context: Context): Boolean {

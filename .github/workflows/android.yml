@@ -57,33 +57,33 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Ensure Permanent debug keystore
+      - name: Decode Secrets and Keystores
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
-          echo "=== Checking permanent debug keystore ==="
+          echo "=== Setting up Permanent Keystores & Secrets ==="
+          if [ -n "${KEYSTORE_BASE64}" ]; then
+            echo "Decoding permanent release keystore from KEYSTORE_BASE64 into app/release.jks..."
+            echo "${KEYSTORE_BASE64}" | base64 -d > app/release.jks
+          fi
+
+          if [ -n "${GOOGLE_SERVICES_JSON_BASE64}" ]; then
+            echo "Decoding google-services.json from GOOGLE_SERVICES_JSON_BASE64..."
+            echo "${GOOGLE_SERVICES_JSON_BASE64}" | base64 -d > app/google-services.json
+          elif [ -n "${GOOGLE_SERVICES_JSON}" ]; then
+            echo "Writing google-services.json from GOOGLE_SERVICES_JSON..."
+            echo "${GOOGLE_SERVICES_JSON}" > app/google-services.json
+          fi
+
           if [ -f "./debug.keystore.base64" ]; then
             echo "Restoring permanent debug.keystore from debug.keystore.base64..."
             base64 -d ./debug.keystore.base64 > ./debug.keystore
           elif [ -f "./debug.keystore" ]; then
             echo "./debug.keystore already exists; skipping generation."
-          else
-            echo "Generating temporary debug keystore at ./debug.keystore..."
-            keytool -genkeypair \
-              -v \
-              -keystore ./debug.keystore \
-              -alias androiddebugkey \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -storepass android \
-              -keypass android \
-              -dname "CN=Android Debug,O=Android,C=US"
           fi
-
-          if [ ! -f "./debug.keystore" ] || [ ! -s "./debug.keystore" ]; then
-            echo "ERROR: Failed to create ./debug.keystore or file is empty." >&2
-            exit 1
-          fi
-          echo "Temporary debug keystore verified."
+          echo "Keystore setup completed."
 
       - name: Build debug APK with dynamic versioning
         env:
