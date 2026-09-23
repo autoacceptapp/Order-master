@@ -70,6 +70,11 @@ import com.example.ActivityLogEntry
 import com.example.AppSettings
 import com.example.LogSeverity
 import com.example.PermissionUtils
+import com.example.R
+import com.example.auth.GoogleAuthManager
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import androidx.compose.material.icons.filled.AccountCircle
 import com.example.ui.OrderMasterViewModel
 import java.util.Locale
 
@@ -78,12 +83,14 @@ fun HomeScreen(
     viewModel: OrderMasterViewModel,
     onNavigateToSettings: () -> Unit,
     onOpenRestrictedSettingsGuide: () -> Unit,
+    onTriggerGoogleSignIn: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val settingsState by viewModel.settingsState.collectAsState()
     val logs by viewModel.liveLogs.collectAsState()
     val ttsStatus by viewModel.ttsStatus.collectAsState()
+    val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
 
     val isServiceRunningInSystem = AppSettings.isAccessibilityServiceEnabled(context)
     val isAutomationActive = settingsState.isAutoAcceptEnabled && isServiceRunningInSystem
@@ -132,6 +139,16 @@ fun HomeScreen(
                     PermissionUtils.openAccessibilitySettings(context)
                 }
             }
+        )
+
+        // =========================================================================================
+        // COMPONENT 1.5: GOOGLE ACCOUNT & CLOUD SYNC CARD
+        // =========================================================================================
+        GoogleAuthStatusCard(
+            isLoggedIn = userAuthState.isLoggedIn,
+            userName = userAuthState.userName,
+            userEmail = userAuthState.userEmail,
+            onTriggerSignIn = onTriggerGoogleSignIn
         )
 
         // =========================================================================================
@@ -731,3 +748,150 @@ private fun EvaluationChip(label: String, value: String) {
         )
     }
 }
+
+@Composable
+private fun GoogleAuthStatusCard(
+    isLoggedIn: Boolean,
+    userName: String?,
+    userEmail: String?,
+    onTriggerSignIn: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("google_auth_status_card"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isLoggedIn) {
+                MaterialTheme.colorScheme.surface
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+            }
+        ),
+        border = CardDefaults.outlinedCardBorder().copy(
+            brush = Brush.horizontalGradient(
+                if (isLoggedIn) {
+                    listOf(Color(0xFF10B981).copy(alpha = 0.5f), Color(0xFF10B981).copy(alpha = 0.15f))
+                } else {
+                    listOf(
+                        Color(0xFF4285F4).copy(alpha = 0.4f),
+                        Color(0xFF34A853).copy(alpha = 0.3f),
+                        Color(0xFFFBBC05).copy(alpha = 0.3f),
+                        Color(0xFFEA4335).copy(alpha = 0.3f)
+                    )
+                }
+            ),
+            width = 1.5.dp
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                if (isLoggedIn) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFF10B981).copy(alpha = 0.15f),
+                        modifier = Modifier.size(38.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = Color(0xFF10B981),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = userName ?: "Google Account Linked",
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1
+                        )
+                        Text(
+                            text = userEmail ?: "Cloud Sync Active",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                } else {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.White,
+                        modifier = Modifier.size(38.dp),
+                        shadowElevation = 1.dp
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Image(
+                                painter = painterResource(id = R.drawable.ic_google_logo),
+                                contentDescription = "Google Logo",
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Connect Google Account",
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Backup filter rules & sync ride logs",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            if (!isLoggedIn) {
+                FilledTonalButton(
+                    onClick = onTriggerSignIn,
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier.testTag("home_google_sign_in_button")
+                ) {
+                    Text(
+                        text = "Sign In",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFF10B981).copy(alpha = 0.15f)
+                ) {
+                    Text(
+                        text = "Synced",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF047857)
+                        ),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+

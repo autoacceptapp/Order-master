@@ -65,6 +65,15 @@ data class SettingsState(
     val selectedLanguage: String get() = voiceLanguage
 }
 
+@Immutable
+data class UserAuthState(
+    val isLoggedIn: Boolean = false,
+    val userEmail: String? = null,
+    val userName: String? = null,
+    val photoUrl: String? = null,
+    val idToken: String? = null
+)
+
 object AppSettings {
     const val PREFS_NAME = "captain_auto_accept_prefs"
 
@@ -85,6 +94,14 @@ object AppSettings {
     const val KEY_SPEECH_PITCH = "key_speech_pitch"
     const val KEY_FLOATING_OVERLAY_ENABLED = "key_floating_overlay_enabled"
     const val KEY_AUTO_CLICK_ENABLED = "key_auto_click_enabled"
+
+    // User Authentication Keys
+    const val KEY_USER_IS_LOGGED_IN = "key_user_is_logged_in"
+    const val KEY_USER_EMAIL = "key_user_email"
+    const val KEY_USER_NAME = "key_user_name"
+    const val KEY_USER_PHOTO_URL = "key_user_photo_url"
+    const val KEY_USER_ID_TOKEN = "key_user_id_token"
+    const val KEY_LOGIN_DISMISSED = "key_login_dismissed"
 
     // Backward-compatibility keys
     const val KEY_SERVICE_ENABLED = "key_service_enabled"
@@ -181,6 +198,9 @@ object AppSettings {
     )
     val logsFlow: StateFlow<List<ActivityLogEntry>> = _logsFlow.asStateFlow()
 
+    private val _userAuthState = MutableStateFlow(UserAuthState())
+    val userAuthState: StateFlow<UserAuthState> = _userAuthState.asStateFlow()
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private fun getPrefs(context: Context): SharedPreferences {
@@ -210,6 +230,19 @@ object AppSettings {
         val overlayEnabled = prefs.getBoolean(KEY_FLOATING_OVERLAY_ENABLED, DEFAULT_FLOATING_OVERLAY_ENABLED)
         val autoClickEnabled = prefs.getBoolean(KEY_AUTO_CLICK_ENABLED, DEFAULT_AUTO_CLICK_ENABLED)
 
+        val userLoggedIn = prefs.getBoolean(KEY_USER_IS_LOGGED_IN, false)
+        val userEmail = prefs.getString(KEY_USER_EMAIL, null)
+        val userName = prefs.getString(KEY_USER_NAME, null)
+        val userPhoto = prefs.getString(KEY_USER_PHOTO_URL, null)
+        val userIdToken = prefs.getString(KEY_USER_ID_TOKEN, null)
+        _userAuthState.value = UserAuthState(
+            isLoggedIn = userLoggedIn,
+            userEmail = userEmail,
+            userName = userName,
+            photoUrl = userPhoto,
+            idToken = userIdToken
+        )
+
         minCurrencyThreshold = minFare.toDouble()
         maxCurrencyThreshold = maxFare.toDouble()
         autoAcceptEnabled = enabled
@@ -238,6 +271,44 @@ object AppSettings {
             isAutoClickEnabled = autoClickEnabled,
             lastAcceptedFare = _lastAcceptedFareFlow.value
         )
+    }
+
+    fun updateUserAuth(
+        context: Context,
+        isLoggedIn: Boolean,
+        email: String?,
+        name: String?,
+        photoUrl: String?,
+        idToken: String? = null
+    ) {
+        persistAsync(context) {
+            putBoolean(KEY_USER_IS_LOGGED_IN, isLoggedIn)
+            putString(KEY_USER_EMAIL, email)
+            putString(KEY_USER_NAME, name)
+            putString(KEY_USER_PHOTO_URL, photoUrl)
+            putString(KEY_USER_ID_TOKEN, idToken)
+        }
+        _userAuthState.value = UserAuthState(
+            isLoggedIn = isLoggedIn,
+            userEmail = email,
+            userName = name,
+            photoUrl = photoUrl,
+            idToken = idToken
+        )
+    }
+
+    fun signOut(context: Context) {
+        updateUserAuth(context, false, null, null, null, null)
+    }
+
+    fun setLoginDismissed(context: Context, dismissed: Boolean) {
+        persistAsync(context) {
+            putBoolean(KEY_LOGIN_DISMISSED, dismissed)
+        }
+    }
+
+    fun isLoginDismissed(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_LOGIN_DISMISSED, false)
     }
 
     private fun persistAsync(context: Context, action: SharedPreferences.Editor.() -> Unit) {

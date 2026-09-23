@@ -38,6 +38,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,6 +49,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -57,8 +60,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.AppSettings
 import com.example.AppSettingsScreen
 import com.example.RestrictedSettingsGuideDialog
+import com.example.auth.GoogleAuthManager
+import com.example.ui.components.GoogleSignInBottomSheet
 import com.example.ui.screens.FilterSettingsScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.OrderHistoryScreen
@@ -79,11 +85,22 @@ sealed class Screen(val route: String, val title: String) {
 fun OrderMasterApp(
     viewModel: OrderMasterViewModel = viewModel()
 ) {
+    val context = LocalContext.current
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route ?: Screen.Home.route
 
     var showRestrictedSettingsGuide by remember { mutableStateOf(false) }
+    var showGoogleSignInSheet by remember { mutableStateOf(false) }
+
+    val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
+
+    // Non-blocking prompt on first launch if unauthenticated
+    LaunchedEffect(Unit) {
+        if (!userAuthState.isLoggedIn && !AppSettings.isLoginDismissed(context)) {
+            showGoogleSignInSheet = true
+        }
+    }
 
     val isMainTab = currentRoute in listOf(Screen.Home.route, Screen.Filters.route, Screen.History.route)
 
@@ -294,7 +311,8 @@ fun OrderMasterApp(
                 HomeScreen(
                     viewModel = viewModel,
                     onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
-                    onOpenRestrictedSettingsGuide = { showRestrictedSettingsGuide = true }
+                    onOpenRestrictedSettingsGuide = { showRestrictedSettingsGuide = true },
+                    onTriggerGoogleSignIn = { showGoogleSignInSheet = true }
                 )
             }
 
@@ -311,7 +329,8 @@ fun OrderMasterApp(
                     viewModel = viewModel,
                     onNavigateToReferAndEarn = {
                         navController.navigate(Screen.ReferAndEarn.route)
-                    }
+                    },
+                    onTriggerGoogleSignIn = { showGoogleSignInSheet = true }
                 )
             }
 
@@ -324,7 +343,8 @@ fun OrderMasterApp(
 
             composable(Screen.Settings.route) {
                 AppSettingsScreen(
-                    onNavigateBack = { navController.popBackStack() }
+                    onNavigateBack = { navController.popBackStack() },
+                    onTriggerGoogleSignIn = { showGoogleSignInSheet = true }
                 )
             }
         }
@@ -334,6 +354,18 @@ fun OrderMasterApp(
     if (showRestrictedSettingsGuide) {
         RestrictedSettingsGuideDialog(
             onDismiss = { showRestrictedSettingsGuide = false }
+        )
+    }
+
+    // Google Sign-In Non-Blocking Bottom Sheet Dialog
+    if (showGoogleSignInSheet) {
+        GoogleSignInBottomSheet(
+            onDismissRequest = {
+                showGoogleSignInSheet = false
+            },
+            onSignInSuccess = {
+                showGoogleSignInSheet = false
+            }
         )
     }
 }

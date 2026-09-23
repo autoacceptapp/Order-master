@@ -82,6 +82,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.ui.theme.PrimaryEmerald
 import com.example.ui.theme.SurfaceStroke
+import com.example.auth.GoogleAuthManager
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
 
 /**
  * Production-ready Permission & Background Readiness Dashboard (AppSettingsScreen).
@@ -95,7 +98,8 @@ import com.example.ui.theme.SurfaceStroke
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppSettingsScreen(
-    onNavigateBack: () -> Unit = {}
+    onNavigateBack: () -> Unit = {},
+    onTriggerGoogleSignIn: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -218,6 +222,88 @@ fun AppSettingsScreen(
                     RestrictedSettingsNoticeBanner(
                         onClick = { showRestrictedSettingsDialog = true }
                     )
+                }
+            }
+
+            // Google Account & Cloud Sync Tile
+            item {
+                val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_google_auth_card")
+                        .clickable { onTriggerGoogleSignIn() },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = CardDefaults.outlinedCardBorder()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color.White,
+                                modifier = Modifier.size(38.dp),
+                                shadowElevation = 1.dp
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Image(
+                                        painter = painterResource(id = R.drawable.ic_google_logo),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            Column {
+                                Text(
+                                    text = if (userAuthState.isLoggedIn) "Google Account" else "Sign in with Google",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                )
+                                Text(
+                                    text = if (userAuthState.isLoggedIn) {
+                                        userAuthState.userEmail ?: "Cloud Sync Active"
+                                    } else {
+                                        "Sync filter presets & order history"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        if (!userAuthState.isLoggedIn) {
+                            FilledTonalButton(
+                                onClick = onTriggerGoogleSignIn,
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text("Connect", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+                            }
+                        } else {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFF10B981).copy(alpha = 0.15f)
+                            ) {
+                                Text(
+                                    text = "Linked",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF047857)
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
