@@ -71,6 +71,7 @@ import com.example.ui.components.GoogleSignInBottomSheet
 import com.example.ui.screens.FilterSettingsScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.OrderHistoryScreen
+import com.example.ui.screens.PaymentVerificationScreen
 import com.example.ui.screens.ProfileScreen
 import com.example.ui.screens.ReferAndEarnScreen
 import com.example.ui.screens.SubscriptionScreen
@@ -84,6 +85,7 @@ sealed class Screen(val route: String, val title: String) {
     data object Settings : Screen("settings", "Settings & Permissions")
     data object ReferAndEarn : Screen("refer_and_earn", "Refer & Earn")
     data object Subscription : Screen("subscription", "Pass & Store")
+    data object PaymentVerification : Screen("payment_verification", "Verify UPI Payment")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -376,7 +378,21 @@ fun OrderMasterApp(
             composable(Screen.Subscription.route) {
                 SubscriptionScreen(
                     onNavigateBack = { navController.popBackStack() },
-                    onTriggerGoogleSignIn = { showGoogleSignInSheet = true }
+                    onTriggerGoogleSignIn = { showGoogleSignInSheet = true },
+                    onNavigateToPaymentVerification = {
+                        navController.navigate(Screen.PaymentVerification.route)
+                    }
+                )
+            }
+
+            composable(Screen.PaymentVerification.route) {
+                PaymentVerificationScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    onVerificationSuccess = {
+                        navController.navigate(Screen.Home.route) {
+                            popUpTo(Screen.Home.route) { inclusive = false }
+                        }
+                    }
                 )
             }
 

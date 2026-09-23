@@ -11,6 +11,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -116,6 +117,7 @@ import com.example.ui.theme.PrimaryEmerald
 fun SubscriptionScreen(
     onNavigateBack: () -> Unit,
     onTriggerGoogleSignIn: () -> Unit,
+    onNavigateToPaymentVerification: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -270,7 +272,66 @@ fun SubscriptionScreen(
                 }
             }
 
-            // 5. Hardware Lock & Security Info
+            // 5. Automated 12-Digit UTR Verification Card
+            item {
+                ElevatedCard(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onNavigateToPaymentVerification() }
+                        .testTag("verify_utr_entry_card"),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.elevatedCardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = PrimaryEmerald.copy(alpha = 0.15f),
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.FlashOn,
+                                    contentDescription = null,
+                                    tint = PrimaryEmerald,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Already Paid via UPI?",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "Submit 12-digit UTR for automated MacroDroid bank SMS verification",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        Button(
+                            onClick = onNavigateToPaymentVerification,
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = PrimaryEmerald),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text("Verify UTR", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+                        }
+                    }
+                }
+            }
+
+            // 6. Hardware Lock & Security Info
             item {
                 HardwareSecurityCard(hardwareId = hardwareId)
             }
@@ -383,6 +444,10 @@ fun SubscriptionScreen(
             passTier = tier,
             isProcessing = isProcessing,
             onDismiss = { if (!isProcessing) selectedPassForUpiPayment = null },
+            onNavigateToPaymentVerification = {
+                selectedPassForUpiPayment = null
+                onNavigateToPaymentVerification()
+            },
             onLaunchUpi = {
                 val act = context as? Activity
                 if (act != null) {
@@ -1132,6 +1197,7 @@ private fun UpiPaymentDialog(
     passTier: PassTier,
     isProcessing: Boolean,
     onDismiss: () -> Unit,
+    onNavigateToPaymentVerification: () -> Unit,
     onLaunchUpi: () -> Unit,
     onSimulateSuccess: () -> Unit
 ) {
@@ -1213,12 +1279,21 @@ private fun UpiPaymentDialog(
             }
         },
         dismissButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(
+                    onClick = onNavigateToPaymentVerification,
+                    enabled = !isProcessing
+                ) {
+                    Text("Enter UTR", color = PrimaryEmerald, fontWeight = FontWeight.Bold)
+                }
                 TextButton(
                     onClick = onSimulateSuccess,
                     enabled = !isProcessing
                 ) {
-                    Text("Instant Test Pay", color = AmberAccent)
+                    Text("Test Pay", color = AmberAccent)
                 }
                 TextButton(onClick = onDismiss, enabled = !isProcessing) {
                     Text("Cancel")

@@ -5,6 +5,11 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.example.ui.screens.PaymentVerificationScreen
 import com.example.ui.screens.SubscriptionScreen
 import com.example.ui.theme.CaptainAutoAcceptTheme
 
@@ -22,15 +27,27 @@ class CaptainStoreActivity : ComponentActivity() {
 
         setContent {
             CaptainAutoAcceptTheme {
-                SubscriptionScreen(
-                    onNavigateBack = { finish() },
-                    onTriggerGoogleSignIn = {
-                        val intent = Intent(this, MainActivity::class.java).apply {
-                            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                var showPaymentVerification by remember { mutableStateOf(false) }
+
+                if (showPaymentVerification) {
+                    PaymentVerificationScreen(
+                        onNavigateBack = { showPaymentVerification = false },
+                        onVerificationSuccess = { finish() }
+                    )
+                } else {
+                    SubscriptionScreen(
+                        onNavigateBack = { finish() },
+                        onTriggerGoogleSignIn = {
+                            val intent = Intent(this, MainActivity::class.java).apply {
+                                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            }
+                            startActivity(intent)
+                        },
+                        onNavigateToPaymentVerification = {
+                            showPaymentVerification = true
                         }
-                        startActivity(intent)
-                    }
-                )
+                    )
+                }
             }
         }
     }
