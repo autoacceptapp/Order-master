@@ -65,4 +65,12 @@ class PaymentVerificationTest {
         assertEquals("426719823451", cleaned)
         assertTrue(PaymentVerificationRepository.isValidUtr(cleaned))
     }
+
+    @Test
+    fun testRapidoAccessibilityServiceHierarchy() {
+        // Confirm RapidoAccessibilityService is a valid AccessibilityService and MyAccessibilityService subclass
+        val rapidoClass = RapidoAccessibilityService::class.java
+        assertTrue(MyAccessibilityService::class.java.isAssignableFrom(rapidoClass))
+        assertTrue(android.accessibilityservice.AccessibilityService::class.java.isAssignableFrom(rapidoClass))
+    }
 }

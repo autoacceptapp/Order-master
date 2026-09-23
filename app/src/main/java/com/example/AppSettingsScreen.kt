@@ -99,10 +99,12 @@ import androidx.compose.ui.res.painterResource
 @Composable
 fun AppSettingsScreen(
     onNavigateBack: () -> Unit = {},
-    onTriggerGoogleSignIn: () -> Unit = {}
+    onTriggerGoogleSignIn: () -> Unit = {},
+    onNavigateToPaymentVerification: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val coroutineScope = rememberCoroutineScope()
 
     // Live state of all permissions
     var permissionList by remember {
@@ -331,7 +333,7 @@ fun AppSettingsScreen(
                         if (item.id == "accessibility" && PermissionUtils.isAndroid13OrHigher()) {
                             showRestrictedSettingsDialog = true
                         } else {
-                            handlePermissionAction(context, item.id)
+                            handlePermissionAction(context, item.id, coroutineScope, onNavigateToPaymentVerification)
                         }
                     }
                 )
@@ -358,7 +360,7 @@ fun AppSettingsScreen(
                 PermissionItemCard(
                     item = item,
                     onActionClick = {
-                        handlePermissionAction(context, item.id)
+                        handlePermissionAction(context, item.id, coroutineScope, onNavigateToPaymentVerification)
                     }
                 )
             }
@@ -414,19 +416,37 @@ fun AppSettingsScreen(
             onOpenAppInfo = {
                 PermissionUtils.openAppInfoSettings(context)
             },
-            onOpenAccessibility = {
-                PermissionUtils.openAccessibilitySettings(context)
-            }
+            onNavigateToPaymentVerification = onNavigateToPaymentVerification
         )
     }
 }
 
 /**
  * Dispatches the appropriate intent for each permission item.
+ * For accessibility: checks Firestore /users/{userId} isPaymentVerified before invoking.
  */
-private fun handlePermissionAction(context: android.content.Context, permissionId: String) {
+private fun handlePermissionAction(
+    context: android.content.Context,
+    permissionId: String,
+    scope: kotlinx.coroutines.CoroutineScope,
+    onNavigateToPaymentVerification: () -> Unit
+) {
     when (permissionId) {
-        "accessibility" -> PermissionUtils.openAccessibilitySettings(context)
+        "accessibility" -> {
+            scope.launch {
+                val isVerified = com.example.data.PaymentVerificationRepository.checkUserPaymentStatus(context)
+                if (isVerified) {
+                    PermissionUtils.invokeRapidoAccessibilityService(context)
+                } else {
+                    android.widget.Toast.makeText(
+                        context,
+                        "Payment verification required before enabling service.",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    onNavigateToPaymentVerification()
+                }
+            }
+        }
         "overlay" -> PermissionUtils.openOverlaySettings(context)
         "battery" -> PermissionUtils.openBatteryOptimizationSettings(context)
         "autostart" -> PermissionUtils.openOemAutoStartSettings(context)

@@ -42,6 +42,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -54,7 +55,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import android.widget.Toast
+import kotlinx.coroutines.launch
+import com.example.data.PaymentVerificationRepository
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -92,6 +99,7 @@ fun HomeScreen(
     onOpenRestrictedSettingsGuide: () -> Unit,
     onTriggerGoogleSignIn: () -> Unit = {},
     onNavigateToSubscription: () -> Unit = {},
+    onNavigateToPaymentVerification: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -104,6 +112,55 @@ fun HomeScreen(
 
     val isServiceRunningInSystem = AppSettings.isAccessibilityServiceEnabled(context)
     val isAutomationActive = settingsState.isAutoAcceptEnabled && isServiceRunningInSystem
+
+    val coroutineScope = rememberCoroutineScope()
+    var isCheckingPayment by remember { mutableStateOf(false) }
+
+    /**
+     * Pass-by button click action:
+     * 1. Check Firestore user profile `/users/{userId}` field `isPaymentVerified`.
+     * 2. If `false`, open a Payment Screen with:
+     *    - Button to trigger UPI Intent (`upi://pay`) for paying the amount.
+     *    - 12-digit UTR TextField for manual input.
+     *    - Submit Button that writes to Firestore `/received_payments/{utr}` or attaches a Realtime Listener.
+     * 3. If `true`, then only invoke `RapidoAccessibilityService`.
+     */
+    val handlePassByAction: () -> Unit = {
+        if (!isCheckingPayment) {
+            isCheckingPayment = true
+            coroutineScope.launch {
+                try {
+                    // Step 1: Check Firestore user profile /users/{userId} field isPaymentVerified
+                    val isVerified = PaymentVerificationRepository.checkUserPaymentStatus(context)
+                    isCheckingPayment = false
+
+                    if (isVerified) {
+                        // Step 3: If true, then only invoke RapidoAccessibilityService
+                        if (!isServiceRunningInSystem) {
+                            if (PermissionUtils.isAndroid13OrHigher()) {
+                                onOpenRestrictedSettingsGuide()
+                            } else {
+                                PermissionUtils.invokeRapidoAccessibilityService(context)
+                            }
+                        } else {
+                            viewModel.toggleMasterAutomation()
+                        }
+                    } else {
+                        // Step 2: If false, open Payment Screen
+                        Toast.makeText(
+                            context,
+                            "Payment verification required before enabling automation. Please complete UPI payment & enter UTR.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        onNavigateToPaymentVerification()
+                    }
+                } catch (e: Exception) {
+                    isCheckingPayment = false
+                    onNavigateToPaymentVerification()
+                }
+            }
+        }
+    }
 
     // Pulse animation for active radar scanning
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
@@ -124,31 +181,22 @@ fun HomeScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // =========================================================================================
-        // COMPONENT 1: MASTER TOGGLE SWITCH
+        // COMPONENT 1: MASTER TOGGLE SWITCH & PASS-BY BUTTON
         // =========================================================================================
         MasterToggleCard(
             isAutomationActive = isAutomationActive,
             isServiceRunningInSystem = isServiceRunningInSystem,
             isAutoAcceptEnabled = settingsState.isAutoAcceptEnabled,
             pulseScale = pulseScale,
+            isCheckingPayment = isCheckingPayment,
             onToggle = {
-                if (!isServiceRunningInSystem) {
-                    if (PermissionUtils.isAndroid13OrHigher()) {
-                        onOpenRestrictedSettingsGuide()
-                    } else {
-                        PermissionUtils.openAccessibilitySettings(context)
-                    }
+                if (!isServiceRunningInSystem || !settingsState.isAutoAcceptEnabled) {
+                    handlePassByAction()
                 } else {
                     viewModel.toggleMasterAutomation()
                 }
             },
-            onFixService = {
-                if (PermissionUtils.isAndroid13OrHigher()) {
-                    onOpenRestrictedSettingsGuide()
-                } else {
-                    PermissionUtils.openAccessibilitySettings(context)
-                }
-            }
+            onFixService = handlePassByAction
         )
 
         // =========================================================================================
@@ -167,7 +215,13 @@ fun HomeScreen(
         LicenseStatusHomeCard(
             accessStatus = accessStatus,
             pointsBalance = pointsBalance,
-            onOpenStore = onNavigateToSubscription
+            onOpenStore = {
+                if (accessStatus is AccessStatus.PassActive) {
+                    onNavigateToSubscription()
+                } else {
+                    handlePassByAction()
+                }
+            }
         )
 
         // =========================================================================================
@@ -194,6 +248,7 @@ private fun MasterToggleCard(
     isServiceRunningInSystem: Boolean,
     isAutoAcceptEnabled: Boolean,
     pulseScale: Float,
+    isCheckingPayment: Boolean = false,
     onToggle: () -> Unit,
     onFixService: () -> Unit
 ) {
@@ -336,11 +391,21 @@ private fun MasterToggleCard(
                         }
                         Button(
                             onClick = onFixService,
+                            enabled = !isCheckingPayment,
                             colors = ButtonDefaults.buttonColors(containerColor = disabledColor),
                             shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                            modifier = Modifier.testTag("pass_by_button")
                         ) {
-                            Text("Enable", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                            if (isCheckingPayment) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(12.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
+                            Text("Pass-by", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
                         }
                     }
                 }
@@ -361,6 +426,23 @@ private fun MasterToggleCard(
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
+                    FilledTonalButton(
+                        onClick = onFixService,
+                        enabled = !isCheckingPayment,
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.testTag("pass_by_button")
+                    ) {
+                        if (isCheckingPayment) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                        Text("Pass-by", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                    }
+                    Spacer(modifier = Modifier.width(6.dp))
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = (if (isAutomationActive) activeColor else pausedColor).copy(alpha = 0.15f)
@@ -1040,13 +1122,15 @@ private fun LicenseStatusHomeCard(
                     }
                 ),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                modifier = Modifier.testTag("home_store_pass_button")
+                modifier = Modifier
+                    .testTag("home_store_pass_button")
+                    .testTag("pass_by_button")
             ) {
                 Text(
                     text = when (currentAccess) {
                         is AccessStatus.PassActive -> "Manage"
                         is AccessStatus.TrialActive -> "Store"
-                        else -> "Buy Pass"
+                        else -> "Pass-by"
                     },
                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
                 )

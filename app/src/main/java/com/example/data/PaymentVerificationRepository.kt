@@ -106,6 +106,37 @@ class PaymentVerificationRepository(
                 else -> PassTier.DAILY
             }
         }
+
+        private val defaultInstance by lazy { PaymentVerificationRepository() }
+
+        /**
+         * Convenience static method to inspect Firestore /users/{userId} for isPaymentVerified.
+         */
+        suspend fun checkUserPaymentStatus(context: Context): Boolean {
+            return defaultInstance.checkIsPaymentVerified(context)
+        }
+    }
+
+    /**
+     * Checks Firestore user profile `/users/{userId}` field `isPaymentVerified`.
+     * Returns true if the user document exists and `isPaymentVerified == true`.
+     */
+    suspend fun checkIsPaymentVerified(context: Context): Boolean {
+        val userId = resolveUserId(context)
+        return try {
+            val doc = firestore.collection(COLL_USERS).document(userId).get().await()
+            if (doc.exists()) {
+                val isVerified = doc.getBoolean("isPaymentVerified") ?: false
+                Log.d(TAG, "checkIsPaymentVerified for user $userId: $isVerified")
+                isVerified
+            } else {
+                Log.d(TAG, "checkIsPaymentVerified for user $userId: user doc does not exist")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "checkIsPaymentVerified query failed: ${e.message}", e)
+            false
+        }
     }
 
     private val _verificationState = MutableStateFlow<PaymentVerificationState>(PaymentVerificationState.Idle)

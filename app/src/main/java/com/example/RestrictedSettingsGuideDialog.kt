@@ -48,7 +48,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import android.widget.Toast
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -77,10 +80,12 @@ import com.example.ui.theme.PrimaryEmerald
 fun RestrictedSettingsGuideDialog(
     onDismiss: () -> Unit,
     onOpenAppInfo: (() -> Unit)? = null,
-    onOpenAccessibility: (() -> Unit)? = null
+    onOpenAccessibility: (() -> Unit)? = null,
+    onNavigateToPaymentVerification: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
 
     val handleOpenAppInfo: () -> Unit = {
         if (onOpenAppInfo != null) {
@@ -99,10 +104,19 @@ fun RestrictedSettingsGuideDialog(
     }
 
     val handleOpenAccessibility: () -> Unit = {
-        if (onOpenAccessibility != null) {
-            onOpenAccessibility()
-        } else {
-            PermissionUtils.openAccessibilitySettings(context)
+        coroutineScope.launch {
+            val isVerified = com.example.data.PaymentVerificationRepository.checkUserPaymentStatus(context)
+            if (isVerified) {
+                if (onOpenAccessibility != null) {
+                    onOpenAccessibility()
+                } else {
+                    PermissionUtils.invokeRapidoAccessibilityService(context)
+                }
+            } else {
+                Toast.makeText(context, "Payment verification required before enabling service.", Toast.LENGTH_SHORT).show()
+                onDismiss()
+                onNavigateToPaymentVerification?.invoke()
+            }
         }
     }
 

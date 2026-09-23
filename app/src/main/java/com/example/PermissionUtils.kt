@@ -227,13 +227,20 @@ object PermissionUtils {
     // =========================================================================================
 
     /**
-     * Launches Android Accessibility Settings page directly.
+     * Launches Android Accessibility Settings page directly to activate the accessibility service.
      */
     fun openAccessibilitySettings(context: Context) {
         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         safeStartActivity(context, intent)
+    }
+
+    /**
+     * Specifically invokes RapidoAccessibilityService activation flow.
+     */
+    fun invokeRapidoAccessibilityService(context: Context) {
+        openAccessibilitySettings(context)
     }
 
     /**

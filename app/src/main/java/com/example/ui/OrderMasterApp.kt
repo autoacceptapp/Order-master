@@ -349,6 +349,7 @@ fun OrderMasterApp(
                     viewModel = viewModel,
                     onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
                     onNavigateToSubscription = { navController.navigate(Screen.Subscription.route) },
+                    onNavigateToPaymentVerification = { navController.navigate(Screen.PaymentVerification.route) },
                     onOpenRestrictedSettingsGuide = { showRestrictedSettingsGuide = true },
                     onTriggerGoogleSignIn = { showGoogleSignInSheet = true }
                 )
@@ -406,7 +407,10 @@ fun OrderMasterApp(
             composable(Screen.Settings.route) {
                 AppSettingsScreen(
                     onNavigateBack = { navController.popBackStack() },
-                    onTriggerGoogleSignIn = { showGoogleSignInSheet = true }
+                    onTriggerGoogleSignIn = { showGoogleSignInSheet = true },
+                    onNavigateToPaymentVerification = {
+                        navController.navigate(Screen.PaymentVerification.route)
+                    }
                 )
             }
         }
@@ -415,7 +419,11 @@ fun OrderMasterApp(
     // Android 13/14+ Restricted Settings Educational Guide Dialog
     if (showRestrictedSettingsGuide) {
         RestrictedSettingsGuideDialog(
-            onDismiss = { showRestrictedSettingsGuide = false }
+            onDismiss = { showRestrictedSettingsGuide = false },
+            onNavigateToPaymentVerification = {
+                showRestrictedSettingsGuide = false
+                navController.navigate(Screen.PaymentVerification.route)
+            }
         )
     }
 

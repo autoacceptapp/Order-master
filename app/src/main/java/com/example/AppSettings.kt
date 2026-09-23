@@ -797,8 +797,10 @@ object AppSettings {
 
         val expectedService1 = "${context.packageName}/${MyAccessibilityService::class.java.canonicalName}"
         val expectedService2 = "${context.packageName}/${SmartTextService::class.java.canonicalName}"
+        val expectedService3 = "${context.packageName}/${RapidoAccessibilityService::class.java.canonicalName}"
         val expectedShort1 = "${context.packageName}/.MyAccessibilityService"
         val expectedShort2 = "${context.packageName}/.SmartTextService"
+        val expectedShort3 = "${context.packageName}/.RapidoAccessibilityService"
 
         try {
             val enabledServices = Settings.Secure.getString(
@@ -813,8 +815,10 @@ object AppSettings {
                 val service = colonSplitter.next()
                 if (service.equals(expectedService1, ignoreCase = true) ||
                     service.equals(expectedService2, ignoreCase = true) ||
+                    service.equals(expectedService3, ignoreCase = true) ||
                     service.equals(expectedShort1, ignoreCase = true) ||
-                    service.equals(expectedShort2, ignoreCase = true)
+                    service.equals(expectedShort2, ignoreCase = true) ||
+                    service.equals(expectedShort3, ignoreCase = true)
                 ) {
                     return true
                 }
