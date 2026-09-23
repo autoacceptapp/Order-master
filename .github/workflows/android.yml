@@ -64,28 +64,27 @@ jobs:
         run: |
           echo "=== Setting up Permanent Keystores & Secrets ==="
           
-          # STRICT CHECK 1: Firebase Google Services JSON
+          # 1. Firebase Google Services JSON (Strict Check)
           if [ -n "${GOOGLE_SERVICES_JSON}" ]; then
-            echo "Writing google-services.json from GOOGLE_SERVICES_JSON..."
             echo "${GOOGLE_SERVICES_JSON}" > app/google-services.json
           else
-            echo "ERROR: GOOGLE_SERVICES_JSON secret is missing from repository secrets! Aborting build." >&2
+            echo "ERROR: GOOGLE_SERVICES_JSON secret is missing! Aborting build." >&2
             exit 1
           fi
 
-          # STRICT CHECK 2: Debug/Release Keystore fallback
+          # 2. Release Keystore 
           if [ -n "${KEYSTORE_BASE64}" ]; then
-            echo "Decoding permanent release keystore from KEYSTORE_BASE64 into app/release.jks..."
             echo "${KEYSTORE_BASE64}" | base64 -d > app/release.jks
           fi
           
-          # Restore debug keystore if available
-          if [ -f "./debug.keystore.base64" ]; then
-            echo "Restoring permanent debug.keystore from debug.keystore.base64..."
-            base64 -d ./debug.keystore.base64 > ./debug.keystore
-          elif [ -f "./debug.keystore" ]; then
-            echo "./debug.keystore already exists; skipping generation."
+          # 3. PERMANENT FIX: Auto-Generate Debug Keystore for GitHub Actions
+          if [ ! -f "./debug.keystore" ]; then
+            echo "Generating permanent debug.keystore for this CI run..."
+            keytool -genkey -v -keystore ./debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          else
+            echo "debug.keystore already exists."
           fi
+          
           echo "Keystore setup completed."
 
       - name: Build debug APK with dynamic versioning
