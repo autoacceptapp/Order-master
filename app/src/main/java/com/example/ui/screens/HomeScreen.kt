@@ -53,6 +53,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,6 +63,7 @@ import androidx.compose.runtime.setValue
 import android.widget.Toast
 import kotlinx.coroutines.launch
 import com.example.data.PaymentVerificationRepository
+import com.example.PassManager
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -115,6 +117,11 @@ fun HomeScreen(
 
     val coroutineScope = rememberCoroutineScope()
     var isCheckingPayment by remember { mutableStateOf(false) }
+
+    // 3. Server-Side / Expiry Date Check on opening HomeScreen
+    LaunchedEffect(Unit) {
+        PassManager.verifyServerPassStatus(context)
+    }
 
     /**
      * Pass-by button click action:

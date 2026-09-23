@@ -12,8 +12,14 @@ import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.tasks.await
+import com.google.firebase.firestore.FirebaseFirestore
+import com.example.data.PaymentVerificationRepository
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -28,6 +34,9 @@ import java.util.concurrent.TimeUnit
  */
 object PassManager {
     private const val TAG = "PassManager"
+    private const val PREF_NAME = "PassPrefs"
+    private const val KEY_IS_PASS_ACTIVE = "is_pass_active"
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -40,30 +49,254 @@ object PassManager {
      */
     val passExpiryTimestampFlow: StateFlow<Long> = AppSettings.passExpiryTimestampFlow
 
+    private val _isPassActiveFlow = MutableStateFlow(false)
+
     /**
      * Exposes reactive StateFlow indicating whether the subscription pass is active.
      */
-    val isPassActiveFlow: StateFlow<Boolean> = AppSettings.isPassActiveFlow
+    val isPassActiveFlow: StateFlow<Boolean> = _isPassActiveFlow.asStateFlow()
+
+    /**
+     * Checks strictly whether a subscription pass is currently active.
+     * Default value is ALWAYS false (in SharedPreferences / DataStore)
+     * until verified by server response.
+     */
+    fun isPassActive(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        // Default value FALSE honi chahiye
+        val isActive = prefs.getBoolean(KEY_IS_PASS_ACTIVE, false)
+        if (!isActive) {
+            _isPassActiveFlow.value = false
+            return false
+        }
+
+        // Double check local expiry timestamp hasn't lapsed
+        val expiry = AppSettings.getPassExpiryTimestamp(context)
+        if (expiry > 0L && System.currentTimeMillis() >= expiry) {
+            setPassStatus(context, false)
+            return false
+        }
+
+        _isPassActiveFlow.value = true
+        return true
+    }
+
+    /**
+     * Updates pass status in SharedPreferences (PassPrefs).
+     */
+    fun setPassStatus(context: Context, status: Boolean) {
+        val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_IS_PASS_ACTIVE, status).apply()
+        _isPassActiveFlow.value = status
+    }
 
     /**
      * Returns true if user has an active pass or an active free trial.
      */
     fun isAccessGranted(context: Context): Boolean {
-        val now = System.currentTimeMillis()
-        val passExpiry = AppSettings.getPassExpiryTimestamp(context)
-        if (now < passExpiry) {
-            return true
+        if (isPassActive(context)) {
+            val now = System.currentTimeMillis()
+            val passExpiry = AppSettings.getPassExpiryTimestamp(context)
+            if (passExpiry == 0L || now < passExpiry) {
+                return true
+            } else {
+                setPassStatus(context, false)
+            }
         }
 
-        // Check hardware trial access from LicenseManager
+        // Check hardware trial access from LicenseManager if pass is not active
         return LicenseManager.isAccessGranted()
     }
 
     /**
-     * Checks strictly whether a subscription pass is currently active.
+     * 1. Payment Response Double-Check:
+     * Pass ka status (isPassActive = true) sirf aur sirf tabhi update karein
+     * jab Razorpay / Cashfree / Firebase Backend se Success Signal aaye.
      */
-    fun isPassActive(context: Context): Boolean {
-        return System.currentTimeMillis() < AppSettings.getPassExpiryTimestamp(context)
+    fun onPaymentSuccess(
+        context: Context,
+        paymentId: String,
+        onComplete: ((Boolean) -> Unit)? = null
+    ) {
+        // 1. Server/Backend se verify karein
+        verifyPaymentWithBackend(context, paymentId) { isSuccess ->
+            if (isSuccess) {
+                // Sirf success aane par pass active karein
+                setPassStatus(context, true)
+                Toast.makeText(context, "Pass Activated!", Toast.LENGTH_SHORT).show()
+                onComplete?.invoke(true)
+            } else {
+                // Payment verify nahi hua
+                setPassStatus(context, false)
+                Toast.makeText(context, "Payment Failed/Not Verified", Toast.LENGTH_SHORT).show()
+                onComplete?.invoke(false)
+            }
+        }
+    }
+
+    /**
+     * Double-checks payment response with Backend (Firebase Firestore / Server).
+     * Only returns true if backend confirms successful transaction.
+     */
+    fun verifyPaymentWithBackend(
+        context: Context,
+        paymentId: String,
+        onResult: (Boolean) -> Unit
+    ) {
+        scope.launch {
+            val isSuccess = verifyPaymentWithBackendSuspend(context, paymentId)
+            withContext(Dispatchers.Main) {
+                onResult(isSuccess)
+            }
+        }
+    }
+
+    /**
+     * Asynchronous suspend verification of paymentId with Firestore backend.
+     */
+    suspend fun verifyPaymentWithBackendSuspend(
+        context: Context,
+        paymentId: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val trimmedId = paymentId.trim()
+            if (trimmedId.isEmpty()) return@withContext false
+
+            val firestore = FirebaseFirestore.getInstance()
+            val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
+
+            // Check 1: Check in /received_payments/{paymentId}
+            val receivedDoc = firestore.collection(PaymentVerificationRepository.COLL_RECEIVED_PAYMENTS)
+                .document(trimmedId)
+                .get()
+                .await()
+
+            if (receivedDoc.exists()) {
+                val status = receivedDoc.getString("status") ?: ""
+                val isUsed = receivedDoc.getBoolean("isUsed") ?: false
+                val claimedBy = receivedDoc.getString("claimedBy")
+                if (status.equals("Verified", ignoreCase = true) || status.equals("SUCCESS", ignoreCase = true)) {
+                    if (!isUsed || claimedBy == userId) {
+                        return@withContext true
+                    }
+                }
+            }
+
+            // Check 2: Check user's profile in /users/{userId}
+            val userDoc = firestore.collection("users")
+                .document(userId)
+                .get()
+                .await()
+
+            if (userDoc.exists()) {
+                val paymentStatus = userDoc.getString("payment_status")
+                    ?: userDoc.getString("paymentStatus")
+                    ?: if (userDoc.getBoolean("isPaymentVerified") == true) "SUCCESS" else "FAILED"
+                val lastVerifiedUtr = userDoc.getString("lastVerifiedUtr")
+                val lastTxnId = userDoc.getString("lastTransactionId")
+
+                val passExpiryDate = userDoc.getLong("pass_expiry_date")
+                    ?: userDoc.getLong("passExpiryDate")
+                    ?: userDoc.getLong("subscriptionExpiryTimestamp")
+                    ?: userDoc.getDate("subscriptionExpiry")?.time
+                    ?: 0L
+
+                val isSuccessStatus = paymentStatus.equals("SUCCESS", ignoreCase = true) || paymentStatus.equals("VERIFIED", ignoreCase = true)
+                val isMatchingId = trimmedId == lastVerifiedUtr || trimmedId == lastTxnId
+
+                if (isSuccessStatus && (isMatchingId || System.currentTimeMillis() < passExpiryDate)) {
+                    return@withContext true
+                }
+            }
+
+            // Check 3: Check in /pending_verifications/{paymentId}
+            val pendingDoc = firestore.collection("pending_verifications")
+                .document(trimmedId)
+                .get()
+                .await()
+
+            if (pendingDoc.exists()) {
+                val status = pendingDoc.getString("status") ?: ""
+                if (status.equals("COMPLETED", ignoreCase = true) || status.equals("VERIFIED", ignoreCase = true)) {
+                    return@withContext true
+                }
+            }
+
+            false
+        } catch (e: Exception) {
+            Log.e(TAG, "verifyPaymentWithBackend failed for $paymentId: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
+     * 3. Server-Side / Expiry Date Check:
+     * User ID ke saath payment_status aur pass_expiry_date store karein.
+     * Jab user app khole (chahe Accessibility ON ho ya OFF), Server check karein:
+     * if (currentTime < passExpiryDate && paymentStatus == "SUCCESS") -> Pass Active.
+     * else -> Pass Expired / Inactive.
+     */
+    suspend fun verifyServerPassStatus(context: Context): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
+            val doc = FirebaseFirestore.getInstance()
+                .collection("users")
+                .document(userId)
+                .get()
+                .await()
+
+            val currentTime = System.currentTimeMillis()
+            if (doc.exists()) {
+                val paymentStatus = doc.getString("payment_status")
+                    ?: doc.getString("paymentStatus")
+                    ?: if (doc.getBoolean("isPaymentVerified") == true) "SUCCESS" else "FAILED"
+
+                val passExpiryDate: Long = doc.getLong("pass_expiry_date")
+                    ?: doc.getLong("passExpiryDate")
+                    ?: doc.getLong("subscriptionExpiryTimestamp")
+                    ?: doc.getDate("subscriptionExpiry")?.time
+                    ?: 0L
+
+                val isSuccess = paymentStatus.equals("SUCCESS", ignoreCase = true) || paymentStatus.equals("VERIFIED", ignoreCase = true)
+                val isActive = currentTime < passExpiryDate && isSuccess
+
+                withContext(Dispatchers.Main) {
+                    if (isActive) {
+                        setPassStatus(context, true)
+                        AppSettings.setPassExpiryTimestamp(context, passExpiryDate)
+                        Log.i(TAG, "Server check: Pass is ACTIVE until $passExpiryDate for user $userId")
+                    } else {
+                        setPassStatus(context, false)
+                        AppSettings.setPassExpiryTimestamp(context, 0L)
+                        Log.w(TAG, "Server check: Pass is EXPIRED/INACTIVE (expiry=$passExpiryDate, status=$paymentStatus) for user $userId")
+                    }
+                }
+                isActive
+            } else {
+                withContext(Dispatchers.Main) {
+                    setPassStatus(context, false)
+                    AppSettings.setPassExpiryTimestamp(context, 0L)
+                }
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "verifyServerPassStatus error: ${e.message}", e)
+            withContext(Dispatchers.Main) {
+                isPassActive(context)
+            }
+        }
+    }
+
+    /**
+     * Background sync of server pass status with callback.
+     */
+    fun syncPassStatusWithServer(context: Context, onComplete: ((Boolean) -> Unit)? = null) {
+        scope.launch {
+            val isActive = verifyServerPassStatus(context)
+            withContext(Dispatchers.Main) {
+                onComplete?.invoke(isActive)
+            }
+        }
     }
 
     /**

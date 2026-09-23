@@ -5,6 +5,7 @@ import android.util.Log
 import com.example.AppSettings
 import com.example.DeviceUtils
 import com.example.LicenseManager
+import com.example.PassManager
 import com.example.PassTier
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
@@ -107,7 +108,7 @@ class PaymentVerificationRepository(
             }
         }
 
-        private val defaultInstance by lazy { PaymentVerificationRepository() }
+        val defaultInstance by lazy { PaymentVerificationRepository() }
 
         /**
          * Convenience static method to inspect Firestore /users/{userId} for isPaymentVerified.
@@ -118,8 +119,9 @@ class PaymentVerificationRepository(
     }
 
     /**
-     * Checks Firestore user profile `/users/{userId}` field `isPaymentVerified`.
-     * Returns true if the user document exists and `isPaymentVerified == true`.
+     * Checks Firestore user profile `/users/{userId}` for active pass status:
+     * if (currentTime < passExpiryDate && paymentStatus == "SUCCESS") -> Pass Active.
+     * else -> Pass Expired / Inactive.
      */
     suspend fun checkIsPaymentVerified(context: Context): Boolean {
         val userId = resolveUserId(context)
@@ -127,15 +129,38 @@ class PaymentVerificationRepository(
             val doc = firestore.collection(COLL_USERS).document(userId).get().await()
             if (doc.exists()) {
                 val isVerified = doc.getBoolean("isPaymentVerified") ?: false
-                Log.d(TAG, "checkIsPaymentVerified for user $userId: $isVerified")
-                isVerified
+                val paymentStatus = doc.getString("payment_status")
+                    ?: doc.getString("paymentStatus")
+                    ?: if (isVerified) "SUCCESS" else "FAILED"
+
+                val passExpiryDate = doc.getLong("pass_expiry_date")
+                    ?: doc.getLong("passExpiryDate")
+                    ?: doc.getLong("subscriptionExpiryTimestamp")
+                    ?: doc.getDate("subscriptionExpiry")?.time
+                    ?: 0L
+
+                val currentTime = System.currentTimeMillis()
+                val isPaymentSuccessful = paymentStatus.equals("SUCCESS", ignoreCase = true) || isVerified
+                val isActive = isPaymentSuccessful && (passExpiryDate == 0L || currentTime < passExpiryDate)
+
+                PassManager.setPassStatus(context, isActive)
+                if (isActive && passExpiryDate > 0L) {
+                    AppSettings.setPassExpiryTimestamp(context, passExpiryDate)
+                } else if (!isActive) {
+                    AppSettings.setPassExpiryTimestamp(context, 0L)
+                }
+
+                Log.d(TAG, "checkIsPaymentVerified for user $userId: isActive=$isActive (status=$paymentStatus, expiry=$passExpiryDate)")
+                isActive
             } else {
                 Log.d(TAG, "checkIsPaymentVerified for user $userId: user doc does not exist")
+                PassManager.setPassStatus(context, false)
+                AppSettings.setPassExpiryTimestamp(context, 0L)
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "checkIsPaymentVerified query failed: ${e.message}", e)
-            false
+            PassManager.isPassActive(context)
         }
     }
 
@@ -370,6 +395,10 @@ class PaymentVerificationRepository(
                     userDocRef,
                     mapOf(
                         "isPaymentVerified" to true,
+                        "payment_status" to "SUCCESS",
+                        "paymentStatus" to "SUCCESS",
+                        "pass_expiry_date" to newExpiryTimestamp,
+                        "passExpiryDate" to newExpiryTimestamp,
                         "subscriptionExpiry" to newExpiryDate,
                         "subscriptionExpiryTimestamp" to newExpiryTimestamp,
                         "lastVerifiedUtr" to utr,
@@ -392,7 +421,8 @@ class PaymentVerificationRepository(
                 )
             }.await()
 
-            // Step 2: Immediate Local and Memory Unlock
+            // Step 2: Immediate Local and Memory Unlock (Double check passed)
+            PassManager.setPassStatus(context, true)
             AppSettings.setPassExpiryTimestamp(context, newExpiryTimestamp, passTier.id)
             LicenseManager.activatePassViaPayment(passTier, utr)
 

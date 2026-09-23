@@ -64,6 +64,12 @@
             android:label="Captain Store"
             android:windowSoftInputMode="adjustResize" />
 
+        <activity
+            android:name=".PaymentActivity"
+            android:exported="false"
+            android:label="Payment Verification"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Primary Accessibility Service: MyAccessibilityService -->
         <service
             android:name=".MyAccessibilityService"

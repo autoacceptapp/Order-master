@@ -455,24 +455,27 @@ fun SubscriptionScreen(
                         activity = act,
                         passTier = tier,
                         onSuccess = { txnId ->
-                            selectedPassForUpiPayment = null
-                            Toast.makeText(context, "✅ Payment Verified! ${tier.title} activated.", Toast.LENGTH_LONG).show()
+                            // 1. Double-check with backend before activating
+                            PassManager.onPaymentSuccess(context, txnId) { isSuccess ->
+                                if (isSuccess) {
+                                    selectedPassForUpiPayment = null
+                                }
+                            }
                         },
                         onFailed = { reason ->
                             errorMessage = reason
                         }
                     )
                 } else {
-                    // Fallback direct payment handler
+                    // Fallback direct payment handler with double-check
                     coroutineScope.launch {
                         isProcessing = true
-                        val res = PassManager.activatePassViaPayment(context, tier)
-                        isProcessing = false
-                        selectedPassForUpiPayment = null
-                        if (res.isSuccess) {
-                            Toast.makeText(context, "✅ Payment Verified! ${tier.title} activated.", Toast.LENGTH_LONG).show()
-                        } else {
-                            errorMessage = res.exceptionOrNull()?.message ?: "Payment failed."
+                        val paymentId = "UPI_${System.currentTimeMillis()}"
+                        PassManager.onPaymentSuccess(context, paymentId) { isSuccess ->
+                            isProcessing = false
+                            if (isSuccess) {
+                                selectedPassForUpiPayment = null
+                            }
                         }
                     }
                 }
@@ -480,13 +483,12 @@ fun SubscriptionScreen(
             onSimulateSuccess = {
                 coroutineScope.launch {
                     isProcessing = true
-                    val res = PassManager.activatePassViaPayment(context, tier, "SANDBOX_UPI_${System.currentTimeMillis()}")
-                    isProcessing = false
-                    selectedPassForUpiPayment = null
-                    if (res.isSuccess) {
-                        Toast.makeText(context, "🎉 ${tier.title} activated successfully!", Toast.LENGTH_LONG).show()
-                    } else {
-                        errorMessage = res.exceptionOrNull()?.message ?: "Activation failed."
+                    val txnId = "SANDBOX_UPI_${System.currentTimeMillis()}"
+                    PassManager.onPaymentSuccess(context, txnId) { isSuccess ->
+                        isProcessing = false
+                        if (isSuccess) {
+                            selectedPassForUpiPayment = null
+                        }
                     }
                 }
             }

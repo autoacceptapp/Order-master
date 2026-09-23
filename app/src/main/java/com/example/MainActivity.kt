@@ -136,6 +136,11 @@ class MainActivity : ComponentActivity() {
         LicenseManager.init(this)
         refreshServiceStatus()
 
+        // 3. Server-Side / Expiry Date Check: Verify pass status with server on app launch
+        lifecycleScope.launch {
+            PassManager.verifyServerPassStatus(applicationContext)
+        }
+
         // Ensure update notification channel is registered
         UpdateNotificationManager.createNotificationChannel(this)
         handleUpdateIntent(intent)
@@ -176,6 +181,11 @@ class MainActivity : ComponentActivity() {
         refreshServiceStatus()
         LicenseManager.refreshAccessStatus()
         AppSettings.syncOverlayService(this)
+
+        // 3. Server-Side / Expiry Date Check on resume (chahe Accessibility ON ho ya OFF)
+        lifecycleScope.launch {
+            PassManager.verifyServerPassStatus(applicationContext)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

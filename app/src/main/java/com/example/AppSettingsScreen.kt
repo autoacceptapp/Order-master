@@ -898,3 +898,29 @@ fun InAppUpdaterSettingsCard() {
     }
 }
 
+/**
+ * Payment Response Double-Check (Frontend):
+ * Pass ka status (isPassActive = true) sirf aur sirf tabhi update karein
+ * jab Razorpay / Cashfree / Firebase Backend se Success Signal aaye.
+ */
+fun onPaymentSuccess(
+    context: android.content.Context,
+    paymentId: String,
+    onComplete: ((Boolean) -> Unit)? = null
+) {
+    // 1. Server/Backend se verify karein
+    PassManager.verifyPaymentWithBackend(context, paymentId) { isSuccess ->
+        if (isSuccess) {
+            // Sirf success aane par pass active karein
+            PassManager.setPassStatus(context, true)
+            android.widget.Toast.makeText(context, "Pass Activated!", android.widget.Toast.LENGTH_SHORT).show()
+            onComplete?.invoke(true)
+        } else {
+            // Payment verify nahi hua
+            PassManager.setPassStatus(context, false)
+            android.widget.Toast.makeText(context, "Payment Failed/Not Verified", android.widget.Toast.LENGTH_SHORT).show()
+            onComplete?.invoke(false)
+        }
+    }
+}
+
