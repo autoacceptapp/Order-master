@@ -85,7 +85,6 @@ fun RestrictedSettingsGuideDialog(
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
-    val coroutineScope = rememberCoroutineScope()
 
     val handleOpenAppInfo: () -> Unit = {
         if (onOpenAppInfo != null) {
@@ -104,19 +103,10 @@ fun RestrictedSettingsGuideDialog(
     }
 
     val handleOpenAccessibility: () -> Unit = {
-        coroutineScope.launch {
-            val isVerified = com.example.data.PaymentVerificationRepository.checkUserPaymentStatus(context)
-            if (isVerified) {
-                if (onOpenAccessibility != null) {
-                    onOpenAccessibility()
-                } else {
-                    PermissionUtils.invokeRapidoAccessibilityService(context)
-                }
-            } else {
-                Toast.makeText(context, "Payment verification required before enabling service.", Toast.LENGTH_SHORT).show()
-                onDismiss()
-                onNavigateToPaymentVerification?.invoke()
-            }
+        if (onOpenAccessibility != null) {
+            onOpenAccessibility()
+        } else {
+            PermissionUtils.invokeRapidoAccessibilityService(context)
         }
     }
 

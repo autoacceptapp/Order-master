@@ -423,7 +423,6 @@ fun AppSettingsScreen(
 
 /**
  * Dispatches the appropriate intent for each permission item.
- * For accessibility: checks Firestore /users/{userId} isPaymentVerified before invoking.
  */
 private fun handlePermissionAction(
     context: android.content.Context,
@@ -432,21 +431,7 @@ private fun handlePermissionAction(
     onNavigateToPaymentVerification: () -> Unit
 ) {
     when (permissionId) {
-        "accessibility" -> {
-            scope.launch {
-                val isVerified = com.example.data.PaymentVerificationRepository.checkUserPaymentStatus(context)
-                if (isVerified) {
-                    PermissionUtils.invokeRapidoAccessibilityService(context)
-                } else {
-                    android.widget.Toast.makeText(
-                        context,
-                        "Payment verification required before enabling service.",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                    onNavigateToPaymentVerification()
-                }
-            }
-        }
+        "accessibility" -> PermissionUtils.invokeRapidoAccessibilityService(context)
         "overlay" -> PermissionUtils.openOverlaySettings(context)
         "battery" -> PermissionUtils.openBatteryOptimizationSettings(context)
         "autostart" -> PermissionUtils.openOemAutoStartSettings(context)
