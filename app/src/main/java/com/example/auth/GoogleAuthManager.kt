@@ -203,13 +203,13 @@ object GoogleAuthManager {
             Log.e(TAG, "Firebase Auth error: ${e.message}", e)
             withContext(Dispatchers.Main) {
                 AppSettings.signOut(context)
-                onResult(AuthResult.Error("Firebase Authentication failed: ${e.localizedMessage ?: e.message}"))
+                onResult(AuthResult.Error(formatFirebaseError(e)))
             }
         } catch (e: FirebaseException) {
             Log.e(TAG, "Firebase error: ${e.message}", e)
             withContext(Dispatchers.Main) {
                 AppSettings.signOut(context)
-                onResult(AuthResult.Error("Firebase error: ${e.localizedMessage ?: e.message}"))
+                onResult(AuthResult.Error(formatFirebaseError(e)))
             }
         } catch (e: Exception) {
             Log.e(TAG, "Unexpected error during Google Sign-In: ${e.message}", e)
@@ -234,6 +234,21 @@ object GoogleAuthManager {
             "ERROR_NO_USER",
             "Firebase user is null after authentication verification."
         )
+    }
+
+    /**
+     * Maps Firebase exceptions (including App Check enforcement failures) to clear, actionable descriptions.
+     */
+    private fun formatFirebaseError(e: FirebaseException): String {
+        val msg = e.localizedMessage ?: e.message ?: "Authentication failed"
+        return when {
+            msg.contains("App Check token is invalid", ignoreCase = true) ||
+            msg.contains("Firebase App Check", ignoreCase = true) ->
+                "Firebase App Check token is invalid. For Debug builds, obtain your debug secret from Logcat and register it in Firebase Console (App Check > Apps > Manage debug tokens). For Release builds, verify Play Integrity."
+            msg.contains("internal error", ignoreCase = true) && msg.contains("token", ignoreCase = true) ->
+                "Firebase security verification failed (App Check token invalid). Please register your debug token in Firebase Console."
+            else -> "Firebase error: $msg"
+        }
     }
 
     /**

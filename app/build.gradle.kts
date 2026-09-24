@@ -141,10 +141,12 @@ dependencies {
   implementation(libs.androidx.room.runtime)
   ksp(libs.androidx.room.compiler)
 
-  // Firebase Firestore, Auth & BoM
+  // Firebase App Check, Firestore, Auth & BoM
   implementation(platform(libs.firebase.bom))
   implementation(libs.firebase.firestore)
   implementation(libs.firebase.auth.ktx)
+  implementation(libs.firebase.appcheck.playintegrity)
+  implementation(libs.firebase.appcheck.debug)
 
   // Google Credential Manager & Identity
   implementation(libs.androidx.credentials)
