@@ -10,6 +10,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -62,7 +63,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import android.widget.Toast
 import kotlinx.coroutines.launch
-import com.example.data.PaymentVerificationRepository
 import com.example.PassManager
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -115,57 +115,20 @@ fun HomeScreen(
     val isServiceRunningInSystem = AppSettings.isAccessibilityServiceEnabled(context)
     val isAutomationActive = settingsState.isAutoAcceptEnabled && isServiceRunningInSystem
 
-    val coroutineScope = rememberCoroutineScope()
-    var isCheckingPayment by remember { mutableStateOf(false) }
-
     // 3. Server-Side / Expiry Date Check on opening HomeScreen
     LaunchedEffect(Unit) {
         PassManager.verifyServerPassStatus(context)
     }
 
-    /**
-     * Pass-by button click action:
-     * 1. Check Firestore user profile `/users/{userId}` field `isPaymentVerified`.
-     * 2. If `false`, open a Payment Screen with:
-     *    - Button to trigger UPI Intent (`upi://pay`) for paying the amount.
-     *    - 12-digit UTR TextField for manual input.
-     *    - Submit Button that writes to Firestore `/received_payments/{utr}` or attaches a Realtime Listener.
-     * 3. If `true`, then only invoke `RapidoAccessibilityService`.
-     */
-    val handlePassByAction: () -> Unit = {
-        if (!isCheckingPayment) {
-            isCheckingPayment = true
-            coroutineScope.launch {
-                try {
-                    // Step 1: Check Firestore user profile /users/{userId} field isPaymentVerified
-                    val isVerified = PaymentVerificationRepository.checkUserPaymentStatus(context)
-                    isCheckingPayment = false
-
-                    if (isVerified) {
-                        // Step 3: If true, then only invoke RapidoAccessibilityService
-                        if (!isServiceRunningInSystem) {
-                            if (PermissionUtils.isAndroid13OrHigher()) {
-                                onOpenRestrictedSettingsGuide()
-                            } else {
-                                PermissionUtils.invokeRapidoAccessibilityService(context)
-                            }
-                        } else {
-                            viewModel.toggleMasterAutomation()
-                        }
-                    } else {
-                        // Step 2: If false, open Payment Screen
-                        Toast.makeText(
-                            context,
-                            "Payment verification required before enabling automation. Please complete UPI payment & enter UTR.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                        onNavigateToPaymentVerification()
-                    }
-                } catch (e: Exception) {
-                    isCheckingPayment = false
-                    onNavigateToPaymentVerification()
-                }
+    val handleOpenAccessibilityService: () -> Unit = {
+        if (!isServiceRunningInSystem) {
+            if (PermissionUtils.isAndroid13OrHigher()) {
+                onOpenRestrictedSettingsGuide()
+            } else {
+                PermissionUtils.invokeRapidoAccessibilityService(context)
             }
+        } else {
+            viewModel.toggleMasterAutomation()
         }
     }
 
@@ -188,22 +151,21 @@ fun HomeScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         // =========================================================================================
-        // COMPONENT 1: MASTER TOGGLE SWITCH & PASS-BY BUTTON
+        // COMPONENT 1: MASTER TOGGLE SWITCH & ACCESSIBILITY STATUS
         // =========================================================================================
         MasterToggleCard(
             isAutomationActive = isAutomationActive,
             isServiceRunningInSystem = isServiceRunningInSystem,
             isAutoAcceptEnabled = settingsState.isAutoAcceptEnabled,
             pulseScale = pulseScale,
-            isCheckingPayment = isCheckingPayment,
-            onToggle = {
-                if (!isServiceRunningInSystem || !settingsState.isAutoAcceptEnabled) {
-                    handlePassByAction()
+            onToggle = handleOpenAccessibilityService,
+            onFixService = {
+                if (PermissionUtils.isAndroid13OrHigher()) {
+                    onOpenRestrictedSettingsGuide()
                 } else {
-                    viewModel.toggleMasterAutomation()
+                    PermissionUtils.invokeRapidoAccessibilityService(context)
                 }
-            },
-            onFixService = handlePassByAction
+            }
         )
 
         // =========================================================================================
@@ -222,13 +184,7 @@ fun HomeScreen(
         LicenseStatusHomeCard(
             accessStatus = accessStatus,
             pointsBalance = pointsBalance,
-            onOpenStore = {
-                if (accessStatus is AccessStatus.PassActive) {
-                    onNavigateToSubscription()
-                } else {
-                    handlePassByAction()
-                }
-            }
+            onOpenStore = onNavigateToSubscription
         )
 
         // =========================================================================================
@@ -255,7 +211,6 @@ private fun MasterToggleCard(
     isServiceRunningInSystem: Boolean,
     isAutoAcceptEnabled: Boolean,
     pulseScale: Float,
-    isCheckingPayment: Boolean = false,
     onToggle: () -> Unit,
     onFixService: () -> Unit
 ) {
@@ -370,50 +325,30 @@ private fun MasterToggleCard(
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = disabledColor.copy(alpha = 0.1f),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onFixService() }
+                        .testTag("accessibility_alert_banner")
                 ) {
                     Row(
                         modifier = Modifier.padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = null,
+                            tint = disabledColor,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Accessibility service is OFF in device settings. Tap to enable.",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontWeight = FontWeight.Medium,
+                                color = disabledColor
+                            ),
                             modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Security,
-                                contentDescription = null,
-                                tint = disabledColor,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Text(
-                                text = "Accessibility service is OFF in device settings.",
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontWeight = FontWeight.Medium,
-                                    color = disabledColor
-                                )
-                            )
-                        }
-                        Button(
-                            onClick = onFixService,
-                            enabled = !isCheckingPayment,
-                            colors = ButtonDefaults.buttonColors(containerColor = disabledColor),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                            modifier = Modifier.testTag("pass_by_button")
-                        ) {
-                            if (isCheckingPayment) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(12.dp),
-                                    color = Color.White,
-                                    strokeWidth = 2.dp
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                            }
-                            Text("Pass-by", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
-                        }
+                        )
                     }
                 }
             } else {
@@ -433,23 +368,6 @@ private fun MasterToggleCard(
                         modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    FilledTonalButton(
-                        onClick = onFixService,
-                        enabled = !isCheckingPayment,
-                        shape = RoundedCornerShape(12.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        modifier = Modifier.testTag("pass_by_button")
-                    ) {
-                        if (isCheckingPayment) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(12.dp),
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                        }
-                        Text("Pass-by", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
-                    }
-                    Spacer(modifier = Modifier.width(6.dp))
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = (if (isAutomationActive) activeColor else pausedColor).copy(alpha = 0.15f)
@@ -1028,7 +946,7 @@ private fun LicenseStatusHomeCard(
                     when (currentAccess) {
                         is AccessStatus.PassActive -> PrimaryEmerald.copy(alpha = 0.6f)
                         is AccessStatus.TrialActive -> Color(0xFF0284C7).copy(alpha = 0.6f)
-                        else -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+                        else -> PrimaryEmerald.copy(alpha = 0.4f)
                     },
                     AmberAccent.copy(alpha = 0.3f)
                 )
@@ -1054,7 +972,7 @@ private fun LicenseStatusHomeCard(
                     color = when (currentAccess) {
                         is AccessStatus.PassActive -> PrimaryEmerald.copy(alpha = 0.15f)
                         is AccessStatus.TrialActive -> Color(0xFF0284C7).copy(alpha = 0.15f)
-                        else -> MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
+                        else -> PrimaryEmerald.copy(alpha = 0.15f)
                     },
                     modifier = Modifier.size(38.dp)
                 ) {
@@ -1063,13 +981,13 @@ private fun LicenseStatusHomeCard(
                             imageVector = when (currentAccess) {
                                 is AccessStatus.PassActive -> Icons.Default.CardGiftcard
                                 is AccessStatus.TrialActive -> Icons.Default.FlashOn
-                                else -> Icons.Default.Lock
+                                else -> Icons.Default.CheckCircle
                             },
                             contentDescription = null,
                             tint = when (currentAccess) {
                                 is AccessStatus.PassActive -> PrimaryEmerald
                                 is AccessStatus.TrialActive -> Color(0xFF0284C7)
-                                else -> MaterialTheme.colorScheme.error
+                                else -> PrimaryEmerald
                             },
                             modifier = Modifier.size(20.dp)
                         )
@@ -1082,7 +1000,7 @@ private fun LicenseStatusHomeCard(
                             text = when (currentAccess) {
                                 is AccessStatus.PassActive -> currentAccess.passTier.title
                                 is AccessStatus.TrialActive -> "2-Day Free Trial"
-                                is AccessStatus.Expired -> "Access Expired"
+                                is AccessStatus.Expired -> "Permissions & Automation Active"
                                 AccessStatus.Loading -> "Verifying..."
                             },
                             style = MaterialTheme.typography.labelLarge.copy(
@@ -1104,8 +1022,8 @@ private fun LicenseStatusHomeCard(
                         text = when (currentAccess) {
                             is AccessStatus.PassActive -> "Expires in ${currentAccess.formattedRemaining}"
                             is AccessStatus.TrialActive -> "Remaining: ${currentAccess.formattedRemaining}"
-                            is AccessStatus.Expired -> "Clicks paused • Get a pass"
-                            AccessStatus.Loading -> "Checking cloud license..."
+                            is AccessStatus.Expired -> "Full access enabled without pass"
+                            AccessStatus.Loading -> "Checking system status..."
                         },
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1113,34 +1031,30 @@ private fun LicenseStatusHomeCard(
                 }
             }
 
-            Button(
-                onClick = onOpenStore,
-                shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = when (currentAccess) {
-                        is AccessStatus.PassActive -> MaterialTheme.colorScheme.primaryContainer
-                        is AccessStatus.TrialActive -> MaterialTheme.colorScheme.secondaryContainer
-                        else -> AmberAccent
-                    },
-                    contentColor = when (currentAccess) {
-                        is AccessStatus.PassActive -> MaterialTheme.colorScheme.onPrimaryContainer
-                        is AccessStatus.TrialActive -> MaterialTheme.colorScheme.onSecondaryContainer
-                        else -> Color.Black
-                    }
-                ),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                modifier = Modifier
-                    .testTag("home_store_pass_button")
-                    .testTag("pass_by_button")
-            ) {
-                Text(
-                    text = when (currentAccess) {
-                        is AccessStatus.PassActive -> "Manage"
-                        is AccessStatus.TrialActive -> "Store"
-                        else -> "Pass-by"
-                    },
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
-                )
+            // Show Manage or Store button ONLY if user has an active pass/trial;
+            // The "Pass-by" button has been completely deleted as requested.
+            if (currentAccess is AccessStatus.PassActive || currentAccess is AccessStatus.TrialActive) {
+                Button(
+                    onClick = onOpenStore,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = when (currentAccess) {
+                            is AccessStatus.PassActive -> MaterialTheme.colorScheme.primaryContainer
+                            else -> MaterialTheme.colorScheme.secondaryContainer
+                        },
+                        contentColor = when (currentAccess) {
+                            is AccessStatus.PassActive -> MaterialTheme.colorScheme.onPrimaryContainer
+                            else -> MaterialTheme.colorScheme.onSecondaryContainer
+                        }
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier.testTag("home_store_pass_button")
+                ) {
+                    Text(
+                        text = if (currentAccess is AccessStatus.PassActive) "Manage" else "Store",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
             }
         }
     }

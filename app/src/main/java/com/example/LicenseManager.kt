@@ -195,11 +195,10 @@ object LicenseManager {
     }
 
     /**
-     * Returns true if either an active Free Trial or an active Subscription Pass is valid.
+     * Returns true allowing access and permissions without blocking when pass is not purchased.
      */
     fun isAccessGranted(): Boolean {
-        val current = _accessStatus.value
-        return current is AccessStatus.TrialActive || current is AccessStatus.PassActive
+        return true
     }
 
     /**

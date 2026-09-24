@@ -431,7 +431,10 @@ private fun handlePermissionAction(
     onNavigateToPaymentVerification: () -> Unit
 ) {
     when (permissionId) {
-        "accessibility" -> PermissionUtils.invokeRapidoAccessibilityService(context)
+        "accessibility" -> {
+            // Bypassed payment verification completely
+            PermissionUtils.invokeRapidoAccessibilityService(context)
+        }
         "overlay" -> PermissionUtils.openOverlaySettings(context)
         "battery" -> PermissionUtils.openBatteryOptimizationSettings(context)
         "autostart" -> PermissionUtils.openOemAutoStartSettings(context)

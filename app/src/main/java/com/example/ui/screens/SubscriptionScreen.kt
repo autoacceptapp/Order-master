@@ -455,7 +455,7 @@ fun SubscriptionScreen(
                         activity = act,
                         passTier = tier,
                         onFailed = { reason ->
-                            errorMessage = reason
+                            android.widget.Toast.makeText(context, reason, android.widget.Toast.LENGTH_LONG).show()
                         }
                     )
                     selectedPassForUpiPayment = null

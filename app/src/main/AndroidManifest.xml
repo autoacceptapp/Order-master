@@ -43,6 +43,27 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="upi" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="upi" android:host="pay" />
+        </intent>
+        <package android:name="com.google.android.apps.nbu.paisa.user" />
+        <package android:name="com.phonepe.app" />
+        <package android:name="net.one97.paytm" />
+        <package android:name="in.org.npci.upiapp" />
+        <package android:name="in.amazon.mShop.android.shopping" />
+        <package android:name="com.dreamplug.androidapp" />
+        <package android:name="com.mobikwik_new" />
+        <package android:name="com.whatsapp" />
+        <package android:name="com.sbi.upi" />
+        <package android:name="com.axis.mobile" />
+        <package android:name="com.bankofbaroda.upi" />
+        <package android:name="com.icicibank.pockets" />
+        <package android:name="com.myairtelapp" />
+        <package android:name="com.freecharge.android" />
+        <package android:name="com.jupiter.money" />
+        <package android:name="com.fi.money" />
+        <package android:name="com.paytmmall" />
     </queries>
 
     <application

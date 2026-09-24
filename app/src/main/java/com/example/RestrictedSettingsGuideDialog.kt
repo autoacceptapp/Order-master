@@ -108,6 +108,7 @@ fun RestrictedSettingsGuideDialog(
         } else {
             PermissionUtils.invokeRapidoAccessibilityService(context)
         }
+        onDismiss()
     }
 
     Dialog(

@@ -95,21 +95,10 @@ object PassManager {
     }
 
     /**
-     * Returns true if user has an active pass or an active free trial.
+     * Returns true allowing access and permissions without blocking when pass is not purchased.
      */
     fun isAccessGranted(context: Context): Boolean {
-        if (isPassActive(context)) {
-            val now = System.currentTimeMillis()
-            val passExpiry = AppSettings.getPassExpiryTimestamp(context)
-            if (passExpiry == 0L || now < passExpiry) {
-                return true
-            } else {
-                setPassStatus(context, false)
-            }
-        }
-
-        // Check hardware trial access from LicenseManager if pass is not active
-        return LicenseManager.isAccessGranted()
+        return true
     }
 
     /**
@@ -509,15 +498,15 @@ object PassManager {
         payeeName: String = "OrderMaster Captain Store",
         transactionRef: String = "ORDER_${passTier.id}_${System.currentTimeMillis()}"
     ): Uri {
+        val formattedAmount = java.lang.String.format(java.util.Locale.US, "%.2f", passTier.priceInInr.toDouble())
         return Uri.Builder()
             .scheme("upi")
             .authority("pay")
             .appendQueryParameter("pa", payeeVpa)
             .appendQueryParameter("pn", payeeName)
-            .appendQueryParameter("mc", "5499") // Miscellaneous merchandise
             .appendQueryParameter("tr", transactionRef)
-            .appendQueryParameter("tn", "Pass: ${passTier.title}")
-            .appendQueryParameter("am", passTier.priceInInr.toString())
+            .appendQueryParameter("tn", "Pass ${passTier.title}")
+            .appendQueryParameter("am", formattedAmount)
             .appendQueryParameter("cu", "INR")
             .build()
     }
@@ -527,18 +516,41 @@ object PassManager {
      */
     fun createUpiPaymentIntent(passTier: PassTier): Intent {
         val uri = buildUpiUri(passTier)
-        return Intent(Intent.ACTION_VIEW, uri).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
+        return Intent(Intent.ACTION_VIEW, uri)
     }
+
+    /**
+     * Known Indian UPI app packages for Android 11+ package resolution
+     */
+    val KNOWN_UPI_PACKAGES = listOf(
+        "com.google.android.apps.nbu.paisa.user", // Google Pay
+        "com.phonepe.app",                       // PhonePe
+        "net.one97.paytm",                        // Paytm
+        "in.org.npci.upiapp",                     // BHIM
+        "com.dreamplug.androidapp",               // CRED
+        "in.amazon.mShop.android.shopping",       // Amazon Pay
+        "com.mobikwik_new",                       // MobiKwik
+        "com.whatsapp",                           // WhatsApp
+        "com.sbi.upi",                            // BHIM SBI Pay
+        "com.axis.mobile",                        // Axis Mobile
+        "com.bankofbaroda.upi",                   // bob World UPI
+        "com.icicibank.pockets",                  // iMobile / Pockets
+        "com.myairtelapp",                        // Airtel
+        "com.freecharge.android",                 // Freecharge
+        "com.jupiter.money",                      // Jupiter
+        "com.fi.money",                           // Fi Money
+        "com.paytmmall"
+    )
 
     /**
      * Launches standard UPI Intent (Google Pay, PhonePe, Paytm, BHIM, etc.) for the user
      * to complete the payment.
      *
-     * IMPORTANT: Does NOT auto-verify or simulate payment success.
-     * The user MUST complete payment in their UPI app, then manually input their
-     * 12-digit UTR / UPI Reference Number to be verified against Firestore.
+     * Features multi-tier fallbacks:
+     * 1. System Chooser intent
+     * 2. Direct ACTION_VIEW intent
+     * 3. Explicit installed UPI package targeting (GPay/PhonePe/Paytm/BHIM/Cred)
+     * 4. Clipboard copy fallback with guidance if intent cannot resolve
      */
     fun initiateUpiPayment(
         activity: Activity,
@@ -546,29 +558,70 @@ object PassManager {
         onSuccess: (txnId: String) -> Unit = {},
         onFailed: (reason: String) -> Unit = {}
     ) {
-        val intent = createUpiPaymentIntent(passTier)
-        val packageManager = activity.packageManager
-        val canResolve = intent.resolveActivity(packageManager) != null
+        val pm = activity.packageManager
+        val baseIntent = createUpiPaymentIntent(passTier)
 
-        if (canResolve) {
+        // Find which known UPI apps are installed
+        val installedPackages = KNOWN_UPI_PACKAGES.filter { pkg ->
             try {
-                val chooser = Intent.createChooser(intent, "Pay ₹${passTier.priceInInr} for ${passTier.title}")
-                activity.startActivity(chooser)
-                Toast.makeText(
-                    activity,
-                    "Complete payment in your UPI app, then enter the 12-digit UTR/Ref number to verify.",
-                    Toast.LENGTH_LONG
-                ).show()
-            } catch (e: Exception) {
-                Log.e(TAG, "UPI intent launch failed: ${e.message}", e)
-                val msg = "Failed to launch UPI app: ${e.localizedMessage ?: "Unknown error"}"
-                Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
-                onFailed(msg)
+                pm.getPackageInfo(pkg, 0)
+                true
+            } catch (_: Exception) {
+                false
             }
-        } else {
-            val msg = "No UPI apps found (Google Pay, PhonePe, Paytm). Please install a UPI app to pay."
-            Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
-            onFailed(msg)
+        }
+
+        // Attempt 1: Try Intent Chooser
+        try {
+            val chooser = Intent.createChooser(baseIntent, "Pay ₹${passTier.priceInInr} for ${passTier.title}")
+            activity.startActivity(chooser)
+            return
+        } catch (e: Exception) {
+            Log.d(TAG, "Chooser launch failed: ${e.message}, trying direct intent...")
+        }
+
+        // Attempt 2: Try Direct ACTION_VIEW Intent without Chooser
+        try {
+            activity.startActivity(baseIntent)
+            return
+        } catch (e: Exception) {
+            Log.d(TAG, "Direct intent launch failed: ${e.message}, trying explicit packages...")
+        }
+
+        // Attempt 3: Try launching specific installed UPI apps directly
+        for (pkg in installedPackages) {
+            try {
+                val directIntent = createUpiPaymentIntent(passTier).apply {
+                    setPackage(pkg)
+                }
+                activity.startActivity(directIntent)
+                return
+            } catch (e: Exception) {
+                Log.d(TAG, "Failed launching explicit package $pkg: ${e.message}")
+            }
+        }
+
+        // Attempt 4: Fallback - copy UPI ID to clipboard so user can pay manually
+        try {
+            val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+            if (clipboard != null) {
+                val clip = android.content.ClipData.newPlainText("UPI ID", "ordermaster@upi")
+                clipboard.setPrimaryClip(clip)
+            }
+            android.widget.Toast.makeText(
+                activity,
+                "UPI ID copied: ordermaster@upi. Please open your UPI app to pay ₹${passTier.priceInInr}.",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            onFailed("UPI ID copied: ordermaster@upi. Please pay in your UPI app and enter UTR.")
+        } catch (e: Exception) {
+            Log.w(TAG, "UPI intent launch and fallback failed: ${e.message}")
+            android.widget.Toast.makeText(
+                activity,
+                "Please pay to UPI ID: ordermaster@upi",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+            onFailed("Please pay to UPI ID: ordermaster@upi")
         }
     }
 
