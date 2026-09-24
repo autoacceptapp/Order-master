@@ -101,8 +101,12 @@ import com.example.ui.theme.CaptainAutoAcceptTheme
 import com.example.ui.theme.AmberAccent
 import com.example.ui.theme.PrimaryEmerald
 import com.example.ui.theme.SurfaceStroke
+import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -135,6 +139,33 @@ class MainActivity : ComponentActivity() {
         AppSettings.init(this)
         LicenseManager.init(this)
         refreshServiceStatus()
+
+        // Strict Real-Time Firebase Session Check on app launch
+        lifecycleScope.launch(Dispatchers.IO) {
+            val user = FirebaseAuth.getInstance().currentUser
+            if (user != null) {
+                try {
+                    user.reload().await()
+                } catch (e: Exception) {
+                    // reload() throws an exception if the user was deleted or the project is dead
+                    withContext(Dispatchers.Main) {
+                        AppSettings.signOut(applicationContext)
+                        PassManager.setPassStatus(applicationContext, false)
+                        AppSettings.setPassExpiryTimestamp(applicationContext, 0L)
+                        Toast.makeText(
+                            applicationContext,
+                            "Session Expired or Account Deleted. Logged out.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            } else {
+                // currentUser is null: ensure local cache matches the logged-out state
+                withContext(Dispatchers.Main) {
+                    AppSettings.signOut(applicationContext)
+                }
+            }
+        }
 
         // 3. Server-Side / Expiry Date Check: Verify pass status with server on app launch
         lifecycleScope.launch {

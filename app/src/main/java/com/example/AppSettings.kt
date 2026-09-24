@@ -5,8 +5,11 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.provider.Settings
 import android.text.TextUtils
+import android.util.Log
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -71,7 +74,7 @@ data class UserAuthState(
     val userEmail: String? = null,
     val userName: String? = null,
     val photoUrl: String? = null,
-    val idToken: String? = null
+    val uid: String? = null
 )
 
 object AppSettings {
@@ -95,12 +98,12 @@ object AppSettings {
     const val KEY_FLOATING_OVERLAY_ENABLED = "key_floating_overlay_enabled"
     const val KEY_AUTO_CLICK_ENABLED = "key_auto_click_enabled"
 
-    // User Authentication Keys
+    // User Authentication Keys (Authoritative source: FirebaseAuth.currentUser)
     const val KEY_USER_IS_LOGGED_IN = "key_user_is_logged_in"
     const val KEY_USER_EMAIL = "key_user_email"
     const val KEY_USER_NAME = "key_user_name"
     const val KEY_USER_PHOTO_URL = "key_user_photo_url"
-    const val KEY_USER_ID_TOKEN = "key_user_id_token"
+    const val KEY_USER_UID = "key_user_uid"
     const val KEY_LOGIN_DISMISSED = "key_login_dismissed"
 
     // Subscription & Pass Management Keys
@@ -241,18 +244,44 @@ object AppSettings {
         val overlayEnabled = prefs.getBoolean(KEY_FLOATING_OVERLAY_ENABLED, DEFAULT_FLOATING_OVERLAY_ENABLED)
         val autoClickEnabled = prefs.getBoolean(KEY_AUTO_CLICK_ENABLED, DEFAULT_AUTO_CLICK_ENABLED)
 
-        val userLoggedIn = prefs.getBoolean(KEY_USER_IS_LOGGED_IN, false)
-        val userEmail = prefs.getString(KEY_USER_EMAIL, null)
-        val userName = prefs.getString(KEY_USER_NAME, null)
-        val userPhoto = prefs.getString(KEY_USER_PHOTO_URL, null)
-        val userIdToken = prefs.getString(KEY_USER_ID_TOKEN, null)
-        _userAuthState.value = UserAuthState(
-            isLoggedIn = userLoggedIn,
-            userEmail = userEmail,
-            userName = userName,
-            photoUrl = userPhoto,
-            idToken = userIdToken
-        )
+        // Initialize user authentication directly from authoritative FirebaseAuth instance
+        val authUser = try {
+            FirebaseAuth.getInstance().currentUser
+        } catch (_: Exception) {
+            null
+        }
+
+        if (authUser != null) {
+            val email = authUser.email
+            val name = authUser.displayName
+            val photo = authUser.photoUrl?.toString()
+            val uid = authUser.uid
+            _userAuthState.value = UserAuthState(
+                isLoggedIn = true,
+                userEmail = email,
+                userName = name,
+                photoUrl = photo,
+                uid = uid
+            )
+        } else {
+            // Strictly reset to logged out if Firebase has no authenticated user
+            _userAuthState.value = UserAuthState(
+                isLoggedIn = false,
+                userEmail = null,
+                userName = null,
+                photoUrl = null,
+                uid = null
+            )
+        }
+
+        // Attach auth state listener so changes in FirebaseAuth propagate to Compose immediately
+        try {
+            FirebaseAuth.getInstance().addAuthStateListener { auth ->
+                updateUserAuthFromFirebase(context, auth.currentUser)
+            }
+        } catch (e: Exception) {
+            Log.w("AppSettings", "Failed to register FirebaseAuth state listener: ${e.message}")
+        }
 
         minCurrencyThreshold = minFare.toDouble()
         maxCurrencyThreshold = maxFare.toDouble()
@@ -289,32 +318,77 @@ object AppSettings {
         _isPassActiveFlow.value = passExpiry > System.currentTimeMillis()
     }
 
+    /**
+     * Synchronizes local UI state and cache with a verified FirebaseUser.
+     * Tokens are NEVER stored or persisted.
+     */
+    fun updateUserAuthFromFirebase(context: Context, user: FirebaseUser?) {
+        if (user != null) {
+            val email = user.email
+            val name = user.displayName
+            val photo = user.photoUrl?.toString()
+            val uid = user.uid
+
+            persistAsync(context) {
+                putBoolean(KEY_USER_IS_LOGGED_IN, true)
+                putString(KEY_USER_EMAIL, email)
+                putString(KEY_USER_NAME, name)
+                putString(KEY_USER_PHOTO_URL, photo)
+                putString(KEY_USER_UID, uid)
+                remove("key_user_id_token")
+            }
+            _userAuthState.value = UserAuthState(
+                isLoggedIn = true,
+                userEmail = email,
+                userName = name,
+                photoUrl = photo,
+                uid = uid
+            )
+        } else {
+            persistAsync(context) {
+                putBoolean(KEY_USER_IS_LOGGED_IN, false)
+                putString(KEY_USER_EMAIL, null)
+                putString(KEY_USER_NAME, null)
+                putString(KEY_USER_PHOTO_URL, null)
+                putString(KEY_USER_UID, null)
+                remove("key_user_id_token")
+            }
+            _userAuthState.value = UserAuthState(
+                isLoggedIn = false,
+                userEmail = null,
+                userName = null,
+                photoUrl = null,
+                uid = null
+            )
+        }
+    }
+
+    /**
+     * Legacy delegation wrapper ensuring state never contradicts FirebaseAuth.
+     */
     fun updateUserAuth(
         context: Context,
         isLoggedIn: Boolean,
         email: String?,
         name: String?,
         photoUrl: String?,
-        idToken: String? = null
+        uid: String? = null
     ) {
-        persistAsync(context) {
-            putBoolean(KEY_USER_IS_LOGGED_IN, isLoggedIn)
-            putString(KEY_USER_EMAIL, email)
-            putString(KEY_USER_NAME, name)
-            putString(KEY_USER_PHOTO_URL, photoUrl)
-            putString(KEY_USER_ID_TOKEN, idToken)
+        val currentFirebaseUser = try { FirebaseAuth.getInstance().currentUser } catch (_: Exception) { null }
+        if (!isLoggedIn || currentFirebaseUser == null) {
+            updateUserAuthFromFirebase(context, null)
+        } else {
+            updateUserAuthFromFirebase(context, currentFirebaseUser)
         }
-        _userAuthState.value = UserAuthState(
-            isLoggedIn = isLoggedIn,
-            userEmail = email,
-            userName = name,
-            photoUrl = photoUrl,
-            idToken = idToken
-        )
     }
 
     fun signOut(context: Context) {
-        updateUserAuth(context, false, null, null, null, null)
+        try {
+            FirebaseAuth.getInstance().signOut()
+        } catch (e: Exception) {
+            Log.w("AppSettings", "Firebase sign out error: ${e.message}")
+        }
+        updateUserAuthFromFirebase(context, null)
     }
 
     fun setLoginDismissed(context: Context, dismissed: Boolean) {

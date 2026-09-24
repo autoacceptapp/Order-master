@@ -62,7 +62,15 @@ android {
         keyAlias = System.getenv("KEY_ALIAS") ?: "androiddebugkey"
         keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: "android"
       } else {
-        throw GradleException("Release keystore missing! Please provide KEYSTORE_BASE64 in GitHub Secrets.")
+        val isReleaseTask = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
+        if (isReleaseTask) {
+          throw GradleException("Release keystore missing! Please provide KEYSTORE_BASE64 in GitHub Secrets.")
+        } else {
+          storeFile = file("${rootDir}/debug.keystore")
+          storePassword = "android"
+          keyAlias = "androiddebugkey"
+          keyPassword = "android"
+        }
       }
     }
   }
