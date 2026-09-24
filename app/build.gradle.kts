@@ -137,6 +137,7 @@ dependencies {
   implementation(libs.androidx.navigation.compose)
 
   // Local persistence & utilities
+  implementation(libs.zxing.core)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   ksp(libs.androidx.room.compiler)

@@ -18,7 +18,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.asImageBitmap
+import com.example.QrCodeGenerator
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -375,6 +378,45 @@ fun PaymentVerificationScreen(
 }
 
 /**
+ * Scannable high-resolution UPI QR Code rendered dynamically from the UPI URI string.
+ */
+@Composable
+fun ScannableUpiQrCode(
+    upiUri: String,
+    modifier: Modifier = Modifier,
+    contentDescription: String = "Scan UPI QR Code to pay"
+) {
+    val qrBitmap = remember(upiUri) {
+        QrCodeGenerator.generateQrCodeBitmap(
+            content = upiUri,
+            widthPx = 512,
+            heightPx = 512
+        )
+    }
+
+    Box(
+        modifier = modifier
+            .aspectRatio(1f)
+            .background(Color.White, RoundedCornerShape(12.dp))
+            .padding(10.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (qrBitmap != null) {
+            Image(
+                bitmap = qrBitmap.asImageBitmap(),
+                contentDescription = contentDescription,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            StylizedQrCodePlaceholder(
+                modifier = Modifier.fillMaxSize(),
+                centerBadgeText = "UPI"
+            )
+        }
+    }
+}
+
+/**
  * Modern QR Code Placeholder Visual Component rendered with Canvas.
  */
 @Composable
@@ -571,6 +613,15 @@ private fun MerchantPaymentQrCard(
                 }
             }
 
+            val upiUri = remember(merchantVpa, selectedTier) {
+                QrCodeGenerator.getUpiUriString(
+                    vpa = merchantVpa,
+                    name = merchantName,
+                    amount = selectedTier.priceInInr.toDouble(),
+                    note = "Pass ${selectedTier.title}"
+                )
+            }
+
             // QR Code Container with subtle background
             Surface(
                 shape = RoundedCornerShape(16.dp),
@@ -582,9 +633,10 @@ private fun MerchantPaymentQrCard(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(16.dp)
                 ) {
-                    StylizedQrCodePlaceholder(
+                    ScannableUpiQrCode(
+                        upiUri = upiUri,
                         modifier = Modifier.size(190.dp),
-                        centerBadgeText = "₹${selectedTier.priceInInr}"
+                        contentDescription = "Scan to pay ₹${selectedTier.priceInInr} to $merchantVpa"
                     )
 
                     Spacer(modifier = Modifier.height(10.dp))

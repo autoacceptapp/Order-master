@@ -8,8 +8,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -355,6 +357,54 @@ private fun PaymentVerificationScreenContent(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
+                    // Dynamic QR Code visual component for scanning
+                    val paymentUpiUri = remember(adminUpiId, selectedTier) {
+                        QrCodeGenerator.getUpiUriString(
+                            vpa = adminUpiId,
+                            name = adminPayeeName,
+                            amount = selectedTier.priceInInr.toDouble(),
+                            note = "Pass ${selectedTier.title}"
+                        )
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(14.dp)
+                        ) {
+                            val qrBitmap = remember(paymentUpiUri) {
+                                QrCodeGenerator.generateQrCodeBitmap(paymentUpiUri, 512, 512)
+                            }
+                            if (qrBitmap != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(175.dp)
+                                        .background(androidx.compose.ui.graphics.Color.White, RoundedCornerShape(12.dp))
+                                        .padding(8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Image(
+                                        bitmap = qrBitmap.asImageBitmap(),
+                                        contentDescription = "Scan to pay ₹${selectedTier.priceInInr} via UPI",
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Scan QR with any UPI App (GPay / PhonePe / Paytm / BHIM)",
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
                             )
                         }
                     }
