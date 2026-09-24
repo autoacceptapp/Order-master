@@ -134,7 +134,8 @@ jobs:
           VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
         run: |
           echo "=== Building Release APK with Gradle Wrapper ==="
-          ./gradlew assembleRelease --stacktrace --no-daemon
+          # FIX: Added 'clean' and '--no-build-cache' to prevent KSP Null Pointer Exceptions
+          ./gradlew clean assembleRelease --stacktrace --no-daemon --no-build-cache
 
       # Step 9: Verify and Locate Generated APKs
       - name: Verify Generated APK Outputs
