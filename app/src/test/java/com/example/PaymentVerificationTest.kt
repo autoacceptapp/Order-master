@@ -56,11 +56,11 @@ class PaymentVerificationTest {
     @Test
     fun testClipboardUtrExtractionFromSms() {
         // Common bank SMS texts
-        val sms1 = "Sent Rs. 49.00 to ordermaster@upi on 23-09-2026. UPI Ref: 426719823451. Check balance:..."
+        val sms1 = "Sent Rs. 49.00 to autoaccept6122-1@okhdfcbank on 23-09-2026. UPI Ref: 426719823451. Check balance:..."
         val match1 = Regex("\\b\\d{12}\\b").find(sms1)?.value
         assertEquals("426719823451", match1)
 
-        val sms2 = "Dear Customer, INR 179.00 debited from A/c XX1234 for VPA ordermaster@upi. UTR no: 987654321098."
+        val sms2 = "Dear Customer, INR 179.00 debited from A/c XX1234 for VPA autoaccept6122-1@okhdfcbank. UTR no: 987654321098."
         val match2 = Regex("\\b\\d{12}\\b").find(sms2)?.value
         assertEquals("987654321098", match2)
 

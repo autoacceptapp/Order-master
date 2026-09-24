@@ -174,7 +174,7 @@ private fun PaymentVerificationScreenContent(
     var uiState by remember { mutableStateOf(VerificationUiState.IDLE) }
     var statusMessage by remember { mutableStateOf("") }
 
-    val adminUpiId = "ordermaster@upi"
+    val adminUpiId = "autoaccept6122-1@okhdfcbank"
     val adminPayeeName = "OrderMaster Captain Store"
 
     Scaffold(

@@ -142,7 +142,7 @@ fun PaymentVerificationScreen(
     val selectedTier by viewModel.selectedTier.collectAsState()
     val isUtrValid by viewModel.isUtrValid.collectAsState()
 
-    val merchantVpa = "ordermaster@upi"
+    val merchantVpa = "autoaccept6122-1@okhdfcbank"
     val merchantName = "OrderMaster Captain Store"
 
     DisposableEffect(Unit) {

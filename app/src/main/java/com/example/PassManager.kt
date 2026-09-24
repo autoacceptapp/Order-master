@@ -494,7 +494,7 @@ object PassManager {
      */
     fun buildUpiUri(
         passTier: PassTier,
-        payeeVpa: String = "ordermaster@upi",
+        payeeVpa: String = "autoaccept6122-1@okhdfcbank",
         payeeName: String = "OrderMaster Captain Store",
         transactionRef: String = "ORDER_${passTier.id}_${System.currentTimeMillis()}"
     ): Uri {
@@ -605,23 +605,23 @@ object PassManager {
         try {
             val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
             if (clipboard != null) {
-                val clip = android.content.ClipData.newPlainText("UPI ID", "ordermaster@upi")
+                val clip = android.content.ClipData.newPlainText("UPI ID", "autoaccept6122-1@okhdfcbank")
                 clipboard.setPrimaryClip(clip)
             }
             android.widget.Toast.makeText(
                 activity,
-                "UPI ID copied: ordermaster@upi. Please open your UPI app to pay ₹${passTier.priceInInr}.",
+                "UPI ID copied: autoaccept6122-1@okhdfcbank. Please open your UPI app to pay ₹${passTier.priceInInr}.",
                 android.widget.Toast.LENGTH_LONG
             ).show()
-            onFailed("UPI ID copied: ordermaster@upi. Please pay in your UPI app and enter UTR.")
+            onFailed("UPI ID copied: autoaccept6122-1@okhdfcbank. Please pay in your UPI app and enter UTR.")
         } catch (e: Exception) {
             Log.w(TAG, "UPI intent launch and fallback failed: ${e.message}")
             android.widget.Toast.makeText(
                 activity,
-                "Please pay to UPI ID: ordermaster@upi",
+                "Please pay to UPI ID: autoaccept6122-1@okhdfcbank",
                 android.widget.Toast.LENGTH_LONG
             ).show()
-            onFailed("Please pay to UPI ID: ordermaster@upi")
+            onFailed("Please pay to UPI ID: autoaccept6122-1@okhdfcbank")
         }
     }
 
