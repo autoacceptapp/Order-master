@@ -1,0 +1,182 @@
+name: Build & Release Debug APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish Debug APK
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Set up Gradle Build Tool
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+          cache-read-only: false
+
+      - name: Setup Keystores and Google Services
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "=== Setting up Keystore and Google Services ==="
+          
+          # 1. Setup debug.keystore
+          if [ ! -f "./debug.keystore" ]; then
+            if [ -f "./debug.keystore.base64" ]; then
+              echo "Decoding debug.keystore from debug.keystore.base64..."
+              base64 -d ./debug.keystore.base64 > ./debug.keystore
+            elif [ -n "${KEYSTORE_BASE64}" ]; then
+              echo "Decoding debug.keystore from KEYSTORE_BASE64 secret..."
+              echo "${KEYSTORE_BASE64}" | base64 -d > ./debug.keystore
+            else
+              echo "Auto-generating debug.keystore with keytool..."
+              keytool -genkey -v -keystore ./debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            fi
+          else
+            echo "debug.keystore already exists."
+          fi
+
+          # 2. Setup google-services.json
+          if [ -n "${GOOGLE_SERVICES_JSON}" ]; then
+            echo "Writing GOOGLE_SERVICES_JSON secret to app/google-services.json..."
+            echo "${GOOGLE_SERVICES_JSON}" > app/google-services.json
+          elif [ ! -f "app/google-services.json" ]; then
+            echo "Generating fallback google-services.json for debug build..."
+            cat << 'EOF' > app/google-services.json
+{
+  "project_info": {
+    "project_number": "699930864283",
+    "project_id": "ordermaster-app",
+    "storage_bucket": "ordermaster-app.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:699930864283:android:1234567890abcdef",
+        "android_client_info": {
+          "package_name": "com.aistudio.smarttext.wkjm"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDummyKeyForCIBuildConfig0000000"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
+EOF
+          fi
+
+      - name: Prepare Dynamic Version Metadata
+        id: version_meta
+        run: |
+          BUILD_NUM="${{ github.run_number }}"
+          VERSION_NAME="1.0.${BUILD_NUM}"
+          VERSION_CODE="${BUILD_NUM}"
+          RELEASE_TAG="v${VERSION_NAME}"
+          echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "Computed Release Tag: ${RELEASE_TAG} (Version Code: ${VERSION_CODE})"
+
+      - name: Grant Execute Permission to Gradle Wrapper
+        run: chmod +x ./gradlew
+
+      - name: Build Debug APK with Gradle
+        env:
+          VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
+          VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
+        run: |
+          echo "=== Building Debug APK with Gradle Wrapper ==="
+          ./gradlew clean assembleDebug --stacktrace --no-daemon
+
+      - name: Locate and Prepare Debug APK Outputs
+        id: prepare_apk
+        run: |
+          echo "=== Locating Built Debug APK ==="
+          mkdir -p apk_output
+          DEBUG_APK=$(find app/build/outputs/apk/debug -type f -name "*.apk" | head -n 1)
+          if [ -n "${DEBUG_APK}" ] && [ -f "${DEBUG_APK}" ]; then
+            echo "Found Debug APK: ${DEBUG_APK} ($(stat -c%s "${DEBUG_APK}") bytes)"
+            cp "${DEBUG_APK}" apk_output/app-debug.apk
+            cp "${DEBUG_APK}" apk_output/OrderMaster-${{ steps.version_meta.outputs.release_tag }}-debug.apk
+            echo "apk_path=apk_output/app-debug.apk" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: Debug APK not found in app/build/outputs/apk/debug!" >&2
+            exit 1
+          fi
+
+      - name: Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-${{ steps.version_meta.outputs.release_tag }}
+          path: apk_output/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish Debug APK to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        if: success()
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.version_meta.outputs.release_tag }}
+          name: "Debug Release ${{ steps.version_meta.outputs.release_tag }} (Build #${{ steps.version_meta.outputs.version_code }})"
+          target_commitish: ${{ github.sha }}
+          draft: false
+          prerelease: false
+          make_latest: "true"
+          generate_release_notes: true
+          body: |
+            ### 📱 Order Master Debug APK ${{ steps.version_meta.outputs.release_tag }}
+
+            - **Version Name**: `${{ steps.version_meta.outputs.version_name }}`
+            - **Version Code**: `${{ steps.version_meta.outputs.version_code }}`
+            - **Commit**: `${{ github.sha }}`
+            - **Build Run**: #${{ github.run_number }}
+
+            #### 📥 Download Assets
+            - [**`app-debug.apk`**](https://github.com/${{ github.repository }}/releases/download/${{ steps.version_meta.outputs.release_tag }}/app-debug.apk) (Install directly on phone)
+            - [**`OrderMaster-${{ steps.version_meta.outputs.release_tag }}-debug.apk`**](https://github.com/${{ github.repository }}/releases/download/${{ steps.version_meta.outputs.release_tag }}/OrderMaster-${{ steps.version_meta.outputs.release_tag }}-debug.apk)
+          files: |
+            apk_output/*.apk
+          fail_on_unmatched_files: true
+
+      - name: Workflow Summary
+        if: always()
+        run: |
+          echo "## 📱 Debug APK Build & Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: Completed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: \`${{ steps.version_meta.outputs.release_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version Code**: \`${{ steps.version_meta.outputs.version_code }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Debug APK Download**: [Download app-debug.apk](https://github.com/${{ github.repository }}/releases/download/${{ steps.version_meta.outputs.release_tag }}/app-debug.apk)" >> $GITHUB_STEP_SUMMARY
