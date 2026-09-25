@@ -156,6 +156,7 @@ private enum class VerificationUiState {
     VERIFYING,
     SUCCESS,
     NOT_FOUND,
+    ALREADY_USED,
     ERROR
 }
 
@@ -535,6 +536,7 @@ private fun PaymentVerificationScreenContent(
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("utr_input_field"),
+                        enabled = uiState != VerificationUiState.VERIFYING,
                         label = { Text("12-Digit UTR / UPI Ref No.") },
                         placeholder = { Text("e.g. 426719823451") },
                         leadingIcon = {
@@ -552,6 +554,7 @@ private fun PaymentVerificationScreenContent(
                                         Toast.makeText(context, "No digits found in clipboard", Toast.LENGTH_SHORT).show()
                                     }
                                 },
+                                enabled = uiState != VerificationUiState.VERIFYING,
                                 modifier = Modifier.testTag("paste_utr_button")
                             ) {
                                 Icon(
@@ -600,7 +603,7 @@ private fun PaymentVerificationScreenContent(
                         onClick = {
                             focusManager.clearFocus()
                             uiState = VerificationUiState.VERIFYING
-                            statusMessage = "Verifying with Firestore backend..."
+                            statusMessage = "Waiting for bank confirmation... This may take up to 90 seconds."
 
                             coroutineScope.launch {
                                 val result = PassManager.verifyPaymentWithBackendDetailed(
@@ -619,10 +622,10 @@ private fun PaymentVerificationScreenContent(
                                     }
                                     is PassManager.VerificationResult.NotFound -> {
                                         uiState = VerificationUiState.NOT_FOUND
-                                        statusMessage = "Payment not verified yet. Please wait a minute or check your UTR"
+                                        statusMessage = result.message
                                     }
                                     is PassManager.VerificationResult.AlreadyUsed -> {
-                                        uiState = VerificationUiState.ERROR
+                                        uiState = VerificationUiState.ALREADY_USED
                                         statusMessage = result.message
                                     }
                                     is PassManager.VerificationResult.Invalid -> {
@@ -638,22 +641,36 @@ private fun PaymentVerificationScreenContent(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(54.dp)
+                            .height(56.dp)
                             .testTag("verify_payment_button"),
                         enabled = utrInput.length == 12 && uiState != VerificationUiState.VERIFYING,
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                            disabledContentColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
                         )
                     ) {
                         if (uiState == VerificationUiState.VERIFYING) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                strokeWidth = 2.5.dp
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text("Checking received_payments/${utrInput}...")
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    strokeWidth = 2.5.dp
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = "Waiting for bank confirmation... This may take up to 90 seconds.",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    maxLines = 2,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
                         } else {
                             Icon(
                                 imageVector = Icons.Default.Payments,
@@ -672,8 +689,13 @@ private fun PaymentVerificationScreenContent(
             }
 
             // Status & Feedback Card
-            if (statusMessage.isNotEmpty()) {
+            if (statusMessage.isNotEmpty() || uiState == VerificationUiState.VERIFYING) {
                 val (cardColor, contentColor, icon) = when (uiState) {
+                    VerificationUiState.VERIFYING -> Triple(
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                        MaterialTheme.colorScheme.onPrimaryContainer,
+                        Icons.Default.HourglassTop
+                    )
                     VerificationUiState.SUCCESS -> Triple(
                         Color(0xFFE8F5E9),
                         Color(0xFF1B5E20),
@@ -684,6 +706,7 @@ private fun PaymentVerificationScreenContent(
                         Color(0xFFB78103),
                         Icons.Default.HourglassTop
                     )
+                    VerificationUiState.ALREADY_USED,
                     VerificationUiState.ERROR -> Triple(
                         Color(0xFFFFEBEE),
                         Color(0xFFB71C1C),
@@ -710,17 +733,27 @@ private fun PaymentVerificationScreenContent(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = icon,
-                                contentDescription = null,
-                                tint = contentColor,
-                                modifier = Modifier.size(24.dp)
-                            )
+                            if (uiState == VerificationUiState.VERIFYING) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = contentColor,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = null,
+                                    tint = contentColor,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
                                 text = when (uiState) {
+                                    VerificationUiState.VERIFYING -> "Verifying... Please wait"
                                     VerificationUiState.SUCCESS -> "Verification Success"
                                     VerificationUiState.NOT_FOUND -> "Pending Verification"
+                                    VerificationUiState.ALREADY_USED -> "Already Claimed"
                                     VerificationUiState.ERROR -> "Verification Notice"
                                     else -> "Status"
                                 },

@@ -20,12 +20,19 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.SetOptions
 import com.example.data.PaymentVerificationRepository
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
 
 /**
  * PassManager - Central Manager for Subscription Passes, Points Conversion,
@@ -162,10 +169,115 @@ object PassManager {
         verifyPaymentWithBackend(context, paymentId, null, onResult)
     }
 
+    private class AlreadyClaimedException(message: String) : Exception(message)
+
+    private sealed interface RealtimeWaitOutcome {
+        data object VerifiedReadyToClaim : RealtimeWaitOutcome
+        data class EarlyResult(val result: VerificationResult) : RealtimeWaitOutcome
+    }
+
+    /**
+     * Executes the ACID Firestore transaction to claim an already verified UTR payment,
+     * update the user's pass expiry, and unlock pass access locally.
+     */
+    private suspend fun executeClaimTransaction(
+        firestore: FirebaseFirestore,
+        paymentDocRef: DocumentReference,
+        userDocRef: DocumentReference,
+        userId: String,
+        cleanUtr: String,
+        preferredTier: PassTier?,
+        context: Context
+    ): VerificationResult {
+        var finalExpiryTimestamp = 0L
+        var activatedTier: PassTier? = null
+
+        firestore.runTransaction { transaction ->
+            val transPaymentDoc = transaction.get(paymentDocRef)
+            val transUserDoc = transaction.get(userDocRef)
+
+            if (!transPaymentDoc.exists()) {
+                throw IllegalStateException("Payment record does not exist.")
+            }
+
+            val transStatus = transPaymentDoc.getString("status") ?: ""
+            if (!transStatus.equals("Verified", ignoreCase = true)) {
+                throw IllegalStateException("Payment is not verified (status: $transStatus).")
+            }
+
+            val transUsed = transPaymentDoc.getBoolean("isUsed") ?: false
+            val transClaimedBy = transPaymentDoc.getString("claimedBy")
+            if (transUsed && transClaimedBy != userId) {
+                throw AlreadyClaimedException("This UTR has already been claimed on another account.")
+            }
+
+            val amount = transPaymentDoc.getLong("amount") ?: 0L
+            val passTier = preferredTier ?: PaymentVerificationRepository.mapAmountToPassTier(amount)
+            activatedTier = passTier
+
+            val currentTime = System.currentTimeMillis()
+            val existingExpiry = transUserDoc.getLong("pass_expiry_date")
+                ?: transUserDoc.getLong("passExpiryDate")
+                ?: 0L
+            val baseTime = if (existingExpiry > currentTime) existingExpiry else currentTime
+            val newExpiryTimestamp = baseTime + passTier.durationMs
+            finalExpiryTimestamp = newExpiryTimestamp
+
+            // 1. Update received_payments/{UTR} -> set isUsed = true and claimedBy = {current_userId}
+            transaction.update(
+                paymentDocRef,
+                mapOf(
+                    "isUsed" to true,
+                    "claimedBy" to userId,
+                    "claimedAt" to FieldValue.serverTimestamp(),
+                    "planId" to passTier.id
+                )
+            )
+
+            // 2. Update users/{current_userId}
+            val userData = mutableMapOf<String, Any>(
+                "payment_status" to "SUCCESS",
+                "paymentStatus" to "SUCCESS",
+                "isPaymentVerified" to true,
+                "lastVerifiedUtr" to cleanUtr,
+                "pass_expiry_date" to newExpiryTimestamp,
+                "passExpiryDate" to newExpiryTimestamp,
+                "subscriptionExpiryTimestamp" to newExpiryTimestamp,
+                "subscriptionExpiry" to java.util.Date(newExpiryTimestamp),
+                "activePassTier" to passTier.id,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+
+            if (transUserDoc.exists()) {
+                transaction.update(userDocRef, userData)
+            } else {
+                userData["userId"] = userId
+                userData["createdAt"] = FieldValue.serverTimestamp()
+                transaction.set(userDocRef, userData)
+            }
+        }.await()
+
+        val tier = activatedTier ?: (preferredTier ?: PassTier.DAILY)
+        withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
+            setPassStatus(context, true)
+            AppSettings.setPassExpiryTimestamp(context, finalExpiryTimestamp, tier.id)
+            LicenseManager.activatePassViaPayment(tier, cleanUtr)
+            AppSettings.addLog(
+                title = "Pass Activated",
+                message = "${tier.title} activated via UTR $cleanUtr. Valid for ${tier.durationDays} day(s).",
+                severity = LogSeverity.MATCH_ACCEPTED
+            )
+        }
+
+        return VerificationResult.Success(tier, finalExpiryTimestamp)
+    }
+
     /**
      * Detailed verification of the user's inputted UTR string with Firestore.
-     * MacroDroid creates document at: received_payments/{UTR} with:
-     * {"utr": "{UTR}", "amount": {Amount}, "status": "Verified", "isUsed": false}
+     * Implements a Real-time Waiting & Claiming architecture:
+     * - SCENARIO A (MacroDroid came first): Claims immediately if already "Verified" and unused.
+     * - SCENARIO B (App came first): Sets status to "Pending", attaches a real-time snapshot listener,
+     *   waits up to 90 seconds for MacroDroid to mark "Verified", and claims instantly when confirmed.
      */
     suspend fun verifyPaymentWithBackendDetailed(
         context: Context,
@@ -183,117 +295,124 @@ object PassManager {
             val paymentDocRef = firestore.collection(PaymentVerificationRepository.COLL_RECEIVED_PAYMENTS).document(cleanUtr)
             val userDocRef = firestore.collection("users").document(userId)
 
-            // Step 1: Fetch the document from Firestore: received_payments/{UTR}
+            // Step 1: Check existing document in received_payments/{cleanUtr}
             val snapshot = paymentDocRef.get().await()
 
-            // If the document DOES NOT exist, return false
-            if (!snapshot.exists()) {
-                Log.w(TAG, "Payment document received_payments/$cleanUtr does not exist yet.")
-                return@withContext VerificationResult.NotFound(
-                    "Payment not verified yet. Please wait a minute or check your UTR"
-                )
-            }
+            if (snapshot.exists()) {
+                val status = snapshot.getString("status") ?: ""
+                val isUsed = snapshot.getBoolean("isUsed") ?: false
+                val claimedBy = snapshot.getString("claimedBy")
 
-            // If the document EXISTS, check if status == "Verified" AND isUsed == false
-            val status = snapshot.getString("status") ?: ""
-            val isUsed = snapshot.getBoolean("isUsed") ?: false
-            val claimedBy = snapshot.getString("claimedBy")
-
-            if (!status.equals("Verified", ignoreCase = true)) {
-                Log.w(TAG, "Payment $cleanUtr status is '$status' (expected 'Verified').")
-                return@withContext VerificationResult.NotFound(
-                    "Payment status is pending verification ($status). Please wait a moment."
-                )
-            }
-
-            if (isUsed && claimedBy != userId) {
-                Log.w(TAG, "Payment $cleanUtr already claimed by another user: '$claimedBy'.")
-                return@withContext VerificationResult.AlreadyUsed(
-                    "This UTR has already been claimed on another account."
-                )
-            }
-
-            // Determine pass tier based on amount in doc or preferred tier
-            val amount = snapshot.getLong("amount") ?: 0L
-            val passTier = preferredTier ?: PaymentVerificationRepository.mapAmountToPassTier(amount)
-
-            var finalExpiryTimestamp = 0L
-
-            // Step 2: Execute an ACID Firestore Transaction with full in-transaction validation:
-            firestore.runTransaction { transaction ->
-                val transPaymentDoc = transaction.get(paymentDocRef)
-                val transUserDoc = transaction.get(userDocRef)
-
-                if (!transPaymentDoc.exists()) {
-                    throw IllegalStateException("Payment record does not exist.")
-                }
-
-                val transStatus = transPaymentDoc.getString("status") ?: ""
-                if (!transStatus.equals("Verified", ignoreCase = true)) {
-                    throw IllegalStateException("Payment is not verified (status: $transStatus).")
-                }
-
-                val transUsed = transPaymentDoc.getBoolean("isUsed") ?: false
-                val transClaimedBy = transPaymentDoc.getString("claimedBy")
-                if (transUsed && transClaimedBy != userId) {
-                    throw IllegalStateException("Payment already claimed by another user.")
-                }
-
-                val currentTime = System.currentTimeMillis()
-                val existingExpiry = transUserDoc.getLong("pass_expiry_date")
-                    ?: transUserDoc.getLong("passExpiryDate")
-                    ?: 0L
-                val baseTime = if (existingExpiry > currentTime) existingExpiry else currentTime
-                val newExpiryTimestamp = baseTime + passTier.durationMs
-                finalExpiryTimestamp = newExpiryTimestamp
-
-                // 1. Update received_payments/{UTR} -> set isUsed = true and claimedBy = {current_userId}
-                transaction.update(
-                    paymentDocRef,
-                    mapOf(
-                        "isUsed" to true,
-                        "claimedBy" to userId,
-                        "claimedAt" to FieldValue.serverTimestamp(),
-                        "planId" to passTier.id
+                if (isUsed && claimedBy != userId) {
+                    Log.w(TAG, "Payment $cleanUtr already claimed by another user: '$claimedBy'.")
+                    return@withContext VerificationResult.AlreadyUsed(
+                        "This UTR has already been claimed on another account."
                     )
-                )
-
-                // 2. Update users/{current_userId}
-                val userData = mutableMapOf<String, Any>(
-                    "payment_status" to "SUCCESS",
-                    "paymentStatus" to "SUCCESS",
-                    "isPaymentVerified" to true,
-                    "lastVerifiedUtr" to cleanUtr,
-                    "pass_expiry_date" to newExpiryTimestamp,
-                    "passExpiryDate" to newExpiryTimestamp,
-                    "subscriptionExpiryTimestamp" to newExpiryTimestamp,
-                    "subscriptionExpiry" to java.util.Date(newExpiryTimestamp),
-                    "activePassTier" to passTier.id,
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-
-                if (transUserDoc.exists()) {
-                    transaction.update(userDocRef, userData)
-                } else {
-                    userData["userId"] = userId
-                    userData["createdAt"] = FieldValue.serverTimestamp()
-                    transaction.set(userDocRef, userData)
                 }
-            }.await()
 
-            // Once committed to Firestore, perform local unlock inside NonCancellable to prevent cancellation leaks
-            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
-                setPassStatus(context, true)
-                AppSettings.setPassExpiryTimestamp(context, finalExpiryTimestamp, passTier.id)
-                LicenseManager.activatePassViaPayment(passTier, cleanUtr)
-                AppSettings.addLog(
-                    title = "Pass Activated",
-                    message = "${passTier.title} activated via UTR $cleanUtr. Valid for ${passTier.durationDays} day(s).",
-                    severity = LogSeverity.MATCH_ACCEPTED
-                )
+                // SCENARIO A: MacroDroid came first (status == "Verified" && !isUsed)
+                if (status.equals("Verified", ignoreCase = true) && !isUsed) {
+                    Log.i(TAG, "Scenario A: MacroDroid verified $cleanUtr first. Claiming immediately...")
+                    return@withContext executeClaimTransaction(
+                        firestore = firestore,
+                        paymentDocRef = paymentDocRef,
+                        userDocRef = userDocRef,
+                        userId = userId,
+                        cleanUtr = cleanUtr,
+                        preferredTier = preferredTier,
+                        context = context
+                    )
+                }
             }
 
-            VerificationResult.Success(passTier, finalExpiryTimestamp)
+            // SCENARIO B: App came first OR status == "Pending" / not yet "Verified"
+            Log.i(TAG, "Scenario B: Real-time listener waiting for MacroDroid confirmation for $cleanUtr...")
+
+            // 1. Create/Set the document with {"utr": cleanUtr, "status": "Pending", "isUsed": false}
+            paymentDocRef.set(
+                mapOf(
+                    "utr" to cleanUtr,
+                    "status" to "Pending",
+                    "isUsed" to false,
+                    "createdAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
+
+            // 2. Suspend with real-time snapshot listener wrapped in 90-second timeout
+            val waitOutcome = withTimeoutOrNull(90_000L) {
+                suspendCancellableCoroutine<RealtimeWaitOutcome> { continuation ->
+                    var listener: ListenerRegistration? = null
+                    val isResumed = AtomicBoolean(false)
+
+                    listener = paymentDocRef.addSnapshotListener { docSnap, error ->
+                        if (error != null) {
+                            Log.w(TAG, "Real-time snapshot listener error for $cleanUtr: ${error.message}")
+                            return@addSnapshotListener
+                        }
+
+                        if (docSnap != null && docSnap.exists()) {
+                            val currentStatus = docSnap.getString("status") ?: ""
+                            val currentUsed = docSnap.getBoolean("isUsed") ?: false
+                            val currentClaimedBy = docSnap.getString("claimedBy")
+
+                            // Check if claimed by another user
+                            if (currentUsed && currentClaimedBy != userId) {
+                                if (isResumed.compareAndSet(false, true)) {
+                                    listener?.remove()
+                                    continuation.resume(
+                                        RealtimeWaitOutcome.EarlyResult(
+                                            VerificationResult.AlreadyUsed("This UTR has already been claimed on another account.")
+                                        )
+                                    )
+                                }
+                                return@addSnapshotListener
+                            }
+
+                            // The moment MacroDroid updates status to "Verified" (and isUsed is still false)
+                            if (currentStatus.equals("Verified", ignoreCase = true) && !currentUsed) {
+                                if (isResumed.compareAndSet(false, true)) {
+                                    // DETACH the listener immediately
+                                    listener?.remove()
+                                    continuation.resume(RealtimeWaitOutcome.VerifiedReadyToClaim)
+                                }
+                            }
+                        }
+                    }
+
+                    continuation.invokeOnCancellation {
+                        Log.d(TAG, "Detaching real-time snapshot listener on cancellation/timeout for $cleanUtr")
+                        listener?.remove()
+                    }
+                }
+            }
+
+            when (waitOutcome) {
+                is RealtimeWaitOutcome.VerifiedReadyToClaim -> {
+                    Log.i(TAG, "Real-time listener received 'Verified'. Executing claim transaction for $cleanUtr...")
+                    executeClaimTransaction(
+                        firestore = firestore,
+                        paymentDocRef = paymentDocRef,
+                        userDocRef = userDocRef,
+                        userId = userId,
+                        cleanUtr = cleanUtr,
+                        preferredTier = preferredTier,
+                        context = context
+                    )
+                }
+                is RealtimeWaitOutcome.EarlyResult -> {
+                    waitOutcome.result
+                }
+                null -> {
+                    // 90-second timeout expired
+                    Log.w(TAG, "Real-time verification timed out after 90 seconds for $cleanUtr")
+                    VerificationResult.NotFound("Verification timeout. Please check your UTR or try again later.")
+                }
+            }
+
+        } catch (e: AlreadyClaimedException) {
+            Log.w(TAG, "Already claimed notice: ${e.message}")
+            VerificationResult.AlreadyUsed(e.message ?: "This UTR has already been claimed.")
         } catch (e: Exception) {
             Log.e(TAG, "verifyPaymentWithBackendDetailed failed for $cleanUtr: ${e.message}", e)
             val msg = e.localizedMessage ?: "Network or verification error. Please retry."
