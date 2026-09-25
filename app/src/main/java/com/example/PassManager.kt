@@ -45,9 +45,6 @@ import kotlin.coroutines.resume
  */
 object PassManager {
     private const val TAG = "PassManager"
-    private const val PREF_NAME = "PassPrefs"
-    private const val KEY_IS_PASS_ACTIVE = "is_pass_active"
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -55,12 +52,20 @@ object PassManager {
     private var lastExpiredAlertTimestamp = 0L
     private const val ALERT_THROTTLE_WINDOW_MS = 30_000L
 
-    /**
-     * Exposes reactive StateFlow for active pass expiry timestamp.
-     */
-    val passExpiryTimestampFlow: StateFlow<Long> = AppSettings.passExpiryTimestampFlow
-
     private val _isPassActiveFlow = MutableStateFlow(false)
+
+    init {
+        scope.launch {
+            LicenseManager.accessStatus.collect { status ->
+                val active = when (status) {
+                    is AccessStatus.PassActive -> status.remainingTimeMs > 0
+                    is AccessStatus.TrialActive -> status.remainingTimeMs > 0
+                    else -> false
+                }
+                _isPassActiveFlow.value = active
+            }
+        }
+    }
 
     /**
      * Exposes reactive StateFlow indicating whether the subscription pass is active.
@@ -69,35 +74,18 @@ object PassManager {
 
     /**
      * Checks strictly whether a subscription pass is currently active.
-     * Default value is ALWAYS false (in SharedPreferences / DataStore)
-     * until verified by server response.
+     * Evaluates strictly from in-memory StateFlow.
+     * Zero local storage (no SharedPreferences).
      */
-    fun isPassActive(context: Context): Boolean {
-        val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        // Default value FALSE honi chahiye
-        val isActive = prefs.getBoolean(KEY_IS_PASS_ACTIVE, false)
-        if (!isActive) {
-            _isPassActiveFlow.value = false
-            return false
-        }
-
-        // Double check local expiry timestamp hasn't lapsed
-        val expiry = AppSettings.getPassExpiryTimestamp(context)
-        if (expiry > 0L && System.currentTimeMillis() >= expiry) {
-            setPassStatus(context, false)
-            return false
-        }
-
-        _isPassActiveFlow.value = true
-        return true
+    fun isPassActive(context: Context? = null): Boolean {
+        return _isPassActiveFlow.value
     }
 
     /**
-     * Updates pass status in SharedPreferences (PassPrefs).
+     * Updates pass status strictly in memory.
+     * ZERO local storage (no SharedPreferences).
      */
-    fun setPassStatus(context: Context, status: Boolean) {
-        val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putBoolean(KEY_IS_PASS_ACTIVE, status).apply()
+    fun setPassStatus(context: Context? = null, status: Boolean) {
         _isPassActiveFlow.value = status
     }
 
@@ -260,7 +248,6 @@ object PassManager {
         val tier = activatedTier ?: (preferredTier ?: PassTier.DAILY)
         withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
             setPassStatus(context, true)
-            AppSettings.setPassExpiryTimestamp(context, finalExpiryTimestamp, tier.id)
             LicenseManager.activatePassViaPayment(tier, cleanUtr)
             AppSettings.addLog(
                 title = "Pass Activated",
@@ -489,11 +476,9 @@ object PassManager {
                 withContext(Dispatchers.Main) {
                     if (isActive) {
                         setPassStatus(context, true)
-                        AppSettings.setPassExpiryTimestamp(context, passExpiryDate)
                         Log.i(TAG, "Server check: Pass is ACTIVE until $passExpiryDate for user $userId")
                     } else {
                         setPassStatus(context, false)
-                        AppSettings.setPassExpiryTimestamp(context, 0L)
                         Log.w(TAG, "Server check: Pass is EXPIRED/INACTIVE (expiry=$passExpiryDate, status=$paymentStatus) for user $userId")
                     }
                 }
@@ -501,7 +486,6 @@ object PassManager {
             } else {
                 withContext(Dispatchers.Main) {
                     setPassStatus(context, false)
-                    AppSettings.setPassExpiryTimestamp(context, 0L)
                 }
                 false
             }
@@ -509,7 +493,7 @@ object PassManager {
             if (e.code == FirebaseFirestoreException.Code.UNAVAILABLE ||
                 e.message?.contains("offline", ignoreCase = true) == true
             ) {
-                Log.w(TAG, "Firestore unavailable or client offline: ${e.message}. Using cached pass status.")
+                Log.w(TAG, "Firestore unavailable or client offline: ${e.message}.")
             } else {
                 Log.w(TAG, "Firestore exception in verifyServerPassStatus: ${e.message}")
             }
@@ -537,27 +521,25 @@ object PassManager {
     }
 
     /**
-     * Returns active pass expiry timestamp stored in AppSettings.
+     * Returns active pass expiry timestamp strictly from LicenseManager in-memory server state.
+     * Zero local storage.
      */
-    fun getPassExpiryTimestamp(context: Context): Long {
-        return AppSettings.getPassExpiryTimestamp(context)
+    fun getPassExpiryTimestamp(context: Context? = null): Long {
+        return when (val status = LicenseManager.accessStatus.value) {
+            is AccessStatus.PassActive -> status.expiryTimestamp
+            is AccessStatus.TrialActive -> status.expiryTimestamp
+            else -> 0L
+        }
     }
 
     /**
      * Formats remaining time for the current pass into a human-readable string.
      */
-    fun getFormattedTimeRemaining(context: Context): String {
-        val remaining = AppSettings.getPassExpiryTimestamp(context) - System.currentTimeMillis()
-        if (remaining <= 0) return "Expired"
-        val days = TimeUnit.MILLISECONDS.toDays(remaining)
-        val hours = TimeUnit.MILLISECONDS.toHours(remaining) % 24
-        val minutes = TimeUnit.MILLISECONDS.toMinutes(remaining) % 60
-        val seconds = TimeUnit.MILLISECONDS.toSeconds(remaining) % 60
-
-        return when {
-            days > 0 -> String.format(Locale.US, "%dd %02dh %02dm", days, hours, minutes)
-            hours > 0 -> String.format(Locale.US, "%dh %02dm", hours, minutes)
-            else -> String.format(Locale.US, "%02dm %02ds", minutes, seconds)
+    fun getFormattedTimeRemaining(context: Context? = null): String {
+        return when (val status = LicenseManager.accessStatus.value) {
+            is AccessStatus.PassActive -> status.formattedRemaining
+            is AccessStatus.TrialActive -> status.formattedRemaining
+            else -> "Expired"
         }
     }
 
@@ -576,13 +558,13 @@ object PassManager {
 
         val result = LicenseManager.purchasePassWithPoints(passTier)
         if (result.isSuccess) {
-            val newExpiry = AppSettings.getPassExpiryTimestamp(context)
+            val newExpiry = getPassExpiryTimestamp(context)
             AppSettings.addLog(
                 title = "Pass Activated",
                 message = "${passTier.title} activated with ${passTier.pointsCost} Points. Valid for ${passTier.durationDays} day(s).",
                 severity = LogSeverity.MATCH_ACCEPTED
             )
-            Log.i(TAG, "Pass ${passTier.title} activated with points successfully. Expiry: $newExpiry")
+            Log.i(TAG, "Pass ${passTier.title} activated with points successfully on Firestore. Expiry: $newExpiry")
         }
         return result
     }
@@ -764,7 +746,6 @@ object PassManager {
         val baseTime = if (currentExpiry > now) currentExpiry else now
         val newExpiry = baseTime + passTier.durationMs
 
-        AppSettings.setPassExpiryTimestamp(context, newExpiry, passTier.id)
         scope.launch {
             LicenseManager.activatePassViaPayment(passTier, transactionId)
         }

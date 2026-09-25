@@ -106,10 +106,6 @@ object AppSettings {
     const val KEY_USER_UID = "key_user_uid"
     const val KEY_LOGIN_DISMISSED = "key_login_dismissed"
 
-    // Subscription & Pass Management Keys
-    const val KEY_PASS_EXPIRY_TIMESTAMP = "pass_expiry_timestamp"
-    const val KEY_ACTIVE_PASS_TIER_ID = "key_active_pass_tier_id"
-
     // Backward-compatibility keys
     const val KEY_SERVICE_ENABLED = "key_service_enabled"
     const val KEY_MIN_VALUE = "key_min_value"
@@ -321,10 +317,25 @@ object AppSettings {
             lastAcceptedFare = _lastAcceptedFareFlow.value
         )
 
-        // Read and initialize Pass Expiry StateFlow
-        val passExpiry = prefs.getLong(KEY_PASS_EXPIRY_TIMESTAMP, 0L)
-        _passExpiryTimestampFlow.value = passExpiry
-        _isPassActiveFlow.value = passExpiry > System.currentTimeMillis()
+        // 100% Cloud-Only: Observe LicenseManager's authoritative in-memory server state
+        appScope.launch {
+            LicenseManager.accessStatus.collect { status ->
+                when (status) {
+                    is AccessStatus.PassActive -> {
+                        _passExpiryTimestampFlow.value = status.expiryTimestamp
+                        _isPassActiveFlow.value = status.remainingTimeMs > 0
+                    }
+                    is AccessStatus.TrialActive -> {
+                        _passExpiryTimestampFlow.value = status.expiryTimestamp
+                        _isPassActiveFlow.value = status.remainingTimeMs > 0
+                    }
+                    else -> {
+                        _passExpiryTimestampFlow.value = 0L
+                        _isPassActiveFlow.value = false
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -410,32 +421,23 @@ object AppSettings {
         return getPrefs(context).getBoolean(KEY_LOGIN_DISMISSED, false)
     }
 
-    // --- Subscription & Pass Expiry Management ---
+    // --- Subscription & Pass Expiry Management (100% Server Driven - Zero Local Storage) ---
 
-    fun getPassExpiryTimestamp(context: Context): Long {
-        val ts = getPrefs(context).getLong(KEY_PASS_EXPIRY_TIMESTAMP, 0L)
-        _passExpiryTimestampFlow.value = ts
-        _isPassActiveFlow.value = ts > System.currentTimeMillis()
-        return ts
+    fun getPassExpiryTimestamp(context: Context? = null): Long {
+        return PassManager.getPassExpiryTimestamp(context)
     }
 
-    fun setPassExpiryTimestamp(context: Context, expiryTimestamp: Long, tierId: String? = null) {
-        persistAsync(context) {
-            putLong(KEY_PASS_EXPIRY_TIMESTAMP, expiryTimestamp)
-            if (tierId != null) {
-                putString(KEY_ACTIVE_PASS_TIER_ID, tierId)
-            }
-        }
+    fun setPassExpiryTimestamp(context: Context? = null, expiryTimestamp: Long, tierId: String? = null) {
         _passExpiryTimestampFlow.value = expiryTimestamp
         _isPassActiveFlow.value = expiryTimestamp > System.currentTimeMillis()
+        // Zero local storage: strictly updates in-memory flows
     }
 
-    fun isPassActive(context: Context): Boolean {
-        val expiry = getPassExpiryTimestamp(context)
-        return System.currentTimeMillis() < expiry
+    fun isPassActive(context: Context? = null): Boolean {
+        return PassManager.isPassActive(context)
     }
 
-    fun extendPass(context: Context, durationMs: Long, tierId: String? = null): Long {
+    fun extendPass(context: Context? = null, durationMs: Long, tierId: String? = null): Long {
         val now = System.currentTimeMillis()
         val currentExpiry = getPassExpiryTimestamp(context)
         val baseTime = if (currentExpiry > now) currentExpiry else now
@@ -444,11 +446,11 @@ object AppSettings {
         return newExpiry
     }
 
-    fun getActivePassTierId(context: Context): String? {
-        return getPrefs(context).getString(KEY_ACTIVE_PASS_TIER_ID, null)
+    fun getActivePassTierId(context: Context? = null): String? {
+        return LicenseManager.activePassInfo.value?.passTier?.id
     }
 
-    fun clearPass(context: Context) {
+    fun clearPass(context: Context? = null) {
         setPassExpiryTimestamp(context, 0L, null)
     }
 

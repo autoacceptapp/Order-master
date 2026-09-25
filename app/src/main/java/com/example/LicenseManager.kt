@@ -1,7 +1,6 @@
 package com.example
 
 import android.content.Context
-import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Handler
@@ -126,7 +125,9 @@ data class TrialInfo(
 /**
  * LicenseManager
  *
- * Core engine governing:
+ * Cloud-Only Architecture:
+ * 100% strictly managed by Firebase Firestore with ZERO local storage fallbacks.
+ *
  * 1. Hardware-Locked 2-Day Free Trial (cloud-synced in `hardware_trials/{Device_Hardware_ID}`).
  * 2. Gmail Account-Synced Pass & Points System (cloud-synced in `users_licensing/{User_Gmail_UID}`).
  * 3. Reactive StateFlow Access gating for accessibility automation and overlay services.
@@ -134,15 +135,6 @@ data class TrialInfo(
 object LicenseManager {
 
     private const val TAG = "LicenseManager"
-    private const val PREFS_NAME = "licensing_security_prefs"
-
-    // SharedPreferences Keys
-    private const val KEY_LOCAL_POINTS = "cached_points_balance"
-    private const val KEY_LOCAL_PASS_TYPE = "cached_active_pass_type"
-    private const val KEY_LOCAL_PASS_EXPIRY = "cached_pass_expiry"
-    private const val KEY_LOCAL_TRIAL_CLAIMED = "cached_trial_claimed_timestamp"
-    private const val KEY_LOCAL_TRIAL_EXPIRY = "cached_trial_expiry_timestamp"
-    private const val KEY_LOCAL_TRIAL_USED = "cached_trial_is_used"
 
     // 2-Day Free Trial Duration: 48 Hours
     private const val TRIAL_DURATION_MS = 48L * 3600L * 1000L
@@ -157,6 +149,7 @@ object LicenseManager {
     @Volatile
     private var appContext: Context? = null
 
+    // Reactive StateFlows - Initial state is STRICTLY Loading until server responds
     private val _accessStatus = MutableStateFlow<AccessStatus>(AccessStatus.Loading)
     val accessStatus: StateFlow<AccessStatus> = _accessStatus.asStateFlow()
 
@@ -169,6 +162,22 @@ object LicenseManager {
     private val _trialInfo = MutableStateFlow<TrialInfo?>(null)
     val trialInfo: StateFlow<TrialInfo?> = _trialInfo.asStateFlow()
 
+    // In-Memory Cloud-Synced State (Zero SharedPreferences)
+    @Volatile
+    private var serverPassTier: PassTier? = null
+    @Volatile
+    private var serverPassExpiry: Long = 0L
+    @Volatile
+    private var serverTrialClaimed: Long = 0L
+    @Volatile
+    private var serverTrialExpiry: Long = 0L
+    @Volatile
+    private var serverTrialUsed: Boolean = false
+    @Volatile
+    private var hasLoadedLicensing: Boolean = false
+    @Volatile
+    private var hasLoadedTrial: Boolean = false
+
     private var userDocListener: ListenerRegistration? = null
     private var currentUserKey: String? = null
     private val authLock = Any()
@@ -176,8 +185,8 @@ object LicenseManager {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     /**
-     * Initializes LicenseManager, loads cached state immediately for zero startup lag,
-     * registers network recovery synchronization, and triggers asynchronous Firestore sync.
+     * Initializes LicenseManager.
+     * ZERO local storage used: initial state is strictly Loading until Firestore responds.
      */
     @Synchronized
     fun init(context: Context) {
@@ -188,23 +197,23 @@ object LicenseManager {
         val ctx = context.applicationContext
         appContext = ctx
 
-        // 1. Read local cache for immediate offline responsiveness
-        loadLocalCache(ctx)
+        // 1. Initial state is strictly Loading
+        _accessStatus.value = AccessStatus.Loading
 
-        // 2. Start recurring ticker to update remaining countdowns and transition states
+        // 2. Start recurring countdown ticker
         startStatusTicker()
 
-        // 3. Register network callback to automatically sync offline-created states upon reconnect
+        // 3. Register network callback to automatically sync with Firestore upon reconnect
         registerNetworkCallback(ctx)
 
-        // 4. Initiate cloud sync
+        // 4. Initiate authoritative Firestore cloud sync
         scope.launch {
             syncHardwareTrialAndLicensing()
         }
     }
 
     /**
-     * Registers a network callback that re-syncs local trial & licensing with Firestore
+     * Registers a network callback that re-syncs with Firestore
      * as soon as active internet connectivity is restored.
      */
     private fun registerNetworkCallback(context: Context) {
@@ -213,7 +222,7 @@ object LicenseManager {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
             val callback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    Log.d(TAG, "Internet connectivity restored. Re-syncing trial and licensing...")
+                    Log.d(TAG, "Internet connectivity restored. Re-syncing cloud licensing with Firestore...")
                     scope.launch {
                         syncHardwareTrialAndLicensing()
                     }
@@ -256,6 +265,8 @@ object LicenseManager {
                     userDocListener = null
                     currentUserKey = newKey
                     docInitAttempted.set(false)
+                    hasLoadedLicensing = false
+                    _accessStatus.value = AccessStatus.Loading
                     syncUserLicensingDocument(newKey, userEmail)
                 }
             }
@@ -263,8 +274,8 @@ object LicenseManager {
     }
 
     /**
-     * Top-up / Recharge points directly in the user's wallet.
-     * Updates Firestore atomically using FieldValue.increment.
+     * Top-up / Recharge points directly in the user's wallet on Firestore.
+     * Zero local storage fallback.
      */
     suspend fun addPoints(amount: Int): Result<Int> {
         val ctx = appContext ?: return Result.failure(IllegalStateException("LicenseManager not initialized"))
@@ -278,32 +289,23 @@ object LicenseManager {
             userDocRef.set(
                 mapOf(
                     "pointsBalance" to FieldValue.increment(amount.toLong()),
-                    "updatedAt" to System.currentTimeMillis()
+                    "updatedAt" to FieldValue.serverTimestamp()
                 ),
                 SetOptions.merge()
             ).await()
 
-            // Update local memory and cache
             val newBalance = _pointsBalance.value + amount
-            _pointsBalance.value = newBalance
-            saveLocalPoints(ctx, newBalance)
-            refreshAccessStatus()
-            Log.i(TAG, "Successfully added $amount points. New balance: $newBalance")
+            Log.i(TAG, "Successfully added $amount points on Firestore. New balance: $newBalance")
             Result.success(newBalance)
         } catch (e: Exception) {
-            Log.w(TAG, "Cloud addPoints failed, updating local wallet as fallback: ${e.message}")
-            // Fallback local update if network is unavailable
-            val newBalance = _pointsBalance.value + amount
-            _pointsBalance.value = newBalance
-            saveLocalPoints(ctx, newBalance)
-            refreshAccessStatus()
-            Result.success(newBalance)
+            Log.e(TAG, "Cloud addPoints failed: ${e.message}", e)
+            Result.failure(e)
         }
     }
 
     /**
-     * Purchases a Pass using the user's Points balance.
-     * Uses atomic transaction to verify balance, deduct points, and set or extend active pass.
+     * Purchases a Pass using the user's Points balance via an atomic Firestore transaction.
+     * Zero local storage fallback.
      */
     suspend fun purchasePassWithPoints(passTier: PassTier): Result<Unit> {
         val ctx = appContext ?: return Result.failure(IllegalStateException("LicenseManager not initialized"))
@@ -340,7 +342,6 @@ object LicenseManager {
                 resultingPoints = newPoints
                 resultingExpiry = newExpiry
 
-                // Concurrency fix: Set explicit new calculated balance rather than FieldValue.increment inside transaction
                 transaction.set(
                     userDocRef,
                     mapOf(
@@ -354,38 +355,23 @@ object LicenseManager {
                 )
             }.await()
 
-            // Update local state and SharedPreferences atomically based on transaction result
+            // Update in-memory state directly from server transaction
             _pointsBalance.value = resultingPoints
-            saveLocalPoints(ctx, resultingPoints)
-            saveLocalPass(ctx, passTier.id, resultingExpiry)
+            serverPassTier = passTier
+            serverPassExpiry = resultingExpiry
             refreshAccessStatus()
 
-            Log.i(TAG, "Successfully purchased ${passTier.title}. New expiry: $resultingExpiry, new points: $resultingPoints")
+            Log.i(TAG, "Successfully purchased ${passTier.title} on Firestore. New expiry: $resultingExpiry")
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Transaction failed for pass purchase: ${e.message}", e)
-            // If offline transaction fails, verify and apply with local fallback
-            if (currentBalance >= passTier.pointsCost) {
-                val newPoints = currentBalance - passTier.pointsCost
-                _pointsBalance.value = newPoints
-                saveLocalPoints(ctx, newPoints)
-
-                val currentLocalExpiry = _activePassInfo.value?.expiryTimestamp ?: 0L
-                val baseTime = if (currentLocalExpiry > now) currentLocalExpiry else now
-                val newLocalExpiry = baseTime + passTier.durationMs
-
-                saveLocalPass(ctx, passTier.id, newLocalExpiry)
-                refreshAccessStatus()
-                Result.success(Unit)
-            } else {
-                Result.failure(e)
-            }
+            Result.failure(e)
         }
     }
 
     /**
-     * Activates a Pass directly via UPI or Payment Gateway without deducting points.
-     * Instantly sets / extends pass expiry and synchronizes with AppSettings and Firestore.
+     * Activates a Pass directly via UPI or Payment Gateway on Firestore.
+     * Zero local storage fallback.
      */
     suspend fun activatePassViaPayment(
         passTier: PassTier,
@@ -395,42 +381,39 @@ object LicenseManager {
         val userKey = currentUserKey ?: resolveUserKey(ctx, null, null)
         val now = System.currentTimeMillis()
 
-        val currentLocalExpiry = _activePassInfo.value?.expiryTimestamp ?: 0L
-        val baseTime = if (currentLocalExpiry > now) currentLocalExpiry else now
-        val newLocalExpiry = baseTime + passTier.durationMs
+        val currentExpiry = serverPassExpiry
+        val baseTime = if (currentExpiry > now) currentExpiry else now
+        val newExpiry = baseTime + passTier.durationMs
 
-        // 1. Immediately update local pass storage & AppSettings
-        saveLocalPass(ctx, passTier.id, newLocalExpiry)
-        AppSettings.setPassExpiryTimestamp(ctx, newLocalExpiry, passTier.id)
-        refreshAccessStatus()
-
-        // 2. Cloud Firestore synchronization (async)
         return try {
             val db = FirebaseFirestore.getInstance()
             val userDocRef = db.collection(COLL_USERS_LICENSING).document(userKey)
             userDocRef.set(
                 mapOf(
                     "activePassType" to passTier.id,
-                    "passExpiryTimestamp" to newLocalExpiry,
+                    "passExpiryTimestamp" to newExpiry,
                     "lastPurchasedTier" to passTier.id,
                     "lastPaymentMethod" to "UPI",
                     "lastTransactionId" to (transactionId ?: "DIRECT_UPI_${System.currentTimeMillis()}"),
-                    "updatedAt" to now
+                    "updatedAt" to FieldValue.serverTimestamp()
                 ),
                 SetOptions.merge()
             ).await()
 
-            Log.i(TAG, "Successfully activated ${passTier.title} via UPI payment. Expiry: $newLocalExpiry")
+            serverPassTier = passTier
+            serverPassExpiry = newExpiry
+            refreshAccessStatus()
+
+            Log.i(TAG, "Successfully activated ${passTier.title} on Firestore via UPI payment. Expiry: $newExpiry")
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.w(TAG, "Cloud sync for UPI pass activation failed (offline fallback active): ${e.message}")
-            // Local activation already completed successfully!
-            Result.success(Unit)
+            Log.e(TAG, "Firestore sync for UPI pass activation failed: ${e.message}", e)
+            Result.failure(e)
         }
     }
 
     /**
-     * Performs cloud sync for hardware trial and user licensing.
+     * Performs cloud sync for hardware trial and user licensing directly with Firestore.
      */
     private suspend fun syncHardwareTrialAndLicensing() {
         val ctx = appContext ?: return
@@ -444,7 +427,7 @@ object LicenseManager {
             val trialSnapshot = trialDocRef.get().await()
             if (!trialSnapshot.exists()) {
                 // First time launch on this physical hardware!
-                // Grant 2-day free trial locked to this device.
+                // Grant 2-day free trial locked to this device on Firestore.
                 val expiry = now + TRIAL_DURATION_MS
                 val trialData = mapOf(
                     "hardwareId" to hwId,
@@ -452,26 +435,28 @@ object LicenseManager {
                     "trialExpiryTimestamp" to expiry,
                     "isUsed" to true,
                     "deviceSpecs" to DeviceUtils.getHardwareSpecs(),
-                    "createdAt" to now
+                    "createdAt" to FieldValue.serverTimestamp()
                 )
                 trialDocRef.set(trialData).await()
-                saveLocalTrial(ctx, claimed = now, expiry = expiry, isUsed = true)
-                Log.i(TAG, "Hardware trial claimed on $hwId until $expiry")
+                serverTrialClaimed = now
+                serverTrialExpiry = expiry
+                serverTrialUsed = true
+                hasLoadedTrial = true
+                Log.i(TAG, "Hardware trial claimed on Firestore for $hwId until $expiry")
             } else {
-                // Existing trial found for this hardware
+                // Existing trial found for this hardware on Firestore
                 val claimed = trialSnapshot.getLong("firstClaimedTimestamp") ?: now
                 val expiry = trialSnapshot.getLong("trialExpiryTimestamp") ?: (claimed + TRIAL_DURATION_MS)
                 val isUsed = trialSnapshot.getBoolean("isUsed") ?: true
-                saveLocalTrial(ctx, claimed = claimed, expiry = expiry, isUsed = isUsed)
+                serverTrialClaimed = claimed
+                serverTrialExpiry = expiry
+                serverTrialUsed = isUsed
+                hasLoadedTrial = true
             }
+            refreshAccessStatus()
         } catch (e: Exception) {
-            Log.w(TAG, "Could not sync hardware trial to Firestore (offline or error): ${e.message}")
-            // Check if local trial exists; if not, initialize first local trial
-            val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            if (!prefs.contains(KEY_LOCAL_TRIAL_CLAIMED)) {
-                val expiry = now + TRIAL_DURATION_MS
-                saveLocalTrial(ctx, claimed = now, expiry = expiry, isUsed = true)
-            }
+            Log.w(TAG, "Could not sync hardware trial to Firestore: ${e.message}")
+            // Zero local fallback: remains in Loading state if server unreachable
         }
 
         // Sync User Licensing Document
@@ -483,9 +468,9 @@ object LicenseManager {
 
     /**
      * Listens in real-time to the user's licensing document in Firestore.
+     * Updates in-memory StateFlows directly from snapshot. Zero local storage.
      */
     private fun syncUserLicensingDocument(userKey: String, userEmail: String?) {
-        val ctx = appContext ?: return
         try {
             val db = FirebaseFirestore.getInstance()
             val userDocRef = db.collection(COLL_USERS_LICENSING).document(userKey)
@@ -493,7 +478,7 @@ object LicenseManager {
             userDocListener?.remove()
             userDocListener = userDocRef.addSnapshotListener { snapshot, error ->
                 if (error != null) {
-                    Log.w(TAG, "User licensing listener error: ${error.message}")
+                    Log.w(TAG, "User licensing snapshot listener error: ${error.message}")
                     return@addSnapshotListener
                 }
 
@@ -502,12 +487,14 @@ object LicenseManager {
                     val passType = snapshot.getString("activePassType")
                     val passExpiry = snapshot.getLong("passExpiryTimestamp") ?: 0L
 
-                    // Update local state if not locally pending
+                    // Update in-memory reactive state directly from Firestore snapshot
                     _pointsBalance.value = points
-                    saveLocalPoints(ctx, points)
-                    saveLocalPass(ctx, passType, passExpiry)
+                    serverPassTier = PassTier.fromId(passType)
+                    serverPassExpiry = passExpiry
+                    hasLoadedLicensing = true
+
                     refreshAccessStatus()
-                    Log.d(TAG, "Synced user licensing: points=$points, passType=$passType, expiry=$passExpiry")
+                    Log.d(TAG, "Synced user licensing from Firestore: points=$points, passType=$passType, expiry=$passExpiry")
                 } else if (snapshot != null && !snapshot.exists()) {
                     // Prevent infinite loop: initialize document strictly once per session
                     if (docInitAttempted.compareAndSet(false, true)) {
@@ -516,17 +503,19 @@ object LicenseManager {
                                 val initialData = mapOf(
                                     "userId" to userKey,
                                     "userEmail" to (userEmail ?: ""),
-                                    "pointsBalance" to _pointsBalance.value.toLong(),
+                                    "pointsBalance" to 0L,
                                     "activePassType" to null,
                                     "passExpiryTimestamp" to 0L,
                                     "createdAt" to FieldValue.serverTimestamp(),
                                     "updatedAt" to FieldValue.serverTimestamp()
                                 )
                                 userDocRef.set(initialData, SetOptions.merge()).await()
-                                Log.i(TAG, "Initialized new user licensing document for $userKey")
+                                hasLoadedLicensing = true
+                                refreshAccessStatus()
+                                Log.i(TAG, "Initialized new user licensing document on Firestore for $userKey")
                             } catch (e: Exception) {
-                                Log.w(TAG, "Could not initialize user licensing doc: ${e.message}")
-                                docInitAttempted.set(false) // Allow retry later if failed
+                                Log.w(TAG, "Could not initialize user licensing doc on Firestore: ${e.message}")
+                                docInitAttempted.set(false)
                             }
                         }
                     }
@@ -550,16 +539,19 @@ object LicenseManager {
     }
 
     /**
-     * Recomputes the current `AccessStatus` based on local and synced data.
+     * Recomputes the current `AccessStatus` strictly from in-memory server state.
+     * ZERO local storage reads.
      */
     fun refreshAccessStatus() {
-        val ctx = appContext ?: return
-        val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val now = System.currentTimeMillis()
+        // If neither user licensing nor hardware trial has loaded from Firestore, remain Loading
+        if (!hasLoadedLicensing && !hasLoadedTrial) {
+            _accessStatus.value = AccessStatus.Loading
+            return
+        }
 
-        val passType = prefs.getString(KEY_LOCAL_PASS_TYPE, null)
-        val passExpiry = prefs.getLong(KEY_LOCAL_PASS_EXPIRY, 0L)
-        val tier = PassTier.fromId(passType)
+        val now = System.currentTimeMillis()
+        val tier = serverPassTier
+        val passExpiry = serverPassExpiry
 
         // 1. Check Paid Subscription Pass First
         if (tier != null && passExpiry > now) {
@@ -581,9 +573,9 @@ object LicenseManager {
         }
 
         // 2. Check Hardware 2-Day Free Trial
-        val trialClaimed = prefs.getLong(KEY_LOCAL_TRIAL_CLAIMED, 0L)
-        val trialExpiry = prefs.getLong(KEY_LOCAL_TRIAL_EXPIRY, 0L)
-        val trialUsed = prefs.getBoolean(KEY_LOCAL_TRIAL_USED, false)
+        val trialClaimed = serverTrialClaimed
+        val trialExpiry = serverTrialExpiry
+        val trialUsed = serverTrialUsed
 
         val trialInfoObj = TrialInfo(
             firstClaimedTimestamp = trialClaimed,
@@ -618,39 +610,6 @@ object LicenseManager {
             hasHadPreviousPass = hasHadPreviousPass,
             message = msg
         )
-    }
-
-    private fun loadLocalCache(context: Context) {
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        _pointsBalance.value = prefs.getInt(KEY_LOCAL_POINTS, 0)
-        refreshAccessStatus()
-    }
-
-    private fun saveLocalPoints(context: Context, points: Int) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putInt(KEY_LOCAL_POINTS, points)
-            .apply()
-    }
-
-    private fun saveLocalPass(context: Context, passType: String?, expiry: Long) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_LOCAL_PASS_TYPE, passType)
-            .putLong(KEY_LOCAL_PASS_EXPIRY, expiry)
-            .apply()
-        // Synchronize with AppSettings for instant access across services and StateFlows
-        AppSettings.setPassExpiryTimestamp(context, expiry, passType)
-    }
-
-    private fun saveLocalTrial(context: Context, claimed: Long, expiry: Long, isUsed: Boolean) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putLong(KEY_LOCAL_TRIAL_CLAIMED, claimed)
-            .putLong(KEY_LOCAL_TRIAL_EXPIRY, expiry)
-            .putBoolean(KEY_LOCAL_TRIAL_USED, isUsed)
-            .apply()
-        refreshAccessStatus()
     }
 
     private fun startStatusTicker() {
