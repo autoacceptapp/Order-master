@@ -6,23 +6,30 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreSettings
+import com.google.firebase.firestore.PersistentCacheSettings
 
 class OrderMasterApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 1. Initialize Firebase & App Check in strict order
         initFirebaseAppCheck()
+
+        // 2. Configure Firestore global offline persistence settings
+        initFirestoreSettings()
+
+        // 3. Initialize core managers at Application level for background services
+        initCoreEngines()
     }
 
     /**
      * Initializes Firebase App Check in the strict required sequence:
-     * Firebase initialization -> App Check provider installation -> Firebase Authentication & Firestore usage.
+     * Firebase initialization -> App Check provider installation -> Token auto-refresh -> Service usage.
      *
      * Debug builds: uses DebugAppCheckProviderFactory.
-     *   The debug token will be printed in Logcat by the Firebase SDK:
-     *   "Enter this debug secret into the allow list in the Firebase Console..."
      * Release builds: uses PlayIntegrityAppCheckProviderFactory.
-     *   Never uses the debug provider in release/production builds.
      */
     private fun initFirebaseAppCheck() {
         try {
@@ -45,8 +52,42 @@ class OrderMasterApplication : Application() {
                     PlayIntegrityAppCheckProviderFactory.getInstance()
                 )
             }
+
+            // 3. Enable automatic App Check token refresh for continuous background monitoring
+            firebaseAppCheck.setTokenAutoRefreshEnabled(true)
+            Log.d(TAG, "Firebase App Check token auto-refresh enabled.")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize Firebase App Check: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Configures Firestore offline persistent cache for zero-crash offline resilience.
+     */
+    private fun initFirestoreSettings() {
+        try {
+            val firestore = FirebaseFirestore.getInstance()
+            val newSettings = FirebaseFirestoreSettings.Builder()
+                .setLocalCacheSettings(PersistentCacheSettings.newBuilder().build())
+                .build()
+            firestore.firestoreSettings = newSettings
+            Log.d(TAG, "Firestore persistent cache initialized successfully.")
+        } catch (e: Exception) {
+            // Firestore settings may already be set; continue safely
+            Log.w(TAG, "Firestore settings initialization notice: ${e.message}")
+        }
+    }
+
+    /**
+     * Initializes AppSettings and LicenseManager on Application startup so that
+     * background Accessibility and Floating Overlay services have immediate access to state.
+     */
+    private fun initCoreEngines() {
+        try {
+            AppSettings.init(this)
+            LicenseManager.init(this)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize core engines in Application.onCreate: ${e.message}", e)
         }
     }
 

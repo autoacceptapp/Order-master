@@ -216,6 +216,9 @@ object AppSettings {
     val isPassActiveFlow: StateFlow<Boolean> = _isPassActiveFlow.asStateFlow()
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile
+    private var isAuthListenerRegistered = false
+    private var authStateListener: FirebaseAuth.AuthStateListener? = null
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -274,13 +277,19 @@ object AppSettings {
             )
         }
 
-        // Attach auth state listener so changes in FirebaseAuth propagate to Compose immediately
-        try {
-            FirebaseAuth.getInstance().addAuthStateListener { auth ->
-                updateUserAuthFromFirebase(context, auth.currentUser)
+        // Attach auth state listener once so changes in FirebaseAuth propagate to Compose immediately
+        if (!isAuthListenerRegistered) {
+            try {
+                val listener = FirebaseAuth.AuthStateListener { auth ->
+                    updateUserAuthFromFirebase(context.applicationContext, auth.currentUser)
+                }
+                FirebaseAuth.getInstance().addAuthStateListener(listener)
+                authStateListener = listener
+                isAuthListenerRegistered = true
+                Log.d("AppSettings", "FirebaseAuth AuthStateListener registered.")
+            } catch (e: Exception) {
+                Log.w("AppSettings", "Failed to register FirebaseAuth state listener: ${e.message}")
             }
-        } catch (e: Exception) {
-            Log.w("AppSettings", "Failed to register FirebaseAuth state listener: ${e.message}")
         }
 
         minCurrencyThreshold = minFare.toDouble()

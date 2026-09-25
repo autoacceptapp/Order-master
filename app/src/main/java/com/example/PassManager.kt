@@ -219,13 +219,19 @@ object PassManager {
 
             var finalExpiryTimestamp = 0L
 
-            // Step 2: If valid, execute a Firestore Transaction to:
-            // 1. Update received_payments/{UTR} -> set isUsed = true and claimedBy = {current_userId}
-            // 2. Update users/{current_userId} -> set payment_status = "SUCCESS", lastVerifiedUtr = {UTR},
-            //    and update pass_expiry_date by adding the PassTier duration to the current timestamp.
+            // Step 2: Execute an ACID Firestore Transaction with full in-transaction validation:
             firestore.runTransaction { transaction ->
                 val transPaymentDoc = transaction.get(paymentDocRef)
                 val transUserDoc = transaction.get(userDocRef)
+
+                if (!transPaymentDoc.exists()) {
+                    throw IllegalStateException("Payment record does not exist.")
+                }
+
+                val transStatus = transPaymentDoc.getString("status") ?: ""
+                if (!transStatus.equals("Verified", ignoreCase = true)) {
+                    throw IllegalStateException("Payment is not verified (status: $transStatus).")
+                }
 
                 val transUsed = transPaymentDoc.getBoolean("isUsed") ?: false
                 val transClaimedBy = transPaymentDoc.getString("claimedBy")
@@ -275,8 +281,8 @@ object PassManager {
                 }
             }.await()
 
-            // Return true to the UI so it can activate the pass locally using setPassStatus(context, true)
-            withContext(Dispatchers.Main) {
+            // Once committed to Firestore, perform local unlock inside NonCancellable to prevent cancellation leaks
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
                 setPassStatus(context, true)
                 AppSettings.setPassExpiryTimestamp(context, finalExpiryTimestamp, passTier.id)
                 LicenseManager.activatePassViaPayment(passTier, cleanUtr)

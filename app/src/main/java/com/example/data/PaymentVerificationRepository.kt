@@ -409,20 +409,30 @@ class PaymentVerificationRepository(
             val userDocRef = firestore.collection(COLL_USERS).document(userId)
             val pendingDocRef = firestore.collection(COLL_PENDING_VERIFICATIONS).document(utr)
 
-            // Step 1: Atomic batch / transaction to update all documents
-            firestore.runBatch { batch ->
-                // Mark received_payments
-                batch.update(
+            // Step 1: Atomic transaction to check and claim documents with race-condition prevention
+            firestore.runTransaction { transaction ->
+                val transPaymentDoc = transaction.get(paymentDocRef)
+                if (transPaymentDoc.exists()) {
+                    val alreadyUsed = transPaymentDoc.getBoolean("isUsed") ?: false
+                    val claimedBy = transPaymentDoc.getString("claimedBy")
+                    if (alreadyUsed && claimedBy != userId) {
+                        throw IllegalStateException("This transaction ($utr) has already been redeemed by another account.")
+                    }
+                }
+
+                // 1. Mark received_payments
+                transaction.set(
                     paymentDocRef,
                     mapOf(
                         "isUsed" to true,
                         "claimedBy" to userId,
                         "claimedAt" to FieldValue.serverTimestamp()
-                    )
+                    ),
+                    SetOptions.merge()
                 )
 
-                // Update /users/{userId}
-                batch.set(
+                // 2. Update /users/{userId}
+                transaction.set(
                     userDocRef,
                     mapOf(
                         "isPaymentVerified" to true,
@@ -440,8 +450,8 @@ class PaymentVerificationRepository(
                     SetOptions.merge()
                 )
 
-                // Update pending_verifications
-                batch.set(
+                // 3. Update pending_verifications
+                transaction.set(
                     pendingDocRef,
                     mapOf(
                         "status" to "COMPLETED",
@@ -452,17 +462,18 @@ class PaymentVerificationRepository(
                 )
             }.await()
 
-            // Step 2: Immediate Local and Memory Unlock (Double check passed)
-            PassManager.setPassStatus(context, true)
-            AppSettings.setPassExpiryTimestamp(context, newExpiryTimestamp, passTier.id)
-            LicenseManager.activatePassViaPayment(passTier, utr)
+            // Step 2: Immediate Local and Memory Unlock inside NonCancellable block
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
+                PassManager.setPassStatus(context, true)
+                AppSettings.setPassExpiryTimestamp(context, newExpiryTimestamp, passTier.id)
+                LicenseManager.activatePassViaPayment(passTier, utr)
 
-            // Log activity
-            AppSettings.addLog(
-                title = "Payment Verified & Unlocked",
-                message = "UTR: $utr (₹$amount). Activated ${passTier.title} until $newExpiryDate.",
-                severity = com.example.LogSeverity.INFO
-            )
+                AppSettings.addLog(
+                    title = "Payment Verified & Unlocked",
+                    message = "UTR: $utr (₹$amount). Activated ${passTier.title} until $newExpiryDate.",
+                    severity = com.example.LogSeverity.INFO
+                )
+            }
 
             // Step 3: Remove listener since verification succeeded
             cancelPendingListener()

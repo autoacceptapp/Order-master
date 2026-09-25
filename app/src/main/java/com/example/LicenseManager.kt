@@ -2,6 +2,8 @@ package com.example
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -20,6 +22,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Pass Tiers Configuration:
@@ -168,10 +171,13 @@ object LicenseManager {
 
     private var userDocListener: ListenerRegistration? = null
     private var currentUserKey: String? = null
+    private val authLock = Any()
+    private val docInitAttempted = AtomicBoolean(false)
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     /**
      * Initializes LicenseManager, loads cached state immediately for zero startup lag,
-     * and triggers asynchronous Firestore sync.
+     * registers network recovery synchronization, and triggers asynchronous Firestore sync.
      */
     @Synchronized
     fun init(context: Context) {
@@ -188,9 +194,45 @@ object LicenseManager {
         // 2. Start recurring ticker to update remaining countdowns and transition states
         startStatusTicker()
 
-        // 3. Initiate cloud sync
+        // 3. Register network callback to automatically sync offline-created states upon reconnect
+        registerNetworkCallback(ctx)
+
+        // 4. Initiate cloud sync
         scope.launch {
             syncHardwareTrialAndLicensing()
+        }
+    }
+
+    /**
+     * Registers a network callback that re-syncs local trial & licensing with Firestore
+     * as soon as active internet connectivity is restored.
+     */
+    private fun registerNetworkCallback(context: Context) {
+        if (networkCallback != null) return
+        try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    Log.d(TAG, "Internet connectivity restored. Re-syncing trial and licensing...")
+                    scope.launch {
+                        syncHardwareTrialAndLicensing()
+                    }
+                }
+            }
+            networkCallback = callback
+            cm.registerDefaultNetworkCallback(callback)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not register network callback: ${e.message}")
+        }
+    }
+
+    /**
+     * Detaches active Firestore listeners to prevent memory leaks during teardown.
+     */
+    fun detachListeners() {
+        synchronized(authLock) {
+            userDocListener?.remove()
+            userDocListener = null
         }
     }
 
@@ -202,16 +244,20 @@ object LicenseManager {
     }
 
     /**
-     * Synchronizes user licensing when Gmail account login changes.
+     * Synchronizes user licensing when Gmail account login changes in a thread-safe manner.
      */
     fun onUserAuthChanged(userEmail: String?, userUid: String?) {
         scope.launch {
             val ctx = appContext ?: return@launch
             val newKey = resolveUserKey(ctx, userEmail, userUid)
-            if (newKey != currentUserKey) {
-                userDocListener?.remove()
-                currentUserKey = newKey
-                syncUserLicensingDocument(newKey, userEmail)
+            synchronized(authLock) {
+                if (newKey != currentUserKey) {
+                    userDocListener?.remove()
+                    userDocListener = null
+                    currentUserKey = newKey
+                    docInitAttempted.set(false)
+                    syncUserLicensingDocument(newKey, userEmail)
+                }
             }
         }
     }
@@ -276,6 +322,9 @@ object LicenseManager {
         val now = System.currentTimeMillis()
 
         return try {
+            var resultingPoints = currentBalance
+            var resultingExpiry = 0L
+
             db.runTransaction { transaction ->
                 val snapshot = transaction.get(userDocRef)
                 val serverPoints = snapshot.getLong("pointsBalance")?.toInt() ?: currentBalance
@@ -286,33 +335,32 @@ object LicenseManager {
                 val currentExpiry = snapshot.getLong("passExpiryTimestamp") ?: 0L
                 val baseTime = if (currentExpiry > now) currentExpiry else now
                 val newExpiry = baseTime + passTier.durationMs
+                val newPoints = (serverPoints - passTier.pointsCost).coerceAtLeast(0)
 
+                resultingPoints = newPoints
+                resultingExpiry = newExpiry
+
+                // Concurrency fix: Set explicit new calculated balance rather than FieldValue.increment inside transaction
                 transaction.set(
                     userDocRef,
                     mapOf(
-                        "pointsBalance" to FieldValue.increment(-passTier.pointsCost.toLong()),
+                        "pointsBalance" to newPoints.toLong(),
                         "activePassType" to passTier.id,
                         "passExpiryTimestamp" to newExpiry,
                         "lastPurchasedTier" to passTier.id,
-                        "updatedAt" to now
+                        "updatedAt" to FieldValue.serverTimestamp()
                     ),
                     SetOptions.merge()
                 )
             }.await()
 
-            // Update local state and SharedPreferences
-            val newPoints = (_pointsBalance.value - passTier.pointsCost).coerceAtLeast(0)
-            _pointsBalance.value = newPoints
-            saveLocalPoints(ctx, newPoints)
-
-            val currentLocalExpiry = _activePassInfo.value?.expiryTimestamp ?: 0L
-            val baseTime = if (currentLocalExpiry > now) currentLocalExpiry else now
-            val newLocalExpiry = baseTime + passTier.durationMs
-
-            saveLocalPass(ctx, passTier.id, newLocalExpiry)
+            // Update local state and SharedPreferences atomically based on transaction result
+            _pointsBalance.value = resultingPoints
+            saveLocalPoints(ctx, resultingPoints)
+            saveLocalPass(ctx, passTier.id, resultingExpiry)
             refreshAccessStatus()
 
-            Log.i(TAG, "Successfully purchased ${passTier.title}. New expiry: $newLocalExpiry")
+            Log.i(TAG, "Successfully purchased ${passTier.title}. New expiry: $resultingExpiry, new points: $resultingPoints")
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Transaction failed for pass purchase: ${e.message}", e)
@@ -454,26 +502,32 @@ object LicenseManager {
                     val passType = snapshot.getString("activePassType")
                     val passExpiry = snapshot.getLong("passExpiryTimestamp") ?: 0L
 
+                    // Update local state if not locally pending
                     _pointsBalance.value = points
                     saveLocalPoints(ctx, points)
                     saveLocalPass(ctx, passType, passExpiry)
                     refreshAccessStatus()
                     Log.d(TAG, "Synced user licensing: points=$points, passType=$passType, expiry=$passExpiry")
-                } else {
-                    // Initialize new user document with starting trial points (e.g. 10 bonus points for joining)
-                    scope.launch {
-                        try {
-                            val initialData = mapOf(
-                                "userId" to userKey,
-                                "userEmail" to (userEmail ?: ""),
-                                "pointsBalance" to _pointsBalance.value,
-                                "activePassType" to null,
-                                "passExpiryTimestamp" to 0L,
-                                "createdAt" to System.currentTimeMillis()
-                            )
-                            userDocRef.set(initialData, SetOptions.merge()).await()
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Could not initialize user licensing doc: ${e.message}")
+                } else if (snapshot != null && !snapshot.exists()) {
+                    // Prevent infinite loop: initialize document strictly once per session
+                    if (docInitAttempted.compareAndSet(false, true)) {
+                        scope.launch {
+                            try {
+                                val initialData = mapOf(
+                                    "userId" to userKey,
+                                    "userEmail" to (userEmail ?: ""),
+                                    "pointsBalance" to _pointsBalance.value.toLong(),
+                                    "activePassType" to null,
+                                    "passExpiryTimestamp" to 0L,
+                                    "createdAt" to FieldValue.serverTimestamp(),
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                )
+                                userDocRef.set(initialData, SetOptions.merge()).await()
+                                Log.i(TAG, "Initialized new user licensing document for $userKey")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Could not initialize user licensing doc: ${e.message}")
+                                docInitAttempted.set(false) // Allow retry later if failed
+                            }
                         }
                     }
                 }
