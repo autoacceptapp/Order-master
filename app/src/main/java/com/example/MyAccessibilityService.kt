@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
+import android.content.res.Resources
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
@@ -39,6 +40,35 @@ open class MyAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: MyAccessibilityService? = null
             protected set
+
+        // Compiled regular expressions for resilient multi-language offer action detection
+        val ACCEPT_REGEX = Regex(
+            pattern = """(?i)^(?:.*?\b(?:accept|auto[\s_-]*accept|confirm|select|take\s*(?:the\s*)?(?:ride|order)|swipe\s*to\s*accept)\b.*?|^go$|(?:.*?(?:स्वीकार|स्वीकारें|कन्फर्म|चुनें|चुने|राइड\s*लें|ऑर्डर\s*लें|sweekar|sweekarein|swikar|swikarein|accept\s*karein|confirm\s*karein).*?))$""",
+            options = setOf(RegexOption.IGNORE_CASE)
+        )
+
+        val REJECT_REGEX = Regex(
+            pattern = """(?i)^(?:.*?\b(?:reject|decline|skip|cancel|pass)\b.*?|(?:.*?(?:अस्वीकार|अस्वीकारें|छोड़ें|छोड़े|रद्द|रद्द\s*करें|मना\s*करें|नकारें|asveekar|asweekar|aswikar|chhodein|chodein|radd|cancel\s*karein|reject\s*karein|decline\s*karein|mana\s*karein).*?))$""",
+            options = setOf(RegexOption.IGNORE_CASE)
+        )
+
+        val RAPIDO_ACCEPT_ID_REGEX = Regex(
+            pattern = """(?i)(?=.*(?:accept|confirm|auto[_-]?accept|take[_-]?ride))(?!.*(?:reject|cancel|decline|unconfirm)).*"""
+        )
+
+        val RAPIDO_REJECT_ID_REGEX = Regex(
+            pattern = """(?i)(?=.*(?:reject|decline|cancel|skip|pass))(?!.*(?:accept|confirm)).*"""
+        )
+
+        // Low-cost signal detection regex for fast event pre-filtering
+        private val OFFER_SIGNAL_REGEX = Regex(
+            pattern = """(?i)(?:[₹₹]|inr|rs\.?|\bkm\b|pickup|drop|accept|reject|confirm|decline|pass|skip|order|ride|fare|cash|स्वीकार|अस्वीकार|sweekar|asweekar|captain)"""
+        )
+
+        // Class names that indicate high-frequency telemetry / map rendering events that should be dropped immediately
+        private val IGNORED_EVENT_CLASS_REGEX = Regex(
+            pattern = """(?i)(?:map|surfaceview|textureview|glsurface|chronometer|progressbar|compass|sensor)"""
+        )
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -138,7 +168,15 @@ open class MyAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 4. Event Debouncing & Throttle: minimum 1000ms delay between processing events to prevent millisecond spam
+        // 4. Low-Cost Event Pre-Filtering (Battery Drain & CPU Optimization):
+        // Inspect event text, content description, class name, and shallow source node
+        // to immediately drop high-frequency non-offer events (map movements, GPS telemetry, clock ticks)
+        // before executing heavy window retrieval and deep recursive UI tree traversal.
+        if (!isPotentialOfferEvent(event)) {
+            return
+        }
+
+        // 5. Event Debouncing & Throttle: minimum delay between processing events to prevent millisecond spam
         val currentTime = System.currentTimeMillis()
         if (isPendingExecution || (currentTime - lastProcessTime < DEBOUNCE_WINDOW_MS)) {
             return
@@ -146,7 +184,7 @@ open class MyAccessibilityService : AccessibilityService() {
         // Advance timestamp immediately so subsequent events within the debounce window are discarded
         lastProcessTime = currentTime
 
-        // 5. Multi-Window & Overlay Support: Retrieve root nodes strictly belonging to target driver app
+        // 6. Multi-Window & Overlay Support: Retrieve root nodes strictly belonging to target driver app
         val rawRootWindows = getAllRootWindows()
         if (rawRootWindows.isEmpty()) return
 
@@ -198,6 +236,94 @@ open class MyAccessibilityService : AccessibilityService() {
                 recycleNode(root)
             }
         }
+    }
+
+    /**
+     * Fast, low-cost pre-filtering check to eliminate battery drain and CPU spikes.
+     * Prevents invoking getAllRootWindows() and deep UI tree scans on frequent non-offer events
+     * such as continuous GPS map re-rendering, animations, and clock ticks.
+     */
+    private fun isPotentialOfferEvent(event: AccessibilityEvent): Boolean {
+        // TYPE_WINDOW_STATE_CHANGED represents new dialogs, bottom sheets, or activities popping up.
+        // Always permit this event type for full evaluation.
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            return true
+        }
+
+        val className = event.className?.toString() ?: ""
+
+        // Discard high-frequency map animations, GL surfaces, and background sensor widgets immediately
+        if (className.isNotEmpty() && IGNORED_EVENT_CLASS_REGEX.containsMatchIn(className)) {
+            return false
+        }
+
+        // 1. Fast inspection of event text and content description for offer indicators
+        val eventContent = buildString {
+            if (event.text.isNotEmpty()) {
+                append(event.text.joinToString(separator = " "))
+            }
+            event.contentDescription?.let {
+                if (isNotEmpty()) append(" ")
+                append(it)
+            }
+        }
+
+        if (eventContent.isNotEmpty()) {
+            if (OFFER_SIGNAL_REGEX.containsMatchIn(eventContent) ||
+                isAcceptAction(eventContent) ||
+                isRejectAction(eventContent)
+            ) {
+                return true
+            }
+        }
+
+        // 2. Shallow inspection of event source node (depth <= 1, max 8 children)
+        val source = try {
+            event.source
+        } catch (_: Exception) {
+            null
+        }
+
+        if (source != null) {
+            try {
+                val sourceText = source.text?.toString() ?: ""
+                val sourceDesc = source.contentDescription?.toString() ?: ""
+                val sourceId = source.viewIdResourceName ?: ""
+
+                if (isAcceptAction(sourceText) || isAcceptAction(sourceDesc) || isRapidoAcceptId(sourceId) ||
+                    isRejectAction(sourceText) || isRejectAction(sourceDesc) || isRapidoRejectId(sourceId) ||
+                    OFFER_SIGNAL_REGEX.containsMatchIn(sourceText) ||
+                    OFFER_SIGNAL_REGEX.containsMatchIn(sourceDesc)
+                ) {
+                    return true
+                }
+
+                // Check immediate children only (bounded to 8 nodes max)
+                val childLimit = minOf(source.childCount, 8)
+                for (i in 0 until childLimit) {
+                    val child = source.getChild(i)
+                    if (child != null) {
+                        val cText = child.text?.toString() ?: ""
+                        val cDesc = child.contentDescription?.toString() ?: ""
+                        val cId = child.viewIdResourceName ?: ""
+
+                        val match = isAcceptAction(cText) || isAcceptAction(cDesc) || isRapidoAcceptId(cId) ||
+                                isRejectAction(cText) || isRejectAction(cDesc) || isRapidoRejectId(cId) ||
+                                OFFER_SIGNAL_REGEX.containsMatchIn(cText) ||
+                                OFFER_SIGNAL_REGEX.containsMatchIn(cDesc)
+                        recycleNode(child)
+                        if (match) {
+                            return true
+                        }
+                    }
+                }
+            } finally {
+                recycleNode(source)
+            }
+        }
+
+        // If no offer signal is detected in the event text, description, or immediate source node, discard it.
+        return false
     }
 
     /**
@@ -823,60 +949,23 @@ open class MyAccessibilityService : AccessibilityService() {
     fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
-
-        return trimmed.equals("Accept", ignoreCase = true) ||
-                trimmed.equals("Auto Accept", ignoreCase = true) ||
-                trimmed.equals("Confirm", ignoreCase = true) ||
-                trimmed.equals("Select", ignoreCase = true) ||
-                trimmed.equals("Accept Order", ignoreCase = true) ||
-                trimmed.equals("Accept Ride", ignoreCase = true) ||
-                trimmed.equals("Go", ignoreCase = true) ||
-                trimmed.contains("Swipe to Accept", ignoreCase = true) ||
-                trimmed.equals("Take Ride", ignoreCase = true) ||
-                trimmed.equals("Confirm Order", ignoreCase = true) ||
-                trimmed.equals("Confirm Ride", ignoreCase = true)
+        return ACCEPT_REGEX.matches(trimmed)
     }
 
-    private fun isRapidoAcceptId(viewId: String): Boolean {
+    fun isRapidoAcceptId(viewId: String): Boolean {
         if (viewId.isEmpty()) return false
-        val lower = viewId.lowercase(Locale.ROOT)
-        return lower.contains("btn_accept") ||
-                lower.contains("accept_order") ||
-                lower.contains("accept_button") ||
-                lower.contains("accept_ride") ||
-                lower.contains("action_accept") ||
-                lower.contains("btn_confirm") ||
-                lower.contains("auto_accept")
+        return RAPIDO_ACCEPT_ID_REGEX.containsMatchIn(viewId)
     }
 
     fun isRejectAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
-
-        return trimmed.equals("Reject", ignoreCase = true) ||
-                trimmed.equals("Decline", ignoreCase = true) ||
-                trimmed.equals("Skip", ignoreCase = true) ||
-                trimmed.equals("Cancel", ignoreCase = true) ||
-                trimmed.equals("Pass", ignoreCase = true) ||
-                trimmed.equals("Reject Order", ignoreCase = true) ||
-                trimmed.equals("Reject Ride", ignoreCase = true) ||
-                trimmed.equals("Decline Order", ignoreCase = true) ||
-                trimmed.equals("Decline Ride", ignoreCase = true) ||
-                trimmed.contains("अस्वीकार", ignoreCase = true) ||
-                trimmed.contains("छोड़ें", ignoreCase = true)
+        return REJECT_REGEX.matches(trimmed)
     }
 
-    private fun isRapidoRejectId(viewId: String): Boolean {
+    fun isRapidoRejectId(viewId: String): Boolean {
         if (viewId.isEmpty()) return false
-        val lower = viewId.lowercase(Locale.ROOT)
-        return lower.contains("btn_reject") ||
-                lower.contains("reject_order") ||
-                lower.contains("btn_decline") ||
-                lower.contains("decline_order") ||
-                lower.contains("btn_cancel") ||
-                lower.contains("action_reject") ||
-                lower.contains("action_decline") ||
-                lower.contains("btn_skip")
+        return RAPIDO_REJECT_ID_REGEX.containsMatchIn(viewId)
     }
 
     fun findRejectNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -955,20 +1044,28 @@ open class MyAccessibilityService : AccessibilityService() {
         }
 
         // Small floating bubble dimensions check (e.g., chatheads are usually small pills/circles)
+        // Convert raw pixel bounds into density-independent pixels (dp) using Resources.getSystem().displayMetrics.density
+        // before evaluating the size to ensure consistency across varying screen densities (HD, FHD, 4K).
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
-        if (!bounds.isEmpty && bounds.width() in 1..320 && bounds.height() in 1..320) {
-            val accept = findAcceptNode(node)
-            if (accept != null) {
-                recycleNode(accept)
-                return false
+        if (!bounds.isEmpty) {
+            val density = Resources.getSystem().displayMetrics.density.let { if (it > 0f) it else 1.0f }
+            val widthDp = bounds.width() / density
+            val heightDp = bounds.height() / density
+
+            if (widthDp in 1f..120f && heightDp in 1f..120f) {
+                val accept = findAcceptNode(node)
+                if (accept != null) {
+                    recycleNode(accept)
+                    return false
+                }
+                val reject = findRejectNode(node)
+                if (reject != null) {
+                    recycleNode(reject)
+                    return false
+                }
+                return true
             }
-            val reject = findRejectNode(node)
-            if (reject != null) {
-                recycleNode(reject)
-                return false
-            }
-            return true
         }
 
         return false

@@ -621,8 +621,12 @@ object PassManager {
     /**
      * Creates an Intent to launch UPI apps installed on the device.
      */
-    fun createUpiPaymentIntent(passTier: PassTier): Intent {
-        val uri = buildUpiUri(passTier)
+    fun createUpiPaymentIntent(
+        passTier: PassTier,
+        payeeVpa: String = "autoaccept6122-1@okhdfcbank",
+        payeeName: String = "OrderMaster Captain Store"
+    ): Intent {
+        val uri = buildUpiUri(passTier, payeeVpa = payeeVpa, payeeName = payeeName)
         return Intent(Intent.ACTION_VIEW, uri)
     }
 
@@ -662,11 +666,13 @@ object PassManager {
     fun initiateUpiPayment(
         activity: Activity,
         passTier: PassTier,
+        payeeVpa: String = "autoaccept6122-1@okhdfcbank",
+        payeeName: String = "OrderMaster Captain Store",
         onSuccess: (txnId: String) -> Unit = {},
         onFailed: (reason: String) -> Unit = {}
     ) {
         val pm = activity.packageManager
-        val baseIntent = createUpiPaymentIntent(passTier)
+        val baseIntent = createUpiPaymentIntent(passTier, payeeVpa = payeeVpa, payeeName = payeeName)
 
         // Find which known UPI apps are installed
         val installedPackages = KNOWN_UPI_PACKAGES.filter { pkg ->
@@ -698,7 +704,7 @@ object PassManager {
         // Attempt 3: Try launching specific installed UPI apps directly
         for (pkg in installedPackages) {
             try {
-                val directIntent = createUpiPaymentIntent(passTier).apply {
+                val directIntent = createUpiPaymentIntent(passTier, payeeVpa = payeeVpa, payeeName = payeeName).apply {
                     setPackage(pkg)
                 }
                 activity.startActivity(directIntent)
@@ -712,23 +718,23 @@ object PassManager {
         try {
             val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
             if (clipboard != null) {
-                val clip = android.content.ClipData.newPlainText("UPI ID", "autoaccept6122-1@okhdfcbank")
+                val clip = android.content.ClipData.newPlainText("UPI ID", payeeVpa)
                 clipboard.setPrimaryClip(clip)
             }
             android.widget.Toast.makeText(
                 activity,
-                "UPI ID copied: autoaccept6122-1@okhdfcbank. Please open your UPI app to pay ₹${passTier.priceInInr}.",
+                "UPI ID copied: $payeeVpa. Please open your UPI app to pay ₹${passTier.priceInInr}.",
                 android.widget.Toast.LENGTH_LONG
             ).show()
-            onFailed("UPI ID copied: autoaccept6122-1@okhdfcbank. Please pay in your UPI app and enter UTR.")
+            onFailed("UPI ID copied: $payeeVpa. Please pay in your UPI app and enter UTR.")
         } catch (e: Exception) {
             Log.w(TAG, "UPI intent launch and fallback failed: ${e.message}")
             android.widget.Toast.makeText(
                 activity,
-                "Please pay to UPI ID: autoaccept6122-1@okhdfcbank",
+                "Please pay to UPI ID: $payeeVpa",
                 android.widget.Toast.LENGTH_LONG
             ).show()
-            onFailed("Please pay to UPI ID: autoaccept6122-1@okhdfcbank")
+            onFailed("Please pay to UPI ID: $payeeVpa")
         }
     }
 

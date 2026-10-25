@@ -81,9 +81,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.util.Log
 import com.example.ui.theme.CaptainAutoAcceptTheme
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * PaymentActivity - Manual UPI Payment & MacroDroid UTR Verification Gateway.
@@ -103,6 +107,48 @@ class PaymentActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_PASS_TIER_ID = "extra_pass_tier_id"
+        private const val TAG = "PaymentActivity"
+
+        const val FALLBACK_ADMIN_UPI_ID = "autoaccept6122-1@okhdfcbank"
+        const val FALLBACK_ADMIN_PAYEE_NAME = "OrderMaster Captain Store"
+        const val FIRESTORE_COLLECTION_ADMIN_SETTINGS = "admin_settings"
+        const val FIRESTORE_DOC_PAYMENT_CONFIG = "payment_config"
+
+        /**
+         * Fetches dynamic payment config (Admin UPI ID and Payee Name) from Firestore:
+         * collection: `admin_settings`, document: `payment_config`
+         *
+         * Falls back silently to default hardcoded values on timeout, network failure, or missing document.
+         */
+        suspend fun fetchPaymentConfig(): Pair<String, String> {
+            return try {
+                withTimeoutOrNull(3500L) {
+                    val firestore = FirebaseFirestore.getInstance()
+                    val docSnapshot = firestore.collection(FIRESTORE_COLLECTION_ADMIN_SETTINGS)
+                        .document(FIRESTORE_DOC_PAYMENT_CONFIG)
+                        .get()
+                        .await()
+
+                    if (docSnapshot.exists()) {
+                        val upi = docSnapshot.getString("adminUpiId")?.trim()
+                        val payee = docSnapshot.getString("adminPayeeName")?.trim()
+                        val validUpi = if (!upi.isNullOrBlank()) upi else FALLBACK_ADMIN_UPI_ID
+                        val validPayee = if (!payee.isNullOrBlank()) payee else FALLBACK_ADMIN_PAYEE_NAME
+                        Log.d(TAG, "Successfully fetched payment config: upi=$validUpi, payee=$validPayee")
+                        Pair(validUpi, validPayee)
+                    } else {
+                        Log.d(TAG, "Document admin_settings/payment_config does not exist. Using fallbacks.")
+                        Pair(FALLBACK_ADMIN_UPI_ID, FALLBACK_ADMIN_PAYEE_NAME)
+                    }
+                } ?: run {
+                    Log.w(TAG, "Fetching payment config timed out. Using fallbacks.")
+                    Pair(FALLBACK_ADMIN_UPI_ID, FALLBACK_ADMIN_PAYEE_NAME)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to fetch remote payment config from Firestore (${e.message}). Using fallbacks.")
+                Pair(FALLBACK_ADMIN_UPI_ID, FALLBACK_ADMIN_PAYEE_NAME)
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -177,8 +223,16 @@ private fun PaymentVerificationScreenContent(
     var uiState by remember { mutableStateOf(VerificationUiState.IDLE) }
     var statusMessage by remember { mutableStateOf("") }
 
-    val adminUpiId = "autoaccept6122-1@okhdfcbank"
-    val adminPayeeName = "OrderMaster Captain Store"
+    var adminUpiId by remember { mutableStateOf(PaymentActivity.FALLBACK_ADMIN_UPI_ID) }
+    var adminPayeeName by remember { mutableStateOf(PaymentActivity.FALLBACK_ADMIN_PAYEE_NAME) }
+    var isLoadingConfig by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        val (fetchedUpi, fetchedName) = PaymentActivity.fetchPaymentConfig()
+        adminUpiId = fetchedUpi
+        adminPayeeName = fetchedName
+        isLoadingConfig = false
+    }
 
     Scaffold(
         topBar = {
@@ -363,7 +417,7 @@ private fun PaymentVerificationScreenContent(
                     }
 
                     // Dynamic QR Code visual component for scanning
-                    val paymentUpiUri = remember(adminUpiId, selectedTier) {
+                    val paymentUpiUri = remember(adminUpiId, adminPayeeName, selectedTier) {
                         QrCodeGenerator.getUpiUriString(
                             vpa = adminUpiId,
                             name = adminPayeeName,
@@ -382,10 +436,7 @@ private fun PaymentVerificationScreenContent(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.padding(14.dp)
                         ) {
-                            val qrBitmap = remember(paymentUpiUri) {
-                                QrCodeGenerator.generateQrCodeBitmap(paymentUpiUri, 512, 512)
-                            }
-                            if (qrBitmap != null) {
+                            if (isLoadingConfig) {
                                 Box(
                                     modifier = Modifier
                                         .size(175.dp)
@@ -393,16 +444,35 @@ private fun PaymentVerificationScreenContent(
                                         .padding(8.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Image(
-                                        bitmap = qrBitmap.asImageBitmap(),
-                                        contentDescription = "Scan to pay ₹${selectedTier.priceInInr} via UPI",
-                                        modifier = Modifier.fillMaxSize()
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(36.dp),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        strokeWidth = 3.dp
                                     )
+                                }
+                            } else {
+                                val qrBitmap = remember(paymentUpiUri) {
+                                    QrCodeGenerator.generateQrCodeBitmap(paymentUpiUri, 512, 512)
+                                }
+                                if (qrBitmap != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(175.dp)
+                                            .background(androidx.compose.ui.graphics.Color.White, RoundedCornerShape(12.dp))
+                                            .padding(8.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Image(
+                                            bitmap = qrBitmap.asImageBitmap(),
+                                            contentDescription = "Scan to pay ₹${selectedTier.priceInInr} via UPI",
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
                                 }
                             }
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = "Scan QR with any UPI App (GPay / PhonePe / Paytm / BHIM)",
+                                text = if (isLoadingConfig) "Fetching payment details..." else "Scan QR with any UPI App (GPay / PhonePe / Paytm / BHIM)",
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
@@ -423,18 +493,37 @@ private fun PaymentVerificationScreenContent(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
-                                Text(
-                                    text = "Payee: $adminPayeeName",
-                                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = adminUpiId,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
+                            if (isLoadingConfig) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Loading UPI details...",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            } else {
+                                Column {
+                                    Text(
+                                        text = "Payee: $adminPayeeName",
+                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = adminUpiId,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
                             }
 
                             OutlinedButton(
@@ -442,6 +531,7 @@ private fun PaymentVerificationScreenContent(
                                     clipboardManager.setText(AnnotatedString(adminUpiId))
                                     Toast.makeText(context, "UPI ID copied: $adminUpiId", Toast.LENGTH_SHORT).show()
                                 },
+                                enabled = !isLoadingConfig,
                                 shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier.testTag("copy_upi_button")
                             ) {
@@ -464,31 +554,48 @@ private fun PaymentVerificationScreenContent(
                                 PassManager.initiateUpiPayment(
                                     activity = act,
                                     passTier = selectedTier,
+                                    payeeVpa = adminUpiId,
+                                    payeeName = adminPayeeName,
                                     onFailed = { reason ->
                                         Toast.makeText(context, reason, Toast.LENGTH_LONG).show()
                                     }
                                 )
                             }
                         },
+                        enabled = !isLoadingConfig,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(50.dp)
                             .testTag("open_upi_app_button"),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                         )
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.AccountBalanceWallet,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Open UPI App (GPay / PhonePe / Paytm)",
-                            fontWeight = FontWeight.Bold
-                        )
+                        if (isLoadingConfig) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Checking UPI Config...",
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.AccountBalanceWallet,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Open UPI App (GPay / PhonePe / Paytm)",
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
 
                     Text(

@@ -14,14 +14,58 @@ class OrderMasterApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // 1. Initialize Firebase & App Check in strict order
+        // 1. Ensure FirebaseApp is reliably initialized first
+        ensureFirebaseInitialized()
+
+        // 2. Initialize App Check in strict sequence
         initFirebaseAppCheck()
 
-        // 2. Configure Firestore global offline persistence settings
+        // 3. Configure Firestore global offline persistence settings
         initFirestoreSettings()
 
-        // 3. Initialize core managers at Application level for background services
+        // 4. Initialize core managers at Application level for background services
         initCoreEngines()
+    }
+
+    /**
+     * Ensures default FirebaseApp is initialized.
+     * If resources from google-services.json are not found, falls back gracefully
+     * to programmatic FirebaseOptions so that FirebaseApp is always available.
+     */
+    private fun ensureFirebaseInitialized() {
+        try {
+            if (FirebaseApp.getApps(this).isEmpty()) {
+                val app = FirebaseApp.initializeApp(this)
+                if (app == null) {
+                    val options = com.google.firebase.FirebaseOptions.Builder()
+                        .setApplicationId(packageName)
+                        .setApiKey("AIzaSyDummyKeyForInitializationPlaceholder")
+                        .setProjectId("order-master-app")
+                        .setDatabaseUrl("https://order-master-app.firebaseio.com")
+                        .setStorageBucket("order-master-app.appspot.com")
+                        .build()
+                    FirebaseApp.initializeApp(this, options)
+                    Log.i(TAG, "Initialized FirebaseApp using fallback FirebaseOptions.")
+                } else {
+                    Log.i(TAG, "Initialized FirebaseApp from application resources.")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Standard Firebase initialization notice: ${e.message}")
+            try {
+                if (FirebaseApp.getApps(this).isEmpty()) {
+                    val options = com.google.firebase.FirebaseOptions.Builder()
+                        .setApplicationId(packageName)
+                        .setApiKey("AIzaSyDummyKeyForInitializationPlaceholder")
+                        .setProjectId("order-master-app")
+                        .build()
+                    FirebaseApp.initializeApp(this, options)
+                    Log.i(TAG, "Initialized FirebaseApp using programmatic fallback.")
+                }
+            } catch (inner: Exception) {
+                Log.e(TAG, "Fallback Firebase initialization failed: ${inner.message}", inner)
+            }
+        }
     }
 
     /**
@@ -33,12 +77,12 @@ class OrderMasterApplication : Application() {
      */
     private fun initFirebaseAppCheck() {
         try {
-            // 1. Ensure FirebaseApp is initialized first
             if (FirebaseApp.getApps(this).isEmpty()) {
-                FirebaseApp.initializeApp(this)
+                Log.w(TAG, "Skipping App Check: FirebaseApp could not be initialized.")
+                return
             }
 
-            // 2. Install App Check provider factory strictly based on build variant
+            // Install App Check provider factory strictly based on build variant
             val firebaseAppCheck = FirebaseAppCheck.getInstance()
 
             if (BuildConfig.DEBUG) {
@@ -53,7 +97,7 @@ class OrderMasterApplication : Application() {
                 )
             }
 
-            // 3. Enable automatic App Check token refresh for continuous background monitoring
+            // Enable automatic App Check token refresh for continuous background monitoring
             firebaseAppCheck.setTokenAutoRefreshEnabled(true)
             Log.d(TAG, "Firebase App Check token auto-refresh enabled.")
         } catch (e: Exception) {
@@ -66,6 +110,10 @@ class OrderMasterApplication : Application() {
      */
     private fun initFirestoreSettings() {
         try {
+            if (FirebaseApp.getApps(this).isEmpty()) {
+                Log.w(TAG, "Skipping Firestore settings: FirebaseApp is not initialized.")
+                return
+            }
             val firestore = FirebaseFirestore.getInstance()
             val newSettings = FirebaseFirestoreSettings.Builder()
                 .setLocalCacheSettings(PersistentCacheSettings.newBuilder().build())

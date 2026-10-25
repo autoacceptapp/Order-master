@@ -295,6 +295,28 @@ class ExampleRobolectricTest {
         assertTrue(service.isAcceptAction("  auto accept  "))
         assertTrue(service.isAcceptAction("  CONFIRM  "))
 
+        // Multi-language Hindi native script support
+        assertTrue(service.isAcceptAction("स्वीकार"))
+        assertTrue(service.isAcceptAction("स्वीकार करें"))
+        assertTrue(service.isAcceptAction("राइड स्वीकार करें"))
+        assertTrue(service.isAcceptAction("ऑर्डर स्वीकार करें"))
+        assertTrue(service.isAcceptAction("कन्फर्म करें"))
+
+        // Multi-language Hindi transliteration (Hinglish) support
+        assertTrue(service.isAcceptAction("sweekar"))
+        assertTrue(service.isAcceptAction("sweekarein"))
+        assertTrue(service.isAcceptAction("accept karein"))
+        assertTrue(service.isAcceptAction("confirm karein"))
+
+        // Resilient target app ID regex checks
+        assertTrue(service.isRapidoAcceptId("btn_accept"))
+        assertTrue(service.isRapidoAcceptId("accept_order"))
+        assertTrue(service.isRapidoAcceptId("btn_confirm"))
+        assertTrue(service.isRapidoAcceptId("auto_accept"))
+        assertTrue(service.isRapidoAcceptId("cta_accept"))
+        assertTrue(service.isRapidoAcceptId("com.rapido.rider:id/btn_accept"))
+        assertFalse(service.isRapidoAcceptId("btn_reject"))
+
         // Static or irrelevant strings that should NOT trigger evaluation
         assertFalse(service.isAcceptAction("Total Earnings: ₹1,500"))
         assertFalse(service.isAcceptAction("Weekly History 24.5 km"))
@@ -352,6 +374,18 @@ class ExampleRobolectricTest {
         assertTrue(service.isRejectAction("Reject Order"))
         assertTrue(service.isRejectAction("Decline Ride"))
         assertTrue(service.isRejectAction("अस्वीकार"))
+        assertTrue(service.isRejectAction("छोड़ें"))
+        assertTrue(service.isRejectAction("रद्द करें"))
+        assertTrue(service.isRejectAction("asveekar"))
+        assertTrue(service.isRejectAction("asweekar"))
+        assertTrue(service.isRejectAction("chhodein"))
+
+        assertTrue(service.isRapidoRejectId("btn_reject"))
+        assertTrue(service.isRapidoRejectId("reject_order"))
+        assertTrue(service.isRapidoRejectId("btn_decline"))
+        assertTrue(service.isRapidoRejectId("btn_skip"))
+        assertTrue(service.isRapidoRejectId("btn_cancel"))
+        assertFalse(service.isRapidoRejectId("btn_accept"))
 
         assertFalse(service.isRejectAction("Accept"))
         assertFalse(service.isRejectAction("Weekly Earnings"))

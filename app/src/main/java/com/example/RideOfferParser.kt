@@ -431,29 +431,12 @@ object RideOfferParser {
     private fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
-        return trimmed.equals("Accept", ignoreCase = true) ||
-                trimmed.equals("Auto Accept", ignoreCase = true) ||
-                trimmed.equals("Confirm", ignoreCase = true) ||
-                trimmed.equals("Select", ignoreCase = true) ||
-                trimmed.equals("Accept Order", ignoreCase = true) ||
-                trimmed.equals("Accept Ride", ignoreCase = true) ||
-                trimmed.equals("Go", ignoreCase = true) ||
-                trimmed.contains("Swipe to Accept", ignoreCase = true) ||
-                trimmed.equals("Take Ride", ignoreCase = true) ||
-                trimmed.equals("Confirm Order", ignoreCase = true) ||
-                trimmed.equals("Confirm Ride", ignoreCase = true)
+        return MyAccessibilityService.ACCEPT_REGEX.matches(trimmed)
     }
 
     private fun isRapidoAcceptId(viewId: String): Boolean {
         if (viewId.isEmpty()) return false
-        val lower = viewId.lowercase(Locale.ROOT)
-        return lower.contains("btn_accept") ||
-                lower.contains("accept_order") ||
-                lower.contains("accept_button") ||
-                lower.contains("accept_ride") ||
-                lower.contains("action_accept") ||
-                lower.contains("btn_confirm") ||
-                lower.contains("auto_accept")
+        return MyAccessibilityService.RAPIDO_ACCEPT_ID_REGEX.containsMatchIn(viewId)
     }
 
     private fun findAcceptNodeInSubtree(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
