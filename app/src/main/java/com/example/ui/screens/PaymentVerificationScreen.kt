@@ -84,6 +84,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -125,7 +126,7 @@ import java.util.Locale
  *
  * Automated UPI Payment Verification Screen via Firebase Firestore.
  * Handles:
- * - Scenario A: MacroDroid updated /received_payments/{utr} first (Instant Match).
+ * - Scenario A: Server updated /received_payments/{utr} first (Instant Match).
  * - Scenario B: User entered UTR first (Real-time snapshot listener on /received_payments/{utr}).
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -145,8 +146,16 @@ fun PaymentVerificationScreen(
     val selectedTier by viewModel.selectedTier.collectAsState()
     val isUtrValid by viewModel.isUtrValid.collectAsState()
 
-    val merchantVpa = "autoaccept6122-1@okhdfcbank"
-    val merchantName = "OrderMaster Captain Store"
+    var merchantVpa by remember { mutableStateOf("") }
+    var merchantName by remember { mutableStateOf("OrderMaster Captain Store") }
+
+    LaunchedEffect(Unit) {
+        val (upi, name) = com.example.PaymentActivity.fetchPaymentConfig()
+        merchantVpa = upi
+        if (name.isNotBlank()) {
+            merchantName = name
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -210,7 +219,7 @@ fun PaymentVerificationScreen(
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "MacroDroid Sync",
+                                text = "Automated Sync",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = PrimaryEmerald,
@@ -330,6 +339,8 @@ fun PaymentVerificationScreen(
                                 PassManager.initiateUpiPayment(
                                     activity = act,
                                     passTier = selectedTier,
+                                    payeeVpa = merchantVpa,
+                                    payeeName = merchantName,
                                     onSuccess = { txnId ->
                                         if (txnId.length == 12 && txnId.all { it.isDigit() }) {
                                             viewModel.onUtrChanged(txnId)
@@ -614,12 +625,16 @@ private fun MerchantPaymentQrCard(
             }
 
             val upiUri = remember(merchantVpa, selectedTier) {
-                QrCodeGenerator.getUpiUriString(
-                    vpa = merchantVpa,
-                    name = merchantName,
-                    amount = selectedTier.priceInInr.toDouble(),
-                    note = "Pass ${selectedTier.title}"
-                )
+                if (merchantVpa.isNotBlank()) {
+                    QrCodeGenerator.getUpiUriString(
+                        vpa = merchantVpa,
+                        name = merchantName,
+                        amount = selectedTier.priceInInr.toDouble(),
+                        note = "Pass ${selectedTier.title}"
+                    )
+                } else {
+                    ""
+                }
             }
 
             // QR Code Container with subtle background
@@ -880,7 +895,7 @@ private fun UtrInputCard(
 
 /**
  * Scenario B Pending Banner:
- * Active while waiting for MacroDroid automation to push the bank SMS.
+ * Active while waiting for secure server automation to confirm the payment.
  */
 @Composable
 private fun PendingVerificationBanner(
@@ -981,7 +996,7 @@ private fun PendingVerificationBanner(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = "• As soon as the merchant phone receives the bank SMS, MacroDroid will push to Firestore and this screen will unlock instantly.",
+                        text = "• As soon as the payment confirmation is processed, our secure server will update Firestore and this screen will unlock instantly.",
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1236,7 +1251,7 @@ private fun VerificationExplainerCard() {
             Text(
                 text = "1. Pay via any UPI app using the QR code or UPI ID above.\n" +
                         "2. Locate the 12-digit UTR / Ref Number in your UPI receipt (e.g. 426719823451).\n" +
-                        "3. Enter the number here. MacroDroid automation automatically matches the bank SMS on our merchant phone.\n" +
+                        "3. Enter the number here. Our automated server securely matches the bank confirmation in seconds.\n" +
                         "4. Once matched, the pass activates immediately without manual support.",
                 style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant

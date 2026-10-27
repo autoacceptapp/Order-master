@@ -313,7 +313,7 @@ fun SubscriptionScreen(
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                             )
                             Text(
-                                text = "Submit 12-digit UTR for automated MacroDroid bank SMS verification",
+                                text = "Submit 12-digit UTR for automated bank confirmation verification",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -449,27 +449,11 @@ fun SubscriptionScreen(
                 onNavigateToPaymentVerification()
             },
             onLaunchUpi = {
-                val act = context as? Activity
-                if (act != null) {
-                    PassManager.initiateUpiPayment(
-                        activity = act,
-                        passTier = tier,
-                        onFailed = { reason ->
-                            android.widget.Toast.makeText(context, reason, android.widget.Toast.LENGTH_LONG).show()
-                        }
-                    )
-                    selectedPassForUpiPayment = null
-                    val intent = android.content.Intent(context, com.example.PaymentActivity::class.java).apply {
-                        putExtra(com.example.PaymentActivity.EXTRA_PASS_TIER_ID, tier.id)
-                    }
-                    context.startActivity(intent)
-                } else {
-                    val intent = android.content.Intent(context, com.example.PaymentActivity::class.java).apply {
-                        putExtra(com.example.PaymentActivity.EXTRA_PASS_TIER_ID, tier.id)
-                    }
-                    context.startActivity(intent)
-                    selectedPassForUpiPayment = null
+                selectedPassForUpiPayment = null
+                val intent = android.content.Intent(context, com.example.PaymentActivity::class.java).apply {
+                    putExtra(com.example.PaymentActivity.EXTRA_PASS_TIER_ID, tier.id)
                 }
+                context.startActivity(intent)
             },
             onSimulateSuccess = {
                 // Removed simulation: Redirect directly to PaymentActivity for real UTR verification

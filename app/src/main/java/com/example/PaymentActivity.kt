@@ -90,13 +90,13 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * PaymentActivity - Manual UPI Payment & MacroDroid UTR Verification Gateway.
+ * PaymentActivity - Manual UPI Payment & Secure Server UTR Verification Gateway.
  *
  * Architecture Flow:
  * 1. User selects Pass Tier (Daily ₹9, Weekly ₹49, Monthly ₹179).
  * 2. Launches UPI Intent (Google Pay / PhonePe / Paytm / BHIM) to Admin UPI ID.
- * 3. After paying, admin device receives bank SMS which MacroDroid intercepts,
- *    extracts the 12-digit UTR, and pushes to Firestore at: `received_payments/{UTR_Number}`.
+ * 3. After paying, backend server receives bank confirmation and creates the verification record
+ *    at: `received_payments/{UTR_Number}`.
  * 4. User manually inputs the 12-digit UTR and clicks "Verify Payment".
  * 5. Passes UTR to `PassManager.verifyPaymentWithBackendDetailed`:
  *    - Validates doc exists, status == "Verified", and isUsed == false.
@@ -109,8 +109,6 @@ class PaymentActivity : ComponentActivity() {
         const val EXTRA_PASS_TIER_ID = "extra_pass_tier_id"
         private const val TAG = "PaymentActivity"
 
-        const val FALLBACK_ADMIN_UPI_ID = "autoaccept6122-1@okhdfcbank"
-        const val FALLBACK_ADMIN_PAYEE_NAME = "OrderMaster Captain Store"
         const val FIRESTORE_COLLECTION_ADMIN_SETTINGS = "admin_settings"
         const val FIRESTORE_DOC_PAYMENT_CONFIG = "payment_config"
 
@@ -118,7 +116,7 @@ class PaymentActivity : ComponentActivity() {
          * Fetches dynamic payment config (Admin UPI ID and Payee Name) from Firestore:
          * collection: `admin_settings`, document: `payment_config`
          *
-         * Falls back silently to default hardcoded values on timeout, network failure, or missing document.
+         * Returns empty strings if document doesn't exist, times out, or fails.
          */
         suspend fun fetchPaymentConfig(): Pair<String, String> {
             return try {
@@ -130,23 +128,21 @@ class PaymentActivity : ComponentActivity() {
                         .await()
 
                     if (docSnapshot.exists()) {
-                        val upi = docSnapshot.getString("adminUpiId")?.trim()
-                        val payee = docSnapshot.getString("adminPayeeName")?.trim()
-                        val validUpi = if (!upi.isNullOrBlank()) upi else FALLBACK_ADMIN_UPI_ID
-                        val validPayee = if (!payee.isNullOrBlank()) payee else FALLBACK_ADMIN_PAYEE_NAME
-                        Log.d(TAG, "Successfully fetched payment config: upi=$validUpi, payee=$validPayee")
-                        Pair(validUpi, validPayee)
+                        val upi = docSnapshot.getString("adminUpiId")?.trim().orEmpty()
+                        val payee = docSnapshot.getString("adminPayeeName")?.trim().orEmpty()
+                        Log.d(TAG, "Successfully fetched payment config: upi=$upi, payee=$payee")
+                        Pair(upi, payee)
                     } else {
-                        Log.d(TAG, "Document admin_settings/payment_config does not exist. Using fallbacks.")
-                        Pair(FALLBACK_ADMIN_UPI_ID, FALLBACK_ADMIN_PAYEE_NAME)
+                        Log.w(TAG, "Document admin_settings/payment_config does not exist.")
+                        Pair("", "")
                     }
                 } ?: run {
-                    Log.w(TAG, "Fetching payment config timed out. Using fallbacks.")
-                    Pair(FALLBACK_ADMIN_UPI_ID, FALLBACK_ADMIN_PAYEE_NAME)
+                    Log.w(TAG, "Fetching payment config timed out.")
+                    Pair("", "")
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Failed to fetch remote payment config from Firestore (${e.message}). Using fallbacks.")
-                Pair(FALLBACK_ADMIN_UPI_ID, FALLBACK_ADMIN_PAYEE_NAME)
+                Log.w(TAG, "Failed to fetch remote payment config from Firestore (${e.message}).")
+                Pair("", "")
             }
         }
     }
@@ -223,8 +219,8 @@ private fun PaymentVerificationScreenContent(
     var uiState by remember { mutableStateOf(VerificationUiState.IDLE) }
     var statusMessage by remember { mutableStateOf("") }
 
-    var adminUpiId by remember { mutableStateOf(PaymentActivity.FALLBACK_ADMIN_UPI_ID) }
-    var adminPayeeName by remember { mutableStateOf(PaymentActivity.FALLBACK_ADMIN_PAYEE_NAME) }
+    var adminUpiId by remember { mutableStateOf("") }
+    var adminPayeeName by remember { mutableStateOf("") }
     var isLoadingConfig by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
@@ -233,6 +229,8 @@ private fun PaymentVerificationScreenContent(
         adminPayeeName = fetchedName
         isLoadingConfig = false
     }
+
+    val isPaymentConfigAvailable = !isLoadingConfig && adminUpiId.isNotBlank()
 
     Scaffold(
         topBar = {
@@ -303,7 +301,7 @@ private fun PaymentVerificationScreenContent(
 
                     Column {
                         Text(
-                            text = "MacroDroid Automated Verification",
+                            text = "Secure Automated Verification",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -418,12 +416,16 @@ private fun PaymentVerificationScreenContent(
 
                     // Dynamic QR Code visual component for scanning
                     val paymentUpiUri = remember(adminUpiId, adminPayeeName, selectedTier) {
-                        QrCodeGenerator.getUpiUriString(
-                            vpa = adminUpiId,
-                            name = adminPayeeName,
-                            amount = selectedTier.priceInInr.toDouble(),
-                            note = "Pass ${selectedTier.title}"
-                        )
+                        if (adminUpiId.isNotBlank()) {
+                            QrCodeGenerator.getUpiUriString(
+                                vpa = adminUpiId,
+                                name = adminPayeeName.ifBlank { "OrderMaster Captain Store" },
+                                amount = selectedTier.priceInInr.toDouble(),
+                                note = "Pass ${selectedTier.title}"
+                            )
+                        } else {
+                            ""
+                        }
                     }
 
                     Surface(
@@ -450,9 +452,35 @@ private fun PaymentVerificationScreenContent(
                                         strokeWidth = 3.dp
                                     )
                                 }
+                            } else if (adminUpiId.isBlank()) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(175.dp)
+                                        .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            imageVector = Icons.Default.ErrorOutline,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(40.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Text(
+                                            text = "Unavailable",
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                    }
+                                }
                             } else {
                                 val qrBitmap = remember(paymentUpiUri) {
-                                    QrCodeGenerator.generateQrCodeBitmap(paymentUpiUri, 512, 512)
+                                    if (paymentUpiUri.isNotBlank()) {
+                                        QrCodeGenerator.generateQrCodeBitmap(paymentUpiUri, 512, 512)
+                                    } else null
                                 }
                                 if (qrBitmap != null) {
                                     Box(
@@ -472,9 +500,13 @@ private fun PaymentVerificationScreenContent(
                             }
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(
-                                text = if (isLoadingConfig) "Fetching payment details..." else "Scan QR with any UPI App (GPay / PhonePe / Paytm / BHIM)",
+                                text = when {
+                                    isLoadingConfig -> "Fetching payment details..."
+                                    adminUpiId.isBlank() -> "Payment system temporarily unavailable. Please try again later."
+                                    else -> "Scan QR with any UPI App (GPay / PhonePe / Paytm / BHIM)"
+                                },
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = if (!isLoadingConfig && adminUpiId.isBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
                             )
                         }
@@ -510,6 +542,13 @@ private fun PaymentVerificationScreenContent(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
+                            } else if (adminUpiId.isBlank()) {
+                                Text(
+                                    text = "Payment system temporarily unavailable. Please try again later.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.weight(1f).padding(end = 8.dp)
+                                )
                             } else {
                                 Column {
                                     Text(
@@ -531,7 +570,7 @@ private fun PaymentVerificationScreenContent(
                                     clipboardManager.setText(AnnotatedString(adminUpiId))
                                     Toast.makeText(context, "UPI ID copied: $adminUpiId", Toast.LENGTH_SHORT).show()
                                 },
-                                enabled = !isLoadingConfig,
+                                enabled = isPaymentConfigAvailable,
                                 shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier.testTag("copy_upi_button")
                             ) {
@@ -555,14 +594,14 @@ private fun PaymentVerificationScreenContent(
                                     activity = act,
                                     passTier = selectedTier,
                                     payeeVpa = adminUpiId,
-                                    payeeName = adminPayeeName,
+                                    payeeName = adminPayeeName.ifBlank { "OrderMaster Captain Store" },
                                     onFailed = { reason ->
                                         Toast.makeText(context, reason, Toast.LENGTH_LONG).show()
                                     }
                                 )
                             }
                         },
-                        enabled = !isLoadingConfig,
+                        enabled = isPaymentConfigAvailable,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(50.dp)
@@ -582,6 +621,17 @@ private fun PaymentVerificationScreenContent(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = "Checking UPI Config...",
+                                fontWeight = FontWeight.Bold
+                            )
+                        } else if (adminUpiId.isBlank()) {
+                            Icon(
+                                imageVector = Icons.Default.ErrorOutline,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Payment Unavailable",
                                 fontWeight = FontWeight.Bold
                             )
                         } else {
@@ -878,7 +928,7 @@ private fun PaymentVerificationScreenContent(
 
                         if (uiState == VerificationUiState.NOT_FOUND) {
                             Text(
-                                text = "Tip: MacroDroid SMS automation intercepts the bank SMS on the admin device and creates the record in seconds. If you just paid, please wait 30 to 60 seconds and tap 'Verify Payment' again.",
+                                text = "Tip: Our secure backend verifies bank confirmations in seconds. If you just paid, please wait 30 to 60 seconds and tap 'Verify Payment' again.",
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                                 color = contentColor.copy(alpha = 0.85f)
                             )

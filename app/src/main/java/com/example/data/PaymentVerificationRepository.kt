@@ -27,7 +27,7 @@ import java.util.Date
 
 /**
  * Data model for documents in /received_payments/{utr_number}
- * Populated automatically by MacroDroid on the merchant device from bank SMS/notifications.
+ * Populated automatically by the automated server from bank SMS/notifications.
  */
 data class ReceivedPayment(
     val utr: String = "",
@@ -71,7 +71,7 @@ sealed class PaymentVerificationState {
  *
  * Implements the automated verification architecture:
  *
- * 1. Scenario A (MacroDroid updated first):
+ * 1. Scenario A (Server updated first):
  *    - Query `/received_payments/{utr}`.
  *    - If document exists, status == "Verified", and isUsed == false:
  *      * Mark isUsed = true.
@@ -82,7 +82,7 @@ sealed class PaymentVerificationState {
  *    - If document does not exist in `/received_payments/{utr}`:
  *      * Save pending entry in `/pending_verifications/{utr}` with { userId, status: "PENDING", timestamp }.
  *      * Attach real-time snapshot listener on `/received_payments/{utr}`.
- *      * As soon as MacroDroid writes the verified document, trigger verification, mark isUsed = true,
+ *      * As soon as the server writes the verified document, trigger verification, mark isUsed = true,
  *        update user status, and automatically unlock the app.
  */
 class PaymentVerificationRepository(
@@ -253,7 +253,7 @@ class PaymentVerificationRepository(
 
                 if (snapshot.exists()) {
                     // =========================================================
-                    // SCENARIO A: MacroDroid already pushed the payment!
+                    // SCENARIO A: Server already recorded the payment!
                     // =========================================================
                     Log.i(TAG, "Scenario A: Document exists in $COLL_RECEIVED_PAYMENTS for UTR: $utr")
                     val isUsed = snapshot.getBoolean("isUsed") ?: false
@@ -291,7 +291,7 @@ class PaymentVerificationRepository(
                 } else {
                     // =========================================================
                     // SCENARIO B: User entered UTR first!
-                    // MacroDroid has not pushed the SMS yet.
+                    // Server has not received the bank confirmation yet.
                     // =========================================================
                     Log.i(TAG, "Scenario B: Document not found yet. Registering pending verification for UTR: $utr")
 
@@ -309,7 +309,7 @@ class PaymentVerificationRepository(
                     // 2. Transition state to Pending
                     _verificationState.value = PaymentVerificationState.Pending(
                         utr = utr,
-                        message = "UTR submitted! Waiting for merchant phone (MacroDroid) bank SMS sync..."
+                        message = "UTR submitted! Waiting for secure server bank confirmation..."
                     )
 
                     // 3. Attach real-time snapshot listener on /received_payments/{utr}
@@ -359,7 +359,7 @@ class PaymentVerificationRepository(
                 Log.i(TAG, "Realtime update received for UTR $utr: status=$status, isUsed=$isUsed, amount=$amount")
 
                 if (status.equals("Verified", ignoreCase = true) && !isUsed) {
-                    // Payment confirmed by MacroDroid! Claim and unlock
+                    // Payment confirmed by server! Claim and unlock
                     repoScope.launch {
                         executeClaimAndUnlock(
                             context = context,

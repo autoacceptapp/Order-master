@@ -263,9 +263,9 @@ object PassManager {
     /**
      * Detailed verification of the user's inputted UTR string with Firestore.
      * Implements a Real-time Waiting & Claiming architecture:
-     * - SCENARIO A (MacroDroid came first): Claims immediately if already "Verified" and unused.
+     * - SCENARIO A (Backend verified first): Claims immediately if already "Verified" and unused.
      * - SCENARIO B (App came first): Sets status to "Pending", attaches a real-time snapshot listener,
-     *   waits up to 90 seconds for MacroDroid to mark "Verified", and claims instantly when confirmed.
+     *   waits up to 90 seconds for Backend to mark "Verified", and claims instantly when confirmed.
      */
     suspend fun verifyPaymentWithBackendDetailed(
         context: Context,
@@ -298,9 +298,9 @@ object PassManager {
                     )
                 }
 
-                // SCENARIO A: MacroDroid came first (status == "Verified" && !isUsed)
+                // SCENARIO A: Server verified first (status == "Verified" && !isUsed)
                 if (status.equals("Verified", ignoreCase = true) && !isUsed) {
-                    Log.i(TAG, "Scenario A: MacroDroid verified $cleanUtr first. Claiming immediately...")
+                    Log.i(TAG, "Scenario A: Server verified $cleanUtr first. Claiming immediately...")
                     return@withContext executeClaimTransaction(
                         firestore = firestore,
                         paymentDocRef = paymentDocRef,
@@ -314,7 +314,7 @@ object PassManager {
             }
 
             // SCENARIO B: App came first OR status == "Pending" / not yet "Verified"
-            Log.i(TAG, "Scenario B: Real-time listener waiting for MacroDroid confirmation for $cleanUtr...")
+            Log.i(TAG, "Scenario B: Real-time listener waiting for server confirmation for $cleanUtr...")
 
             // 1. Create/Set the document with {"utr": cleanUtr, "status": "Pending", "isUsed": false}
             paymentDocRef.set(
@@ -357,7 +357,7 @@ object PassManager {
                                 return@addSnapshotListener
                             }
 
-                            // The moment MacroDroid updates status to "Verified" (and isUsed is still false)
+                            // The moment Server updates status to "Verified" (and isUsed is still false)
                             if (currentStatus.equals("Verified", ignoreCase = true) && !currentUsed) {
                                 if (isResumed.compareAndSet(false, true)) {
                                     // DETACH the listener immediately
@@ -602,7 +602,7 @@ object PassManager {
      */
     fun buildUpiUri(
         passTier: PassTier,
-        payeeVpa: String = "autoaccept6122-1@okhdfcbank",
+        payeeVpa: String,
         payeeName: String = "OrderMaster Captain Store",
         transactionRef: String = "ORDER_${passTier.id}_${System.currentTimeMillis()}"
     ): Uri {
@@ -624,7 +624,7 @@ object PassManager {
      */
     fun createUpiPaymentIntent(
         passTier: PassTier,
-        payeeVpa: String = "autoaccept6122-1@okhdfcbank",
+        payeeVpa: String,
         payeeName: String = "OrderMaster Captain Store"
     ): Intent {
         val uri = buildUpiUri(passTier, payeeVpa = payeeVpa, payeeName = payeeName)
@@ -667,11 +667,15 @@ object PassManager {
     fun initiateUpiPayment(
         activity: Activity,
         passTier: PassTier,
-        payeeVpa: String = "autoaccept6122-1@okhdfcbank",
+        payeeVpa: String,
         payeeName: String = "OrderMaster Captain Store",
         onSuccess: (txnId: String) -> Unit = {},
         onFailed: (reason: String) -> Unit = {}
     ) {
+        if (payeeVpa.isBlank()) {
+            onFailed("Payment UPI details are currently unavailable. Please try again later.")
+            return
+        }
         val pm = activity.packageManager
         val baseIntent = createUpiPaymentIntent(passTier, payeeVpa = payeeVpa, payeeName = payeeName)
 

@@ -12,9 +12,6 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
  */
 object QrCodeGenerator {
 
-    const val DEFAULT_UPI_ID = "autoaccept6122-1@okhdfcbank"
-    const val DEFAULT_PAYEE_NAME = "OrderMaster Captain Store"
-
     /**
      * Generates a standard, high-contrast, scannable QR Code bitmap for the given content.
      */
@@ -60,8 +57,8 @@ object QrCodeGenerator {
      * (Google Pay, PhonePe, Paytm, BHIM, Cred, Amazon Pay, etc.).
      */
     fun getUpiUriString(
-        vpa: String = DEFAULT_UPI_ID,
-        name: String = DEFAULT_PAYEE_NAME,
+        vpa: String,
+        name: String,
         amount: Double? = null,
         note: String? = null
     ): String {
