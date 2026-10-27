@@ -14,8 +14,14 @@ class OrderMasterApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // 1. Ensure FirebaseApp is reliably initialized first
-        ensureFirebaseInitialized()
+        // 1. Initialize FirebaseApp strictly from authentic configuration (google-services.json)
+        try {
+            if (FirebaseApp.getApps(this).isEmpty()) {
+                FirebaseApp.initializeApp(this)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize FirebaseApp: ${e.message}", e)
+        }
 
         // 2. Initialize App Check in strict sequence
         initFirebaseAppCheck()
@@ -25,47 +31,6 @@ class OrderMasterApplication : Application() {
 
         // 4. Initialize core managers at Application level for background services
         initCoreEngines()
-    }
-
-    /**
-     * Ensures default FirebaseApp is initialized.
-     * If resources from google-services.json are not found, falls back gracefully
-     * to programmatic FirebaseOptions so that FirebaseApp is always available.
-     */
-    private fun ensureFirebaseInitialized() {
-        try {
-            if (FirebaseApp.getApps(this).isEmpty()) {
-                val app = FirebaseApp.initializeApp(this)
-                if (app == null) {
-                    val options = com.google.firebase.FirebaseOptions.Builder()
-                        .setApplicationId(packageName)
-                        .setApiKey("AIzaSyDummyKeyForInitializationPlaceholder")
-                        .setProjectId("order-master-app")
-                        .setDatabaseUrl("https://order-master-app.firebaseio.com")
-                        .setStorageBucket("order-master-app.appspot.com")
-                        .build()
-                    FirebaseApp.initializeApp(this, options)
-                    Log.i(TAG, "Initialized FirebaseApp using fallback FirebaseOptions.")
-                } else {
-                    Log.i(TAG, "Initialized FirebaseApp from application resources.")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Standard Firebase initialization notice: ${e.message}")
-            try {
-                if (FirebaseApp.getApps(this).isEmpty()) {
-                    val options = com.google.firebase.FirebaseOptions.Builder()
-                        .setApplicationId(packageName)
-                        .setApiKey("AIzaSyDummyKeyForInitializationPlaceholder")
-                        .setProjectId("order-master-app")
-                        .build()
-                    FirebaseApp.initializeApp(this, options)
-                    Log.i(TAG, "Initialized FirebaseApp using programmatic fallback.")
-                }
-            } catch (inner: Exception) {
-                Log.e(TAG, "Fallback Firebase initialization failed: ${inner.message}", inner)
-            }
-        }
     }
 
     /**

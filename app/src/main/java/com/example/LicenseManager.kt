@@ -246,10 +246,16 @@ object LicenseManager {
     }
 
     /**
-     * Returns true allowing access and permissions without blocking when pass is not purchased.
+     * Checks whether subscription pass or trial access is currently active and granted.
+     * Evaluates strictly against reactive cloud-synced AccessStatus StateFlow.
+     * Returns true ONLY if status is PassActive or TrialActive with valid remaining time.
      */
     fun isAccessGranted(): Boolean {
-        return true
+        return when (val status = _accessStatus.value) {
+            is AccessStatus.PassActive -> status.remainingTimeMs > 0
+            is AccessStatus.TrialActive -> status.remainingTimeMs > 0
+            else -> false
+        }
     }
 
     /**

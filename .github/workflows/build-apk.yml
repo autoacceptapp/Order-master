@@ -59,44 +59,16 @@ jobs:
             echo "debug.keystore already exists."
           fi
 
-          # 2. Setup google-services.json
-          if [ -n "${GOOGLE_SERVICES_JSON}" ]; then
-            echo "Writing GOOGLE_SERVICES_JSON secret to app/google-services.json..."
-            echo "${GOOGLE_SERVICES_JSON}" > app/google-services.json
-          elif [ ! -f "app/google-services.json" ]; then
-            echo "Generating fallback google-services.json for debug build..."
-            cat << 'EOF' > app/google-services.json
-{
-  "project_info": {
-    "project_number": "699930864283",
-    "project_id": "ordermaster-app",
-    "storage_bucket": "ordermaster-app.appspot.com"
-  },
-  "client": [
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:699930864283:android:1234567890abcdef",
-        "android_client_info": {
-          "package_name": "com.aistudio.smarttext.wkjm"
-        }
-      },
-      "oauth_client": [],
-      "api_key": [
-        {
-          "current_key": "AIzaSyDummyKeyForCIBuildConfig0000000"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": []
-        }
-      }
-    }
-  ],
-  "configuration_version": "1"
-}
-EOF
+          # 2. Setup google-services.json (Strict verification)
+          if [ -z "${GOOGLE_SERVICES_JSON}" ]; then
+            echo "ERROR: GOOGLE_SERVICES_JSON secret is missing or empty!" >&2
+            echo "An authentic google-services.json is strictly required for Firebase Authentication & Firestore." >&2
+            echo "Please configure the GOOGLE_SERVICES_JSON secret in your repository settings." >&2
+            exit 1
           fi
+
+          echo "Writing GOOGLE_SERVICES_JSON secret to app/google-services.json..."
+          echo "${GOOGLE_SERVICES_JSON}" > app/google-services.json
 
       - name: Prepare Dynamic Version Metadata
         id: version_meta

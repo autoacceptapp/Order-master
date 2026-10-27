@@ -90,10 +90,11 @@ object PassManager {
     }
 
     /**
-     * Returns true allowing access and permissions without blocking when pass is not purchased.
+     * Checks if user access is granted based on active pass or trial status.
+     * Evaluates strictly from in-memory StateFlow and LicenseManager.
      */
     fun isAccessGranted(context: Context): Boolean {
-        return true
+        return LicenseManager.isAccessGranted()
     }
 
     /**
