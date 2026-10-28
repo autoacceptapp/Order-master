@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "14592259076",
+    "firebase_url": "https://order-master-1561f-default-rtdb.firebaseio.com",
+    "project_id": "order-master-1561f",
+    "storage_bucket": "order-master-1561f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:14592259076:android:9d13a5884a47fa5f337151",
+        "android_client_info": {
+          "package_name": "com.aistudio.smarttext.wkjm"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "14592259076-7pa5hirpao10dmidv4bgvco3oqlkcbpu.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.smarttext.wkjm",
+            "certificate_hash": "99802b88fdbf2bfd9ce47ed86407b4b2fa6dc8d5"
+          }
+        },
+        {
+          "client_id": "14592259076-qak6f3tv5feuabvovsvt7s9roj1skgjt.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDSp3HYnbnuqs-4_cyOq3_u9nbjG04gxzY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "14592259076-qak6f3tv5feuabvovsvt7s9roj1skgjt.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -36,39 +36,37 @@ jobs:
           gradle-version: '9.3.1'
           cache-read-only: false
 
-      - name: Setup Keystores and Google Services
+      - name: Restore Firebase-registered debug keystore and google-services.json
         env:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
           echo "=== Setting up Keystore and Google Services ==="
-          
-          # 1. Setup debug.keystore
-          if [ ! -f "./debug.keystore" ]; then
-            if [ -f "./debug.keystore.base64" ]; then
-              echo "Decoding debug.keystore from debug.keystore.base64..."
-              base64 -d ./debug.keystore.base64 > ./debug.keystore
-            elif [ -n "${KEYSTORE_BASE64}" ]; then
-              echo "Decoding debug.keystore from KEYSTORE_BASE64 secret..."
-              echo "${KEYSTORE_BASE64}" | base64 -d > ./debug.keystore
-            else
-              echo "Auto-generating debug.keystore with keytool..."
-              keytool -genkey -v -keystore ./debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-            fi
-          else
-            echo "debug.keystore already exists."
+
+          # 1. Restore debug.keystore
+          if [ -n "${KEYSTORE_BASE64}" ]; then
+            echo "Restoring debug.keystore from KEYSTORE_BASE64 secret..."
+            echo "${KEYSTORE_BASE64}" | base64 -d > ./debug.keystore
+          elif [ -f "./debug.keystore.base64" ]; then
+            echo "Restoring debug.keystore from ./debug.keystore.base64 file..."
+            base64 -d ./debug.keystore.base64 > ./debug.keystore
           fi
 
-          # 2. Setup google-services.json (Strict verification)
-          if [ -z "${GOOGLE_SERVICES_JSON}" ]; then
-            echo "ERROR: GOOGLE_SERVICES_JSON secret is missing or empty!" >&2
-            echo "An authentic google-services.json is strictly required for Firebase Authentication & Firestore." >&2
-            echo "Please configure the GOOGLE_SERVICES_JSON secret in your repository settings." >&2
+          if [ ! -s "./debug.keystore" ]; then
+            echo "::error::debug.keystore could not be restored! Set KEYSTORE_BASE64 secret or keep debug.keystore.base64."
             exit 1
           fi
 
-          echo "Writing GOOGLE_SERVICES_JSON secret to app/google-services.json..."
-          echo "${GOOGLE_SERVICES_JSON}" > app/google-services.json
+          echo "=== Debug Keystore Fingerprints ==="
+          keytool -list -v -keystore ./debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1|SHA256"
+
+          # 2. Restore google-services.json
+          if [ -n "${GOOGLE_SERVICES_JSON}" ]; then
+            echo "Writing GOOGLE_SERVICES_JSON secret to app/google-services.json..."
+            echo "${GOOGLE_SERVICES_JSON}" > app/google-services.json
+          elif [ ! -f "app/google-services.json" ]; then
+            echo "::warning::app/google-services.json is missing and GOOGLE_SERVICES_JSON secret is not set."
+          fi
 
       - name: Prepare Dynamic Version Metadata
         id: version_meta
