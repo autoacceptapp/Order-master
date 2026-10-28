@@ -146,6 +146,7 @@ dependencies {
   // Firebase App Check, Firestore, Auth & BoM
   implementation(platform(libs.firebase.bom))
   implementation(libs.firebase.firestore)
+  implementation(libs.firebase.functions)
   implementation(libs.firebase.auth.ktx)
   implementation(libs.firebase.appcheck.playintegrity)
   implementation(libs.firebase.appcheck.debug)

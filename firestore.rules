@@ -68,5 +68,17 @@ service cloud.firestore {
         allow update, delete: if false;
       }
     }
+
+    // Hardware Trials: Read-only for authenticated users, direct client writes prohibited (enforced via Cloud Function secureClaimTrial)
+    match /hardware_trials/{hardwareId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // User Trials: Read-only for owning user, direct client writes prohibited
+    match /user_trials/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false;
+    }
   }
 }

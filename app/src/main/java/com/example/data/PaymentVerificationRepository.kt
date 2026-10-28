@@ -9,6 +9,7 @@ import com.example.DeviceUtils
 import com.example.LicenseManager
 import com.example.PassManager
 import com.example.PassTier
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -86,8 +87,11 @@ sealed class PaymentVerificationState {
  *        update user status, and automatically unlock the app.
  */
 class PaymentVerificationRepository(
-    private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance()
+    customFirestore: FirebaseFirestore? = null
 ) {
+    private val firestore: FirebaseFirestore by lazy {
+        customFirestore ?: FirebaseFirestore.getInstance()
+    }
 
     companion object {
         private const val TAG = "PaymentVerificationRepo"
@@ -148,6 +152,10 @@ class PaymentVerificationRepository(
         }
 
         return try {
+            if (FirebaseApp.getApps(context).isEmpty()) {
+                Log.w(TAG, "FirebaseApp is not initialized; skipping checkIsPaymentVerified.")
+                return PassManager.isPassActive(context)
+            }
             val doc = firestore.collection(COLL_USERS).document(userId).get().await()
             if (doc.exists()) {
                 val isVerified = doc.getBoolean("isPaymentVerified") ?: false
@@ -209,7 +217,15 @@ class PaymentVerificationRepository(
      * 3. Hardware device ID
      */
     fun resolveUserId(context: Context): String {
-        val authUser = FirebaseAuth.getInstance().currentUser
+        val authUser = try {
+            if (FirebaseApp.getApps(context).isNotEmpty()) {
+                FirebaseAuth.getInstance().currentUser
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
         if (!authUser?.uid.isNullOrBlank()) {
             return authUser!!.uid
         }

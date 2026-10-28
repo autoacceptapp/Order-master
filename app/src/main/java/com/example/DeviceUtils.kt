@@ -93,15 +93,46 @@ object DeviceUtils {
     }
 
     /**
+     * Detects if the device is running inside an emulator.
+     */
+    fun isEmulator(): Boolean {
+        return (Build.FINGERPRINT.startsWith("generic")
+                || Build.FINGERPRINT.startsWith("unknown")
+                || Build.MODEL.contains("google_sdk")
+                || Build.MODEL.contains("Emulator")
+                || Build.MODEL.contains("Android SDK built for x86")
+                || Build.MANUFACTURER.contains("Genymotion")
+                || Build.HARDWARE.contains("goldfish")
+                || Build.HARDWARE.contains("ranchu")
+                || Build.PRODUCT.contains("sdk_gphone")
+                || Build.PRODUCT.contains("google_sdk")
+                || Build.PRODUCT.contains("sdk")
+                || Build.PRODUCT.contains("vbox86p")
+                || Build.BOARD.lowercase(Locale.ROOT).contains("goldfish"))
+    }
+
+    /**
      * Extracts Widevine hardware crypto module ID if present on device.
+     * Bypasses on emulators to prevent DrmHalHidl passthrough failure errors.
      */
     private fun getWidevineUniqueId(): String? {
+        if (isEmulator()) {
+            return null
+        }
         return try {
+            if (!MediaDrm.isCryptoSchemeSupported(WIDEVINE_UUID)) {
+                return null
+            }
             val drm = MediaDrm(WIDEVINE_UUID)
             val bytes = drm.getPropertyByteArray(MediaDrm.PROPERTY_DEVICE_UNIQUE_ID)
-            drm.close()
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                drm.close()
+            } else {
+                @Suppress("DEPRECATION")
+                drm.release()
+            }
             bytes.joinToString("") { "%02x".format(it) }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             null
         }
     }
@@ -128,7 +159,9 @@ object DeviceUtils {
             "Model" to "${Build.MANUFACTURER} ${Build.MODEL}",
             "Board" to Build.BOARD,
             "Hardware" to Build.HARDWARE,
-            "Android Version" to "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
+            "Android Version" to "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
+            "Fingerprint" to Build.FINGERPRINT,
+            "IsEmulator" to isEmulator().toString()
         )
     }
 }

@@ -149,39 +149,45 @@ object HardwareIdManager {
      */
     private fun generatePermanentHardwareId(context: Context): HardwareDetails {
         var mediaDrm: MediaDrm? = null
-        try {
-            mediaDrm = MediaDrm(WIDEVINE_UUID)
-            val rawBytes = mediaDrm.getPropertyByteArray(MediaDrm.PROPERTY_DEVICE_UNIQUE_ID)
-
-            if (rawBytes != null && rawBytes.isNotEmpty()) {
-                val fullSha256 = sha256Hex(rawBytes)
-                val formatted = formatHardwareCode(fullSha256)
-                Log.i(TAG, "Generated permanent hardware ID from Widevine MediaDrm: $formatted")
-                return HardwareDetails(
-                    formattedId = formatted,
-                    fullSha256 = fullSha256,
-                    source = "Widevine Hardware DRM Module",
-                    isHardwareDrm = true
-                )
-            } else {
-                Log.w(TAG, "MediaDrm deviceUniqueId returned null or empty bytes. Using crypto fallback.")
-            }
-        } catch (e: UnsupportedSchemeException) {
-            Log.w(TAG, "Widevine MediaDrm unsupported on this device: ${e.message}. Using fallback.")
-        } catch (e: Exception) {
-            Log.w(TAG, "Exception accessing Widevine MediaDrm: ${e.message}. Using fallback.", e)
-        } finally {
+        if (!DeviceUtils.isEmulator()) {
             try {
-                if (mediaDrm != null) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        mediaDrm.close()
+                if (MediaDrm.isCryptoSchemeSupported(WIDEVINE_UUID)) {
+                    mediaDrm = MediaDrm(WIDEVINE_UUID)
+                    val rawBytes = mediaDrm.getPropertyByteArray(MediaDrm.PROPERTY_DEVICE_UNIQUE_ID)
+
+                    if (rawBytes != null && rawBytes.isNotEmpty()) {
+                        val fullSha256 = sha256Hex(rawBytes)
+                        val formatted = formatHardwareCode(fullSha256)
+                        Log.i(TAG, "Generated permanent hardware ID from Widevine MediaDrm: $formatted")
+                        return HardwareDetails(
+                            formattedId = formatted,
+                            fullSha256 = fullSha256,
+                            source = "Widevine Hardware DRM Module",
+                            isHardwareDrm = true
+                        )
                     } else {
-                        @Suppress("DEPRECATION")
-                        mediaDrm.release()
+                        Log.w(TAG, "MediaDrm deviceUniqueId returned null or empty bytes. Using crypto fallback.")
                     }
+                } else {
+                    Log.d(TAG, "Widevine crypto scheme not supported on this device. Using crypto fallback.")
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Error closing MediaDrm: ${e.message}")
+            } catch (e: UnsupportedSchemeException) {
+                Log.w(TAG, "Widevine MediaDrm unsupported on this device: ${e.message}. Using fallback.")
+            } catch (e: Throwable) {
+                Log.w(TAG, "Exception accessing Widevine MediaDrm: ${e.message}. Using fallback.", e)
+            } finally {
+                try {
+                    if (mediaDrm != null) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            mediaDrm.close()
+                        } else {
+                            @Suppress("DEPRECATION")
+                            mediaDrm.release()
+                        }
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Error closing MediaDrm: ${e.message}")
+                }
             }
         }
 

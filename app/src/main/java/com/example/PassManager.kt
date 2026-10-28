@@ -22,6 +22,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -278,6 +279,10 @@ object PassManager {
         }
 
         try {
+            if (FirebaseApp.getApps(context).isEmpty()) {
+                Log.w(TAG, "FirebaseApp is not initialized; cannot verify payment.")
+                return@withContext VerificationResult.Error("Firebase service is not initialized.")
+            }
             val firestore = FirebaseFirestore.getInstance()
             val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
             val paymentDocRef = firestore.collection(PaymentVerificationRepository.COLL_RECEIVED_PAYMENTS).document(cleanUtr)
@@ -452,6 +457,10 @@ object PassManager {
         }
 
         try {
+            if (FirebaseApp.getApps(context).isEmpty()) {
+                Log.w(TAG, "FirebaseApp is not initialized; skipping verifyServerPassStatus.")
+                return@withContext isPassActive(context)
+            }
             val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
             val doc = FirebaseFirestore.getInstance()
                 .collection("users")

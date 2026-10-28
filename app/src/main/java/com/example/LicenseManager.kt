@@ -6,11 +6,14 @@ import android.net.Network
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.example.auth.GoogleAuthManager
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -206,7 +209,17 @@ object LicenseManager {
         // 3. Register network callback to automatically sync with Firestore upon reconnect
         registerNetworkCallback(ctx)
 
-        // 4. Initiate authoritative Firestore cloud sync
+        // 4. Observe GoogleAuthManager auth state to automatically trigger cloud sync upon user login
+        scope.launch {
+            GoogleAuthManager.userAuthState.collect { authState ->
+                if (authState.isLoggedIn && !authState.uid.isNullOrBlank()) {
+                    Log.d(TAG, "Auth state updated: Logged in as ${authState.userEmail}. Syncing licensing & trial...")
+                    syncHardwareTrialAndLicensing()
+                }
+            }
+        }
+
+        // 5. Initiate authoritative Firestore cloud sync
         scope.launch {
             syncHardwareTrialAndLicensing()
         }
@@ -280,31 +293,40 @@ object LicenseManager {
     }
 
     /**
-     * Top-up / Recharge points directly in the user's wallet on Firestore.
+     * Top-up / Recharge points securely via server-side Firebase Callable Cloud Function.
+     * Prevents client-side points manipulation attacks.
      * Zero local storage fallback.
      */
     suspend fun addPoints(amount: Int): Result<Int> {
         val ctx = appContext ?: return Result.failure(IllegalStateException("LicenseManager not initialized"))
         if (amount <= 0) return Result.failure(IllegalArgumentException("Amount must be positive"))
 
+        if (FirebaseApp.getApps(ctx).isEmpty()) {
+            return Result.failure(IllegalStateException("Firebase is not initialized"))
+        }
+
         return try {
             val userKey = currentUserKey ?: resolveUserKey(ctx, null, null)
-            val db = FirebaseFirestore.getInstance()
-            val userDocRef = db.collection(COLL_USERS_LICENSING).document(userKey)
+            val functions = FirebaseFunctions.getInstance()
+            val payload = hashMapOf(
+                "amount" to amount,
+                "userKey" to userKey
+            )
 
-            userDocRef.set(
-                mapOf(
-                    "pointsBalance" to FieldValue.increment(amount.toLong()),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                ),
-                SetOptions.merge()
-            ).await()
+            val result = functions
+                .getHttpsCallable("secureAddPoints")
+                .call(payload)
+                .await()
 
-            val newBalance = _pointsBalance.value + amount
-            Log.i(TAG, "Successfully added $amount points on Firestore. New balance: $newBalance")
+            val data = result.data as? Map<*, *>
+            val newBalance = (data?.get("pointsBalance") as? Number)?.toInt()
+                ?: (_pointsBalance.value + amount)
+
+            _pointsBalance.value = newBalance
+            Log.i(TAG, "Successfully added $amount points via secureAddPoints. New balance: $newBalance")
             Result.success(newBalance)
         } catch (e: Exception) {
-            Log.e(TAG, "Cloud addPoints failed: ${e.message}", e)
+            Log.e(TAG, "Cloud addPoints via secureAddPoints failed: ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -324,12 +346,16 @@ object LicenseManager {
             )
         }
 
+        if (FirebaseApp.getApps(ctx).isEmpty()) {
+            return Result.failure(IllegalStateException("Firebase is not initialized"))
+        }
+
         val userKey = currentUserKey ?: resolveUserKey(ctx, null, null)
-        val db = FirebaseFirestore.getInstance()
-        val userDocRef = db.collection(COLL_USERS_LICENSING).document(userKey)
         val now = System.currentTimeMillis()
 
         return try {
+            val db = FirebaseFirestore.getInstance()
+            val userDocRef = db.collection(COLL_USERS_LICENSING).document(userKey)
             var resultingPoints = currentBalance
             var resultingExpiry = 0L
 
@@ -384,6 +410,9 @@ object LicenseManager {
         transactionId: String? = null
     ): Result<Unit> {
         val ctx = appContext ?: return Result.failure(IllegalStateException("LicenseManager not initialized"))
+        if (FirebaseApp.getApps(ctx).isEmpty()) {
+            return Result.failure(IllegalStateException("Firebase is not initialized"))
+        }
         val userKey = currentUserKey ?: resolveUserKey(ctx, null, null)
         val now = System.currentTimeMillis()
 
@@ -420,43 +449,91 @@ object LicenseManager {
 
     /**
      * Performs cloud sync for hardware trial and user licensing directly with Firestore.
+     * Enforces that hardware trials can ONLY be claimed by authenticated Google users
+     * via the secure Firebase Callable Cloud Function `secureClaimTrial`.
+     * Zero direct client-side writes to `hardware_trials`.
      */
     private suspend fun syncHardwareTrialAndLicensing() {
         val ctx = appContext ?: return
         val hwId = DeviceUtils.getDeviceHardwareId(ctx)
         val now = System.currentTimeMillis()
 
+        if (FirebaseApp.getApps(ctx).isEmpty()) {
+            try {
+                FirebaseApp.initializeApp(ctx)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not initialize FirebaseApp in syncHardwareTrialAndLicensing: ${e.message}")
+            }
+        }
+
+        if (FirebaseApp.getApps(ctx).isEmpty()) {
+            Log.w(TAG, "Default FirebaseApp is not initialized in this process; skipping Firestore cloud sync.")
+            refreshAccessStatus()
+            return
+        }
+
+        // 1. Check user authentication
+        val authUser = try {
+            FirebaseAuth.getInstance().currentUser
+        } catch (_: Exception) {
+            null
+        }
+        val authState = GoogleAuthManager.userAuthState.value
+        val isAuthenticated = (authUser != null && !authUser.isAnonymous) || (authState.isLoggedIn && !authState.uid.isNullOrBlank())
+
         try {
             val db = FirebaseFirestore.getInstance()
             val trialDocRef = db.collection(COLL_HARDWARE_TRIALS).document(hwId)
 
             val trialSnapshot = trialDocRef.get().await()
-            if (!trialSnapshot.exists()) {
-                // First time launch on this physical hardware!
-                // Grant 2-day free trial locked to this device on Firestore.
-                val expiry = now + TRIAL_DURATION_MS
-                val trialData = mapOf(
-                    "hardwareId" to hwId,
-                    "firstClaimedTimestamp" to now,
-                    "trialExpiryTimestamp" to expiry,
-                    "isUsed" to true,
-                    "deviceSpecs" to DeviceUtils.getHardwareSpecs(),
-                    "createdAt" to FieldValue.serverTimestamp()
-                )
-                trialDocRef.set(trialData).await()
-                serverTrialClaimed = now
-                serverTrialExpiry = expiry
-                serverTrialUsed = true
-                hasLoadedTrial = true
-                Log.i(TAG, "Hardware trial claimed on Firestore for $hwId until $expiry")
-            } else {
-                // Existing trial found for this hardware on Firestore
+            if (trialSnapshot != null && trialSnapshot.exists()) {
+                // Existing trial record found on Firestore for this hardware
                 val claimed = trialSnapshot.getLong("firstClaimedTimestamp") ?: now
                 val expiry = trialSnapshot.getLong("trialExpiryTimestamp") ?: (claimed + TRIAL_DURATION_MS)
                 val isUsed = trialSnapshot.getBoolean("isUsed") ?: true
                 serverTrialClaimed = claimed
                 serverTrialExpiry = expiry
                 serverTrialUsed = isUsed
+                hasLoadedTrial = true
+                Log.i(TAG, "Loaded existing trial for hardware $hwId: claimed=$claimed, expiry=$expiry, isUsed=$isUsed")
+            } else if (isAuthenticated) {
+                // First time launch on this hardware AND user is authenticated:
+                // Claim trial securely via Firebase Callable Cloud Function (enforces Play Integrity + 1:1 UID/Hardware mapping)
+                try {
+                    val functions = FirebaseFunctions.getInstance()
+                    val payload = hashMapOf(
+                        "hardwareId" to hwId,
+                        "deviceSpecs" to DeviceUtils.getHardwareSpecs()
+                    )
+                    val result = functions
+                        .getHttpsCallable("secureClaimTrial")
+                        .call(payload)
+                        .await()
+
+                    val data = result.data as? Map<*, *>
+                    val claimed = (data?.get("firstClaimedTimestamp") as? Number)?.toLong() ?: now
+                    val expiry = (data?.get("trialExpiryTimestamp") as? Number)?.toLong() ?: (now + TRIAL_DURATION_MS)
+                    val isUsed = (data?.get("isUsed") as? Boolean) ?: true
+
+                    serverTrialClaimed = claimed
+                    serverTrialExpiry = expiry
+                    serverTrialUsed = isUsed
+                    hasLoadedTrial = true
+                    Log.i(TAG, "Securely claimed hardware trial via secureClaimTrial Cloud Function for $hwId until $expiry")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to claim hardware trial via secureClaimTrial: ${e.message}", e)
+                    serverTrialClaimed = 0L
+                    serverTrialExpiry = 0L
+                    serverTrialUsed = true
+                    hasLoadedTrial = true
+                }
+            } else {
+                // Unauthenticated user attempting to use trial:
+                // Anonymous or unauthenticated hardware IDs must no longer receive a free trial
+                Log.w(TAG, "Hardware trial not claimed: User is not authenticated. Google Sign-In required.")
+                serverTrialClaimed = 0L
+                serverTrialExpiry = 0L
+                serverTrialUsed = false
                 hasLoadedTrial = true
             }
             refreshAccessStatus()
@@ -466,10 +543,18 @@ object LicenseManager {
         }
 
         // Sync User Licensing Document
-        val user = FirebaseAuth.getInstance().currentUser
-        val userKey = resolveUserKey(ctx, user?.email, user?.uid)
-        currentUserKey = userKey
-        syncUserLicensingDocument(userKey, user?.email)
+        try {
+            val user = if (FirebaseApp.getApps(ctx).isNotEmpty()) {
+                FirebaseAuth.getInstance().currentUser
+            } else {
+                null
+            }
+            val userKey = resolveUserKey(ctx, user?.email, user?.uid)
+            currentUserKey = userKey
+            syncUserLicensingDocument(userKey, user?.email)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not sync user licensing: ${e.message}")
+        }
     }
 
     /**
@@ -477,6 +562,11 @@ object LicenseManager {
      * Updates in-memory StateFlows directly from snapshot. Zero local storage.
      */
     private fun syncUserLicensingDocument(userKey: String, userEmail: String?) {
+        val ctx = appContext
+        if (ctx != null && FirebaseApp.getApps(ctx).isEmpty()) {
+            Log.w(TAG, "FirebaseApp is not initialized; skipping syncUserLicensingDocument.")
+            return
+        }
         try {
             val db = FirebaseFirestore.getInstance()
             val userDocRef = db.collection(COLL_USERS_LICENSING).document(userKey)
@@ -603,12 +693,17 @@ object LicenseManager {
             return
         }
 
-        // 3. Both Pass & Trial Expired
+        // 3. Both Pass & Trial Expired or Not Active
         val hasHadPreviousPass = tier != null || passExpiry > 0L
-        val msg = if (hasHadPreviousPass) {
+        val authState = GoogleAuthManager.userAuthState.value
+        val msg = if (!authState.isLoggedIn) {
+            "Sign in with Google to activate your 2-Day Free Trial."
+        } else if (hasHadPreviousPass) {
             "Your ${tier?.title ?: "subscription"} has expired. Renew your pass to resume auto-acceptance."
-        } else {
+        } else if (trialClaimed > 0L) {
             "Your 2-Day Free Trial has ended. Choose a Pass to continue enjoying high-speed auto-acceptance."
+        } else {
+            "Trial not active. Choose a Pass to continue enjoying high-speed auto-acceptance."
         }
 
         _accessStatus.value = AccessStatus.Expired(

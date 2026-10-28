@@ -83,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.util.Log
 import com.example.ui.theme.CaptainAutoAcceptTheme
+import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -118,9 +119,22 @@ class PaymentActivity : ComponentActivity() {
          *
          * Returns empty strings if document doesn't exist, times out, or fails.
          */
-        suspend fun fetchPaymentConfig(): Pair<String, String> {
+        suspend fun fetchPaymentConfig(context: Context? = null): Pair<String, String> {
             return try {
                 withTimeoutOrNull(3500L) {
+                    val isInitialized = if (context != null) {
+                        FirebaseApp.getApps(context).isNotEmpty()
+                    } else {
+                        try {
+                            FirebaseApp.getInstance() != null
+                        } catch (_: Exception) {
+                            false
+                        }
+                    }
+                    if (!isInitialized) {
+                        Log.w(TAG, "FirebaseApp is not initialized; cannot fetch payment config.")
+                        return@withTimeoutOrNull Pair("", "")
+                    }
                     val firestore = FirebaseFirestore.getInstance()
                     val docSnapshot = firestore.collection(FIRESTORE_COLLECTION_ADMIN_SETTINGS)
                         .document(FIRESTORE_DOC_PAYMENT_CONFIG)
@@ -224,7 +238,7 @@ private fun PaymentVerificationScreenContent(
     var isLoadingConfig by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
-        val (fetchedUpi, fetchedName) = PaymentActivity.fetchPaymentConfig()
+        val (fetchedUpi, fetchedName) = PaymentActivity.fetchPaymentConfig(context)
         adminUpiId = fetchedUpi
         adminPayeeName = fetchedName
         isLoadingConfig = false
