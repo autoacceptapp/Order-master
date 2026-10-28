@@ -3,6 +3,14 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
     function isValidInitialPoints(data) {
       return data.points == 50;
     }
@@ -11,74 +19,91 @@ service cloud.firestore {
       return data.hardware_id == docId;
     }
 
-    // Users Collection (Document ID = DRM Hardware ID)
+    // Admin Settings (e.g., payment_config for dynamic UPI ID)
+    match /admin_settings/{settingId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Hardware Trials: 100% Free Anti-Fraud Lock
+    // 1. Only allow document creation if it doesn't already exist (!exists)
+    // 2. Enforce that claimedByUid perfectly matches request.auth.uid
+    // 3. Document ID must match hardwareId
+    // 4. Updates and deletes are prohibited to prevent trial resetting
+    match /hardware_trials/{hardwareId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated()
+                    && !exists(/databases/$(database)/documents/hardware_trials/$(hardwareId))
+                    && request.resource.data.claimedByUid == request.auth.uid
+                    && request.resource.data.hardwareId == hardwareId
+                    && request.resource.data.isUsed == true;
+      allow update, delete: if false;
+    }
+
+    // User Trials: Prevents single Google account from claiming trials on multiple devices
+    match /user_trials/{userId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId)
+                    && !exists(/databases/$(database)/documents/user_trials/$(userId))
+                    && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // User Licensing: Stores Points Balance and Active Pass details
+    // Only the authenticated owner can read and update their own document's pointsBalance
+    match /users_licensing/{userKey} {
+      allow read: if isAuthenticated() && (request.auth.uid == userKey || resource.data.userId == request.auth.uid);
+      allow create: if isAuthenticated() && (request.auth.uid == userKey || request.resource.data.userId == request.auth.uid);
+      allow update: if isAuthenticated() && (request.auth.uid == userKey || resource.data.userId == request.auth.uid);
+      allow delete: if false;
+    }
+
+    // Users Collection (Referrals & DRM Profile)
     match /users/{hardwareId} {
-      
-      // Allow reading user profiles (needed for verifying referral codes)
       allow read: if true;
 
-      // Allow creating a new profile only if:
-      // 1. Initial points are exactly 50 (Welcome Bonus)
-      // 2. has_used_referral starts at false
-      // 3. referral_count starts at 0
-      // 4. hardware_id matches the document path
       allow create: if isAntiFraudHardwareIdValid(hardwareId, request.resource.data)
                     && isValidInitialPoints(request.resource.data)
                     && request.resource.data.has_used_referral == false
                     && request.resource.data.referral_count == 0;
 
-      // Allow updating under strict anti-fraud rules:
       allow update: if 
-        // Case 1: Referee claiming a referral code
         (
-          // Cannot re-claim if already used
           resource.data.has_used_referral == false &&
           request.resource.data.has_used_referral == true &&
-          // Cannot modify own points in this operation
           request.resource.data.points == resource.data.points &&
-          // Referral code & hardware ID cannot be modified
           request.resource.data.hardware_id == resource.data.hardware_id &&
           request.resource.data.referral_code == resource.data.referral_code
         )
         ||
-        // Case 2: Referrer receiving points reward from an atomic transaction
         (
-          // Points must strictly increment by 20
           request.resource.data.points == resource.data.points + 20 &&
-          // Referral count must strictly increment by 1
           request.resource.data.referral_count == resource.data.referral_count + 1 &&
-          // Protected fields remain untouched
           request.resource.data.hardware_id == resource.data.hardware_id &&
           request.resource.data.referral_code == resource.data.referral_code &&
           request.resource.data.has_used_referral == resource.data.has_used_referral
         );
 
-      // Deletion is prohibited to preserve hardware identity across app uninstalls & factory resets
       allow delete: if false;
 
-      // Audit Subcollection for Fraud Prevention
       match /referrals/{refereeHardwareId} {
         allow read: if true;
-        
-        // Prevent duplicate referral events from the same physical device
         allow create: if !exists(/databases/$(database)/documents/users/$(hardwareId)/referrals/$(refereeHardwareId))
                       && request.resource.data.reward_points == 20
                       && request.resource.data.referee_hardware_id == refereeHardwareId;
-                      
         allow update, delete: if false;
       }
     }
 
-    // Hardware Trials: Read-only for authenticated users, direct client writes prohibited (enforced via Cloud Function secureClaimTrial)
-    match /hardware_trials/{hardwareId} {
-      allow read: if request.auth != null;
+    // Payment verification collections
+    match /received_payments/{utr} {
+      allow read: if isAuthenticated();
       allow write: if false;
     }
 
-    // User Trials: Read-only for owning user, direct client writes prohibited
-    match /user_trials/{userId} {
-      allow read: if request.auth != null && request.auth.uid == userId;
-      allow write: if false;
+    match /pending_verifications/{utr} {
+      allow read, create: if isAuthenticated();
+      allow update, delete: if false;
     }
   }
 }

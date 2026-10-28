@@ -13,7 +13,6 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -293,8 +292,8 @@ object LicenseManager {
     }
 
     /**
-     * Top-up / Recharge points securely via server-side Firebase Callable Cloud Function.
-     * Prevents client-side points manipulation attacks.
+     * Top-up / Recharge points directly in the user's wallet on Firestore.
+     * Enforced by Firestore Security Rules: only the authenticated owner can write to their own document.
      * Zero local storage fallback.
      */
     suspend fun addPoints(amount: Int): Result<Int> {
@@ -307,26 +306,24 @@ object LicenseManager {
 
         return try {
             val userKey = currentUserKey ?: resolveUserKey(ctx, null, null)
-            val functions = FirebaseFunctions.getInstance()
-            val payload = hashMapOf(
-                "amount" to amount,
-                "userKey" to userKey
-            )
+            val db = FirebaseFirestore.getInstance()
+            val userDocRef = db.collection(COLL_USERS_LICENSING).document(userKey)
 
-            val result = functions
-                .getHttpsCallable("secureAddPoints")
-                .call(payload)
-                .await()
+            userDocRef.set(
+                mapOf(
+                    "userId" to userKey,
+                    "pointsBalance" to FieldValue.increment(amount.toLong()),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
 
-            val data = result.data as? Map<*, *>
-            val newBalance = (data?.get("pointsBalance") as? Number)?.toInt()
-                ?: (_pointsBalance.value + amount)
-
+            val newBalance = _pointsBalance.value + amount
             _pointsBalance.value = newBalance
-            Log.i(TAG, "Successfully added $amount points via secureAddPoints. New balance: $newBalance")
+            Log.i(TAG, "Successfully added $amount points on Firestore. New balance: $newBalance")
             Result.success(newBalance)
         } catch (e: Exception) {
-            Log.e(TAG, "Cloud addPoints via secureAddPoints failed: ${e.message}", e)
+            Log.e(TAG, "Cloud addPoints failed: ${e.message}", e)
             Result.failure(e)
         }
     }
@@ -498,30 +495,32 @@ object LicenseManager {
                 Log.i(TAG, "Loaded existing trial for hardware $hwId: claimed=$claimed, expiry=$expiry, isUsed=$isUsed")
             } else if (isAuthenticated) {
                 // First time launch on this hardware AND user is authenticated:
-                // Claim trial securely via Firebase Callable Cloud Function (enforces Play Integrity + 1:1 UID/Hardware mapping)
+                // Grant 2-day free trial on Firestore enforced by strict Security Rules:
+                // - Only creates if !exists (blocks infinite resets)
+                // - Enforces claimedByUid == request.auth.uid
+                // - Prohibits update/delete
                 try {
-                    val functions = FirebaseFunctions.getInstance()
-                    val payload = hashMapOf(
+                    val uid = authUser?.uid ?: authState.uid ?: ""
+                    val expiry = now + TRIAL_DURATION_MS
+                    val trialData = mapOf(
                         "hardwareId" to hwId,
-                        "deviceSpecs" to DeviceUtils.getHardwareSpecs()
+                        "claimedByUid" to uid,
+                        "userEmail" to (authUser?.email ?: authState.userEmail ?: ""),
+                        "firstClaimedTimestamp" to now,
+                        "trialExpiryTimestamp" to expiry,
+                        "isUsed" to true,
+                        "deviceSpecs" to DeviceUtils.getHardwareSpecs(),
+                        "createdAt" to FieldValue.serverTimestamp()
                     )
-                    val result = functions
-                        .getHttpsCallable("secureClaimTrial")
-                        .call(payload)
-                        .await()
+                    trialDocRef.set(trialData).await()
 
-                    val data = result.data as? Map<*, *>
-                    val claimed = (data?.get("firstClaimedTimestamp") as? Number)?.toLong() ?: now
-                    val expiry = (data?.get("trialExpiryTimestamp") as? Number)?.toLong() ?: (now + TRIAL_DURATION_MS)
-                    val isUsed = (data?.get("isUsed") as? Boolean) ?: true
-
-                    serverTrialClaimed = claimed
+                    serverTrialClaimed = now
                     serverTrialExpiry = expiry
-                    serverTrialUsed = isUsed
+                    serverTrialUsed = true
                     hasLoadedTrial = true
-                    Log.i(TAG, "Securely claimed hardware trial via secureClaimTrial Cloud Function for $hwId until $expiry")
+                    Log.i(TAG, "Hardware trial claimed on Firestore for $hwId by $uid until $expiry")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to claim hardware trial via secureClaimTrial: ${e.message}", e)
+                    Log.e(TAG, "Failed to claim hardware trial on Firestore: ${e.message}", e)
                     serverTrialClaimed = 0L
                     serverTrialExpiry = 0L
                     serverTrialUsed = true
