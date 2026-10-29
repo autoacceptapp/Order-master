@@ -341,6 +341,10 @@ open class MyAccessibilityService : AccessibilityService() {
         val isMaxPickupDistEnabled = AppSettings.isMaxPickupDistanceEnabled(this)
         val isMaxDropDistEnabled = AppSettings.isMaxDropDistanceEnabled(this)
         val maxDropDist = AppSettings.getMaxDropDistance(this)
+        val minPerKmRate = AppSettings.getMinPerKmRate(this)
+        val isMinPerKmRateEnabled = AppSettings.isMinPerKmRateEnabled(this)
+        val blockedLocations = AppSettings.getBlockedLocations(this)
+        val isDestinationBlacklistEnabled = AppSettings.isDestinationBlacklistEnabled(this)
 
         // UI Logging Requirement: Log total distinct order cards detected
         AppSettings.addLog(
@@ -373,7 +377,11 @@ open class MyAccessibilityService : AccessibilityService() {
                 isMaxFareEnabled = isMaxFareEnabled,
                 isMaxPickupDistanceEnabled = isMaxPickupDistEnabled,
                 isMaxDropDistanceEnabled = isMaxDropDistEnabled,
-                maxDropDistance = maxDropDist
+                maxDropDistance = maxDropDist,
+                minPerKmRate = minPerKmRate,
+                isMinPerKmRateEnabled = isMinPerKmRateEnabled,
+                blockedLocations = blockedLocations,
+                isDestinationBlacklistEnabled = isDestinationBlacklistEnabled
             )
 
             evaluatedOffers.add(offer to evaluation)
@@ -445,7 +453,157 @@ open class MyAccessibilityService : AccessibilityService() {
             mainHandler.postDelayed({
                 executeCardAcceptClick(bestOffer, bestEvaluation)
             }, delayMs)
+        } else if (isAutoAccept && evaluatedOffers.isNotEmpty()) {
+            // Smart Auto-Reject: If offer failed criteria, dismiss it by clicking Reject/Pass
+            val isAutoClick = AppSettings.isAutoClickEnabled(this)
+            if (isAutoClick) {
+                val (rejectedOffer, rejectedEval) = evaluatedOffers.first()
+                val delayMs = AppSettings.getClickDelayMs(this)
+                mainHandler.postDelayed({
+                    executeCardRejectClick(rejectedOffer, rejectedEval)
+                }, delayMs)
+            }
         }
+    }
+
+    /**
+     * Executes ACTION_CLICK strictly targeting the Reject/Pass button node
+     * located inside the spatial bounds of an invalid/rejected order card to clear the screen.
+     */
+    private fun executeCardRejectClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
+        // Security check: Active pass or trial required
+        if (!PassManager.isAccessGranted(this)) {
+            Log.w(TAG, "Access expired: Auto-reject blocked. Active subscription required.")
+            return
+        }
+
+        // Debounce / Cooldown check: respect strict COOLDOWN_MS
+        val now = System.currentTimeMillis()
+        if (now < lastProcessTime) {
+            Log.d(TAG, "executeCardRejectClick: Suppressed due to active cooldown.")
+            return
+        }
+
+        var clicked = false
+        val cardBounds = offer.bounds
+
+        try {
+            // 1. Search strictly within card bounds across active windows
+            val rootWindows = getAllRootWindows()
+            try {
+                for (root in rootWindows) {
+                    val targetNode = findRejectNodeInBounds(root, cardBounds) ?: continue
+                    try {
+                        val clickable = findClickableParentOrSelf(targetNode) ?: targetNode
+                        clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        Log.i(TAG, "executeCardRejectClick: in-bounds ACTION_CLICK success=$clicked")
+                        if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                            clicked = dispatchTapGesture(clickable)
+                            Log.i(TAG, "executeCardRejectClick: fallback gesture success=$clicked")
+                        }
+                        if (clickable !== targetNode) {
+                            recycleNode(clickable)
+                        }
+                        if (clicked) break
+                    } finally {
+                        recycleNode(targetNode)
+                    }
+                }
+            } finally {
+                for (root in rootWindows) {
+                    recycleNode(root)
+                }
+            }
+
+            // 2. Fallback coordinate tap heuristic targeting typical bottom-left area of card bounds
+            if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !cardBounds.isEmpty) {
+                val screenWidth = resources.displayMetrics.widthPixels.toFloat()
+                val screenHeight = resources.displayMetrics.heightPixels.toFloat()
+
+                // Target the left-most 15-20% and bottom 20% of the offer card (Pass/Reject button location)
+                val rawTapX = cardBounds.left + (cardBounds.width() * 0.15f)
+                val rawTapY = cardBounds.bottom - (cardBounds.height() * 0.2f)
+
+                // Clamp strictly within card bounds and physical screen resolution
+                val tapX = rawTapX.coerceIn(cardBounds.left.toFloat(), (cardBounds.right - 1).toFloat())
+                    .coerceIn(0f, screenWidth - 1f)
+                val tapY = rawTapY.coerceIn(cardBounds.top.toFloat(), (cardBounds.bottom - 1).toFloat())
+                    .coerceIn(0f, screenHeight - 1f)
+
+                clicked = dispatchTapAtCoordinates(tapX, tapY)
+                Log.i(TAG, "executeCardRejectClick: coordinate fallback tap at ($tapX, $tapY) success=$clicked")
+            }
+
+            // Cooldown: 2000ms cooldown upon success to ignore lingering UI elements; standard debounce on failure
+            lastProcessTime = if (clicked) {
+                System.currentTimeMillis() + COOLDOWN_MS
+            } else {
+                System.currentTimeMillis()
+            }
+
+            AppSettings.addLog(
+                title = if (clicked) "Order Auto-Dismissed" else "Reject Attempted",
+                message = if (clicked) "Dismissed card via Reject action. (${evaluation.decisionReason}). Cooldown active (2000ms)."
+                else "Reject button not found in card bounds; letting offer time out naturally.",
+                severity = if (clicked) LogSeverity.REJECTED else LogSeverity.INFO,
+                evaluation = evaluation
+            )
+            broadcastLog("Auto-reject executed: $clicked (${evaluation.decisionReason})")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error executing card reject click", e)
+            lastProcessTime = System.currentTimeMillis()
+        }
+    }
+
+    /**
+     * Finds an actionable reject node strictly located inside the provided screen bounding box.
+     */
+    fun findRejectNodeInBounds(root: AccessibilityNodeInfo, bounds: Rect): AccessibilityNodeInfo? {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        @Suppress("DEPRECATION")
+        queue.add(AccessibilityNodeInfo.obtain(root))
+
+        val startTime = System.currentTimeMillis()
+        val timeoutMs = 150L
+
+        while (queue.isNotEmpty()) {
+            if (System.currentTimeMillis() - startTime > timeoutMs) {
+                while (queue.isNotEmpty()) {
+                    recycleNode(queue.removeFirst())
+                }
+                break
+            }
+
+            val node = queue.removeFirst()
+
+            val text = node.text?.toString() ?: ""
+            val desc = node.contentDescription?.toString() ?: ""
+            val viewId = node.viewIdResourceName ?: ""
+
+            if (isRejectAction(text) || isRejectAction(desc) || isRapidoRejectId(viewId)) {
+                val nodeBounds = Rect()
+                node.getBoundsInScreen(nodeBounds)
+
+                // Verify that the node lies inside the card's vertical and horizontal range
+                val isInBounds = bounds.contains(nodeBounds.centerX(), nodeBounds.centerY()) ||
+                        (nodeBounds.top >= bounds.top - 20 && nodeBounds.bottom <= bounds.bottom + 20)
+
+                if (isInBounds && isActionableNodeOrChild(node)) {
+                    while (queue.isNotEmpty()) {
+                        recycleNode(queue.removeFirst())
+                    }
+                    return node
+                }
+            }
+
+            val childCount = node.childCount
+            for (i in 0 until childCount) {
+                val child = node.getChild(i) ?: continue
+                queue.add(child)
+            }
+            recycleNode(node)
+        }
+        return null
     }
 
     /**
@@ -453,6 +611,11 @@ open class MyAccessibilityService : AccessibilityService() {
      * located inside the spatial bounds of the selected best matching order card.
      */
     private fun executeCardAcceptClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
+        // Security check: Active pass or trial required
+        if (!PassManager.isAccessGranted(this)) {
+            Log.w(TAG, "Access expired: Auto-accept blocked. Active subscription required.")
+            return
+        }
         isPendingExecution = false
         lastProcessTime = System.currentTimeMillis()
 
@@ -504,17 +667,35 @@ open class MyAccessibilityService : AccessibilityService() {
                 }
             }
 
-            // 3. Fallback gesture dispatch centered directly on the card's action area or accept button center
+            // 3. Fallback coordinate tap heuristic targeting bottom-right corner of card bounds
             if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !cardBounds.isEmpty) {
-                val tapX = cardBounds.centerX().toFloat()
-                val tapY = (cardBounds.bottom - (cardBounds.height() * 0.2f)).coerceAtLeast(cardBounds.top.toFloat())
+                val screenWidth = resources.displayMetrics.widthPixels.toFloat()
+                val screenHeight = resources.displayMetrics.heightPixels.toFloat()
+
+                // Target the right-most 15-20% and bottom 20% of the offer card
+                val rawTapX = cardBounds.right - (cardBounds.width() * 0.15f)
+                val rawTapY = cardBounds.bottom - (cardBounds.height() * 0.2f)
+
+                // Clamp strictly within card bounds and physical screen resolution
+                val tapX = rawTapX.coerceIn(cardBounds.left.toFloat(), (cardBounds.right - 1).toFloat())
+                    .coerceIn(0f, screenWidth - 1f)
+                val tapY = rawTapY.coerceIn(cardBounds.top.toFloat(), (cardBounds.bottom - 1).toFloat())
+                    .coerceIn(0f, screenHeight - 1f)
+
                 clicked = dispatchTapAtCoordinates(tapX, tapY)
                 Log.i(TAG, "executeCardAcceptClick: coordinate fallback tap at ($tapX, $tapY) success=$clicked")
             }
 
+            // Click Cooldown: 2000ms cooldown upon success to ignore lingering UI elements; standard debounce on failure
+            lastProcessTime = if (clicked) {
+                System.currentTimeMillis() + COOLDOWN_MS
+            } else {
+                System.currentTimeMillis()
+            }
+
             AppSettings.addLog(
                 title = if (clicked) "Order Accepted!" else "Click Attempted",
-                message = if (clicked) "ACTION_CLICK delivered strictly to Accept button for ₹${offer.totalFare?.toInt()} order."
+                message = if (clicked) "ACTION_CLICK delivered strictly to Accept button for ₹${offer.totalFare?.toInt()} order. Cooldown active (2000ms)."
                 else "Accept button could not be clicked within card boundaries.",
                 severity = if (clicked) LogSeverity.CLICK_EXECUTED else LogSeverity.WARNING,
                 evaluation = evaluation
@@ -530,6 +711,7 @@ open class MyAccessibilityService : AccessibilityService() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error executing card accept click", e)
+            lastProcessTime = System.currentTimeMillis()
         }
     }
 

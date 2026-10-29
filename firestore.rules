@@ -50,11 +50,21 @@ service cloud.firestore {
     }
 
     // User Licensing: Stores Points Balance and Active Pass details
-    // Only the authenticated owner can read and update their own document's pointsBalance
+    // Allows authenticated users to query/read profiles and allows atomic referral bonuses
     match /users_licensing/{userKey} {
-      allow read: if isAuthenticated() && (request.auth.uid == userKey || resource.data.userId == request.auth.uid);
+      allow read: if isAuthenticated();
       allow create: if isAuthenticated() && (request.auth.uid == userKey || request.resource.data.userId == request.auth.uid);
-      allow update: if isAuthenticated() && (request.auth.uid == userKey || resource.data.userId == request.auth.uid);
+      allow update: if isAuthenticated() && (
+        // Authenticated owner can update their own document
+        (request.auth.uid == userKey || resource.data.userId == request.auth.uid)
+        ||
+        // Peer referral reward: an authenticated referee can reward the referrer +20 or +50 points
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pointsBalance', 'referralCount', 'updatedAt']) &&
+          (request.resource.data.pointsBalance == resource.data.pointsBalance + 20 ||
+           request.resource.data.pointsBalance == resource.data.pointsBalance + 50)
+        )
+      );
       allow delete: if false;
     }
 

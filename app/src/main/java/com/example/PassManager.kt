@@ -273,9 +273,9 @@ object PassManager {
         utr: String,
         preferredTier: PassTier? = null
     ): VerificationResult = withContext(Dispatchers.IO) {
-        val cleanUtr = utr.trim().filter { it.isDigit() }
-        if (cleanUtr.length != 12) {
-            return@withContext VerificationResult.Invalid("Please enter a valid 12-digit UTR/UPI reference number.")
+        val cleanUtr = utr.trim().filter { it.isLetterOrDigit() }.uppercase()
+        if (cleanUtr.length !in 9..16) {
+            return@withContext VerificationResult.Invalid("Please enter a valid 9 to 16-character UTR / UPI reference number.")
         }
 
         try {

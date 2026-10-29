@@ -156,6 +156,33 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
         AppSettings.setMaxDropDistance(app, value)
     }
 
+    // --- Per-Km Rate Controls ---
+    fun toggleMinPerKmRate(enabled: Boolean) {
+        val app = getApplication<Application>()
+        AppSettings.setMinPerKmRateEnabled(app, enabled)
+    }
+
+    fun setMinPerKmRate(value: Float) {
+        val app = getApplication<Application>()
+        AppSettings.setMinPerKmRate(app, value)
+    }
+
+    // --- Destination Blacklist Controls ---
+    fun toggleDestinationBlacklist(enabled: Boolean) {
+        val app = getApplication<Application>()
+        AppSettings.setDestinationBlacklistEnabled(app, enabled)
+    }
+
+    fun addBlockedLocation(location: String) {
+        val app = getApplication<Application>()
+        AppSettings.addBlockedLocation(app, location)
+    }
+
+    fun removeBlockedLocation(location: String) {
+        val app = getApplication<Application>()
+        AppSettings.removeBlockedLocation(app, location)
+    }
+
     fun toggleVoiceAnnouncer(enabled: Boolean) {
         val app = getApplication<Application>()
         AppSettings.setVoiceAnnouncerEnabled(app, enabled)

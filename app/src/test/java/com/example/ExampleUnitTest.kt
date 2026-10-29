@@ -67,4 +67,25 @@ class ExampleUnitTest {
     // Verify call completes without exception
     assertNotNull(isA13)
   }
+
+  @Test
+  fun testReferralCodeFormat_starts_with_OM_and_length_is_8() {
+    val code = LicenseManager.generateReferralCode()
+    assertEquals(8, code.length)
+    assertTrue("Code must start with 'OM'", code.startsWith("OM"))
+    assertTrue("Code must only contain uppercase alphanumeric characters", code.matches(Regex("^[A-Z0-9]{8}$")))
+  }
+
+  @Test
+  fun testReferralCodeGeneration_uniqueness() {
+    val codes = (1..50).map { LicenseManager.generateReferralCode() }.toSet()
+    assertEquals("Generated codes should be predominantly unique", 50, codes.size)
+  }
+
+  @Test
+  fun testReferralManager_bonusValues() {
+    assertEquals(20, ReferralManager.REFERRAL_BONUS_POINTS)
+    assertEquals(50, ReferralManager.WELCOME_BONUS_POINTS)
+  }
 }
+

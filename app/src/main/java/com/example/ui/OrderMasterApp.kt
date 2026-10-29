@@ -111,8 +111,18 @@ fun OrderMasterApp(
     }
 
     // Sync cloud licensing and points whenever Gmail auth state updates
-    LaunchedEffect(userAuthState.userEmail) {
-        LicenseManager.onUserAuthChanged(userAuthState.userEmail, null)
+    LaunchedEffect(userAuthState.userEmail, userAuthState.uid) {
+        LicenseManager.onUserAuthChanged(userAuthState.userEmail, userAuthState.uid)
+    }
+
+    // Auto-navigate to Refer & Earn screen if opened via invite deep link
+    val pendingInvite by com.example.ReferralManager.pendingInviteCode.collectAsState()
+    LaunchedEffect(pendingInvite) {
+        if (!pendingInvite.isNullOrBlank() && currentRoute != Screen.ReferAndEarn.route) {
+            navController.navigate(Screen.ReferAndEarn.route) {
+                launchSingleTop = true
+            }
+        }
     }
 
     val isMainTab = currentRoute in listOf(Screen.Home.route, Screen.Filters.route, Screen.History.route)

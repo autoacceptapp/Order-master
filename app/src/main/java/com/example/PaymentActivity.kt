@@ -689,7 +689,7 @@ private fun PaymentVerificationScreenContent(
                     )
 
                     Text(
-                        text = "After completing your payment, copy the 12-digit UTR / UPI Ref number from the payment receipt and enter it below.",
+                        text = "After completing your payment, copy the 9-16 character UTR / UPI Ref number from the payment receipt and enter it below.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -697,8 +697,8 @@ private fun PaymentVerificationScreenContent(
                     OutlinedTextField(
                         value = utrInput,
                         onValueChange = { input ->
-                            val digitsOnly = input.filter { it.isDigit() }.take(12)
-                            utrInput = digitsOnly
+                            val clean = input.filter { it.isLetterOrDigit() }.take(16).uppercase()
+                            utrInput = clean
                             if (uiState != VerificationUiState.IDLE) {
                                 uiState = VerificationUiState.IDLE
                                 statusMessage = ""
@@ -708,8 +708,8 @@ private fun PaymentVerificationScreenContent(
                             .fillMaxWidth()
                             .testTag("utr_input_field"),
                         enabled = uiState != VerificationUiState.VERIFYING,
-                        label = { Text("12-Digit UTR / UPI Ref No.") },
-                        placeholder = { Text("e.g. 426719823451") },
+                        label = { Text("UTR / UPI Ref No. (9-16 chars)") },
+                        placeholder = { Text("e.g. 426719823451 or IMPS123456") },
                         leadingIcon = {
                             Icon(imageVector = Icons.Default.Pin, contentDescription = null)
                         },
@@ -717,12 +717,12 @@ private fun PaymentVerificationScreenContent(
                             IconButton(
                                 onClick = {
                                     val clipText = clipboardManager.getText()?.text ?: ""
-                                    val digits = clipText.filter { it.isDigit() }.take(12)
-                                    if (digits.isNotEmpty()) {
-                                        utrInput = digits
-                                        Toast.makeText(context, "Pasted: $digits", Toast.LENGTH_SHORT).show()
+                                    val clean = clipText.filter { it.isLetterOrDigit() }.take(16).uppercase()
+                                    if (clean.isNotEmpty()) {
+                                        utrInput = clean
+                                        Toast.makeText(context, "Pasted: $clean", Toast.LENGTH_SHORT).show()
                                     } else {
-                                        Toast.makeText(context, "No digits found in clipboard", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "No alphanumeric reference found in clipboard", Toast.LENGTH_SHORT).show()
                                     }
                                 },
                                 enabled = uiState != VerificationUiState.VERIFYING,
@@ -736,7 +736,7 @@ private fun PaymentVerificationScreenContent(
                         },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Number,
+                            keyboardType = KeyboardType.Text,
                             imeAction = ImeAction.Done
                         ),
                         keyboardActions = KeyboardActions(
@@ -748,24 +748,24 @@ private fun PaymentVerificationScreenContent(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    text = if (utrInput.isNotEmpty() && utrInput.length < 12) {
-                                        "Need 12 digits (${12 - utrInput.length} more)"
+                                    text = if (utrInput.isNotEmpty() && utrInput.length < 9) {
+                                        "Need at least 9 characters (${9 - utrInput.length} more)"
                                     } else {
                                         "Found on GPay/PhonePe receipt"
                                     },
-                                    color = if (utrInput.isNotEmpty() && utrInput.length < 12) {
+                                    color = if (utrInput.isNotEmpty() && utrInput.length < 9) {
                                         MaterialTheme.colorScheme.error
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
                                     }
                                 )
                                 Text(
-                                    text = "${utrInput.length}/12",
+                                    text = "${utrInput.length}/16",
                                     fontWeight = FontWeight.Bold
                                 )
                             }
                         },
-                        isError = utrInput.isNotEmpty() && utrInput.length < 12,
+                        isError = utrInput.isNotEmpty() && utrInput.length < 9,
                         shape = RoundedCornerShape(12.dp)
                     )
 
@@ -814,7 +814,7 @@ private fun PaymentVerificationScreenContent(
                             .fillMaxWidth()
                             .height(56.dp)
                             .testTag("verify_payment_button"),
-                        enabled = utrInput.length == 12 && uiState != VerificationUiState.VERIFYING,
+                        enabled = utrInput.length in 9..16 && uiState != VerificationUiState.VERIFYING,
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary,

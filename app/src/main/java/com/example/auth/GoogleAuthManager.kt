@@ -70,7 +70,7 @@ object GoogleAuthManager {
         try {
             val resId = com.example.R.string.default_web_client_id
             val clientId = context.getString(resId)
-            if (clientId.isNotBlank()) {
+            if (clientId.isNotBlank() && !clientId.contains("YOUR_WEB_CLIENT_ID")) {
                 return clientId
             }
         } catch (_: Throwable) {}
@@ -80,7 +80,7 @@ object GoogleAuthManager {
             val resId = context.resources.getIdentifier("default_web_client_id", "string", "com.example")
             if (resId != 0) {
                 val clientId = context.getString(resId)
-                if (clientId.isNotBlank()) {
+                if (clientId.isNotBlank() && !clientId.contains("YOUR_WEB_CLIENT_ID")) {
                     return clientId
                 }
             }
@@ -91,7 +91,7 @@ object GoogleAuthManager {
             val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
             if (resId != 0) {
                 val clientId = context.getString(resId)
-                if (clientId.isNotBlank()) {
+                if (clientId.isNotBlank() && !clientId.contains("YOUR_WEB_CLIENT_ID")) {
                     return clientId
                 }
             }

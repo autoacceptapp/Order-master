@@ -667,4 +667,129 @@ class ExampleRobolectricTest {
         assertTrue(eval.passesPickupDistance)
         assertTrue(eval.passesFare)
     }
+
+    @Test
+    fun `test per-km rate filter rejects low-rate rides and accepts high-rate rides`() {
+        // Offer: ₹100 fare, 2.0 km pickup, 18.0 km drop -> total 20.0 km -> 5.0 ₹/km
+        val lowRateOffer = ParsedRideOffer(
+            rawText = "Ride: ₹100 • 2.0 km pickup • 18.0 km drop [Accept]",
+            totalFare = 100.0,
+            pickupDistanceKm = 2.0,
+            dropDistanceKm = 18.0,
+            hasAcceptButton = true
+        )
+
+        // Evaluate with minPerKmRate = 10.0f
+        val evalRejected = TextAnalysisEngine.evaluateRideOffer(
+            offer = lowRateOffer,
+            minFare = 50.0f,
+            maxFare = 5000.0f,
+            maxPickupDistance = 3.0f,
+            isAutoAcceptEnabled = true,
+            minPerKmRate = 10.0f,
+            isMinPerKmRateEnabled = true
+        )
+        assertFalse(evalRejected.isAccepted)
+        assertTrue(evalRejected.decisionReason.contains("low Per-Km rate") || evalRejected.decisionReason.contains("5.0/km"))
+
+        // Offer: ₹150 fare, 1.0 km pickup, 4.0 km drop -> total 5.0 km -> 30.0 ₹/km
+        val highRateOffer = ParsedRideOffer(
+            rawText = "Ride: ₹150 • 1.0 km pickup • 4.0 km drop [Accept]",
+            totalFare = 150.0,
+            pickupDistanceKm = 1.0,
+            dropDistanceKm = 4.0,
+            hasAcceptButton = true
+        )
+        val evalAccepted = TextAnalysisEngine.evaluateRideOffer(
+            offer = highRateOffer,
+            minFare = 50.0f,
+            maxFare = 5000.0f,
+            maxPickupDistance = 3.0f,
+            isAutoAcceptEnabled = true,
+            minPerKmRate = 10.0f,
+            isMinPerKmRateEnabled = true
+        )
+        assertTrue(evalAccepted.isAccepted)
+    }
+
+    @Test
+    fun `test destination blacklist filter rejects offers with blacklisted locations`() {
+        val blockedOffer = ParsedRideOffer(
+            rawText = "Ride: ₹180 • 1.0 km pickup • 5.0 km drop • Destination: Airport Terminal 2 [Accept]",
+            totalFare = 180.0,
+            pickupDistanceKm = 1.0,
+            dropDistanceKm = 5.0,
+            hasAcceptButton = true,
+            targetOffer = TargetRideOffer(
+                fare = 180.0,
+                pickupDistance = 1.0,
+                pickupLocation = "City Center",
+                dropDistance = 5.0,
+                dropLocation = "Airport Terminal 2"
+            )
+        )
+
+        val evalBlocked = TextAnalysisEngine.evaluateRideOffer(
+            offer = blockedOffer,
+            minFare = 50.0f,
+            maxFare = 5000.0f,
+            maxPickupDistance = 3.0f,
+            isAutoAcceptEnabled = true,
+            blockedLocations = listOf("Airport", "Toll Road"),
+            isDestinationBlacklistEnabled = true
+        )
+        assertFalse(evalBlocked.isAccepted)
+        assertTrue(evalBlocked.decisionReason.contains("Blacklisted Area") && evalBlocked.decisionReason.contains("Airport"))
+
+        // Offer to non-blacklisted area
+        val allowedOffer = ParsedRideOffer(
+            rawText = "Ride: ₹180 • 1.0 km pickup • 5.0 km drop • Destination: MG Road [Accept]",
+            totalFare = 180.0,
+            pickupDistanceKm = 1.0,
+            dropDistanceKm = 5.0,
+            hasAcceptButton = true,
+            targetOffer = TargetRideOffer(
+                fare = 180.0,
+                pickupDistance = 1.0,
+                pickupLocation = "City Center",
+                dropDistance = 5.0,
+                dropLocation = "MG Road"
+            )
+        )
+        val evalAllowed = TextAnalysisEngine.evaluateRideOffer(
+            offer = allowedOffer,
+            minFare = 50.0f,
+            maxFare = 5000.0f,
+            maxPickupDistance = 3.0f,
+            isAutoAcceptEnabled = true,
+            blockedLocations = listOf("Airport", "Toll Road"),
+            isDestinationBlacklistEnabled = true
+        )
+        assertTrue(evalAllowed.isAccepted)
+    }
+
+    @Test
+    fun `test app settings rate per km and destination blacklist persistence`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // Per-Km Rate
+        AppSettings.setMinPerKmRateEnabled(context, true)
+        assertTrue(AppSettings.isMinPerKmRateEnabled(context))
+        AppSettings.setMinPerKmRate(context, 14.0f)
+        assertEquals(14.0f, AppSettings.getMinPerKmRate(context), 0.01f)
+        assertEquals(14.0f, AppSettings.settingsState.value.minPerKmRate, 0.01f)
+
+        // Destination Blacklist
+        AppSettings.setDestinationBlacklistEnabled(context, true)
+        assertTrue(AppSettings.isDestinationBlacklistEnabled(context))
+        AppSettings.setBlockedLocations(context, listOf("Airport", "Toll"))
+        assertTrue(AppSettings.getBlockedLocations(context).contains("Airport"))
+        assertTrue(AppSettings.getBlockedLocations(context).contains("Toll"))
+
+        AppSettings.addBlockedLocation(context, "Slum Area")
+        assertTrue(AppSettings.getBlockedLocations(context).contains("Slum Area"))
+
+        AppSettings.removeBlockedLocation(context, "Airport")
+        assertFalse(AppSettings.getBlockedLocations(context).contains("Airport"))
+    }
 }

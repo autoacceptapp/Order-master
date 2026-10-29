@@ -53,6 +53,10 @@ data class SettingsState(
     val isMaxDropDistanceEnabled: Boolean = false,
     val maxDropDistance: Float = 15.0f,
     val clickDelayMs: Long = 500L,
+    val isMinPerKmRateEnabled: Boolean = true,
+    val minPerKmRate: Float = AppSettings.DEFAULT_MIN_PER_KM_RATE,
+    val isDestinationBlacklistEnabled: Boolean = true,
+    val blockedLocations: List<String> = emptyList(),
     val isVoiceAnnouncerEnabled: Boolean = true,
     val voiceLanguage: String = "en",
     val speechRate: Float = 1.0f,
@@ -91,6 +95,10 @@ object AppSettings {
     const val KEY_MAX_DROP_DIST_ENABLED = "key_max_drop_dist_enabled"
     const val KEY_MAX_DROP_DISTANCE = "key_max_drop_distance"
     const val KEY_CLICK_DELAY_MS = "key_click_delay_ms"
+    const val KEY_MIN_PER_KM_RATE_ENABLED = "key_min_per_km_rate_enabled"
+    const val KEY_MIN_PER_KM_RATE = "key_min_per_km_rate"
+    const val KEY_DESTINATION_BLACKLIST_ENABLED = "key_destination_blacklist_enabled"
+    const val KEY_BLOCKED_LOCATIONS = "key_blocked_locations"
     const val KEY_VOICE_ANNOUNCER_ENABLED = "key_voice_announcer_enabled"
     const val KEY_VOICE_LANGUAGE = "key_voice_language"
     const val KEY_SPEECH_RATE = "key_speech_rate"
@@ -136,6 +144,9 @@ object AppSettings {
     const val DEFAULT_MAX_PICKUP_DIST_ENABLED = true
     const val DEFAULT_MAX_DROP_DIST_ENABLED = false
     const val DEFAULT_CLICK_DELAY_MS = 500L
+    const val DEFAULT_MIN_PER_KM_RATE_ENABLED = true
+    const val DEFAULT_MIN_PER_KM_RATE = 10.0f
+    const val DEFAULT_DESTINATION_BLACKLIST_ENABLED = true
     const val DEFAULT_VOICE_ANNOUNCER_ENABLED = true
     const val DEFAULT_VOICE_LANGUAGE = "en"
     const val DEFAULT_SPEECH_RATE = 1.0f
@@ -177,6 +188,10 @@ object AppSettings {
             maxFare = DEFAULT_MAX_FARE,
             maxPickupDistance = DEFAULT_MAX_PICKUP_DISTANCE,
             clickDelayMs = DEFAULT_CLICK_DELAY_MS,
+            isMinPerKmRateEnabled = DEFAULT_MIN_PER_KM_RATE_ENABLED,
+            minPerKmRate = DEFAULT_MIN_PER_KM_RATE,
+            isDestinationBlacklistEnabled = DEFAULT_DESTINATION_BLACKLIST_ENABLED,
+            blockedLocations = emptyList(),
             isVoiceAnnouncerEnabled = DEFAULT_VOICE_ANNOUNCER_ENABLED,
             voiceLanguage = DEFAULT_VOICE_LANGUAGE,
             isFloatingOverlayEnabled = DEFAULT_FLOATING_OVERLAY_ENABLED,
@@ -236,6 +251,11 @@ object AppSettings {
         val dropDistEnabled = prefs.getBoolean(KEY_MAX_DROP_DIST_ENABLED, DEFAULT_MAX_DROP_DIST_ENABLED)
         val dropDist = prefs.getFloat(KEY_MAX_DROP_DISTANCE, DEFAULT_MAX_DROP_DISTANCE)
         val delay = prefs.getLong(KEY_CLICK_DELAY_MS, DEFAULT_CLICK_DELAY_MS)
+        val minPerKmRateEnabled = prefs.getBoolean(KEY_MIN_PER_KM_RATE_ENABLED, DEFAULT_MIN_PER_KM_RATE_ENABLED)
+        val minPerKmRate = prefs.getFloat(KEY_MIN_PER_KM_RATE, DEFAULT_MIN_PER_KM_RATE)
+        val destBlacklistEnabled = prefs.getBoolean(KEY_DESTINATION_BLACKLIST_ENABLED, DEFAULT_DESTINATION_BLACKLIST_ENABLED)
+        val blockedLocationsSet = prefs.getStringSet(KEY_BLOCKED_LOCATIONS, emptySet()) ?: emptySet()
+        val blockedLocations = blockedLocationsSet.toList().sorted()
         val voiceEnabled = prefs.getBoolean(KEY_VOICE_ANNOUNCER_ENABLED, DEFAULT_VOICE_ANNOUNCER_ENABLED)
         val voiceLang = prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE) ?: DEFAULT_VOICE_LANGUAGE
         val speechRate = prefs.getFloat(KEY_SPEECH_RATE, DEFAULT_SPEECH_RATE)
@@ -308,6 +328,10 @@ object AppSettings {
             isMaxDropDistanceEnabled = dropDistEnabled,
             maxDropDistance = dropDist,
             clickDelayMs = delay,
+            isMinPerKmRateEnabled = minPerKmRateEnabled,
+            minPerKmRate = minPerKmRate,
+            isDestinationBlacklistEnabled = destBlacklistEnabled,
+            blockedLocations = blockedLocations,
             isVoiceAnnouncerEnabled = voiceEnabled,
             voiceLanguage = voiceLang,
             speechRate = speechRate,
@@ -562,6 +586,76 @@ object AppSettings {
         }
     }
 
+    // --- Minimum Per-Km Rate Filter Controls ---
+    fun isMinPerKmRateEnabled(context: Context): Boolean {
+        val prefs = getPrefs(context)
+        return prefs.getBoolean(KEY_MIN_PER_KM_RATE_ENABLED, DEFAULT_MIN_PER_KM_RATE_ENABLED)
+    }
+
+    fun setMinPerKmRateEnabled(context: Context, enabled: Boolean) {
+        _settingsState.value = _settingsState.value.copy(isMinPerKmRateEnabled = enabled)
+        persistAsync(context) {
+            putBoolean(KEY_MIN_PER_KM_RATE_ENABLED, enabled)
+        }
+    }
+
+    fun getMinPerKmRate(context: Context): Float {
+        val prefs = getPrefs(context)
+        return prefs.getFloat(KEY_MIN_PER_KM_RATE, DEFAULT_MIN_PER_KM_RATE)
+    }
+
+    fun setMinPerKmRate(context: Context, rate: Float) {
+        val clamped = rate.coerceIn(1.0f, 100.0f)
+        _settingsState.value = _settingsState.value.copy(minPerKmRate = clamped)
+        persistAsync(context) {
+            putFloat(KEY_MIN_PER_KM_RATE, clamped)
+        }
+    }
+
+    // --- Destination Blacklist Filter Controls ---
+    fun isDestinationBlacklistEnabled(context: Context): Boolean {
+        val prefs = getPrefs(context)
+        return prefs.getBoolean(KEY_DESTINATION_BLACKLIST_ENABLED, DEFAULT_DESTINATION_BLACKLIST_ENABLED)
+    }
+
+    fun setDestinationBlacklistEnabled(context: Context, enabled: Boolean) {
+        _settingsState.value = _settingsState.value.copy(isDestinationBlacklistEnabled = enabled)
+        persistAsync(context) {
+            putBoolean(KEY_DESTINATION_BLACKLIST_ENABLED, enabled)
+        }
+    }
+
+    fun getBlockedLocations(context: Context): List<String> {
+        val prefs = getPrefs(context)
+        val set = prefs.getStringSet(KEY_BLOCKED_LOCATIONS, emptySet()) ?: emptySet()
+        return set.toList().sorted()
+    }
+
+    fun setBlockedLocations(context: Context, locations: List<String>) {
+        val cleanList = locations.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
+        _settingsState.value = _settingsState.value.copy(blockedLocations = cleanList)
+        persistAsync(context) {
+            putStringSet(KEY_BLOCKED_LOCATIONS, cleanList.toSet())
+        }
+    }
+
+    fun addBlockedLocation(context: Context, location: String) {
+        val trimmed = location.trim()
+        if (trimmed.isEmpty()) return
+        val current = _settingsState.value.blockedLocations.toMutableList()
+        if (!current.contains(trimmed)) {
+            current.add(trimmed)
+            setBlockedLocations(context, current)
+        }
+    }
+
+    fun removeBlockedLocation(context: Context, location: String) {
+        val current = _settingsState.value.blockedLocations.toMutableList()
+        if (current.remove(location.trim())) {
+            setBlockedLocations(context, current)
+        }
+    }
+
     // --- Floating Overlay Button Controls ---
     fun isFloatingOverlayEnabled(context: Context): Boolean {
         val prefs = getPrefs(context)
@@ -639,6 +733,7 @@ object AppSettings {
                 setMaxPickupDistanceEnabled(context, true)
                 setMaxPickupDistance(context, 2.0f)
                 setMaxDropDistanceEnabled(context, false)
+                setMinPerKmRate(context, 14.0f)
             }
             "short", "short trips" -> {
                 setMinFareEnabled(context, true)
@@ -649,6 +744,7 @@ object AppSettings {
                 setMaxPickupDistance(context, 1.5f)
                 setMaxDropDistanceEnabled(context, true)
                 setMaxDropDistance(context, 5.0f)
+                setMinPerKmRate(context, 12.0f)
             }
             "high", "high value" -> {
                 setMinFareEnabled(context, true)
@@ -658,6 +754,7 @@ object AppSettings {
                 setMaxPickupDistanceEnabled(context, true)
                 setMaxPickupDistance(context, 3.0f)
                 setMaxDropDistanceEnabled(context, false)
+                setMinPerKmRate(context, 15.0f)
             }
             else -> {
                 // Default / Reset
@@ -669,6 +766,7 @@ object AppSettings {
                 setMaxPickupDistance(context, DEFAULT_MAX_PICKUP_DISTANCE)
                 setMaxDropDistanceEnabled(context, false)
                 setMaxDropDistance(context, DEFAULT_MAX_DROP_DISTANCE)
+                setMinPerKmRate(context, DEFAULT_MIN_PER_KM_RATE)
             }
         }
     }

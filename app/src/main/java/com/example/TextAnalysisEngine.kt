@@ -943,7 +943,11 @@ object TextAnalysisEngine {
         isMaxFareEnabled: Boolean = true,
         isMaxPickupDistanceEnabled: Boolean = true,
         isMaxDropDistanceEnabled: Boolean = false,
-        maxDropDistance: Float = 15.0f
+        maxDropDistance: Float = 15.0f,
+        minPerKmRate: Float = 10.0f,
+        isMinPerKmRateEnabled: Boolean = false,
+        blockedLocations: List<String> = emptyList(),
+        isDestinationBlacklistEnabled: Boolean = false
     ): RideEvaluation {
         val effectiveMaxPickup = maxPickupDistance.coerceIn(0.0f, 3.0f)
 
@@ -1001,15 +1005,47 @@ object TextAnalysisEngine {
             true
         }
 
+        // Per-Km Rate Filter: calculate totalFare / (pickupDistanceKm + dropDistanceKm)
+        // Strictly protected against DivideByZeroException
+        val totalDistanceKm = (pickupDist ?: 0.0) + (dropDist ?: 0.0)
+        val calculatedRatePerKm = if (totalDistanceKm > 0.0) evalFare / totalDistanceKm else null
+        val passesPerKmRate = if (isMinPerKmRateEnabled && calculatedRatePerKm != null) {
+            calculatedRatePerKm >= minPerKmRate
+        } else {
+            true
+        }
+
+        // Destination Blacklist Check (matched against drop location and card text)
+        val locationTextForMatching = buildString {
+            if (offer.dropLocation.isNotBlank()) append(offer.dropLocation).append(" ")
+            if (offer.pickupLocation.isNotBlank()) append(offer.pickupLocation).append(" ")
+            if (offer.rawText.isNotBlank()) append(offer.rawText)
+        }
+
+        val matchedBlockedKeyword = if (isDestinationBlacklistEnabled && blockedLocations.isNotEmpty()) {
+            blockedLocations.firstOrNull { keyword ->
+                val trimmed = keyword.trim()
+                trimmed.isNotEmpty() && locationTextForMatching.contains(trimmed, ignoreCase = true)
+            }
+        } else null
+        val passesBlacklist = matchedBlockedKeyword == null
+
         val breakdownStr = if (offer.fareBreakdown.size > 1) {
             " (${offer.fareBreakdown.joinToString(" + ") { "₹$it" }})"
         } else ""
 
         val reason = when {
-            passesFare && passesPickup && passesDrop -> {
+            passesFare && passesPickup && passesDrop && passesPerKmRate && passesBlacklist -> {
                 val dropStr = dropDist?.let { ", Drop: ${String.format(Locale.US, "%.1f", it)}km" } ?: ""
                 val pickupStr = pickupDist?.let { "Pickup ${String.format(Locale.US, "%.1f", it)}km" } ?: ""
-                "MATCHED: Fare ₹${String.format(Locale.US, "%.1f", evalFare)}$breakdownStr $pickupStr$dropStr meets all active criteria"
+                val rateStr = calculatedRatePerKm?.let { " [₹${String.format(Locale.US, "%.1f", it)}/km]" } ?: ""
+                "MATCHED: Fare ₹${String.format(Locale.US, "%.1f", evalFare)}$breakdownStr $pickupStr$dropStr$rateStr meets all active criteria"
+            }
+            !passesBlacklist -> {
+                "REJECTED: Rejected due to Blacklisted Area ('$matchedBlockedKeyword')"
+            }
+            !passesPerKmRate && calculatedRatePerKm != null -> {
+                "REJECTED: Rejected due to low Per-Km rate (${String.format(Locale.US, "%.1f", calculatedRatePerKm)}/km < ₹${minPerKmRate.toInt()}/km)"
             }
             !isAboveMinFare -> {
                 "REJECTED: Fare ₹${String.format(Locale.US, "%.1f", evalFare)}$breakdownStr < Min Limit ₹$minFare"
@@ -1031,7 +1067,7 @@ object TextAnalysisEngine {
             }
         }
 
-        val isAccepted = passesFare && passesPickup && passesDrop
+        val isAccepted = passesFare && passesPickup && passesDrop && passesPerKmRate && passesBlacklist
 
         return RideEvaluation(
             offer = offer,
@@ -1055,7 +1091,16 @@ object TextAnalysisEngine {
             minFare = settings.minFare,
             maxFare = settings.maxFare,
             maxPickupDistance = settings.maxPickupDistance,
-            isAutoAcceptEnabled = settings.isAutoAcceptEnabled
+            isAutoAcceptEnabled = settings.isAutoAcceptEnabled,
+            isMinFareEnabled = settings.isMinFareEnabled,
+            isMaxFareEnabled = settings.isMaxFareEnabled,
+            isMaxPickupDistanceEnabled = settings.isMaxPickupDistanceEnabled,
+            isMaxDropDistanceEnabled = settings.isMaxDropDistanceEnabled,
+            maxDropDistance = settings.maxDropDistance,
+            minPerKmRate = settings.minPerKmRate,
+            isMinPerKmRateEnabled = settings.isMinPerKmRateEnabled,
+            blockedLocations = settings.blockedLocations,
+            isDestinationBlacklistEnabled = settings.isDestinationBlacklistEnabled
         )
     }
 

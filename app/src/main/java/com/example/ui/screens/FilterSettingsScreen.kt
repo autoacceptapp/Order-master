@@ -22,12 +22,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CurrencyRupee
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.LocationOff
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Speed
@@ -46,6 +50,9 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.InputChip
+import androidx.compose.material3.InputChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedButton
@@ -75,11 +82,12 @@ import androidx.compose.ui.unit.sp
 import com.example.AppSettings
 import com.example.PermissionUtils
 import com.example.ui.OrderMasterViewModel
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import com.example.ui.components.FareFilterCard
 import java.util.Locale
 import kotlin.math.roundToInt
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun FilterSettingsScreen(
     viewModel: OrderMasterViewModel,
@@ -88,6 +96,7 @@ fun FilterSettingsScreen(
     val context = LocalContext.current
     val settingsState by viewModel.settingsState.collectAsState()
     var languageDropdownExpanded by remember { mutableStateOf(false) }
+    var newBlacklistKeyword by remember { mutableStateOf("") }
 
     var hasOverlayPermission by remember {
         mutableStateOf(PermissionUtils.canDrawOverlays(context))
@@ -377,7 +386,160 @@ fun FilterSettingsScreen(
             }
 
             // =========================================================================================
-            // 5. VOICE ANNOUNCEMENTS (TTS) FILTER
+            // 5. MINIMUM RATE PER-KM FILTER (₹/km)
+            // =========================================================================================
+            item {
+                FilterCard(
+                    title = "Minimum Rate Per-Km Filter",
+                    subtitle = "Reject offers paying less than ₹/km (fare ÷ total trip distance)",
+                    icon = Icons.Default.Speed,
+                    isEnabled = settingsState.isMinPerKmRateEnabled,
+                    onToggle = { viewModel.toggleMinPerKmRate(it) },
+                    testTag = "min_per_km_rate_filter_card"
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Minimum ₹/Km Required:",
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer
+                            ) {
+                                Text(
+                                    text = "₹${settingsState.minPerKmRate.toInt()}/km",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+
+                        Slider(
+                            value = settingsState.minPerKmRate,
+                            onValueChange = { viewModel.setMinPerKmRate(it.roundToInt().toFloat()) },
+                            valueRange = 5.0f..30.0f,
+                            steps = 24, // 1 ₹/km steps
+                            modifier = Modifier.fillMaxWidth().testTag("min_per_km_slider")
+                        )
+
+                        // Quick Select Chips
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(8f, 10f, 12f, 15f, 20f).forEach { rateVal ->
+                                OutlinedButton(
+                                    onClick = { viewModel.setMinPerKmRate(rateVal) },
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(0.dp),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("₹${rateVal.toInt()}", fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // =========================================================================================
+            // 6. DESTINATION KEYWORD BLACKLIST (Geofencing via text)
+            // =========================================================================================
+            item {
+                FilterCard(
+                    title = "Destination Blacklist Filter",
+                    subtitle = "Auto-reject rides going to unwanted locations or landmarks",
+                    icon = Icons.Default.LocationOff,
+                    isEnabled = settingsState.isDestinationBlacklistEnabled,
+                    onToggle = { viewModel.toggleDestinationBlacklist(it) },
+                    testTag = "destination_blacklist_filter_card"
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = newBlacklistKeyword,
+                                onValueChange = { newBlacklistKeyword = it },
+                                placeholder = { Text("e.g. Airport, Slum, Toll", fontSize = 13.sp) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("blacklist_keyword_input"),
+                                singleLine = true,
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            FilledTonalButton(
+                                onClick = {
+                                    if (newBlacklistKeyword.isNotBlank()) {
+                                        viewModel.addBlockedLocation(newBlacklistKeyword)
+                                        newBlacklistKeyword = ""
+                                    }
+                                },
+                                enabled = newBlacklistKeyword.isNotBlank(),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.testTag("add_blacklist_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "Add Keyword",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Add", fontSize = 12.sp)
+                            }
+                        }
+
+                        if (settingsState.blockedLocations.isEmpty()) {
+                            Text(
+                                text = "No blacklisted areas configured. Add landmark names above to auto-reject matching offers.",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            )
+                        } else {
+                            FlowRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                settingsState.blockedLocations.forEach { keyword ->
+                                    InputChip(
+                                        selected = false,
+                                        onClick = { viewModel.removeBlockedLocation(keyword) },
+                                        label = { Text(keyword, fontSize = 12.sp) },
+                                        trailingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Remove $keyword",
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        },
+                                        colors = InputChipDefaults.inputChipColors(
+                                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f),
+                                            labelColor = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // =========================================================================================
+            // 7. VOICE ANNOUNCEMENTS (TTS) FILTER
             // =========================================================================================
             item {
                 FilterCard(

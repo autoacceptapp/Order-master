@@ -9,8 +9,14 @@ import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderF
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.PersistentCacheSettings
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class OrderMasterApplication : Application() {
+
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreate() {
         super.onCreate()
@@ -94,14 +100,33 @@ class OrderMasterApplication : Application() {
     /**
      * Initializes AppSettings and LicenseManager on Application startup so that
      * background Accessibility and Floating Overlay services have immediate access to state.
+     * Runs asynchronously on Dispatchers.IO to prevent ANRs on slow network or heavy I/O.
      */
     private fun initCoreEngines() {
-        try {
-            AppSettings.init(this)
-            LicenseManager.init(this)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize core engines in Application.onCreate: ${e.message}", e)
+        if (isUnitTestEnvironment()) {
+            try {
+                AppSettings.init(this)
+                LicenseManager.init(this)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize core engines synchronously in test: ${e.message}", e)
+            }
+            return
         }
+
+        appScope.launch {
+            try {
+                AppSettings.init(this@OrderMasterApplication)
+                LicenseManager.init(this@OrderMasterApplication)
+                Log.d(TAG, "Core engines initialized successfully on background thread.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize core engines in Application.onCreate: ${e.message}", e)
+            }
+        }
+    }
+
+    private fun isUnitTestEnvironment(): Boolean {
+        return android.os.Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
+                runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
     }
 
     companion object {

@@ -146,7 +146,7 @@ object LicenseManager {
     private const val COLL_USERS_LICENSING = "users_licensing"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
 
     @Volatile
     private var appContext: Context? = null
@@ -163,6 +163,15 @@ object LicenseManager {
 
     private val _trialInfo = MutableStateFlow<TrialInfo?>(null)
     val trialInfo: StateFlow<TrialInfo?> = _trialInfo.asStateFlow()
+
+    private val _referralCode = MutableStateFlow<String?>(null)
+    val referralCode: StateFlow<String?> = _referralCode.asStateFlow()
+
+    private val _hasClaimedReferral = MutableStateFlow<Boolean>(false)
+    val hasClaimedReferral: StateFlow<Boolean> = _hasClaimedReferral.asStateFlow()
+
+    private val _referralCount = MutableStateFlow<Int>(0)
+    val referralCount: StateFlow<Int> = _referralCount.asStateFlow()
 
     // In-Memory Cloud-Synced State (Zero SharedPreferences)
     @Volatile
@@ -185,6 +194,11 @@ object LicenseManager {
     private val authLock = Any()
     private val docInitAttempted = AtomicBoolean(false)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * Exposes current application context.
+     */
+    fun getAppContext(): Context? = appContext
 
     /**
      * Initializes LicenseManager.
@@ -581,24 +595,53 @@ object LicenseManager {
                     val points = snapshot.getLong("pointsBalance")?.toInt() ?: 0
                     val passType = snapshot.getString("activePassType")
                     val passExpiry = snapshot.getLong("passExpiryTimestamp") ?: 0L
+                    val code = snapshot.getString("referralCode")
+                    val hasClaimed = snapshot.getBoolean("hasClaimedReferral") ?: false
+                    val refCount = snapshot.getLong("referralCount")?.toInt() ?: 0
 
                     // Update in-memory reactive state directly from Firestore snapshot
                     _pointsBalance.value = points
+                    _hasClaimedReferral.value = hasClaimed
+                    _referralCount.value = refCount
                     serverPassTier = PassTier.fromId(passType)
                     serverPassExpiry = passExpiry
                     hasLoadedLicensing = true
 
+                    if (!code.isNullOrBlank()) {
+                        _referralCode.value = code
+                    } else {
+                        // Generate referral code for existing document missing one
+                        val newCode = generateReferralCode()
+                        _referralCode.value = newCode
+                        scope.launch {
+                            try {
+                                userDocRef.set(mapOf("referralCode" to newCode), SetOptions.merge()).await()
+                                Log.i(TAG, "Assigned new referralCode $newCode to existing user $userKey")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed updating referralCode for user: ${e.message}")
+                            }
+                        }
+                    }
+
                     refreshAccessStatus()
-                    Log.d(TAG, "Synced user licensing from Firestore: points=$points, passType=$passType, expiry=$passExpiry")
+                    Log.d(TAG, "Synced user licensing from Firestore: points=$points, passType=$passType, code=${_referralCode.value}")
                 } else if (snapshot != null && !snapshot.exists()) {
                     // Prevent infinite loop: initialize document strictly once per session
                     if (docInitAttempted.compareAndSet(false, true)) {
                         scope.launch {
                             try {
+                                val generatedCode = generateReferralCode()
+                                _referralCode.value = generatedCode
+                                _hasClaimedReferral.value = false
+                                _referralCount.value = 0
+
                                 val initialData = mapOf(
                                     "userId" to userKey,
                                     "userEmail" to (userEmail ?: ""),
                                     "pointsBalance" to 0L,
+                                    "referralCode" to generatedCode,
+                                    "hasClaimedReferral" to false,
+                                    "referralCount" to 0L,
                                     "activePassType" to null,
                                     "passExpiryTimestamp" to 0L,
                                     "createdAt" to FieldValue.serverTimestamp(),
@@ -607,7 +650,7 @@ object LicenseManager {
                                 userDocRef.set(initialData, SetOptions.merge()).await()
                                 hasLoadedLicensing = true
                                 refreshAccessStatus()
-                                Log.i(TAG, "Initialized new user licensing document on Firestore for $userKey")
+                                Log.i(TAG, "Initialized new user licensing document with referralCode $generatedCode for $userKey")
                             } catch (e: Exception) {
                                 Log.w(TAG, "Could not initialize user licensing doc on Firestore: ${e.message}")
                                 docInitAttempted.set(false)
@@ -737,4 +780,44 @@ object LicenseManager {
             else -> String.format(Locale.US, "%02dm %02ds", minutes, seconds)
         }
     }
+
+    /**
+     * Generates a unique 8-character uppercase alphanumeric referral code (e.g. "OM" + random 6 chars).
+     * Excludes ambiguous characters (0, O, 1, I).
+     */
+    fun generateReferralCode(): String {
+        val allowedChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        val randomSuffix = (1..6).map { allowedChars.random() }.joinToString("")
+        return "OM$randomSuffix"
+    }
+
+    /**
+     * Updates in-memory state when referral code is successfully claimed.
+     */
+    fun notifyReferralClaimed(newPoints: Int) {
+        _pointsBalance.value = newPoints
+        _hasClaimedReferral.value = true
+    }
+
+    /**
+     * Updates in-memory state with standard 50-point bonus when no balance is explicitly passed.
+     */
+    fun notifyReferralClaimed() {
+        notifyReferralClaimed(_pointsBalance.value + 50)
+    }
+
+    /**
+     * Executes the secure, ACID cloud transaction to claim an invite referral code.
+     * Atomically adds 50 points to the current user (Referee), 50 points to the invite code owner (Referrer),
+     * increments the referrer's referralCount, and marks hasClaimedReferral = true.
+     */
+    suspend fun claimReferralCode(inviteCode: String): Result<Unit> {
+        val ctx = appContext
+        return if (ctx != null) {
+            ReferralManager.claimReferralCode(ctx, inviteCode)
+        } else {
+            ReferralManager.claimReferralCode(inviteCode)
+        }
+    }
 }
+

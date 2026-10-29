@@ -97,6 +97,7 @@ class MainActivity : ComponentActivity() {
         // Ensure update notification channel is registered
         UpdateNotificationManager.createNotificationChannel(this)
         handleUpdateIntent(intent)
+        handleDeepLinkIntent(intent)
 
         // Automatically check for new releases in the background when app launches
         GitHubUpdateManager.autoCheckForUpdates(this, lifecycleScope)
@@ -145,11 +146,23 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleUpdateIntent(intent)
+        handleDeepLinkIntent(intent)
     }
 
     private fun handleUpdateIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_SHOW_UPDATE_DIALOG, false) == true) {
             GitHubUpdateManager.showDialog()
+        }
+    }
+
+    private fun handleDeepLinkIntent(intent: Intent?) {
+        val data = intent?.data ?: return
+        // Captures https://ordermaster.app/invite?code={CODE} or ordermaster://invite?code={CODE}
+        val code = data.getQueryParameter("code")
+        if (!code.isNullOrBlank()) {
+            val cleanCode = code.trim().uppercase(java.util.Locale.ROOT)
+            ReferralManager.pendingInviteCode.value = cleanCode
+            Log.i(TAG, "Deep link captured invite code: $cleanCode")
         }
     }
 
