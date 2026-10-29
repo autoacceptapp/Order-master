@@ -138,6 +138,18 @@ class FloatingOverlayService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    private val accessVerificationRunnable = object : Runnable {
+        override fun run() {
+            if (!LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)) {
+                Log.w(TAG, "Periodic check: Floating overlay access expired in background. Dismissing floating overlay.")
+                removeOverlayView()
+                stopSelf()
+                return
+            }
+            mainHandler.postDelayed(this, 30_000L) // Re-evaluate every 30 seconds
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -148,10 +160,21 @@ class FloatingOverlayService : Service() {
 
         buildOverlayView()
         observeSettingsAndFare()
+
+        // Start continuous 30-second periodic background access verification
+        mainHandler.postDelayed(accessVerificationRunnable, 30_000L)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // Strict feature check: dismiss overlay immediately if floating_overlay feature is not unlocked
+        if (!LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)) {
+            Log.i(TAG, "Floating overlay feature not unlocked on startCommand. Stopping FloatingOverlayService.")
+            removeOverlayView()
             stopSelf()
             return START_NOT_STICKY
         }
@@ -473,6 +496,18 @@ class FloatingOverlayService : Service() {
         serviceScope.launch {
             AppSettings.lastAcceptedFareFlow.collectLatest { fare ->
                 updateFareText(fare)
+            }
+        }
+
+        serviceScope.launch {
+            LicenseManager.accessStatus.collectLatest { status ->
+                if (status is AccessStatus.Expired) {
+                    Log.w(TAG, "Access status is Expired (${status.message}). Removing overlay view and stopping service.")
+                    removeOverlayView()
+                    stopSelf()
+                } else {
+                    updateVisualState(AppSettings.isAutoClickEnabled(this@FloatingOverlayService))
+                }
             }
         }
     }

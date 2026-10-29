@@ -5,7 +5,7 @@ import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.SetOptions
+import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.tasks.await
@@ -15,17 +15,14 @@ import java.util.Locale
 /**
  * ReferralManager
  *
- * Implements a secure, atomic Firestore ACID transaction for Order Master's Refer & Earn system:
+ * Implements a zero-trust, server-enforced Refer & Earn system via Cloud Functions:
  * 1. Validate input (length 8, not empty).
  * 2. Block Self-Referral: Return failure if submittedCode equals LicenseManager.referralCode.value.
- * 3. Pre-Transaction Query: Query Firestore (users_licensing) using whereEqualTo("referralCode", submittedCode)
- *    to find the referrer's document ID BEFORE starting runTransaction. If empty, return "Invalid Code".
- * 4. Secure Atomic Transaction (db.runTransaction):
- *    - Read current user document (users_licensing/{currentUserUid}).
- *    - Strictly check hasClaimedReferral == false inside transaction to prevent double-claim race conditions.
- *    - Update referrer document: pointsBalance + 20, referralCount + 1.
- *    - Update current user document: pointsBalance + 50, hasClaimedReferral = true, claimedFromCode = submittedCode.
- * 5. Catch exceptions and return clean Result.failure strings.
+ * 3. Atomic Server Transaction (claimReferralCode Cloud Function):
+ *    - Validates code on backend.
+ *    - Strictly checks hasClaimedReferral == false.
+ *    - Updates referrer (+20 pts, +1 count) and referee (+50 pts).
+ * 4. Catch exceptions and return clean Result.failure strings.
  */
 object ReferralManager {
 
@@ -39,7 +36,7 @@ object ReferralManager {
     val pendingInviteCode = MutableStateFlow<String>("")
 
     /**
-     * Executes the atomic referral claim transaction.
+     * Executes the atomic referral claim transaction via Cloud Function.
      */
     suspend fun claimReferralCode(context: Context, submittedCode: String): Result<Unit> = withContext(Dispatchers.IO) {
         val cleanCode = submittedCode.trim().uppercase(Locale.ROOT)
@@ -59,8 +56,6 @@ object ReferralManager {
             return@withContext Result.failure(IllegalStateException("Please sign in with Google to claim referral rewards."))
         }
 
-        val currentUid = currentUser.uid
-
         // 2. Block Self-Referral against local user referralCode
         val myCode = LicenseManager.referralCode.value
         if (!myCode.isNullOrBlank() && myCode.equals(cleanCode, ignoreCase = true)) {
@@ -72,95 +67,26 @@ object ReferralManager {
         }
 
         try {
-            val db = FirebaseFirestore.getInstance()
-
-            // 3. Pre-Transaction Query: find referrer document ID before starting transaction
-            val querySnapshot = db.collection(COLL_USERS_LICENSING)
-                .whereEqualTo("referralCode", cleanCode)
-                .limit(1)
-                .get()
+            val functions = FirebaseFunctions.getInstance()
+            val result = functions.getHttpsCallable("claimReferralCode")
+                .call(mapOf("submittedCode" to cleanCode))
                 .await()
 
-            if (querySnapshot.isEmpty) {
-                return@withContext Result.failure(IllegalArgumentException("Invalid Code"))
-            }
-
-            val referrerDocSnapshot = querySnapshot.documents.first()
-            val referrerDocRef = referrerDocSnapshot.reference
-            val referrerUid = referrerDocSnapshot.getString("userId") ?: referrerDocSnapshot.id
-
-            // Block self-referral if document matches current user
-            if (referrerUid == currentUid || referrerDocSnapshot.id == currentUid) {
-                return@withContext Result.failure(IllegalArgumentException("Cannot use your own code"))
-            }
-
-            val currentUserDocRef = db.collection(COLL_USERS_LICENSING).document(currentUid)
-            var newCurrentPoints = 0
-
-            // 4. Secure Atomic Transaction
-            db.runTransaction { transaction ->
-                // Read current user document
-                val freshCurrentDoc = transaction.get(currentUserDocRef)
-
-                // Read referrer document
-                val freshReferrerDoc = transaction.get(referrerDocRef)
-                if (!freshReferrerDoc.exists()) {
-                    throw IllegalArgumentException("Invalid Code")
-                }
-
-                if (freshReferrerDoc.id == currentUid) {
-                    throw IllegalArgumentException("Cannot use your own code")
-                }
-
-                // Strictly check hasClaimedReferral == false inside transaction
-                val hasClaimedOnServer = freshCurrentDoc.getBoolean("hasClaimedReferral") ?: false
-                if (hasClaimedOnServer) {
-                    throw IllegalStateException("Bonus Already Claimed")
-                }
-
-                val currentPoints = freshCurrentDoc.getLong("pointsBalance") ?: 0L
-                val referrerPoints = freshReferrerDoc.getLong("pointsBalance") ?: 0L
-                val referrerCount = freshReferrerDoc.getLong("referralCount") ?: 0L
-
-                val resultingCurrentPoints = currentPoints + WELCOME_BONUS_POINTS
-                val resultingReferrerPoints = referrerPoints + REFERRAL_BONUS_POINTS
-                newCurrentPoints = resultingCurrentPoints.toInt()
-
-                // Update referrer document: pointsBalance + 20, referralCount + 1
-                transaction.update(
-                    referrerDocRef,
-                    mapOf(
-                        "pointsBalance" to resultingReferrerPoints,
-                        "referralCount" to (referrerCount + 1L),
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                )
-
-                // Update current user document: pointsBalance + 50, hasClaimedReferral = true, claimedFromCode = submittedCode
-                transaction.set(
-                    currentUserDocRef,
-                    mapOf(
-                        "userId" to currentUid,
-                        "pointsBalance" to resultingCurrentPoints,
-                        "hasClaimedReferral" to true,
-                        "claimedFromCode" to cleanCode,
-                        "claimedFrom" to cleanCode,
-                        "claimedAt" to FieldValue.serverTimestamp(),
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    ),
-                    SetOptions.merge()
-                )
-            }.await()
+            val data = result.data as? Map<*, *>
+            val newPoints = (data?.get("newPointsBalance") as? Number)?.toInt()
+                ?: (LicenseManager.pointsBalance.value + WELCOME_BONUS_POINTS)
 
             // Update in-memory reactive state on success
-            LicenseManager.notifyReferralClaimed(newCurrentPoints)
+            LicenseManager.notifyReferralClaimed(newPoints)
             pendingInviteCode.value = ""
-            Log.i(TAG, "Referral claimed: referee +50 pts, referrer +20 pts")
+            Log.i(TAG, "Referral claimed via Cloud Function: referee +50 pts, referrer +20 pts")
             Result.success(Unit)
         } catch (e: Exception) {
             val message = when {
-                e is IllegalArgumentException -> e.message ?: "Invalid Code"
-                e is IllegalStateException -> e.message ?: "Bonus Already Claimed"
+                e.message?.contains("Cannot use your own", ignoreCase = true) == true -> "Cannot use your own code"
+                e.message?.contains("Bonus Already Claimed", ignoreCase = true) == true -> "Bonus Already Claimed"
+                e.message?.contains("Invalid referral code", ignoreCase = true) == true ||
+                e.message?.contains("not found", ignoreCase = true) == true -> "Invalid Code"
                 e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ->
                     "Server security policy prevented referral claim. Please try again."
                 else -> e.message ?: "Failed to process referral code. Please check your connection."

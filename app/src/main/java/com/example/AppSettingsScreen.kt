@@ -1,8 +1,8 @@
 package com.example
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,10 +27,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
@@ -38,7 +37,10 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.TouchApp
+import android.widget.Toast
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.ui.draw.alpha
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -52,10 +54,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -66,25 +70,25 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.example.ui.theme.PrimaryEmerald
-import com.example.ui.theme.SurfaceStroke
 import com.example.auth.GoogleAuthManager
-import androidx.compose.foundation.Image
-import androidx.compose.ui.res.painterResource
+import com.example.ui.theme.PrimaryEmerald
+import com.example.ui.theme.PrimaryEmeraldDark
+import com.example.ui.theme.SurfaceStroke
+import kotlinx.coroutines.launch
 
 /**
  * Production-ready Permission & Background Readiness Dashboard (AppSettingsScreen).
@@ -106,6 +110,17 @@ fun AppSettingsScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val coroutineScope = rememberCoroutineScope()
 
+    // Reactive licensing and operating mode (Free vs Pro)
+    val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
+    val isProMode = when (val s = accessStatus) {
+        is AccessStatus.PassActive -> s.remainingTimeMs > 0
+        is AccessStatus.TrialActive -> s.remainingTimeMs > 0
+        else -> false
+    }
+
+    var featureToUnlock by remember { mutableStateOf<String?>(null) }
+
     // Live state of all permissions
     var permissionList by remember {
         mutableStateOf(PermissionUtils.getPermissionStatusList(context))
@@ -116,6 +131,15 @@ fun AppSettingsScreen(
     }
 
     var showRestrictedSettingsDialog by remember { mutableStateOf(false) }
+
+    // Feature Unlock Micro-transaction Dialog
+    featureToUnlock?.let { fId ->
+        FeatureUnlockDialog(
+            featureId = fId,
+            onDismiss = { featureToUnlock = null },
+            onSuccess = { featureToUnlock = null }
+        )
+    }
 
     // Refresh permission statuses
     val refreshPermissions = {
@@ -157,7 +181,7 @@ fun AppSettingsScreen(
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Navigate Back to Dashboard",
+                            contentDescription = stringResource(R.string.settings_cd_navigate_back),
                             tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
@@ -165,11 +189,11 @@ fun AppSettingsScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Permissions & System Setup",
+                            text = stringResource(R.string.settings_title_permissions_setup),
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Background Reliability & Auto-Accept",
+                            text = stringResource(R.string.settings_subtitle_permissions_setup),
                             style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
                         )
                     }
@@ -181,7 +205,7 @@ fun AppSettingsScreen(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
-                            contentDescription = "Refresh Status",
+                            contentDescription = stringResource(R.string.settings_cd_refresh_status),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -253,7 +277,7 @@ fun AppSettingsScreen(
                         ) {
                             Surface(
                                 shape = CircleShape,
-                                color = Color.White,
+                                color = MaterialTheme.colorScheme.onPrimary,
                                 modifier = Modifier.size(38.dp),
                                 shadowElevation = 1.dp
                             ) {
@@ -267,14 +291,17 @@ fun AppSettingsScreen(
                             }
                             Column {
                                 Text(
-                                    text = if (userAuthState.isLoggedIn) "Google Account" else "Sign in with Google",
+                                    text = if (userAuthState.isLoggedIn)
+                                        stringResource(R.string.settings_google_account_title)
+                                    else
+                                        stringResource(R.string.settings_sign_in_google_title),
                                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                                 )
                                 Text(
                                     text = if (userAuthState.isLoggedIn) {
-                                        userAuthState.userEmail ?: "Cloud Sync Active"
+                                        userAuthState.userEmail ?: stringResource(R.string.settings_cloud_sync_active)
                                     } else {
-                                        "Sync filter presets & order history"
+                                        stringResource(R.string.settings_sync_presets_desc)
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -288,20 +315,235 @@ fun AppSettingsScreen(
                                 shape = RoundedCornerShape(10.dp),
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                             ) {
-                                Text("Connect", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+                                Text(
+                                    text = stringResource(R.string.settings_btn_connect),
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                                )
                             }
                         } else {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF10B981).copy(alpha = 0.15f)
+                                color = PrimaryEmerald.copy(alpha = 0.15f)
                             ) {
                                 Text(
-                                    text = "Linked",
+                                    text = stringResource(R.string.settings_badge_linked),
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF047857)
+                                        color = PrimaryEmeraldDark
                                     ),
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Freemium Operating Mode & Order Filters Lock Status
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_freemium_mode_card"),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isProMode)
+                            MaterialTheme.colorScheme.surface
+                        else
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    ),
+                    border = CardDefaults.outlinedCardBorder().copy(
+                        brush = androidx.compose.ui.graphics.SolidColor(
+                            if (isProMode) PrimaryEmerald.copy(alpha = 0.5f)
+                            else MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f)
+                        )
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            if (isProMode) PrimaryEmerald.copy(alpha = 0.15f)
+                                            else MaterialTheme.colorScheme.tertiaryContainer
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (isProMode) Icons.Default.Check else Icons.Default.Lock,
+                                        contentDescription = null,
+                                        tint = if (isProMode) PrimaryEmerald else MaterialTheme.colorScheme.onTertiaryContainer,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Column {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = if (isProMode) "Pro Mode (Filters Unlocked)" else "Free Mode (Filters Locked)",
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                        )
+                                        if (!isProMode) {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = MaterialTheme.colorScheme.tertiaryContainer
+                                            ) {
+                                                Text(
+                                                    text = "PRO FEATURE",
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        fontSize = 9.sp,
+                                                        fontWeight = FontWeight.ExtraBold,
+                                                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                                                    ),
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Text(
+                                        text = if (isProMode)
+                                            "Custom filters active. Orders are evaluated in 300-700ms with smart auto-reject."
+                                        else
+                                            "Blind auto-accept (1-2s delay). Filter configuration is locked to Pro subscribers.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
+                        // Order Filter & Premium features list showing locked / unlocked state
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                Triple(FeatureIds.FARE_FILTERS, "Minimum Fare Filter", "Min fare threshold limit"),
+                                Triple(FeatureIds.FARE_FILTERS, "Maximum Fare Filter", "Surge ceiling limit"),
+                                Triple(FeatureIds.DISTANCE_FILTERS, "Max Pickup Distance Filter", "0.0 - 3.0 km radius"),
+                                Triple(FeatureIds.FARE_FILTERS, "Minimum Rate Per-KM Filter", "Trip rate threshold"),
+                                Triple(FeatureIds.DESTINATION_BLACKLIST, "Destination Blacklist", "Geofence blacklist"),
+                                Triple(FeatureIds.AUTO_CLICK, "Ultra-Fast Auto-Accept Speed", "Sub-second 300ms reaction"),
+                                Triple(FeatureIds.TTS_VOICE, "Voice Announcements (TTS)", "Audio alerts for orders"),
+                                Triple(FeatureIds.FLOATING_OVERLAY, "Floating HUD Overlay", "Draggable status widget")
+                            ).forEach { (fId, filterName, _) ->
+                                val isFeatureUnlocked = isProMode || LicenseManager.isFeatureUnlocked(fId)
+                                val remainingMs = LicenseManager.getFeatureRemainingTimeMs(fId)
+                                val pricing = FeatureIds.getPricing(fId)
+                                val pointsPerHour = pricing?.pointsPerHour ?: 10
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .alpha(if (isFeatureUnlocked) 1f else 0.85f),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isFeatureUnlocked) Icons.Default.Check else Icons.Default.Lock,
+                                            contentDescription = null,
+                                            tint = if (isFeatureUnlocked) PrimaryEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Text(
+                                            text = filterName,
+                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                            maxLines = 1
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    if (isFeatureUnlocked) {
+                                        val remainingText = if (isProMode) {
+                                            "UNLOCKED"
+                                        } else {
+                                            val totalMins = (remainingMs / 60000L).coerceAtLeast(1L)
+                                            val hrs = totalMins / 60
+                                            val mins = totalMins % 60
+                                            val timeStr = if (hrs > 0) "${hrs}h ${mins}m" else "${mins}m"
+                                            "UNLOCKED (expires in $timeStr)"
+                                        }
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = PrimaryEmerald.copy(alpha = 0.15f)
+                                        ) {
+                                            Text(
+                                                text = remainingText,
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = PrimaryEmeraldDark
+                                                ),
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    } else {
+                                        FilledTonalButton(
+                                            onClick = { featureToUnlock = fId },
+                                            shape = RoundedCornerShape(6.dp),
+                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                            modifier = Modifier
+                                                .height(28.dp)
+                                                .testTag("unlock_feature_${fId}_button")
+                                        ) {
+                                            Text(
+                                                text = "Unlock ($pointsPerHour Pts/Hr)",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!isProMode) {
+                            FilledTonalButton(
+                                onClick = onNavigateToPaymentVerification,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("upgrade_to_pro_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Unlock Order Filters with Pro Pass",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
                                 )
                             }
                         }
@@ -312,7 +554,7 @@ fun AppSettingsScreen(
             // 2. Section Header: Critical Core Permissions
             item {
                 Text(
-                    text = "CRITICAL FOR ORDER ACCEPTANCE",
+                    text = stringResource(R.string.settings_section_critical_permissions),
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
@@ -342,7 +584,7 @@ fun AppSettingsScreen(
             // 3. Section Header: Reliability & System Settings
             item {
                 Text(
-                    text = "BACKGROUND SURVIVAL & NOTIFICATIONS",
+                    text = stringResource(R.string.settings_section_background_survival),
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
@@ -365,19 +607,10 @@ fun AppSettingsScreen(
                 )
             }
 
-            // 4. Quick OEM Guidance Footer Card
-            item {
-                OemGuidanceCard(
-                    onOpenOemSettings = {
-                        PermissionUtils.openOemAutoStartSettings(context)
-                    }
-                )
-            }
-
-            // 5. Section Header: In-App Updater & Releases
+            // 4. Section Header: In-App Updater & Releases
             item {
                 Text(
-                    text = "IN-APP UPDATER & RELEASES",
+                    text = stringResource(R.string.settings_section_in_app_updater),
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
@@ -389,23 +622,6 @@ fun AppSettingsScreen(
 
             item {
                 InAppUpdaterSettingsCard()
-            }
-
-            // 5. Section Header: Permanent Device Hardware ID
-            item {
-                Text(
-                    text = "PERMANENT DEVICE HARDWARE ID",
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp
-                    ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 4.dp, top = 8.dp)
-                )
-            }
-
-            item {
-                HardwareIdCard()
             }
         }
     }
@@ -432,7 +648,6 @@ private fun handlePermissionAction(
 ) {
     when (permissionId) {
         "accessibility" -> {
-            // Bypassed payment verification completely
             PermissionUtils.invokeRapidoAccessibilityService(context)
         }
         "overlay" -> PermissionUtils.openOverlaySettings(context)
@@ -489,12 +704,18 @@ fun ReadinessSummaryBanner(
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = if (isReady) "Ready for Auto-Acceptance" else "Action Required",
+                            text = if (isReady)
+                                stringResource(R.string.settings_banner_ready_title)
+                            else
+                                stringResource(R.string.settings_banner_action_required_title),
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = if (isReady) PrimaryEmerald else MaterialTheme.colorScheme.error
                         )
                         Text(
-                            text = if (isReady) "All critical background guards are active" else "Missing critical permissions for automation",
+                            text = if (isReady)
+                                stringResource(R.string.settings_banner_ready_desc)
+                            else
+                                stringResource(R.string.settings_banner_action_required_desc),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -515,7 +736,10 @@ fun ReadinessSummaryBanner(
                     ),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text("Grant Missing Critical Permissions", fontWeight = FontWeight.Bold)
+                    Text(
+                        text = stringResource(R.string.settings_btn_grant_missing_permissions),
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
@@ -611,9 +835,9 @@ fun PermissionItemCard(
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = if (item.isGranted) "GRANTED"
-                            else if (item.id == "autostart") "MANUAL CHECK"
-                            else "REQUIRED",
+                            text = if (item.isGranted) stringResource(R.string.settings_badge_granted)
+                            else if (item.id == "autostart") stringResource(R.string.settings_badge_manual_check)
+                            else stringResource(R.string.settings_badge_required),
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             color = if (item.isGranted) PrimaryEmerald
@@ -634,7 +858,7 @@ fun PermissionItemCard(
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
-                        contentDescription = "Manage",
+                        contentDescription = stringResource(R.string.settings_btn_manage),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(14.dp)
                     )
@@ -647,7 +871,7 @@ fun PermissionItemCard(
                     modifier = Modifier.testTag("grant_button_${item.id}")
                 ) {
                     Text(
-                        text = if (item.id == "autostart") "Manage" else "Enable",
+                        text = if (item.id == "autostart") stringResource(R.string.settings_btn_manage) else stringResource(R.string.settings_btn_enable),
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -672,13 +896,13 @@ fun OemGuidanceCard(
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
-                text = "💡 Xiaomi / Realme / Oppo / Vivo Captains",
+                text = stringResource(R.string.settings_oem_title),
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                 color = MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = "Aggressive OEM battery savers often kill background apps when the screen turns off. Ensure 'Auto-Start' is switched ON and Battery Saver is set to 'No Restrictions'.",
+                text = stringResource(R.string.settings_oem_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 lineHeight = 16.sp
@@ -694,7 +918,11 @@ fun OemGuidanceCard(
                     containerColor = MaterialTheme.colorScheme.primary
                 )
             ) {
-                Text("Open OEM Device Manager / Auto-Start", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    text = stringResource(R.string.settings_oem_btn_open),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
@@ -750,11 +978,15 @@ fun InAppUpdaterSettingsCard() {
                     }
                     Column {
                         Text(
-                            text = "Release Updates",
+                            text = stringResource(R.string.settings_updater_title),
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})",
+                            text = stringResource(
+                                R.string.settings_updater_version_format,
+                                BuildConfig.VERSION_NAME,
+                                BuildConfig.VERSION_CODE
+                            ),
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -786,7 +1018,10 @@ fun InAppUpdaterSettingsCard() {
                             color = MaterialTheme.colorScheme.primary
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Checking...", fontSize = 12.sp)
+                        Text(
+                            text = stringResource(R.string.settings_updater_checking),
+                            fontSize = 12.sp
+                        )
                     } else {
                         Icon(
                             imageVector = Icons.Default.Refresh,
@@ -794,7 +1029,11 @@ fun InAppUpdaterSettingsCard() {
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Check Now", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = stringResource(R.string.settings_updater_check_now),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }
@@ -819,7 +1058,7 @@ fun InAppUpdaterSettingsCard() {
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "New Version ${state.latestVersion} Available!",
+                                text = stringResource(R.string.settings_updater_new_version_format, state.latestVersion),
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = PrimaryEmerald
@@ -830,7 +1069,7 @@ fun InAppUpdaterSettingsCard() {
                 }
                 is UpdateResult.NoUpdate -> {
                     Text(
-                        text = "✓ Order Master is up to date (${state.currentVersion})",
+                        text = stringResource(R.string.settings_updater_up_to_date_format, state.currentVersion),
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = PrimaryEmerald,
                             fontWeight = FontWeight.Medium
@@ -839,7 +1078,7 @@ fun InAppUpdaterSettingsCard() {
                 }
                 is UpdateResult.Error -> {
                     Text(
-                        text = "Unable to check updates: ${state.message}",
+                        text = stringResource(R.string.settings_updater_error_format, state.message),
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = MaterialTheme.colorScheme.error
                         )
@@ -858,11 +1097,11 @@ fun InAppUpdaterSettingsCard() {
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Automatic Update Check",
+                        text = stringResource(R.string.settings_updater_auto_check_title),
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
                     )
                     Text(
-                        text = "Silently check for newer captain builds on app launch",
+                        text = stringResource(R.string.settings_updater_auto_check_desc),
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -877,7 +1116,7 @@ fun InAppUpdaterSettingsCard() {
                     },
                     modifier = Modifier.testTag("auto_update_toggle"),
                     colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.White,
+                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
                         checkedTrackColor = PrimaryEmerald
                     )
                 )
@@ -888,27 +1127,229 @@ fun InAppUpdaterSettingsCard() {
 
 /**
  * Payment Response Double-Check (Frontend):
- * Pass ka status (isPassActive = true) sirf aur sirf tabhi update karein
- * jab Razorpay / Cashfree / Firebase Backend se Success Signal aaye.
+ * Pass status is updated strictly upon server confirmation.
  */
 fun onPaymentSuccess(
     context: android.content.Context,
     paymentId: String,
     onComplete: ((Boolean) -> Unit)? = null
 ) {
-    // 1. Server/Backend se verify karein
     PassManager.verifyPaymentWithBackend(context, paymentId) { isSuccess ->
         if (isSuccess) {
-            // Sirf success aane par pass active karein
             PassManager.setPassStatus(context, true)
-            android.widget.Toast.makeText(context, "Pass Activated!", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast.makeText(context, context.getString(R.string.settings_toast_pass_activated), android.widget.Toast.LENGTH_SHORT).show()
             onComplete?.invoke(true)
         } else {
-            // Payment verify nahi hua
             PassManager.setPassStatus(context, false)
-            android.widget.Toast.makeText(context, "Payment Failed/Not Verified", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast.makeText(context, context.getString(R.string.settings_toast_payment_failed), android.widget.Toast.LENGTH_SHORT).show()
             onComplete?.invoke(false)
         }
     }
+}
+
+/**
+ * Interactive Dialog to Unlock a Specific Premium Feature on an Hourly Pay-Per-Use Basis.
+ */
+@Composable
+fun FeatureUnlockDialog(
+    featureId: String,
+    onDismiss: () -> Unit,
+    onSuccess: () -> Unit
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val pricing = FeatureIds.getPricing(featureId)
+    val pointsPerHour = pricing?.pointsPerHour ?: 10
+    var hours by remember { mutableStateOf(1) }
+    var isLoading by remember { mutableStateOf(false) }
+    val pointsBalance by LicenseManager.pointsBalance.collectAsState()
+    val totalCost = pointsPerHour * hours
+    val hasEnoughPoints = pointsBalance >= totalCost
+
+    AlertDialog(
+        onDismissRequest = { if (!isLoading) onDismiss() },
+        title = {
+            Text(
+                text = "Unlock ${pricing?.title ?: "Feature"}",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                pricing?.description?.let { desc ->
+                    Text(
+                        text = desc,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                // Hours selector with Slider and Quick Buttons
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Duration",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        Text(
+                            text = "$hours Hour${if (hours > 1) "s" else ""}",
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        )
+                    }
+
+                    Slider(
+                        value = hours.toFloat(),
+                        onValueChange = { hours = it.toInt().coerceIn(1, 12) },
+                        valueRange = 1f..12f,
+                        steps = 10,
+                        enabled = !isLoading
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(1, 2, 4, 8, 12).forEach { quickHour ->
+                            FilledTonalButton(
+                                onClick = { hours = quickHour },
+                                enabled = !isLoading,
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(30.dp),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = if (hours == quickHour)
+                                        MaterialTheme.colorScheme.primary
+                                    else
+                                        MaterialTheme.colorScheme.surfaceVariant,
+                                    contentColor = if (hours == quickHour)
+                                        MaterialTheme.colorScheme.onPrimary
+                                    else
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            ) {
+                                Text(
+                                    text = "${quickHour}h",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Cost Summary Box
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(text = "Rate per hour:", style = MaterialTheme.typography.bodySmall)
+                            Text(text = "$pointsPerHour Pts", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(text = "Your Points Balance:", style = MaterialTheme.typography.bodySmall)
+                            Text(text = "$pointsBalance Pts", style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold))
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Total Cost:",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "$totalCost Points",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = if (hasEnoughPoints) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                )
+                            )
+                        }
+                        if (!hasEnoughPoints) {
+                            Text(
+                                text = "Insufficient points balance (Need ${totalCost - pointsBalance} more pts). Earn points with Refer & Earn.",
+                                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.error)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (isLoading || !hasEnoughPoints) return@Button
+                    isLoading = true
+                    coroutineScope.launch {
+                        val result = LicenseManager.unlockFeature(featureId, hours)
+                        isLoading = false
+                        result.onSuccess {
+                            Toast.makeText(
+                                context,
+                                "Unlocked ${pricing?.title ?: "Feature"} for $hours hr(s)!",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            onSuccess()
+                            onDismiss()
+                        }.onFailure { err ->
+                            Toast.makeText(
+                                context,
+                                "Unlock failed: ${err.message}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                },
+                enabled = !isLoading && hasEnoughPoints,
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Processing...")
+                } else {
+                    Text(
+                        text = "Pay & Unlock ($totalCost Pts)",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            if (!isLoading) {
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel")
+                }
+            }
+        }
+    )
 }
 

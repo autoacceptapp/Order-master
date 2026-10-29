@@ -3,6 +3,7 @@ package com.example
 import android.app.Activity
 import android.content.Context
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -11,7 +12,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,10 +37,8 @@ import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Pin
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -69,11 +67,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.ClipboardManager
+import androidx.compose.ui.focus.FocusManager
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -81,7 +82,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import android.util.Log
 import com.example.ui.theme.CaptainAutoAcceptTheme
 import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FirebaseFirestore
@@ -116,8 +116,6 @@ class PaymentActivity : ComponentActivity() {
         /**
          * Fetches dynamic payment config (Admin UPI ID and Payee Name) from Firestore:
          * collection: `admin_settings`, document: `payment_config`
-         *
-         * Returns empty strings if document doesn't exist, times out, or fails.
          */
         suspend fun fetchPaymentConfig(context: Context? = null): Pair<String, String> {
             return try {
@@ -187,9 +185,6 @@ class PaymentActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Backward-compatible callback hook for external activities.
-     */
     fun onPaymentSuccess(paymentId: String) {
         PassManager.onPaymentSuccess(this@PaymentActivity, paymentId) { isSuccess ->
             if (isSuccess) {
@@ -199,9 +194,6 @@ class PaymentActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Verifies payment status directly with backend / Firebase Firestore
-     */
     fun verifyPaymentWithBackend(paymentId: String, callback: (Boolean) -> Unit) {
         PassManager.verifyPaymentWithBackend(this@PaymentActivity, paymentId, callback)
     }
@@ -251,7 +243,7 @@ private fun PaymentVerificationScreenContent(
             CenterAlignedTopAppBar(
                 title = {
                     Text(
-                        text = "UPI Payment & Verification",
+                        text = stringResource(R.string.payment_screen_title),
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.titleMedium
                     )
@@ -263,7 +255,7 @@ private fun PaymentVerificationScreenContent(
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back"
+                            contentDescription = stringResource(R.string.payment_cd_back)
                         )
                     }
                 },
@@ -281,704 +273,813 @@ private fun PaymentVerificationScreenContent(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-
             // Header Banner
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                )
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.primary),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.VerifiedUser,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimary,
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
+            PaymentHeaderBanner()
 
-                    Spacer(modifier = Modifier.width(14.dp))
-
-                    Column {
-                        Text(
-                            text = "Secure Automated Verification",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                        Text(
-                            text = "Pay via any UPI app, then submit the 12-digit UTR / UPI Ref number to unlock your pass.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-                        )
-                    }
+            // Step 1: Plan Selection Section
+            PlanSelectionSection(
+                selectedTier = selectedTier,
+                onSelectTier = { tier ->
+                    selectedTier = tier
+                    uiState = VerificationUiState.IDLE
+                    statusMessage = ""
                 }
-            }
-
-            // Step 0: Plan Selection
-            Text(
-                text = "1. Select Pass Plan",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
             )
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                PassTier.entries.forEach { tier ->
-                    val isSelected = selectedTier == tier
-                    OutlinedCard(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable {
-                                selectedTier = tier
-                                uiState = VerificationUiState.IDLE
-                                statusMessage = ""
-                            }
-                            .testTag("tier_card_${tier.id}"),
-                        shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(
-                            width = if (isSelected) 2.dp else 1.dp,
-                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
-                        ),
-                        colors = CardDefaults.outlinedCardColors(
-                            containerColor = if (isSelected) {
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                            } else {
-                                MaterialTheme.colorScheme.surface
-                            }
+            // Step 2: Pay via UPI Section
+            UpiPaymentSection(
+                selectedTier = selectedTier,
+                adminUpiId = adminUpiId,
+                adminPayeeName = adminPayeeName,
+                isLoadingConfig = isLoadingConfig,
+                isPaymentConfigAvailable = isPaymentConfigAvailable,
+                clipboardManager = clipboardManager
+            )
+
+            // Step 3: Enter 12-Digit UTR Verification Section
+            val verifyingMessage = stringResource(R.string.payment_verifying_msg)
+            val successToastText = stringResource(R.string.payment_toast_success)
+            UtrVerificationSection(
+                utrInput = utrInput,
+                onUtrChange = { clean ->
+                    utrInput = clean
+                    if (uiState != VerificationUiState.IDLE) {
+                        uiState = VerificationUiState.IDLE
+                        statusMessage = ""
+                    }
+                },
+                uiState = uiState,
+                clipboardManager = clipboardManager,
+                focusManager = focusManager,
+                onVerifyClick = {
+                    focusManager.clearFocus()
+                    uiState = VerificationUiState.VERIFYING
+                    statusMessage = verifyingMessage
+
+                    coroutineScope.launch {
+                        val result = PassManager.verifyPaymentWithBackendDetailed(
+                            context = context,
+                            utr = utrInput,
+                            preferredTier = selectedTier
                         )
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 12.dp, horizontal = 6.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = tier.title.replace(" Pass", ""),
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "₹${tier.priceInInr}",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                text = "${tier.durationDays} Day${if (tier.durationDays > 1) "s" else ""}",
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+
+                        when (result) {
+                            is PassManager.VerificationResult.Success -> {
+                                uiState = VerificationUiState.SUCCESS
+                                statusMessage = context.getString(R.string.payment_success_msg, result.passTier.durationDays)
+                                Toast.makeText(context, successToastText, Toast.LENGTH_SHORT).show()
+                                delay(1500)
+                                onSuccessDone()
+                            }
+                            is PassManager.VerificationResult.NotFound -> {
+                                uiState = VerificationUiState.NOT_FOUND
+                                statusMessage = result.message
+                            }
+                            is PassManager.VerificationResult.AlreadyUsed -> {
+                                uiState = VerificationUiState.ALREADY_USED
+                                statusMessage = result.message
+                            }
+                            is PassManager.VerificationResult.Invalid -> {
+                                uiState = VerificationUiState.ERROR
+                                statusMessage = result.message
+                            }
+                            is PassManager.VerificationResult.Error -> {
+                                uiState = VerificationUiState.ERROR
+                                statusMessage = result.message
+                            }
                         }
                     }
                 }
-            }
-
-            // Step 1: Pay via UPI Card
-            OutlinedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "2. Pay ₹${selectedTier.priceInInr} via UPI",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer
-                        ) {
-                            Text(
-                                text = "Admin UPI ID",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-
-                    // Dynamic QR Code visual component for scanning
-                    val paymentUpiUri = remember(adminUpiId, adminPayeeName, selectedTier) {
-                        if (adminUpiId.isNotBlank()) {
-                            QrCodeGenerator.getUpiUriString(
-                                vpa = adminUpiId,
-                                name = adminPayeeName.ifBlank { "OrderMaster Captain Store" },
-                                amount = selectedTier.priceInInr.toDouble(),
-                                note = "Pass ${selectedTier.title}"
-                            )
-                        } else {
-                            ""
-                        }
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.padding(14.dp)
-                        ) {
-                            if (isLoadingConfig) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(175.dp)
-                                        .background(androidx.compose.ui.graphics.Color.White, RoundedCornerShape(12.dp))
-                                        .padding(8.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(36.dp),
-                                        color = MaterialTheme.colorScheme.primary,
-                                        strokeWidth = 3.dp
-                                    )
-                                }
-                            } else if (adminUpiId.isBlank()) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(175.dp)
-                                        .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
-                                        .padding(16.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Icon(
-                                            imageVector = Icons.Default.ErrorOutline,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.size(40.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        Text(
-                                            text = "Unavailable",
-                                            fontWeight = FontWeight.Bold,
-                                            style = MaterialTheme.typography.labelLarge,
-                                            color = MaterialTheme.colorScheme.error
-                                        )
-                                    }
-                                }
-                            } else {
-                                val qrBitmap = remember(paymentUpiUri) {
-                                    if (paymentUpiUri.isNotBlank()) {
-                                        QrCodeGenerator.generateQrCodeBitmap(paymentUpiUri, 512, 512)
-                                    } else null
-                                }
-                                if (qrBitmap != null) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(175.dp)
-                                            .background(androidx.compose.ui.graphics.Color.White, RoundedCornerShape(12.dp))
-                                            .padding(8.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Image(
-                                            bitmap = qrBitmap.asImageBitmap(),
-                                            contentDescription = "Scan to pay ₹${selectedTier.priceInInr} via UPI",
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                    }
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = when {
-                                    isLoadingConfig -> "Fetching payment details..."
-                                    adminUpiId.isBlank() -> "Payment system temporarily unavailable. Please try again later."
-                                    else -> "Scan QR with any UPI App (GPay / PhonePe / Paytm / BHIM)"
-                                },
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                color = if (!isLoadingConfig && adminUpiId.isBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center
-                            )
-                        }
-                    }
-
-                    // UPI ID display box with copy button
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (isLoadingConfig) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.padding(vertical = 4.dp)
-                                ) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        strokeWidth = 2.dp,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "Loading UPI details...",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            } else if (adminUpiId.isBlank()) {
-                                Text(
-                                    text = "Payment system temporarily unavailable. Please try again later.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.weight(1f).padding(end = 8.dp)
-                                )
-                            } else {
-                                Column {
-                                    Text(
-                                        text = "Payee: $adminPayeeName",
-                                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Text(
-                                        text = adminUpiId,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                            }
-
-                            OutlinedButton(
-                                onClick = {
-                                    clipboardManager.setText(AnnotatedString(adminUpiId))
-                                    Toast.makeText(context, "UPI ID copied: $adminUpiId", Toast.LENGTH_SHORT).show()
-                                },
-                                enabled = isPaymentConfigAvailable,
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.testTag("copy_upi_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ContentCopy,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Copy")
-                            }
-                        }
-                    }
-
-                    // Pay via UPI app button
-                    Button(
-                        onClick = {
-                            val act = context as? Activity
-                            if (act != null) {
-                                PassManager.initiateUpiPayment(
-                                    activity = act,
-                                    passTier = selectedTier,
-                                    payeeVpa = adminUpiId,
-                                    payeeName = adminPayeeName.ifBlank { "OrderMaster Captain Store" },
-                                    onFailed = { reason ->
-                                        Toast.makeText(context, reason, Toast.LENGTH_LONG).show()
-                                    }
-                                )
-                            }
-                        },
-                        enabled = isPaymentConfigAvailable,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp)
-                            .testTag("open_upi_app_button"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                        )
-                    ) {
-                        if (isLoadingConfig) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Checking UPI Config...",
-                                fontWeight = FontWeight.Bold
-                            )
-                        } else if (adminUpiId.isBlank()) {
-                            Icon(
-                                imageVector = Icons.Default.ErrorOutline,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Payment Unavailable",
-                                fontWeight = FontWeight.Bold
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.AccountBalanceWallet,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Open UPI App (GPay / PhonePe / Paytm)",
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    Text(
-                        text = "• Click to pay directly, or copy the UPI ID into your preferred payment app.",
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            // Step 2: Input 12-Digit UTR Card
-            OutlinedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        text = "3. Enter 12-Digit UTR / UPI Ref Number",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Text(
-                        text = "After completing your payment, copy the 9-16 character UTR / UPI Ref number from the payment receipt and enter it below.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    OutlinedTextField(
-                        value = utrInput,
-                        onValueChange = { input ->
-                            val clean = input.filter { it.isLetterOrDigit() }.take(16).uppercase()
-                            utrInput = clean
-                            if (uiState != VerificationUiState.IDLE) {
-                                uiState = VerificationUiState.IDLE
-                                statusMessage = ""
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("utr_input_field"),
-                        enabled = uiState != VerificationUiState.VERIFYING,
-                        label = { Text("UTR / UPI Ref No. (9-16 chars)") },
-                        placeholder = { Text("e.g. 426719823451 or IMPS123456") },
-                        leadingIcon = {
-                            Icon(imageVector = Icons.Default.Pin, contentDescription = null)
-                        },
-                        trailingIcon = {
-                            IconButton(
-                                onClick = {
-                                    val clipText = clipboardManager.getText()?.text ?: ""
-                                    val clean = clipText.filter { it.isLetterOrDigit() }.take(16).uppercase()
-                                    if (clean.isNotEmpty()) {
-                                        utrInput = clean
-                                        Toast.makeText(context, "Pasted: $clean", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        Toast.makeText(context, "No alphanumeric reference found in clipboard", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                enabled = uiState != VerificationUiState.VERIFYING,
-                                modifier = Modifier.testTag("paste_utr_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ContentPaste,
-                                    contentDescription = "Paste from clipboard"
-                                )
-                            }
-                        },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Text,
-                            imeAction = ImeAction.Done
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onDone = { focusManager.clearFocus() }
-                        ),
-                        supportingText = {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = if (utrInput.isNotEmpty() && utrInput.length < 9) {
-                                        "Need at least 9 characters (${9 - utrInput.length} more)"
-                                    } else {
-                                        "Found on GPay/PhonePe receipt"
-                                    },
-                                    color = if (utrInput.isNotEmpty() && utrInput.length < 9) {
-                                        MaterialTheme.colorScheme.error
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    }
-                                )
-                                Text(
-                                    text = "${utrInput.length}/16",
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        },
-                        isError = utrInput.isNotEmpty() && utrInput.length < 9,
-                        shape = RoundedCornerShape(12.dp)
-                    )
-
-                    // Verify Payment Button
-                    Button(
-                        onClick = {
-                            focusManager.clearFocus()
-                            uiState = VerificationUiState.VERIFYING
-                            statusMessage = "Waiting for bank confirmation... This may take up to 90 seconds."
-
-                            coroutineScope.launch {
-                                val result = PassManager.verifyPaymentWithBackendDetailed(
-                                    context = context,
-                                    utr = utrInput,
-                                    preferredTier = selectedTier
-                                )
-
-                                when (result) {
-                                    is PassManager.VerificationResult.Success -> {
-                                        uiState = VerificationUiState.SUCCESS
-                                        statusMessage = "Pass Activated! Valid for ${result.passTier.durationDays} day(s)."
-                                        Toast.makeText(context, "✅ Pass Activated Successfully!", Toast.LENGTH_SHORT).show()
-                                        delay(1500)
-                                        onSuccessDone()
-                                    }
-                                    is PassManager.VerificationResult.NotFound -> {
-                                        uiState = VerificationUiState.NOT_FOUND
-                                        statusMessage = result.message
-                                    }
-                                    is PassManager.VerificationResult.AlreadyUsed -> {
-                                        uiState = VerificationUiState.ALREADY_USED
-                                        statusMessage = result.message
-                                    }
-                                    is PassManager.VerificationResult.Invalid -> {
-                                        uiState = VerificationUiState.ERROR
-                                        statusMessage = result.message
-                                    }
-                                    is PassManager.VerificationResult.Error -> {
-                                        uiState = VerificationUiState.ERROR
-                                        statusMessage = result.message
-                                    }
-                                }
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .testTag("verify_payment_button"),
-                        enabled = utrInput.length in 9..16 && uiState != VerificationUiState.VERIFYING,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                            disabledContentColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
-                        )
-                    ) {
-                        if (uiState == VerificationUiState.VERIFYING) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                    strokeWidth = 2.5.dp
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text(
-                                    text = "Waiting for bank confirmation... This may take up to 90 seconds.",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp,
-                                    maxLines = 2,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Payments,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "Verify Payment",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
-                            )
-                        }
-                    }
-                }
-            }
+            )
 
             // Status & Feedback Card
             if (statusMessage.isNotEmpty() || uiState == VerificationUiState.VERIFYING) {
-                val (cardColor, contentColor, icon) = when (uiState) {
-                    VerificationUiState.VERIFYING -> Triple(
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                        MaterialTheme.colorScheme.onPrimaryContainer,
-                        Icons.Default.HourglassTop
-                    )
-                    VerificationUiState.SUCCESS -> Triple(
-                        Color(0xFFE8F5E9),
-                        Color(0xFF1B5E20),
-                        Icons.Default.CheckCircle
-                    )
-                    VerificationUiState.NOT_FOUND -> Triple(
-                        Color(0xFFFFF8E1),
-                        Color(0xFFB78103),
-                        Icons.Default.HourglassTop
-                    )
-                    VerificationUiState.ALREADY_USED,
-                    VerificationUiState.ERROR -> Triple(
-                        Color(0xFFFFEBEE),
-                        Color(0xFFB71C1C),
-                        Icons.Default.ErrorOutline
-                    )
-                    else -> Triple(
-                        MaterialTheme.colorScheme.surfaceVariant,
-                        MaterialTheme.colorScheme.onSurfaceVariant,
-                        Icons.Default.Info
-                    )
-                }
+                StatusFeedbackCard(
+                    uiState = uiState,
+                    statusMessage = statusMessage
+                )
+            }
 
-                Card(
+            // Reference Help Card
+            UtrHelpSection()
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+/**
+ * Modular Header Banner Component
+ */
+@Composable
+private fun PaymentHeaderBanner(
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.primary),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.VerifiedUser,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(14.dp))
+
+            Column {
+                Text(
+                    text = stringResource(R.string.payment_header_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Text(
+                    text = stringResource(R.string.payment_header_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Modular Plan Selection Section Component
+ */
+@Composable
+private fun PlanSelectionSection(
+    selectedTier: PassTier,
+    onSelectTier: (PassTier) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.payment_step_1_title),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            PassTier.entries.forEach { tier ->
+                val isSelected = selectedTier == tier
+                OutlinedCard(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("verification_status_card"),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = cardColor)
+                        .weight(1f)
+                        .clickable { onSelectTier(tier) }
+                        .testTag("tier_card_${tier.id}"),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(
+                        width = if (isSelected) 2.dp else 1.dp,
+                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                    ),
+                    colors = CardDefaults.outlinedCardColors(
+                        containerColor = if (isSelected) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        }
+                    )
                 ) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                            .padding(vertical = 12.dp, horizontal = 6.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (uiState == VerificationUiState.VERIFYING) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    color = contentColor,
-                                    strokeWidth = 2.dp
-                                )
-                            } else {
+                        Text(
+                            text = tier.title.replace(" Pass", ""),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = stringResource(R.string.payment_price_format, tier.priceInInr),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = if (tier.durationDays > 1)
+                                stringResource(R.string.payment_duration_multi_day, tier.durationDays)
+                            else
+                                stringResource(R.string.payment_duration_single_day, tier.durationDays),
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Modular UPI Payment Section Component
+ */
+@Composable
+private fun UpiPaymentSection(
+    selectedTier: PassTier,
+    adminUpiId: String,
+    adminPayeeName: String,
+    isLoadingConfig: Boolean,
+    isPaymentConfigAvailable: Boolean,
+    clipboardManager: ClipboardManager,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val defaultPayeeName = stringResource(R.string.payment_default_payee_name)
+
+    OutlinedCard(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = stringResource(R.string.payment_step_2_title, selectedTier.priceInInr),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Text(
+                        text = stringResource(R.string.payment_admin_upi_badge),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            // QR Code Container
+            val paymentUpiUri = remember(adminUpiId, adminPayeeName, selectedTier) {
+                if (adminUpiId.isNotBlank()) {
+                    QrCodeGenerator.getUpiUriString(
+                        vpa = adminUpiId,
+                        name = adminPayeeName.ifBlank { defaultPayeeName },
+                        amount = selectedTier.priceInInr.toDouble(),
+                        note = "Pass ${selectedTier.title}"
+                    )
+                } else {
+                    ""
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(14.dp)
+                ) {
+                    if (isLoadingConfig) {
+                        Box(
+                            modifier = Modifier
+                                .size(175.dp)
+                                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+                                .padding(8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(36.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                strokeWidth = 3.dp
+                            )
+                        }
+                    } else if (adminUpiId.isBlank()) {
+                        Box(
+                            modifier = Modifier
+                                .size(175.dp)
+                                .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(
-                                    imageVector = icon,
+                                    imageVector = Icons.Default.ErrorOutline,
                                     contentDescription = null,
-                                    tint = contentColor,
-                                    modifier = Modifier.size(24.dp)
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = stringResource(R.string.payment_btn_unavailable),
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.error
                                 )
                             }
-                            Spacer(modifier = Modifier.width(10.dp))
+                        }
+                    } else {
+                        val qrBitmap = remember(paymentUpiUri) {
+                            if (paymentUpiUri.isNotBlank()) {
+                                QrCodeGenerator.generateQrCodeBitmap(paymentUpiUri, 512, 512)
+                            } else null
+                        }
+                        if (qrBitmap != null) {
+                            Box(
+                                modifier = Modifier
+                                    .size(175.dp)
+                                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+                                    .padding(8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Image(
+                                    bitmap = qrBitmap.asImageBitmap(),
+                                    contentDescription = stringResource(R.string.payment_qr_cd_format, selectedTier.priceInInr),
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = when {
+                            isLoadingConfig -> stringResource(R.string.payment_qr_fetching)
+                            adminUpiId.isBlank() -> stringResource(R.string.payment_system_unavailable)
+                            else -> stringResource(R.string.payment_qr_scan_caption)
+                        },
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                        color = if (!isLoadingConfig && adminUpiId.isBlank()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
+            // UPI ID Display Box with Copy Button
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isLoadingConfig) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = when (uiState) {
-                                    VerificationUiState.VERIFYING -> "Verifying... Please wait"
-                                    VerificationUiState.SUCCESS -> "Verification Success"
-                                    VerificationUiState.NOT_FOUND -> "Pending Verification"
-                                    VerificationUiState.ALREADY_USED -> "Already Claimed"
-                                    VerificationUiState.ERROR -> "Verification Notice"
-                                    else -> "Status"
-                                },
-                                fontWeight = FontWeight.Bold,
-                                color = contentColor,
-                                style = MaterialTheme.typography.titleSmall
+                                text = stringResource(R.string.payment_loading_upi_details),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-
+                    } else if (adminUpiId.isBlank()) {
                         Text(
-                            text = statusMessage,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = contentColor
+                            text = stringResource(R.string.payment_system_unavailable),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.weight(1f).padding(end = 8.dp)
                         )
-
-                        if (uiState == VerificationUiState.NOT_FOUND) {
+                    } else {
+                        Column {
                             Text(
-                                text = "Tip: Our secure backend verifies bank confirmations in seconds. If you just paid, please wait 30 to 60 seconds and tap 'Verify Payment' again.",
+                                text = stringResource(R.string.payment_payee_label, adminPayeeName),
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                color = contentColor.copy(alpha = 0.85f)
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = adminUpiId,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(adminUpiId))
+                            Toast.makeText(context, context.getString(R.string.payment_toast_upi_copied, adminUpiId), Toast.LENGTH_SHORT).show()
+                        },
+                        enabled = isPaymentConfigAvailable,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.testTag("copy_upi_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(stringResource(R.string.payment_btn_copy))
                     }
                 }
             }
 
-            // Reference help card
-            OutlinedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp)
+            // Pay via UPI App Button
+            Button(
+                onClick = {
+                    val act = context as? Activity
+                    if (act != null) {
+                        PassManager.initiateUpiPayment(
+                            activity = act,
+                            passTier = selectedTier,
+                            payeeVpa = adminUpiId,
+                            payeeName = adminPayeeName.ifBlank { defaultPayeeName },
+                            onFailed = { reason ->
+                                Toast.makeText(context, reason, Toast.LENGTH_LONG).show()
+                            }
+                        )
+                    }
+                },
+                enabled = isPaymentConfigAvailable,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    .testTag("open_upi_app_button"),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                )
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        text = "Where to find the 12-digit UTR?",
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.labelLarge
+                if (isLoadingConfig) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "• Google Pay: Tap the payment > Look for 'UPI transaction ID'\n" +
-                                "• PhonePe: View History > Payment Details > 'UTR'\n" +
-                                "• Paytm: Passbook / Transaction History > 'UPI Ref No.'\n" +
-                                "• Any Bank: Look for 12 digits starting with the current day/month sequence.",
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = stringResource(R.string.payment_btn_checking_upi),
+                        fontWeight = FontWeight.Bold
+                    )
+                } else if (adminUpiId.isBlank()) {
+                    Icon(
+                        imageVector = Icons.Default.ErrorOutline,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.payment_btn_unavailable),
+                        fontWeight = FontWeight.Bold
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.AccountBalanceWallet,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.payment_btn_open_upi),
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = stringResource(R.string.payment_upi_hint),
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * Modular UTR Verification Section Component
+ */
+@Composable
+private fun UtrVerificationSection(
+    utrInput: String,
+    onUtrChange: (String) -> Unit,
+    uiState: VerificationUiState,
+    clipboardManager: ClipboardManager,
+    focusManager: FocusManager,
+    onVerifyClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+
+    OutlinedCard(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.payment_step_3_title),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            Text(
+                text = stringResource(R.string.payment_step_3_desc),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            OutlinedTextField(
+                value = utrInput,
+                onValueChange = { input ->
+                    val clean = input.filter { it.isLetterOrDigit() }.take(16).uppercase()
+                    onUtrChange(clean)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("utr_input_field"),
+                enabled = uiState != VerificationUiState.VERIFYING,
+                label = { Text(stringResource(R.string.payment_utr_label)) },
+                placeholder = { Text(stringResource(R.string.payment_utr_placeholder)) },
+                leadingIcon = {
+                    Icon(imageVector = Icons.Default.Pin, contentDescription = null)
+                },
+                trailingIcon = {
+                    IconButton(
+                        onClick = {
+                            val clipText = clipboardManager.getText()?.text ?: ""
+                            val clean = clipText.filter { it.isLetterOrDigit() }.take(16).uppercase()
+                            if (clean.isNotEmpty()) {
+                                onUtrChange(clean)
+                                Toast.makeText(context, context.getString(R.string.payment_toast_pasted, clean), Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, context.getString(R.string.payment_toast_no_clip), Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        enabled = uiState != VerificationUiState.VERIFYING,
+                        modifier = Modifier.testTag("paste_utr_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentPaste,
+                            contentDescription = stringResource(R.string.payment_cd_paste)
+                        )
+                    }
+                },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Text,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = { focusManager.clearFocus() }
+                ),
+                supportingText = {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = if (utrInput.isNotEmpty() && utrInput.length < 9) {
+                                stringResource(R.string.payment_utr_need_more, 9 - utrInput.length)
+                            } else {
+                                stringResource(R.string.payment_utr_hint)
+                            },
+                            color = if (utrInput.isNotEmpty() && utrInput.length < 9) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        Text(
+                            text = stringResource(R.string.payment_char_count_format, utrInput.length),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                isError = utrInput.isNotEmpty() && utrInput.length < 9,
+                shape = RoundedCornerShape(12.dp)
+            )
+
+            // Verify Payment Button
+            Button(
+                onClick = onVerifyClick,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .testTag("verify_payment_button"),
+                enabled = utrInput.length in 9..16 && uiState != VerificationUiState.VERIFYING,
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                    disabledContentColor = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                )
+            ) {
+                if (uiState == VerificationUiState.VERIFYING) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.5.dp
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = stringResource(R.string.payment_verifying_msg),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            maxLines = 2,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Payments,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(R.string.payment_btn_verify),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Modular Status Feedback Card Component
+ */
+@Composable
+private fun StatusFeedbackCard(
+    uiState: VerificationUiState,
+    statusMessage: String,
+    modifier: Modifier = Modifier
+) {
+    val (cardColor, contentColor, icon) = when (uiState) {
+        VerificationUiState.VERIFYING -> Triple(
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+            MaterialTheme.colorScheme.onPrimaryContainer,
+            Icons.Default.HourglassTop
+        )
+        VerificationUiState.SUCCESS -> Triple(
+            MaterialTheme.colorScheme.primaryContainer,
+            MaterialTheme.colorScheme.onPrimaryContainer,
+            Icons.Default.CheckCircle
+        )
+        VerificationUiState.NOT_FOUND -> Triple(
+            MaterialTheme.colorScheme.secondaryContainer,
+            MaterialTheme.colorScheme.onSecondaryContainer,
+            Icons.Default.HourglassTop
+        )
+        VerificationUiState.ALREADY_USED,
+        VerificationUiState.ERROR -> Triple(
+            MaterialTheme.colorScheme.errorContainer,
+            MaterialTheme.colorScheme.onErrorContainer,
+            Icons.Default.ErrorOutline
+        )
+        else -> Triple(
+            MaterialTheme.colorScheme.surfaceVariant,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+            Icons.Default.Info
+        )
+    }
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("verification_status_card"),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = cardColor)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (uiState == VerificationUiState.VERIFYING) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = contentColor,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = contentColor,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = when (uiState) {
+                        VerificationUiState.VERIFYING -> stringResource(R.string.payment_status_verifying_title)
+                        VerificationUiState.SUCCESS -> stringResource(R.string.payment_status_success_title)
+                        VerificationUiState.NOT_FOUND -> stringResource(R.string.payment_status_pending_title)
+                        VerificationUiState.ALREADY_USED -> stringResource(R.string.payment_status_claimed_title)
+                        VerificationUiState.ERROR -> stringResource(R.string.payment_status_notice_title)
+                        else -> stringResource(R.string.payment_status_default_title)
+                    },
+                    fontWeight = FontWeight.Bold,
+                    color = contentColor,
+                    style = MaterialTheme.typography.titleSmall
+                )
+            }
+
+            Text(
+                text = statusMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = contentColor
+            )
+
+            if (uiState == VerificationUiState.NOT_FOUND) {
+                Text(
+                    text = stringResource(R.string.payment_tip_pending),
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                    color = contentColor.copy(alpha = 0.85f)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Modular UTR Help / Guide Component
+ */
+@Composable
+private fun UtrHelpSection(
+    modifier: Modifier = Modifier
+) {
+    OutlinedCard(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.payment_help_title),
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelLarge
+            )
+            Text(
+                text = stringResource(R.string.payment_help_desc),
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

@@ -670,67 +670,7 @@ fun ProfileScreen(
             }
         }
 
-        // 4. Vehicle & Equipment Details
-        item {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("equipment_details_card"),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                border = CardDefaults.outlinedCardBorder()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(18.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.DirectionsBike,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Text(
-                            text = "Assigned Vehicle & Hardware",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                    }
-
-                    InfoRow(
-                        icon = Icons.Default.DirectionsBike,
-                        label = "Vehicle Profile",
-                        value = "Two-Wheeler / Honda Activa"
-                    )
-                    InfoRow(
-                        icon = Icons.Default.Badge,
-                        label = "Fleet Plate",
-                        value = "GJ-03-XX-1234"
-                    )
-                    InfoRow(
-                        icon = Icons.Default.PhoneAndroid,
-                        label = "Device Hardware",
-                        value = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}"
-                    )
-                    InfoRow(
-                        icon = Icons.Default.Security,
-                        label = "Android Version",
-                        value = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
-                    )
-                }
-            }
-        }
-
-        // 5. App Version & Build Information
+        // 4. App Version & Build Information
         item {
             AppVersionInfoCard(
                 modifier = Modifier.testTag("app_version_card")

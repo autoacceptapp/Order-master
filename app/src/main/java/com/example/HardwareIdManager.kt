@@ -9,9 +9,7 @@ import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,14 +25,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -47,13 +42,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ui.theme.PrimaryEmerald
 import java.security.MessageDigest
 import java.util.UUID
 
@@ -253,22 +249,16 @@ object HardwareIdManager {
     /**
      * Copies text to the system clipboard and displays a standard confirmation Toast.
      */
-    fun copyToClipboard(context: Context, text: String, label: String = "Device Hardware ID") {
+    fun copyToClipboard(context: Context, text: String, label: String = context.getString(R.string.hwid_clipboard_label)) {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
         val clip = ClipData.newPlainText(label, text)
         clipboard?.setPrimaryClip(clip)
-        Toast.makeText(context, "$label copied to clipboard!", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.hwid_toast_copied, label), Toast.LENGTH_SHORT).show()
     }
 }
 
 /**
  * Purely informational Jetpack Compose UI card displaying the Permanent Device Hardware ID.
- * Features:
- * - Clean Material 3 visual styling with generous padding and tactile elevation.
- * - Prominent monospace Hardware ID display.
- * - "Copy ID" primary button with instant clipboard feedback.
- * - Hardware entropy source indicator (Widevine DRM vs Hardware Fallback).
- * - Zero lock / Zero blocking / Zero restrictions.
  */
 @Composable
 fun HardwareIdCard(
@@ -313,7 +303,7 @@ fun HardwareIdCard(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Memory,
-                            contentDescription = "Device Hardware Module",
+                            contentDescription = stringResource(R.string.hwid_card_title),
                             tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(22.dp)
                         )
@@ -321,14 +311,14 @@ fun HardwareIdCard(
 
                     Column {
                         Text(
-                            text = "Device Hardware ID",
+                            text = stringResource(R.string.hwid_card_title),
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold
                             ),
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Permanent DRM Hardware UUID",
+                            text = stringResource(R.string.hwid_card_subtitle),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -337,7 +327,7 @@ fun HardwareIdCard(
 
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = Color(0xFF10B981).copy(alpha = 0.15f)
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -347,14 +337,14 @@ fun HardwareIdCard(
                         Icon(
                             imageVector = Icons.Default.CheckCircle,
                             contentDescription = null,
-                            tint = Color(0xFF10B981),
+                            tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(12.dp)
                         )
                         Text(
-                            text = "PERMANENT",
+                            text = stringResource(R.string.hwid_badge_permanent),
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.ExtraBold,
-                                color = Color(0xFF047857),
+                                color = MaterialTheme.colorScheme.primary,
                                 fontSize = 10.sp
                             )
                         )
@@ -388,7 +378,7 @@ fun HardwareIdCard(
                     Spacer(modifier = Modifier.height(6.dp))
 
                     Text(
-                        text = "Source: ${details.source}",
+                        text = stringResource(R.string.hwid_source_label, details.source),
                         style = MaterialTheme.typography.labelSmall.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 11.sp
@@ -399,7 +389,7 @@ fun HardwareIdCard(
 
             // Description note
             Text(
-                text = "Tied to physical crypto-hardware. This identifier never changes, even after factory reset or app uninstallation.",
+                text = stringResource(R.string.hwid_description),
                 style = MaterialTheme.typography.bodySmall.copy(
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -412,9 +402,10 @@ fun HardwareIdCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                val clipboardLabel = stringResource(R.string.hwid_clipboard_label)
                 Button(
                     onClick = {
-                        HardwareIdManager.copyToClipboard(context, details.formattedId, "Device Hardware ID")
+                        HardwareIdManager.copyToClipboard(context, details.formattedId, clipboardLabel)
                         copiedRecently = true
                     },
                     shape = RoundedCornerShape(12.dp),
@@ -428,12 +419,12 @@ fun HardwareIdCard(
                 ) {
                     Icon(
                         imageVector = if (copiedRecently) Icons.Default.CheckCircle else Icons.Default.ContentCopy,
-                        contentDescription = "Copy ID",
+                        contentDescription = stringResource(R.string.hwid_btn_copy),
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (copiedRecently) "Copied to Clipboard!" else "Copy Hardware ID",
+                        text = stringResource(if (copiedRecently) R.string.hwid_btn_copied else R.string.hwid_btn_copy),
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp
                     )

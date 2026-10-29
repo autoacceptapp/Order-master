@@ -14,6 +14,12 @@ import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
@@ -72,6 +78,7 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     @Volatile
     private var isPendingExecution: Boolean = false
@@ -83,9 +90,32 @@ open class MyAccessibilityService : AccessibilityService() {
     private val processedOfferIds = LinkedHashSet<String>()
     private val maxProcessedHistory = 50
 
+    private val accessCheckRunnable = object : Runnable {
+        override fun run() {
+            val isPro = PassManager.isAccessGranted(this@MyAccessibilityService)
+            Log.d(TAG, "Periodic 30s check: Mode = ${if (isPro) "PRO MODE (Active Pass/Trial)" else "FREE MODE (Blind Accept)"}")
+            mainHandler.postDelayed(this, 30_000L)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         TTSManager.init(this)
+
+        // Continuous 30-second background verification of licensing & pass status
+        mainHandler.postDelayed(accessCheckRunnable, 30_000L)
+
+        // Reactive listener for licensing & pass status changes
+        serviceScope.launch {
+            LicenseManager.accessStatus.collectLatest { status ->
+                val isPro = when (status) {
+                    is AccessStatus.PassActive -> status.remainingTimeMs > 0
+                    is AccessStatus.TrialActive -> status.remainingTimeMs > 0
+                    else -> false
+                }
+                Log.i(TAG, "LicenseManager access status changed: $status -> Operating in ${if (isPro) "PRO MODE" else "FREE MODE"}")
+            }
+        }
     }
 
     override fun onServiceConnected() {
@@ -121,6 +151,7 @@ open class MyAccessibilityService : AccessibilityService() {
         if (instance === this) {
             instance = null
         }
+        serviceScope.cancel()
         mainHandler.removeCallbacksAndMessages(null)
         TTSManager.shutdown()
         Log.d(TAG, "Accessibility Service stopped.")
@@ -161,12 +192,9 @@ open class MyAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 3b. Pass & License Enforcement: Ensure active pass or active trial
-        if (!PassManager.isAccessGranted(this)) {
-            Log.w(TAG, "Access expired: Automation blocked. Active subscription pass required.")
-            PassManager.notifyAccessExpired(this)
-            return
-        }
+        // 3b. Operating Mode Detection (Freemium Model)
+        // Free Mode runs without stopping the accessibility service; Pro Mode enables custom filters.
+        val isProMode = PassManager.isAccessGranted(this)
 
         // 4. Low-Cost Event Pre-Filtering (Battery Drain & CPU Optimization):
         // Inspect event text, content description, class name, and shallow source node
@@ -226,7 +254,7 @@ open class MyAccessibilityService : AccessibilityService() {
             }
 
             // 2. Multi-Order Processing Queue
-            processOrderQueue(offers, candidateWindows)
+            processOrderQueue(offers, candidateWindows, isProMode)
 
         } finally {
             parsedOffers?.forEach { offer ->
@@ -331,32 +359,43 @@ open class MyAccessibilityService : AccessibilityService() {
      * Evaluates multiple simultaneous order offers isolated by tree grouping, logs card-level validation,
      * speaks announcements in order (QUEUE_ADD), and executes ACTION_CLICK strictly within the bounds of the best offer.
      */
-    private fun processOrderQueue(offers: List<ParsedRideOffer>, rootWindows: List<AccessibilityNodeInfo>) {
-        val minFare = AppSettings.getMinFare(this)
-        val maxFare = AppSettings.getMaxFare(this)
-        val maxPickupDist = AppSettings.getMaxPickupDistance(this)
+    private fun processOrderQueue(offers: List<ParsedRideOffer>, rootWindows: List<AccessibilityNodeInfo>, isProMode: Boolean) {
         val isAutoAccept = AppSettings.isAutoAcceptEnabled(this)
-        val isMinFareEnabled = AppSettings.isMinFareEnabled(this)
-        val isMaxFareEnabled = AppSettings.isMaxFareEnabled(this)
-        val isMaxPickupDistEnabled = AppSettings.isMaxPickupDistanceEnabled(this)
-        val isMaxDropDistEnabled = AppSettings.isMaxDropDistanceEnabled(this)
-        val maxDropDist = AppSettings.getMaxDropDistance(this)
-        val minPerKmRate = AppSettings.getMinPerKmRate(this)
-        val isMinPerKmRateEnabled = AppSettings.isMinPerKmRateEnabled(this)
-        val blockedLocations = AppSettings.getBlockedLocations(this)
-        val isDestinationBlacklistEnabled = AppSettings.isDestinationBlacklistEnabled(this)
 
         // UI Logging Requirement: Log total distinct order cards detected
         AppSettings.addLog(
             title = "Orders Detected",
-            message = "Detected ${offers.size} distinct order card${if (offers.size > 1) "s" else ""} on screen.",
+            message = "Detected ${offers.size} distinct order card${if (offers.size > 1) "s" else ""} on screen (${if (isProMode) "Pro Mode" else "Free Mode"}).",
             severity = LogSeverity.INFO
         )
-        broadcastLog("Detected ${offers.size} distinct order card${if (offers.size > 1) "s" else ""}")
+        broadcastLog("Detected ${offers.size} distinct order card${if (offers.size > 1) "s" else ""} [${if (isProMode) "Pro" else "Free"}]")
+
+        // Pay-Per-Use Feature Checks:
+        val isFareFiltersUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.FARE_FILTERS)
+        val isDistanceFiltersUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.DISTANCE_FILTERS)
+        val isBlacklistUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
+        val isAutoClickSpeedUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK)
+        val isTtsVoiceUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE)
+
+        val minFare = AppSettings.getMinFare(this)
+        val maxFare = AppSettings.getMaxFare(this)
+        val maxPickupDist = AppSettings.getMaxPickupDistance(this)
+        val maxDropDist = AppSettings.getMaxDropDistance(this)
+        val minPerKmRate = AppSettings.getMinPerKmRate(this)
+        val blockedLocations = AppSettings.getBlockedLocations(this)
+
+        // Dynamically override user's filter toggles based on feature unlock status
+        val isMinFareEnabled = isFareFiltersUnlocked && AppSettings.isMinFareEnabled(this)
+        val isMaxFareEnabled = isFareFiltersUnlocked && AppSettings.isMaxFareEnabled(this)
+        val isMinPerKmRateEnabled = isFareFiltersUnlocked && AppSettings.isMinPerKmRateEnabled(this)
+        val isMaxPickupDistEnabled = isDistanceFiltersUnlocked && AppSettings.isMaxPickupDistanceEnabled(this)
+        val isMaxDropDistEnabled = isDistanceFiltersUnlocked && AppSettings.isMaxDropDistanceEnabled(this)
+        val isDestinationBlacklistEnabled = isBlacklistUnlocked && AppSettings.isDestinationBlacklistEnabled(this)
+        val effectiveBlockedLocations = if (isBlacklistUnlocked) blockedLocations else emptyList()
 
         val evaluatedOffers = mutableListOf<Pair<ParsedRideOffer, RideEvaluation>>()
 
-        // Sequential Queue Evaluation
+        // Sequential Queue Evaluation: Always evaluate offers via TextAnalysisEngine with effective filter settings
         offers.forEachIndexed { index, offer ->
             // Record in deduplication set
             synchronized(processedOfferIds) {
@@ -380,7 +419,7 @@ open class MyAccessibilityService : AccessibilityService() {
                 maxDropDistance = maxDropDist,
                 minPerKmRate = minPerKmRate,
                 isMinPerKmRateEnabled = isMinPerKmRateEnabled,
-                blockedLocations = blockedLocations,
+                blockedLocations = effectiveBlockedLocations,
                 isDestinationBlacklistEnabled = isDestinationBlacklistEnabled
             )
 
@@ -410,11 +449,12 @@ open class MyAccessibilityService : AccessibilityService() {
                 broadcastLog("Card $cardNum: ₹$fareVal, ${distVal}km - INVALID")
             }
 
-            // TTS Announcer Debounce & Duplicate Cooldown (Fix 4x Repeat Speech)
-            // Uses TTSManager.announceNewRide which enforces the 10-second deduplication cooldown per unique offer
-            val spoke = announceNewRide(offer, queueMode = TextToSpeech.QUEUE_ADD)
-            if (!evaluation.isAccepted && spoke) {
-                announceRideSkipped(evaluation.decisionReason, queueMode = TextToSpeech.QUEUE_ADD)
+            // TTS Announcements: Only announce if TTS Voice feature is unlocked
+            if (isTtsVoiceUnlocked) {
+                val spoke = announceNewRide(offer, queueMode = TextToSpeech.QUEUE_ADD)
+                if (!evaluation.isAccepted && spoke) {
+                    announceRideSkipped(evaluation.decisionReason, queueMode = TextToSpeech.QUEUE_ADD)
+                }
             }
         }
 
@@ -427,7 +467,7 @@ open class MyAccessibilityService : AccessibilityService() {
                 val topOffer = matchingOffers.first().first
                 AppSettings.addLog(
                     title = "Voice-Only Mode Active",
-                    message = "Matching ride detected (₹${topOffer.totalFare?.toInt()}). Auto-click disabled; please tap Accept manually.",
+                    message = "Matching ride detected (₹${topOffer.totalFare?.toInt() ?: 0}). Auto-click disabled; please tap Accept manually.",
                     severity = LogSeverity.INFO
                 )
                 broadcastLog("Voice-only mode: ride matches filters, auto-click skipped.")
@@ -440,28 +480,43 @@ open class MyAccessibilityService : AccessibilityService() {
             val bestEvaluation = bestCandidate.second
 
             isPendingExecution = true
-            val delayMs = AppSettings.getClickDelayMs(this)
+            // Acceptance Speed: If AUTO_CLICK is unlocked, use fast delay (300-700ms), else slow delay (1000-2000ms)
+            val acceptDelayMs = if (isAutoClickSpeedUnlocked) {
+                kotlin.random.Random.nextLong(300L, 700L)
+            } else {
+                kotlin.random.Random.nextLong(1000L, 2000L)
+            }
 
+            val speedLabel = if (isAutoClickSpeedUnlocked) "Fast (300-700ms)" else "Standard (1000-2000ms)"
             AppSettings.addLog(
                 title = "Auto-Accept Scheduled",
-                message = "Selected best offer: ₹${bestOffer.totalFare?.toInt()}, ${bestOffer.pickupDistanceKm}km. Auto-clicking Accept in ${delayMs}ms...",
+                message = "Selected best offer: ₹${bestOffer.totalFare?.toInt() ?: 0}, ${bestOffer.pickupDistanceKm ?: 0.0}km. Auto-clicking Accept in ${acceptDelayMs}ms ($speedLabel)...",
                 severity = LogSeverity.MATCH_ACCEPTED,
                 evaluation = bestEvaluation
             )
-            broadcastLog("Auto-clicking Accept for best offer (₹${bestOffer.totalFare?.toInt()}) in ${delayMs}ms...")
+            broadcastLog("Auto-clicking Accept for best offer (₹${bestOffer.totalFare?.toInt() ?: 0}) in ${acceptDelayMs}ms [$speedLabel]...")
 
             mainHandler.postDelayed({
                 executeCardAcceptClick(bestOffer, bestEvaluation)
-            }, delayMs)
+            }, acceptDelayMs)
         } else if (isAutoAccept && evaluatedOffers.isNotEmpty()) {
-            // Smart Auto-Reject: If offer failed criteria, dismiss it by clicking Reject/Pass
-            val isAutoClick = AppSettings.isAutoClickEnabled(this)
-            if (isAutoClick) {
-                val (rejectedOffer, rejectedEval) = evaluatedOffers.first()
-                val delayMs = AppSettings.getClickDelayMs(this)
-                mainHandler.postDelayed({
-                    executeCardRejectClick(rejectedOffer, rejectedEval)
-                }, delayMs)
+            // Smart Auto-Reject: Only execute if FARE_FILTERS or another relevant filter is unlocked
+            val hasAnyFilterUnlocked = isFareFiltersUnlocked || isDistanceFiltersUnlocked || isBlacklistUnlocked
+            if (hasAnyFilterUnlocked) {
+                val isAutoClick = AppSettings.isAutoClickEnabled(this)
+                if (isAutoClick) {
+                    val (rejectedOffer, rejectedEval) = evaluatedOffers.first()
+                    val delayMs = if (isAutoClickSpeedUnlocked) {
+                        kotlin.random.Random.nextLong(300L, 700L)
+                    } else {
+                        kotlin.random.Random.nextLong(1000L, 2000L)
+                    }
+                    mainHandler.postDelayed({
+                        executeCardRejectClick(rejectedOffer, rejectedEval)
+                    }, delayMs)
+                }
+            } else {
+                Log.d(TAG, "Auto-reject skipped: filters locked, allowing offer to time out.")
             }
         }
     }
@@ -471,9 +526,12 @@ open class MyAccessibilityService : AccessibilityService() {
      * located inside the spatial bounds of an invalid/rejected order card to clear the screen.
      */
     private fun executeCardRejectClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
-        // Security check: Active pass or trial required
-        if (!PassManager.isAccessGranted(this)) {
-            Log.w(TAG, "Access expired: Auto-reject blocked. Active subscription required.")
+        // Security check: Active pass/trial OR relevant filter feature unlocked
+        val hasAnyFilterUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.FARE_FILTERS) ||
+                LicenseManager.isFeatureUnlocked(FeatureIds.DISTANCE_FILTERS) ||
+                LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
+        if (!hasAnyFilterUnlocked) {
+            Log.w(TAG, "executeCardRejectClick: Auto-reject blocked. No filters unlocked.")
             return
         }
 
@@ -611,11 +669,6 @@ open class MyAccessibilityService : AccessibilityService() {
      * located inside the spatial bounds of the selected best matching order card.
      */
     private fun executeCardAcceptClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
-        // Security check: Active pass or trial required
-        if (!PassManager.isAccessGranted(this)) {
-            Log.w(TAG, "Access expired: Auto-accept blocked. Active subscription required.")
-            return
-        }
         isPendingExecution = false
         lastProcessTime = System.currentTimeMillis()
 

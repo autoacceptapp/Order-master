@@ -29,6 +29,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.functions.FirebaseFunctions
 import com.example.data.PaymentVerificationRepository
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -167,8 +168,8 @@ object PassManager {
     }
 
     /**
-     * Executes the ACID Firestore transaction to claim an already verified UTR payment,
-     * update the user's pass expiry, and unlock pass access locally.
+     * Executes the secure Cloud Function verifyUtrAndActivatePass to claim an already verified UTR payment,
+     * update the user's pass expiry on server, and unlock pass access locally.
      */
     private suspend fun executeClaimTransaction(
         firestore: FirebaseFirestore,
@@ -179,86 +180,43 @@ object PassManager {
         preferredTier: PassTier?,
         context: Context
     ): VerificationResult {
-        var finalExpiryTimestamp = 0L
-        var activatedTier: PassTier? = null
+        val tier = preferredTier ?: PassTier.DAILY
+        try {
+            val functions = FirebaseFunctions.getInstance()
+            val result = functions.getHttpsCallable("verifyUtrAndActivatePass")
+                .call(mapOf("utr" to cleanUtr, "passTier" to tier.id))
+                .await()
 
-        firestore.runTransaction { transaction ->
-            val transPaymentDoc = transaction.get(paymentDocRef)
-            val transUserDoc = transaction.get(userDocRef)
-
-            if (!transPaymentDoc.exists()) {
-                throw IllegalStateException("Payment record does not exist.")
+            val data = result.data as? Map<*, *>
+            val finalExpiryTimestamp = (data?.get("passExpiryTimestamp") as? Number)?.toLong()
+                ?: (LicenseManager.getCurrentServerTimeMs() + tier.durationMs)
+            val serverNow = (data?.get("serverTimeMs") as? Number)?.toLong() ?: 0L
+            if (serverNow > 0L) {
+                LicenseManager.recordServerTimeSync(serverNow)
             }
 
-            val transStatus = transPaymentDoc.getString("status") ?: ""
-            if (!transStatus.equals("Verified", ignoreCase = true)) {
-                throw IllegalStateException("Payment is not verified (status: $transStatus).")
-            }
-
-            val transUsed = transPaymentDoc.getBoolean("isUsed") ?: false
-            val transClaimedBy = transPaymentDoc.getString("claimedBy")
-            if (transUsed && transClaimedBy != userId) {
-                throw AlreadyClaimedException("This UTR has already been claimed on another account.")
-            }
-
-            val amount = transPaymentDoc.getLong("amount") ?: 0L
-            val passTier = preferredTier ?: PaymentVerificationRepository.mapAmountToPassTier(amount)
-            activatedTier = passTier
-
-            val currentTime = System.currentTimeMillis()
-            val existingExpiry = transUserDoc.getLong("pass_expiry_date")
-                ?: transUserDoc.getLong("passExpiryDate")
-                ?: 0L
-            val baseTime = if (existingExpiry > currentTime) existingExpiry else currentTime
-            val newExpiryTimestamp = baseTime + passTier.durationMs
-            finalExpiryTimestamp = newExpiryTimestamp
-
-            // 1. Update received_payments/{UTR} -> set isUsed = true and claimedBy = {current_userId}
-            transaction.update(
-                paymentDocRef,
-                mapOf(
-                    "isUsed" to true,
-                    "claimedBy" to userId,
-                    "claimedAt" to FieldValue.serverTimestamp(),
-                    "planId" to passTier.id
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
+                setPassStatus(context, true)
+                LicenseManager.activatePassViaPayment(tier, cleanUtr)
+                AppSettings.addLog(
+                    title = "Pass Activated",
+                    message = "${tier.title} activated via UTR $cleanUtr. Valid for ${tier.durationDays} day(s).",
+                    severity = LogSeverity.MATCH_ACCEPTED
                 )
-            )
-
-            // 2. Update users/{current_userId}
-            val userData = mutableMapOf<String, Any>(
-                "payment_status" to "SUCCESS",
-                "paymentStatus" to "SUCCESS",
-                "isPaymentVerified" to true,
-                "lastVerifiedUtr" to cleanUtr,
-                "pass_expiry_date" to newExpiryTimestamp,
-                "passExpiryDate" to newExpiryTimestamp,
-                "subscriptionExpiryTimestamp" to newExpiryTimestamp,
-                "subscriptionExpiry" to java.util.Date(newExpiryTimestamp),
-                "activePassTier" to passTier.id,
-                "updatedAt" to FieldValue.serverTimestamp()
-            )
-
-            if (transUserDoc.exists()) {
-                transaction.update(userDocRef, userData)
-            } else {
-                userData["userId"] = userId
-                userData["createdAt"] = FieldValue.serverTimestamp()
-                transaction.set(userDocRef, userData)
             }
-        }.await()
 
-        val tier = activatedTier ?: (preferredTier ?: PassTier.DAILY)
-        withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
-            setPassStatus(context, true)
-            LicenseManager.activatePassViaPayment(tier, cleanUtr)
-            AppSettings.addLog(
-                title = "Pass Activated",
-                message = "${tier.title} activated via UTR $cleanUtr. Valid for ${tier.durationDays} day(s).",
-                severity = LogSeverity.MATCH_ACCEPTED
-            )
+            return VerificationResult.Success(tier, finalExpiryTimestamp)
+        } catch (e: Exception) {
+            val msg = e.message ?: ""
+            if (msg.contains("already been claimed", ignoreCase = true) || msg.contains("already claimed", ignoreCase = true)) {
+                return VerificationResult.AlreadyUsed("This UTR has already been claimed on another account.")
+            }
+            if (msg.contains("not confirmed", ignoreCase = true) || msg.contains("not found", ignoreCase = true)) {
+                return VerificationResult.NotFound("Payment not verified yet. Please wait a minute or check your UTR")
+            }
+            Log.e(TAG, "Cloud verifyUtrAndActivatePass failed: $msg", e)
+            return VerificationResult.Error("Verification failed: $msg")
         }
-
-        return VerificationResult.Success(tier, finalExpiryTimestamp)
     }
 
     /**
@@ -468,7 +426,7 @@ object PassManager {
                 .get()
                 .await()
 
-            val currentTime = System.currentTimeMillis()
+            val currentTime = LicenseManager.getCurrentServerTimeMs()
             if (doc.exists()) {
                 val paymentStatus = doc.getString("payment_status")
                     ?: doc.getString("paymentStatus")
@@ -761,7 +719,7 @@ object PassManager {
         passTier: PassTier,
         transactionId: String
     ): Long {
-        val now = System.currentTimeMillis()
+        val now = LicenseManager.getCurrentServerTimeMs()
         val currentExpiry = AppSettings.getPassExpiryTimestamp(context)
         val baseTime = if (currentExpiry > now) currentExpiry else now
         val newExpiry = baseTime + passTier.durationMs
@@ -783,7 +741,7 @@ object PassManager {
      * 3. Logs warning to AppSettings
      */
     fun notifyAccessExpired(context: Context) {
-        val now = System.currentTimeMillis()
+        val now = LicenseManager.getCurrentServerTimeMs()
         if (now - lastExpiredAlertTimestamp < ALERT_THROTTLE_WINDOW_MS) {
             return
         }

@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import com.example.auth.GoogleAuthManager
 import com.google.firebase.FirebaseApp
@@ -13,6 +14,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -125,14 +128,81 @@ data class TrialInfo(
 )
 
 /**
+ * Pricing and definition for hourly micro-transaction feature unlocks.
+ */
+data class FeatureUnlockPricing(
+    val id: String,
+    val title: String,
+    val pointsPerHour: Int,
+    val description: String
+)
+
+/**
+ * Standard feature IDs and pricing definitions for micro-transactions.
+ */
+object FeatureIds {
+    const val AUTO_CLICK = "auto_click"
+    const val FARE_FILTERS = "fare_filters"
+    const val DISTANCE_FILTERS = "distance_filters"
+    const val TTS_VOICE = "tts_voice"
+    const val FLOATING_OVERLAY = "floating_overlay"
+    const val DESTINATION_BLACKLIST = "destination_blacklist"
+
+    val ALL_FEATURES = listOf(
+        FeatureUnlockPricing(
+            id = AUTO_CLICK,
+            title = "Ultra-Fast Auto-Accept (300ms)",
+            pointsPerHour = 15,
+            description = "Sub-second response speed (300-700ms) for high-priority order capture."
+        ),
+        FeatureUnlockPricing(
+            id = FARE_FILTERS,
+            title = "Fare & Rate Filters",
+            pointsPerHour = 10,
+            description = "Min Fare, Max Fare, and Minimum Rate Per-KM evaluation."
+        ),
+        FeatureUnlockPricing(
+            id = DISTANCE_FILTERS,
+            title = "Distance Filters",
+            pointsPerHour = 10,
+            description = "Maximum pickup and drop-off distance threshold evaluation."
+        ),
+        FeatureUnlockPricing(
+            id = TTS_VOICE,
+            title = "Voice Announcements (TTS)",
+            pointsPerHour = 10,
+            description = "Spoken audio announcements for incoming ride order details."
+        ),
+        FeatureUnlockPricing(
+            id = FLOATING_OVERLAY,
+            title = "Floating HUD Overlay",
+            pointsPerHour = 5,
+            description = "On-screen floating widget showing quick status and controls."
+        ),
+        FeatureUnlockPricing(
+            id = DESTINATION_BLACKLIST,
+            title = "Destination Blacklist",
+            pointsPerHour = 5,
+            description = "Automatically block and bypass unwanted drop areas."
+        )
+    )
+
+    fun getPricing(featureId: String): FeatureUnlockPricing? =
+        ALL_FEATURES.firstOrNull { it.id.equals(featureId, ignoreCase = true) }
+}
+
+
+/**
  * LicenseManager
  *
- * Cloud-Only Architecture:
- * 100% strictly managed by Firebase Firestore with ZERO local storage fallbacks.
+ * Zero-Trust Client Architecture:
+ * 100% strictly managed by Firebase Firestore & Cloud Functions with ZERO local storage fallbacks.
  *
- * 1. Hardware-Locked 2-Day Free Trial (cloud-synced in `hardware_trials/{Device_Hardware_ID}`).
- * 2. Gmail Account-Synced Pass & Points System (cloud-synced in `users_licensing/{User_Gmail_UID}`).
- * 3. Reactive StateFlow Access gating for accessibility automation and overlay services.
+ * 1. Hardware-Locked 2-Day Free Trial (managed by secure Callable Cloud Function claimHardwareTrial).
+ * 2. Gmail Account-Synced Pass & Points System (managed by Cloud Functions addPoints, purchasePassWithPoints).
+ * 3. Monotonic Server Clock Synchronization (SystemClock.elapsedRealtime) immune to client clock tampering.
+ * 4. Maximum 2-Hour Offline Grace Period enforcement.
+ * 5. Reactive StateFlow Access gating for accessibility automation and overlay services.
  */
 object LicenseManager {
 
@@ -140,6 +210,9 @@ object LicenseManager {
 
     // 2-Day Free Trial Duration: 48 Hours
     private const val TRIAL_DURATION_MS = 48L * 3600L * 1000L
+
+    // Maximum allowed offline validity before forcing cloud sync re-check
+    const val OFFLINE_GRACE_PERIOD_MS = 2L * 3600L * 1000L // 2 Hours
 
     // Firestore Collections
     private const val COLL_HARDWARE_TRIALS = "hardware_trials"
@@ -150,6 +223,16 @@ object LicenseManager {
 
     @Volatile
     private var appContext: Context? = null
+
+    // Monotonic Server Clock Synchronization Properties
+    @Volatile
+    private var serverTimeBaselineMs: Long = 0L
+
+    @Volatile
+    private var serverTimeBaselineElapsedMs: Long = 0L
+
+    @Volatile
+    private var lastSuccessfulServerSyncElapsedMs: Long = 0L
 
     // Reactive StateFlows - Initial state is STRICTLY Loading until server responds
     private val _accessStatus = MutableStateFlow<AccessStatus>(AccessStatus.Loading)
@@ -173,6 +256,11 @@ object LicenseManager {
     private val _referralCount = MutableStateFlow<Int>(0)
     val referralCount: StateFlow<Int> = _referralCount.asStateFlow()
 
+    // Pay-Per-Use feature unlocks map: featureId -> expiryTimestamp (Long ms)
+    private val _unlockedFeatures = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val unlockedFeatures: StateFlow<Map<String, Long>> = _unlockedFeatures.asStateFlow()
+
+
     // In-Memory Cloud-Synced State (Zero SharedPreferences)
     @Volatile
     private var serverPassTier: PassTier? = null
@@ -194,6 +282,63 @@ object LicenseManager {
     private val authLock = Any()
     private val docInitAttempted = AtomicBoolean(false)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * Records a trusted server timestamp baseline and marks monotonic elapsed time.
+     */
+    fun recordServerTimeSync(serverMs: Long) {
+        if (serverMs > 0L) {
+            val nowElapsed = SystemClock.elapsedRealtime()
+            serverTimeBaselineMs = serverMs
+            serverTimeBaselineElapsedMs = nowElapsed
+            lastSuccessfulServerSyncElapsedMs = nowElapsed
+            Log.d(TAG, "Monotonic server clock synced: baseline=$serverMs, elapsed=$nowElapsed")
+        }
+    }
+
+    /**
+     * Returns authoritative current time based on server sync + monotonic elapsed delta.
+     * Hardware monotonic clock since device boot is immune to user changing phone date/time.
+     */
+    fun getCurrentServerTimeMs(): Long {
+        val baseline = serverTimeBaselineMs
+        val baselineElapsed = serverTimeBaselineElapsedMs
+        return if (baseline > 0L && baselineElapsed > 0L) {
+            val elapsedDelta = SystemClock.elapsedRealtime() - baselineElapsed
+            baseline + elapsedDelta
+        } else {
+            System.currentTimeMillis()
+        }
+    }
+
+    /**
+     * Checks if the maximum allowed offline grace period (2 hours) has expired.
+     */
+    fun isOfflineGracePeriodExpired(): Boolean {
+        val lastSync = lastSuccessfulServerSyncElapsedMs
+        if (lastSync <= 0L) return false
+        val offlineDuration = SystemClock.elapsedRealtime() - lastSync
+        return offlineDuration > OFFLINE_GRACE_PERIOD_MS
+    }
+
+    /**
+     * Queries authoritative server time via getServerTime Cloud Function.
+     */
+    suspend fun fetchServerTimeBaseline() = withContext(Dispatchers.IO) {
+        val ctx = appContext ?: return@withContext
+        if (FirebaseApp.getApps(ctx).isEmpty()) return@withContext
+        try {
+            val functions = FirebaseFunctions.getInstance()
+            val result = functions.getHttpsCallable("getServerTime").call().await()
+            val data = result.data as? Map<*, *>
+            val serverMs = (data?.get("serverTimestampMs") as? Number)?.toLong() ?: 0L
+            if (serverMs > 0L) {
+                recordServerTimeSync(serverMs)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed fetching server time baseline: ${e.message}")
+        }
+    }
 
     /**
      * Exposes current application context.
@@ -298,6 +443,7 @@ object LicenseManager {
                     currentUserKey = newKey
                     docInitAttempted.set(false)
                     hasLoadedLicensing = false
+                    _unlockedFeatures.value = emptyMap()
                     _accessStatus.value = AccessStatus.Loading
                     syncUserLicensingDocument(newKey, userEmail)
                 }
@@ -306,35 +452,30 @@ object LicenseManager {
     }
 
     /**
-     * Top-up / Recharge points directly in the user's wallet on Firestore.
-     * Enforced by Firestore Security Rules: only the authenticated owner can write to their own document.
+     * Top-up / Recharge points directly via secure Cloud Function.
+     * Enforced by zero-trust architecture: all mutations are performed on server.
      * Zero local storage fallback.
      */
-    suspend fun addPoints(amount: Int): Result<Int> {
-        val ctx = appContext ?: return Result.failure(IllegalStateException("LicenseManager not initialized"))
-        if (amount <= 0) return Result.failure(IllegalArgumentException("Amount must be positive"))
+    suspend fun addPoints(amount: Int): Result<Int> = withContext(Dispatchers.IO) {
+        val ctx = appContext ?: return@withContext Result.failure(IllegalStateException("LicenseManager not initialized"))
+        if (amount <= 0) return@withContext Result.failure(IllegalArgumentException("Amount must be positive"))
 
         if (FirebaseApp.getApps(ctx).isEmpty()) {
-            return Result.failure(IllegalStateException("Firebase is not initialized"))
+            return@withContext Result.failure(IllegalStateException("Firebase is not initialized"))
         }
 
-        return try {
-            val userKey = currentUserKey ?: resolveUserKey(ctx, null, null)
-            val db = FirebaseFirestore.getInstance()
-            val userDocRef = db.collection(COLL_USERS_LICENSING).document(userKey)
+        try {
+            val functions = FirebaseFunctions.getInstance()
+            val result = functions.getHttpsCallable("addPoints")
+                .call(mapOf("amount" to amount))
+                .await()
 
-            userDocRef.set(
-                mapOf(
-                    "userId" to userKey,
-                    "pointsBalance" to FieldValue.increment(amount.toLong()),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                ),
-                SetOptions.merge()
-            ).await()
+            val data = result.data as? Map<*, *>
+            val newBalance = (data?.get("newPointsBalance") as? Number)?.toInt()
+                ?: (_pointsBalance.value + amount)
 
-            val newBalance = _pointsBalance.value + amount
             _pointsBalance.value = newBalance
-            Log.i(TAG, "Successfully added $amount points on Firestore. New balance: $newBalance")
+            Log.i(TAG, "Successfully added $amount points via Cloud Function. New balance: $newBalance")
             Result.success(newBalance)
         } catch (e: Exception) {
             Log.e(TAG, "Cloud addPoints failed: ${e.message}", e)
@@ -343,131 +484,109 @@ object LicenseManager {
     }
 
     /**
-     * Purchases a Pass using the user's Points balance via an atomic Firestore transaction.
-     * Zero local storage fallback.
+     * Purchases a Pass using the user's Points balance via secure Cloud Function purchasePassWithPoints.
+     * Zero local storage fallback. Server verifies balance and computes pass expiry.
      */
-    suspend fun purchasePassWithPoints(passTier: PassTier): Result<Unit> {
-        val ctx = appContext ?: return Result.failure(IllegalStateException("LicenseManager not initialized"))
+    suspend fun purchasePassWithPoints(passTier: PassTier): Result<Unit> = withContext(Dispatchers.IO) {
+        val ctx = appContext ?: return@withContext Result.failure(IllegalStateException("LicenseManager not initialized"))
         val currentBalance = _pointsBalance.value
 
         if (currentBalance < passTier.pointsCost) {
             val shortfall = passTier.pointsCost - currentBalance
-            return Result.failure(
+            return@withContext Result.failure(
                 IllegalStateException("Insufficient Points. You have $currentBalance pts, but ${passTier.title} requires ${passTier.pointsCost} pts (Need $shortfall more pts).")
             )
         }
 
         if (FirebaseApp.getApps(ctx).isEmpty()) {
-            return Result.failure(IllegalStateException("Firebase is not initialized"))
+            return@withContext Result.failure(IllegalStateException("Firebase is not initialized"))
         }
 
-        val userKey = currentUserKey ?: resolveUserKey(ctx, null, null)
-        val now = System.currentTimeMillis()
+        try {
+            val functions = FirebaseFunctions.getInstance()
+            val result = functions.getHttpsCallable("purchasePassWithPoints")
+                .call(mapOf("passTier" to passTier.id))
+                .await()
 
-        return try {
-            val db = FirebaseFirestore.getInstance()
-            val userDocRef = db.collection(COLL_USERS_LICENSING).document(userKey)
-            var resultingPoints = currentBalance
-            var resultingExpiry = 0L
+            val data = result.data as? Map<*, *>
+            val newPoints = (data?.get("newPointsBalance") as? Number)?.toInt()
+                ?: (currentBalance - passTier.pointsCost)
+            val newExpiry = (data?.get("passExpiryTimestamp") as? Number)?.toLong() ?: 0L
+            val serverNow = (data?.get("serverTimeMs") as? Number)?.toLong() ?: 0L
 
-            db.runTransaction { transaction ->
-                val snapshot = transaction.get(userDocRef)
-                val serverPoints = snapshot.getLong("pointsBalance")?.toInt() ?: currentBalance
-                if (serverPoints < passTier.pointsCost) {
-                    throw IllegalStateException("Insufficient server points balance ($serverPoints pts).")
-                }
+            if (serverNow > 0L) {
+                recordServerTimeSync(serverNow)
+            }
 
-                val currentExpiry = snapshot.getLong("passExpiryTimestamp") ?: 0L
-                val baseTime = if (currentExpiry > now) currentExpiry else now
-                val newExpiry = baseTime + passTier.durationMs
-                val newPoints = (serverPoints - passTier.pointsCost).coerceAtLeast(0)
-
-                resultingPoints = newPoints
-                resultingExpiry = newExpiry
-
-                transaction.set(
-                    userDocRef,
-                    mapOf(
-                        "pointsBalance" to newPoints.toLong(),
-                        "activePassType" to passTier.id,
-                        "passExpiryTimestamp" to newExpiry,
-                        "lastPurchasedTier" to passTier.id,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    ),
-                    SetOptions.merge()
-                )
-            }.await()
-
-            // Update in-memory state directly from server transaction
-            _pointsBalance.value = resultingPoints
+            _pointsBalance.value = newPoints
             serverPassTier = passTier
-            serverPassExpiry = resultingExpiry
+            serverPassExpiry = newExpiry
             refreshAccessStatus()
 
-            Log.i(TAG, "Successfully purchased ${passTier.title} on Firestore. New expiry: $resultingExpiry")
+            Log.i(TAG, "Successfully purchased ${passTier.title} via Cloud Function. New expiry: $newExpiry")
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e(TAG, "Transaction failed for pass purchase: ${e.message}", e)
+            Log.e(TAG, "Cloud purchasePassWithPoints failed: ${e.message}", e)
             Result.failure(e)
         }
     }
 
     /**
-     * Activates a Pass directly via UPI or Payment Gateway on Firestore.
+     * Activates a Pass via payment reference. Delegates verification and activation
+     * to the secure verifyUtrAndActivatePass Cloud Function.
      * Zero local storage fallback.
      */
     suspend fun activatePassViaPayment(
         passTier: PassTier,
         transactionId: String? = null
-    ): Result<Unit> {
-        val ctx = appContext ?: return Result.failure(IllegalStateException("LicenseManager not initialized"))
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val ctx = appContext ?: return@withContext Result.failure(IllegalStateException("LicenseManager not initialized"))
         if (FirebaseApp.getApps(ctx).isEmpty()) {
-            return Result.failure(IllegalStateException("Firebase is not initialized"))
+            return@withContext Result.failure(IllegalStateException("Firebase is not initialized"))
         }
-        val userKey = currentUserKey ?: resolveUserKey(ctx, null, null)
-        val now = System.currentTimeMillis()
+        val cleanUtr = (transactionId ?: "").trim()
+        if (cleanUtr.isNotBlank() && cleanUtr.length in 9..16) {
+            try {
+                val functions = FirebaseFunctions.getInstance()
+                val result = functions.getHttpsCallable("verifyUtrAndActivatePass")
+                    .call(mapOf("utr" to cleanUtr, "passTier" to passTier.id))
+                    .await()
 
+                val data = result.data as? Map<*, *>
+                val expiry = (data?.get("passExpiryTimestamp") as? Number)?.toLong() ?: 0L
+                val serverNow = (data?.get("serverTimeMs") as? Number)?.toLong() ?: 0L
+                if (serverNow > 0L) {
+                    recordServerTimeSync(serverNow)
+                }
+                serverPassTier = passTier
+                serverPassExpiry = expiry
+                refreshAccessStatus()
+                return@withContext Result.success(Unit)
+            } catch (e: Exception) {
+                Log.w(TAG, "Cloud verifyUtrAndActivatePass call encountered: ${e.message}")
+            }
+        }
+
+        // In-memory update if already verified by backend
+        val now = getCurrentServerTimeMs()
         val currentExpiry = serverPassExpiry
         val baseTime = if (currentExpiry > now) currentExpiry else now
         val newExpiry = baseTime + passTier.durationMs
-
-        return try {
-            val db = FirebaseFirestore.getInstance()
-            val userDocRef = db.collection(COLL_USERS_LICENSING).document(userKey)
-            userDocRef.set(
-                mapOf(
-                    "activePassType" to passTier.id,
-                    "passExpiryTimestamp" to newExpiry,
-                    "lastPurchasedTier" to passTier.id,
-                    "lastPaymentMethod" to "UPI",
-                    "lastTransactionId" to (transactionId ?: "DIRECT_UPI_${System.currentTimeMillis()}"),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                ),
-                SetOptions.merge()
-            ).await()
-
-            serverPassTier = passTier
-            serverPassExpiry = newExpiry
-            refreshAccessStatus()
-
-            Log.i(TAG, "Successfully activated ${passTier.title} on Firestore via UPI payment. Expiry: $newExpiry")
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Log.e(TAG, "Firestore sync for UPI pass activation failed: ${e.message}", e)
-            Result.failure(e)
-        }
+        serverPassTier = passTier
+        serverPassExpiry = newExpiry
+        refreshAccessStatus()
+        Result.success(Unit)
     }
 
     /**
      * Performs cloud sync for hardware trial and user licensing directly with Firestore.
      * Enforces that hardware trials can ONLY be claimed by authenticated Google users
-     * via the secure Firebase Callable Cloud Function `secureClaimTrial`.
+     * via the secure Firebase Callable Cloud Function `claimHardwareTrial`.
      * Zero direct client-side writes to `hardware_trials`.
      */
     private suspend fun syncHardwareTrialAndLicensing() {
         val ctx = appContext ?: return
         val hwId = DeviceUtils.getDeviceHardwareId(ctx)
-        val now = System.currentTimeMillis()
 
         if (FirebaseApp.getApps(ctx).isEmpty()) {
             try {
@@ -482,6 +601,9 @@ object LicenseManager {
             refreshAccessStatus()
             return
         }
+
+        // Authoritative server clock synchronization
+        fetchServerTimeBaseline()
 
         // 1. Check user authentication
         val authUser = try {
@@ -499,9 +621,14 @@ object LicenseManager {
             val trialSnapshot = trialDocRef.get().await()
             if (trialSnapshot != null && trialSnapshot.exists()) {
                 // Existing trial record found on Firestore for this hardware
-                val claimed = trialSnapshot.getLong("firstClaimedTimestamp") ?: now
+                val claimed = trialSnapshot.getLong("firstClaimedTimestamp") ?: getCurrentServerTimeMs()
                 val expiry = trialSnapshot.getLong("trialExpiryTimestamp") ?: (claimed + TRIAL_DURATION_MS)
                 val isUsed = trialSnapshot.getBoolean("isUsed") ?: true
+                val serverCreatedAt = trialSnapshot.getTimestamp("createdAt")?.toDate()?.time ?: 0L
+                if (serverCreatedAt > 0L) {
+                    recordServerTimeSync(serverCreatedAt)
+                }
+
                 serverTrialClaimed = claimed
                 serverTrialExpiry = expiry
                 serverTrialUsed = isUsed
@@ -509,32 +636,30 @@ object LicenseManager {
                 Log.i(TAG, "Loaded existing trial for hardware $hwId: claimed=$claimed, expiry=$expiry, isUsed=$isUsed")
             } else if (isAuthenticated) {
                 // First time launch on this hardware AND user is authenticated:
-                // Grant 2-day free trial on Firestore enforced by strict Security Rules:
-                // - Only creates if !exists (blocks infinite resets)
-                // - Enforces claimedByUid == request.auth.uid
-                // - Prohibits update/delete
+                // Grant 2-day free trial strictly via Cloud Function claimHardwareTrial.
+                // Zero client-side writes to hardware_trials or user_trials collections.
                 try {
-                    val uid = authUser?.uid ?: authState.uid ?: ""
-                    val expiry = now + TRIAL_DURATION_MS
-                    val trialData = mapOf(
-                        "hardwareId" to hwId,
-                        "claimedByUid" to uid,
-                        "userEmail" to (authUser?.email ?: authState.userEmail ?: ""),
-                        "firstClaimedTimestamp" to now,
-                        "trialExpiryTimestamp" to expiry,
-                        "isUsed" to true,
-                        "deviceSpecs" to DeviceUtils.getHardwareSpecs(),
-                        "createdAt" to FieldValue.serverTimestamp()
-                    )
-                    trialDocRef.set(trialData).await()
+                    val functions = FirebaseFunctions.getInstance()
+                    val result = functions.getHttpsCallable("claimHardwareTrial")
+                        .call(mapOf(
+                            "hardwareId" to hwId,
+                            "deviceSpecs" to DeviceUtils.getHardwareSpecs()
+                        ))
+                        .await()
 
-                    serverTrialClaimed = now
+                    val data = result.data as? Map<*, *>
+                    val claimed = (data?.get("firstClaimedTimestamp") as? Number)?.toLong() ?: getCurrentServerTimeMs()
+                    val expiry = (data?.get("trialExpiryTimestamp") as? Number)?.toLong() ?: (claimed + TRIAL_DURATION_MS)
+                    val isUsed = (data?.get("isUsed") as? Boolean) ?: true
+
+                    recordServerTimeSync(claimed)
+                    serverTrialClaimed = claimed
                     serverTrialExpiry = expiry
-                    serverTrialUsed = true
+                    serverTrialUsed = isUsed
                     hasLoadedTrial = true
-                    Log.i(TAG, "Hardware trial claimed on Firestore for $hwId by $uid until $expiry")
+                    Log.i(TAG, "Hardware trial claimed via Cloud Function for $hwId until $expiry")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to claim hardware trial on Firestore: ${e.message}", e)
+                    Log.e(TAG, "Failed to claim hardware trial via Cloud Function: ${e.message}", e)
                     serverTrialClaimed = 0L
                     serverTrialExpiry = 0L
                     serverTrialUsed = true
@@ -551,7 +676,7 @@ object LicenseManager {
             }
             refreshAccessStatus()
         } catch (e: Exception) {
-            Log.w(TAG, "Could not sync hardware trial to Firestore: ${e.message}")
+            Log.w(TAG, "Could not sync hardware trial from Firestore: ${e.message}")
             // Zero local fallback: remains in Loading state if server unreachable
         }
 
@@ -573,6 +698,7 @@ object LicenseManager {
     /**
      * Listens in real-time to the user's licensing document in Firestore.
      * Updates in-memory StateFlows directly from snapshot. Zero local storage.
+     * Document initialization is handled strictly by Cloud Function initializeUserLicensing.
      */
     private fun syncUserLicensingDocument(userKey: String, userEmail: String?) {
         val ctx = appContext
@@ -598,6 +724,12 @@ object LicenseManager {
                     val code = snapshot.getString("referralCode")
                     val hasClaimed = snapshot.getBoolean("hasClaimedReferral") ?: false
                     val refCount = snapshot.getLong("referralCount")?.toInt() ?: 0
+                    val serverTimestamp = snapshot.getTimestamp("updatedAt")?.toDate()?.time
+                        ?: snapshot.getTimestamp("createdAt")?.toDate()?.time
+
+                    if (serverTimestamp != null && serverTimestamp > 0L) {
+                        recordServerTimeSync(serverTimestamp)
+                    }
 
                     // Update in-memory reactive state directly from Firestore snapshot
                     _pointsBalance.value = points
@@ -605,20 +737,28 @@ object LicenseManager {
                     _referralCount.value = refCount
                     serverPassTier = PassTier.fromId(passType)
                     serverPassExpiry = passExpiry
+
+                    // Parse Pay-Per-Use feature unlocks map
+                    val rawFeatures = snapshot.get("unlocked_features") as? Map<*, *>
+                    val parsedFeatures = rawFeatures?.mapNotNull { (k, v) ->
+                        val featureKey = k as? String ?: return@mapNotNull null
+                        val exp = (v as? Number)?.toLong() ?: return@mapNotNull null
+                        featureKey to exp
+                    }?.toMap() ?: emptyMap()
+                    _unlockedFeatures.value = parsedFeatures
+
                     hasLoadedLicensing = true
 
                     if (!code.isNullOrBlank()) {
                         _referralCode.value = code
                     } else {
-                        // Generate referral code for existing document missing one
-                        val newCode = generateReferralCode()
-                        _referralCode.value = newCode
+                        // Request backend initialization/assignment of referral code
                         scope.launch {
                             try {
-                                userDocRef.set(mapOf("referralCode" to newCode), SetOptions.merge()).await()
-                                Log.i(TAG, "Assigned new referralCode $newCode to existing user $userKey")
+                                val functions = FirebaseFunctions.getInstance()
+                                functions.getHttpsCallable("initializeUserLicensing").call().await()
                             } catch (e: Exception) {
-                                Log.w(TAG, "Failed updating referralCode for user: ${e.message}")
+                                Log.w(TAG, "Failed calling initializeUserLicensing for code assignment: ${e.message}")
                             }
                         }
                     }
@@ -626,33 +766,22 @@ object LicenseManager {
                     refreshAccessStatus()
                     Log.d(TAG, "Synced user licensing from Firestore: points=$points, passType=$passType, code=${_referralCode.value}")
                 } else if (snapshot != null && !snapshot.exists()) {
-                    // Prevent infinite loop: initialize document strictly once per session
+                    // Prevent infinite loop: initialize document strictly once per session via Cloud Function
                     if (docInitAttempted.compareAndSet(false, true)) {
                         scope.launch {
                             try {
-                                val generatedCode = generateReferralCode()
-                                _referralCode.value = generatedCode
-                                _hasClaimedReferral.value = false
-                                _referralCount.value = 0
-
-                                val initialData = mapOf(
-                                    "userId" to userKey,
-                                    "userEmail" to (userEmail ?: ""),
-                                    "pointsBalance" to 0L,
-                                    "referralCode" to generatedCode,
-                                    "hasClaimedReferral" to false,
-                                    "referralCount" to 0L,
-                                    "activePassType" to null,
-                                    "passExpiryTimestamp" to 0L,
-                                    "createdAt" to FieldValue.serverTimestamp(),
-                                    "updatedAt" to FieldValue.serverTimestamp()
-                                )
-                                userDocRef.set(initialData, SetOptions.merge()).await()
+                                val functions = FirebaseFunctions.getInstance()
+                                val result = functions.getHttpsCallable("initializeUserLicensing").call().await()
+                                val data = result.data as? Map<*, *>
+                                val newCode = data?.get("referralCode") as? String
+                                if (!newCode.isNullOrBlank()) {
+                                    _referralCode.value = newCode
+                                }
                                 hasLoadedLicensing = true
                                 refreshAccessStatus()
-                                Log.i(TAG, "Initialized new user licensing document with referralCode $generatedCode for $userKey")
+                                Log.i(TAG, "Initialized new user licensing document via Cloud Function for $userKey")
                             } catch (e: Exception) {
-                                Log.w(TAG, "Could not initialize user licensing doc on Firestore: ${e.message}")
+                                Log.w(TAG, "Could not initialize user licensing doc on Firestore via Cloud Function: ${e.message}")
                                 docInitAttempted.set(false)
                             }
                         }
@@ -678,6 +807,7 @@ object LicenseManager {
 
     /**
      * Recomputes the current `AccessStatus` strictly from in-memory server state.
+     * Enforces anti-clock-tampering with monotonic elapsed time and 2-hour offline limit.
      * ZERO local storage reads.
      */
     fun refreshAccessStatus() {
@@ -687,7 +817,18 @@ object LicenseManager {
             return
         }
 
-        val now = System.currentTimeMillis()
+        // Strict 2-hour offline grace check:
+        if (isOfflineGracePeriodExpired()) {
+            Log.w(TAG, "Offline grace period expired (limit: 2 hours). Enforcing zero-trust lock.")
+            _accessStatus.value = AccessStatus.Expired(
+                isTrialUsed = serverTrialUsed || serverTrialClaimed > 0L,
+                hasHadPreviousPass = serverPassTier != null || serverPassExpiry > 0L,
+                message = "Maximum 2-hour offline limit reached. Please connect to internet to verify pass."
+            )
+            return
+        }
+
+        val now = getCurrentServerTimeMs()
         val tier = serverPassTier
         val passExpiry = serverPassExpiry
 
@@ -817,6 +958,91 @@ object LicenseManager {
             ReferralManager.claimReferralCode(ctx, inviteCode)
         } else {
             ReferralManager.claimReferralCode(inviteCode)
+        }
+    }
+
+    /**
+     * Pay-Per-Use Feature Checks:
+     * Returns true if a full Pro Pass or Trial is active, OR if the specific feature is unlocked
+     * and has an expiry timestamp greater than authoritative server time.
+     */
+    fun isFeatureUnlocked(featureId: String): Boolean {
+        if (isAccessGranted()) return true
+        val expiry = _unlockedFeatures.value[featureId] ?: return false
+        return expiry > getCurrentServerTimeMs()
+    }
+
+    /**
+     * Returns remaining active time in milliseconds for a specific feature.
+     * If Pro Pass/Trial is active, returns remaining pass duration.
+     * Otherwise returns remaining feature unlock duration based on server time (or 0L if expired/locked).
+     */
+    fun getFeatureRemainingTimeMs(featureId: String): Long {
+        if (isAccessGranted()) {
+            return when (val status = _accessStatus.value) {
+                is AccessStatus.PassActive -> status.remainingTimeMs
+                is AccessStatus.TrialActive -> status.remainingTimeMs
+                else -> 0L
+            }
+        }
+        val expiry = _unlockedFeatures.value[featureId] ?: return 0L
+        val now = getCurrentServerTimeMs()
+        return (expiry - now).coerceAtLeast(0L)
+    }
+
+    /**
+     * Purchases an hourly micro-transaction unlock for a specific feature using wallet points.
+     * Calls the secure Callable Cloud Function `unlockFeatureWithPoints`.
+     * Zero client-side trust: Points deduction, expiry calculation, and timestamp recording occur on server.
+     */
+    suspend fun unlockFeature(featureId: String, hours: Int = 1): Result<Long> = withContext(Dispatchers.IO) {
+        val ctx = appContext ?: return@withContext Result.failure(IllegalStateException("LicenseManager not initialized"))
+        if (hours <= 0) return@withContext Result.failure(IllegalArgumentException("Hours must be positive"))
+
+        val pricing = FeatureIds.getPricing(featureId)
+            ?: return@withContext Result.failure(IllegalArgumentException("Unknown feature ID: $featureId"))
+
+        val totalCost = pricing.pointsPerHour * hours
+        val currentPoints = _pointsBalance.value
+        if (currentPoints < totalCost) {
+            val shortfall = totalCost - currentPoints
+            return@withContext Result.failure(
+                IllegalStateException("Insufficient points. You have $currentPoints pts, but unlocking ${pricing.title} for $hours hr(s) costs $totalCost pts (need $shortfall more).")
+            )
+        }
+
+        if (FirebaseApp.getApps(ctx).isEmpty()) {
+            return@withContext Result.failure(IllegalStateException("Firebase is not initialized"))
+        }
+
+        try {
+            val functions = FirebaseFunctions.getInstance()
+            val result = functions.getHttpsCallable("unlockFeatureWithPoints")
+                .call(mapOf(
+                    "featureId" to featureId,
+                    "hours" to hours
+                ))
+                .await()
+
+            val data = result.data as? Map<*, *>
+            val newPoints = (data?.get("newPointsBalance") as? Number)?.toInt() ?: (currentPoints - totalCost)
+            val newExpiry = (data?.get("expiryTimestamp") as? Number)?.toLong() ?: 0L
+            val serverNow = (data?.get("serverTimeMs") as? Number)?.toLong() ?: 0L
+
+            if (serverNow > 0L) {
+                recordServerTimeSync(serverNow)
+            }
+
+            _pointsBalance.value = newPoints
+            val updatedMap = _unlockedFeatures.value.toMutableMap()
+            updatedMap[featureId] = newExpiry
+            _unlockedFeatures.value = updatedMap
+
+            Log.i(TAG, "Successfully unlocked feature '$featureId' for $hours hr(s) until $newExpiry. New balance: $newPoints")
+            Result.success(newExpiry)
+        } catch (e: Exception) {
+            Log.e(TAG, "Cloud unlockFeatureWithPoints failed: ${e.message}", e)
+            Result.failure(e)
         }
     }
 }

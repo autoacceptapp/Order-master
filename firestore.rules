@@ -11,109 +11,69 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function isValidInitialPoints(data) {
-      return data.points == 50;
+    // App Check validation: enforces PlayIntegrity / AppCheck token
+    function hasAppCheck() {
+      return request.app != null || request.auth.token.app_check.token_type == 'PlayIntegrity';
     }
 
-    function isAntiFraudHardwareIdValid(docId, data) {
-      return data.hardware_id == docId;
-    }
-
-    // Admin Settings (e.g., payment_config for dynamic UPI ID)
+    // Public / Read-Only Admin Settings (e.g. payment_config)
     match /admin_settings/{settingId} {
       allow read: if true;
       allow write: if false;
     }
 
-    // Hardware Trials: 100% Free Anti-Fraud Lock
-    // 1. Only allow document creation if it doesn't already exist (!exists)
-    // 2. Enforce that claimedByUid perfectly matches request.auth.uid
-    // 3. Document ID must match hardwareId
-    // 4. Updates and deletes are prohibited to prevent trial resetting
+    // Hardware Trials: 100% Locked Against Client Manipulation
+    // Clients CANNOT create, update, or delete hardware trials directly.
+    // Trial creation and verification is strictly handled by the `claimHardwareTrial` Cloud Function.
     match /hardware_trials/{hardwareId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated()
-                    && !exists(/databases/$(database)/documents/hardware_trials/$(hardwareId))
-                    && request.resource.data.claimedByUid == request.auth.uid
-                    && request.resource.data.hardwareId == hardwareId
-                    && request.resource.data.isUsed == true;
-      allow update, delete: if false;
-    }
-
-    // User Trials: Prevents single Google account from claiming trials on multiple devices
-    match /user_trials/{userId} {
-      allow read: if isOwner(userId);
-      allow create: if isOwner(userId)
-                    && !exists(/databases/$(database)/documents/user_trials/$(userId))
-                    && request.resource.data.uid == request.auth.uid;
-      allow update, delete: if false;
-    }
-
-    // User Licensing: Stores Points Balance and Active Pass details
-    // Allows authenticated users to query/read profiles and allows atomic referral bonuses
-    match /users_licensing/{userKey} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && (request.auth.uid == userKey || request.resource.data.userId == request.auth.uid);
-      allow update: if isAuthenticated() && (
-        // Authenticated owner can update their own document
-        (request.auth.uid == userKey || resource.data.userId == request.auth.uid)
-        ||
-        // Peer referral reward: an authenticated referee can reward the referrer +20 or +50 points
-        (
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pointsBalance', 'referralCount', 'updatedAt']) &&
-          (request.resource.data.pointsBalance == resource.data.pointsBalance + 20 ||
-           request.resource.data.pointsBalance == resource.data.pointsBalance + 50)
-        )
-      );
-      allow delete: if false;
-    }
-
-    // Users Collection (Referrals & DRM Profile)
-    match /users/{hardwareId} {
-      allow read: if true;
-
-      allow create: if isAntiFraudHardwareIdValid(hardwareId, request.resource.data)
-                    && isValidInitialPoints(request.resource.data)
-                    && request.resource.data.has_used_referral == false
-                    && request.resource.data.referral_count == 0;
-
-      allow update: if 
-        (
-          resource.data.has_used_referral == false &&
-          request.resource.data.has_used_referral == true &&
-          request.resource.data.points == resource.data.points &&
-          request.resource.data.hardware_id == resource.data.hardware_id &&
-          request.resource.data.referral_code == resource.data.referral_code
-        )
-        ||
-        (
-          request.resource.data.points == resource.data.points + 20 &&
-          request.resource.data.referral_count == resource.data.referral_count + 1 &&
-          request.resource.data.hardware_id == resource.data.hardware_id &&
-          request.resource.data.referral_code == resource.data.referral_code &&
-          request.resource.data.has_used_referral == resource.data.has_used_referral
-        );
-
-      allow delete: if false;
-
-      match /referrals/{refereeHardwareId} {
-        allow read: if true;
-        allow create: if !exists(/databases/$(database)/documents/users/$(hardwareId)/referrals/$(refereeHardwareId))
-                      && request.resource.data.reward_points == 20
-                      && request.resource.data.referee_hardware_id == refereeHardwareId;
-        allow update, delete: if false;
-      }
-    }
-
-    // Payment verification collections
-    match /received_payments/{utr} {
-      allow read: if isAuthenticated();
+      allow read: if isAuthenticated() && hasAppCheck();
       allow write: if false;
     }
 
+    // User Trials: Prevents single Google account from claiming multiple trials
+    // Managed exclusively by Cloud Functions
+    match /user_trials/{userId} {
+      allow read: if isOwner(userId) && hasAppCheck();
+      allow write: if false;
+    }
+
+    // User Licensing: Stores Points Balance and Active Pass details
+    // CLIENT WRITE IS STRICTLY DENIED (allow write: if false).
+    // All updates to points, activePassType, and passExpiryTimestamp must be executed
+    // by trusted Cloud Functions using the Admin SDK.
+    match /users_licensing/{userKey} {
+      allow read: if isAuthenticated() && hasAppCheck() && (
+        request.auth.uid == userKey ||
+        resource.data.userId == request.auth.uid ||
+        request.auth.token.email == resource.data.userEmail
+      );
+      allow write: if false;
+    }
+
+    // Received Bank UPI Payments:
+    // Clients can read status of their own UTR. Writes are only allowed by admin/backend webhooks.
+    match /received_payments/{utr} {
+      allow read: if isAuthenticated() && hasAppCheck();
+      allow write: if false;
+    }
+
+    // Pending UTR Verifications:
+    // Client can submit UTR verification request if not already claimed. Updates/deletions denied.
     match /pending_verifications/{utr} {
-      allow read, create: if isAuthenticated();
+      allow read: if isAuthenticated() && hasAppCheck();
+      allow create: if isAuthenticated() && hasAppCheck() && request.resource.data.userId == request.auth.uid;
       allow update, delete: if false;
+    }
+
+    // Users Collection (Legacy Referral Tracking)
+    match /users/{userId} {
+      allow read: if isAuthenticated() && hasAppCheck();
+      allow write: if false;
+
+      match /referrals/{refereeId} {
+        allow read: if isAuthenticated() && hasAppCheck();
+        allow write: if false;
+      }
     }
   }
 }

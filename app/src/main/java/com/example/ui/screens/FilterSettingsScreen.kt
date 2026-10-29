@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.CurrencyRupee
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LocationOff
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Speed
@@ -72,6 +73,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -81,6 +84,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.AppSettings
 import com.example.PermissionUtils
+import com.example.LicenseManager
+import com.example.AccessStatus
 import com.example.ui.OrderMasterViewModel
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import com.example.ui.components.FareFilterCard
@@ -95,6 +100,12 @@ fun FilterSettingsScreen(
 ) {
     val context = LocalContext.current
     val settingsState by viewModel.settingsState.collectAsState()
+    val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val isProMode = when (val s = accessStatus) {
+        is AccessStatus.PassActive -> s.remainingTimeMs > 0
+        is AccessStatus.TrialActive -> s.remainingTimeMs > 0
+        else -> false
+    }
     var languageDropdownExpanded by remember { mutableStateOf(false) }
     var newBlacklistKeyword by remember { mutableStateOf("") }
 
@@ -202,6 +213,73 @@ fun FilterSettingsScreen(
                 }
             }
 
+            // Operating Mode Status Banner
+            item {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (isProMode) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                    } else {
+                        MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+                    },
+                    border = CardDefaults.outlinedCardBorder().copy(
+                        brush = androidx.compose.ui.graphics.SolidColor(
+                            if (isProMode) MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                            else MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f)
+                        )
+                    ),
+                    modifier = Modifier.fillMaxWidth().testTag("operating_mode_banner")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isProMode) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                                    else MaterialTheme.colorScheme.tertiary.copy(alpha = 0.2f)
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = if (isProMode) Icons.Default.CheckCircle else Icons.Default.Lock,
+                                contentDescription = null,
+                                tint = if (isProMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = if (isProMode) "PRO MODE ACTIVE" else "FREE MODE (FILTERS LOCKED)",
+                                    style = MaterialTheme.typography.titleSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isProMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+                                    )
+                                )
+                            }
+                            Text(
+                                text = if (isProMode)
+                                    "All filter rules unlocked. Ultra-fast auto-acceptance (300-700ms) with smart auto-reject."
+                                else
+                                    "All order filters are locked. Free mode blindly accepts any order on screen with 1-2s delay. Upgrade to Pro Pass to configure custom filters.",
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 11.sp
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+
             // =========================================================================================
             // 1. MINIMUM FARE FILTER (FareFilterCard)
             // =========================================================================================
@@ -215,14 +293,15 @@ fun FilterSettingsScreen(
                     description = "Ignore rides paying below this baseline threshold",
                     icon = Icons.Default.CurrencyRupee,
                     isEnabled = settingsState.isMinFareEnabled,
-                    onToggle = { viewModel.toggleMinFareFilter(it) },
+                    onToggle = { if (isProMode) viewModel.toggleMinFareFilter(it) },
                     value = settingsState.minFare,
-                    onValueChange = { viewModel.setMinFare(it) },
+                    onValueChange = { if (isProMode) viewModel.setMinFare(it) },
                     valueRange = AppSettings.MIN_FARE_RANGE_START..AppSettings.MIN_FARE_RANGE_END,
                     presetValues = listOf(40f, 60f, 80f, 100f, 150f),
                     accentColor = Color(0xFF00E676),
                     validationWarning = if (minExceedsMax) "Minimum fare cannot exceed maximum fare (₹${settingsState.maxFare.toInt()})" else null,
-                    testTag = "min_fare_filter_card"
+                    testTag = "min_fare_filter_card",
+                    isProMode = isProMode
                 )
             }
 
@@ -239,15 +318,16 @@ fun FilterSettingsScreen(
                     description = "Ceiling limit for long-distance and surge rides",
                     icon = Icons.Default.CurrencyRupee,
                     isEnabled = settingsState.isMaxFareEnabled,
-                    onToggle = { viewModel.toggleMaxFareFilter(it) },
+                    onToggle = { if (isProMode) viewModel.toggleMaxFareFilter(it) },
                     value = settingsState.maxFare,
-                    onValueChange = { viewModel.setMaxFare(it) },
+                    onValueChange = { if (isProMode) viewModel.setMaxFare(it) },
                     valueRange = AppSettings.MAX_FARE_RANGE_START..AppSettings.MAX_FARE_RANGE_END,
                     presetValues = listOf(200f, 300f, 500f, 800f, 1000f),
                     accentColor = Color(0xFF00E676),
                     secondaryBadgeColor = MaterialTheme.colorScheme.secondaryContainer,
                     validationWarning = if (minExceedsMax) "Maximum fare must be at least minimum fare (₹${settingsState.minFare.toInt()})" else null,
-                    testTag = "max_fare_filter_card"
+                    testTag = "max_fare_filter_card",
+                    isProMode = isProMode
                 )
             }
 
@@ -260,8 +340,9 @@ fun FilterSettingsScreen(
                     subtitle = "Strict limit to reach customer (0.0 - 3.0 km)",
                     icon = Icons.Default.NearMe,
                     isEnabled = settingsState.isMaxPickupDistanceEnabled,
-                    onToggle = { viewModel.toggleMaxPickupDistFilter(it) },
-                    testTag = "pickup_dist_filter_card"
+                    onToggle = { if (isProMode) viewModel.toggleMaxPickupDistFilter(it) },
+                    testTag = "pickup_dist_filter_card",
+                    isProMode = isProMode
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -292,7 +373,8 @@ fun FilterSettingsScreen(
 
                         Slider(
                             value = settingsState.maxPickupDistance,
-                            onValueChange = { viewModel.setMaxPickupDistance((it * 10).roundToInt() / 10f) },
+                            enabled = isProMode,
+                            onValueChange = { if (isProMode) viewModel.setMaxPickupDistance((it * 10).roundToInt() / 10f) },
                             valueRange = 0.0f..3.0f,
                             steps = 29, // 0.1km steps
                             modifier = Modifier.fillMaxWidth().testTag("pickup_dist_slider")
@@ -305,7 +387,8 @@ fun FilterSettingsScreen(
                         ) {
                             listOf(1.0f, 1.5f, 2.0f, 2.5f, 3.0f).forEach { distVal ->
                                 OutlinedButton(
-                                    onClick = { viewModel.setMaxPickupDistance(distVal) },
+                                    onClick = { if (isProMode) viewModel.setMaxPickupDistance(distVal) },
+                                    enabled = isProMode,
                                     modifier = Modifier.weight(1f),
                                     contentPadding = PaddingValues(0.dp),
                                     shape = RoundedCornerShape(8.dp)
@@ -327,8 +410,9 @@ fun FilterSettingsScreen(
                     subtitle = "Filter out rides with excessive trip distance",
                     icon = Icons.Default.DirectionsCar,
                     isEnabled = settingsState.isMaxDropDistanceEnabled,
-                    onToggle = { viewModel.toggleMaxDropDistFilter(it) },
-                    testTag = "drop_dist_filter_card"
+                    onToggle = { if (isProMode) viewModel.toggleMaxDropDistFilter(it) },
+                    testTag = "drop_dist_filter_card",
+                    isProMode = isProMode
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -359,7 +443,8 @@ fun FilterSettingsScreen(
 
                         Slider(
                             value = settingsState.maxDropDistance,
-                            onValueChange = { viewModel.setMaxDropDistance((it * 2).roundToInt() / 2f) },
+                            enabled = isProMode,
+                            onValueChange = { if (isProMode) viewModel.setMaxDropDistance((it * 2).roundToInt() / 2f) },
                             valueRange = 1.0f..30.0f,
                             steps = 57, // 0.5km steps
                             modifier = Modifier.fillMaxWidth().testTag("drop_dist_slider")
@@ -372,7 +457,8 @@ fun FilterSettingsScreen(
                         ) {
                             listOf(5.0f, 10.0f, 15.0f, 20.0f, 30.0f).forEach { distVal ->
                                 OutlinedButton(
-                                    onClick = { viewModel.setMaxDropDistance(distVal) },
+                                    onClick = { if (isProMode) viewModel.setMaxDropDistance(distVal) },
+                                    enabled = isProMode,
                                     modifier = Modifier.weight(1f),
                                     contentPadding = PaddingValues(0.dp),
                                     shape = RoundedCornerShape(8.dp)
@@ -394,8 +480,9 @@ fun FilterSettingsScreen(
                     subtitle = "Reject offers paying less than ₹/km (fare ÷ total trip distance)",
                     icon = Icons.Default.Speed,
                     isEnabled = settingsState.isMinPerKmRateEnabled,
-                    onToggle = { viewModel.toggleMinPerKmRate(it) },
-                    testTag = "min_per_km_rate_filter_card"
+                    onToggle = { if (isProMode) viewModel.toggleMinPerKmRate(it) },
+                    testTag = "min_per_km_rate_filter_card",
+                    isProMode = isProMode
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -426,7 +513,8 @@ fun FilterSettingsScreen(
 
                         Slider(
                             value = settingsState.minPerKmRate,
-                            onValueChange = { viewModel.setMinPerKmRate(it.roundToInt().toFloat()) },
+                            enabled = isProMode,
+                            onValueChange = { if (isProMode) viewModel.setMinPerKmRate(it.roundToInt().toFloat()) },
                             valueRange = 5.0f..30.0f,
                             steps = 24, // 1 ₹/km steps
                             modifier = Modifier.fillMaxWidth().testTag("min_per_km_slider")
@@ -439,7 +527,8 @@ fun FilterSettingsScreen(
                         ) {
                             listOf(8f, 10f, 12f, 15f, 20f).forEach { rateVal ->
                                 OutlinedButton(
-                                    onClick = { viewModel.setMinPerKmRate(rateVal) },
+                                    onClick = { if (isProMode) viewModel.setMinPerKmRate(rateVal) },
+                                    enabled = isProMode,
                                     modifier = Modifier.weight(1f),
                                     contentPadding = PaddingValues(0.dp),
                                     shape = RoundedCornerShape(8.dp)
@@ -461,8 +550,9 @@ fun FilterSettingsScreen(
                     subtitle = "Auto-reject rides going to unwanted locations or landmarks",
                     icon = Icons.Default.LocationOff,
                     isEnabled = settingsState.isDestinationBlacklistEnabled,
-                    onToggle = { viewModel.toggleDestinationBlacklist(it) },
-                    testTag = "destination_blacklist_filter_card"
+                    onToggle = { if (isProMode) viewModel.toggleDestinationBlacklist(it) },
+                    testTag = "destination_blacklist_filter_card",
+                    isProMode = isProMode
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(
@@ -472,7 +562,8 @@ fun FilterSettingsScreen(
                         ) {
                             OutlinedTextField(
                                 value = newBlacklistKeyword,
-                                onValueChange = { newBlacklistKeyword = it },
+                                onValueChange = { if (isProMode) newBlacklistKeyword = it },
+                                enabled = isProMode,
                                 placeholder = { Text("e.g. Airport, Slum, Toll", fontSize = 13.sp) },
                                 modifier = Modifier
                                     .weight(1f)
@@ -482,12 +573,12 @@ fun FilterSettingsScreen(
                             )
                             FilledTonalButton(
                                 onClick = {
-                                    if (newBlacklistKeyword.isNotBlank()) {
+                                    if (isProMode && newBlacklistKeyword.isNotBlank()) {
                                         viewModel.addBlockedLocation(newBlacklistKeyword)
                                         newBlacklistKeyword = ""
                                     }
                                 },
-                                enabled = newBlacklistKeyword.isNotBlank(),
+                                enabled = isProMode && newBlacklistKeyword.isNotBlank(),
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.testTag("add_blacklist_button")
                             ) {
@@ -517,14 +608,17 @@ fun FilterSettingsScreen(
                                 settingsState.blockedLocations.forEach { keyword ->
                                     InputChip(
                                         selected = false,
-                                        onClick = { viewModel.removeBlockedLocation(keyword) },
+                                        enabled = isProMode,
+                                        onClick = { if (isProMode) viewModel.removeBlockedLocation(keyword) },
                                         label = { Text(keyword, fontSize = 12.sp) },
                                         trailingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Default.Close,
-                                                contentDescription = "Remove $keyword",
-                                                modifier = Modifier.size(14.dp)
-                                            )
+                                            if (isProMode) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = "Remove $keyword",
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
                                         },
                                         colors = InputChipDefaults.inputChipColors(
                                             containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f),
@@ -852,7 +946,8 @@ fun FilterSettingsScreen(
         // 6. SAVE/RESTORE QUICK PRESETS BAR AT THE BOTTOM
         // =========================================================================================
         QuickPresetsBar(
-            onApplyPreset = { presetName -> viewModel.applyPreset(presetName) },
+            onApplyPreset = { presetName -> if (isProMode) viewModel.applyPreset(presetName) },
+            isProMode = isProMode,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 8.dp)
@@ -871,22 +966,24 @@ private fun FilterCard(
     isEnabled: Boolean,
     onToggle: (Boolean) -> Unit,
     testTag: String,
+    isProMode: Boolean = true,
     content: @Composable () -> Unit
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag(testTag),
+            .testTag(testTag)
+            .alpha(if (isProMode) 1f else 0.55f),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (isEnabled)
+            containerColor = if (isEnabled && isProMode)
                 MaterialTheme.colorScheme.surface
             else
                 MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
         ),
         border = CardDefaults.outlinedCardBorder().copy(
             brush = androidx.compose.ui.graphics.SolidColor(
-                if (isEnabled)
+                if (isEnabled && isProMode)
                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                 else
                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
@@ -914,7 +1011,7 @@ private fun FilterCard(
                         modifier = Modifier
                             .size(36.dp)
                             .background(
-                                if (isEnabled)
+                                if (isEnabled && isProMode)
                                     MaterialTheme.colorScheme.primaryContainer
                                 else
                                     MaterialTheme.colorScheme.surfaceVariant,
@@ -925,7 +1022,7 @@ private fun FilterCard(
                         Icon(
                             imageVector = icon,
                             contentDescription = null,
-                            tint = if (isEnabled)
+                            tint = if (isEnabled && isProMode)
                                 MaterialTheme.colorScheme.primary
                             else
                                 MaterialTheme.colorScheme.onSurfaceVariant,
@@ -934,16 +1031,48 @@ private fun FilterCard(
                     }
 
                     Column {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = if (isEnabled)
-                                    MaterialTheme.colorScheme.onSurface
-                                else
-                                    MaterialTheme.colorScheme.onSurfaceVariant
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isEnabled && isProMode)
+                                        MaterialTheme.colorScheme.onSurface
+                                    else
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             )
-                        )
+                            if (!isProMode) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.tertiaryContainer
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = "Pro Feature",
+                                            modifier = Modifier.size(12.dp),
+                                            tint = MaterialTheme.colorScheme.onTertiaryContainer
+                                        )
+                                        Text(
+                                            text = "Pro Feature",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                fontSize = 10.sp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
                         Text(
                             text = subtitle,
                             style = MaterialTheme.typography.bodySmall.copy(
@@ -956,8 +1085,9 @@ private fun FilterCard(
 
                 // Individual Toggle Switch
                 Switch(
-                    checked = isEnabled,
-                    onCheckedChange = onToggle,
+                    checked = isEnabled && isProMode,
+                    onCheckedChange = if (isProMode) onToggle else null,
+                    enabled = isProMode,
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = Color.White,
                         checkedTrackColor = MaterialTheme.colorScheme.primary
@@ -966,7 +1096,7 @@ private fun FilterCard(
             }
 
             // Expandable control inputs when filter is active
-            AnimatedVisibility(visible = isEnabled) {
+            AnimatedVisibility(visible = isEnabled && isProMode) {
                 Column(modifier = Modifier.padding(top = 4.dp)) {
                     content()
                 }
@@ -981,12 +1111,13 @@ private fun FilterCard(
 @Composable
 private fun QuickPresetsBar(
     onApplyPreset: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isProMode: Boolean = true
 ) {
     Surface(
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-        modifier = modifier
+        modifier = modifier.alpha(if (isProMode) 1f else 0.55f)
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -1002,20 +1133,20 @@ private fun QuickPresetsBar(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Speed,
+                        imageVector = if (isProMode) Icons.Default.Speed else Icons.Default.Lock,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = "Quick Rule Presets",
+                        text = if (isProMode) "Quick Rule Presets" else "Quick Rule Presets (Pro Feature)",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.Bold
                         )
                     )
                 }
                 Text(
-                    text = "Tap to restore",
+                    text = if (isProMode) "Tap to restore" else "Pro Only",
                     style = MaterialTheme.typography.labelSmall.copy(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 10.sp
@@ -1030,21 +1161,25 @@ private fun QuickPresetsBar(
                 PresetChip(
                     name = "Peak Hours",
                     onClick = { onApplyPreset("peak") },
+                    enabled = isProMode,
                     modifier = Modifier.weight(1f)
                 )
                 PresetChip(
                     name = "Short Trips",
                     onClick = { onApplyPreset("short") },
+                    enabled = isProMode,
                     modifier = Modifier.weight(1f)
                 )
                 PresetChip(
                     name = "High Value",
                     onClick = { onApplyPreset("high") },
+                    enabled = isProMode,
                     modifier = Modifier.weight(1f)
                 )
                 PresetChip(
                     name = "Default",
                     onClick = { onApplyPreset("default") },
+                    enabled = isProMode,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -1056,10 +1191,12 @@ private fun QuickPresetsBar(
 private fun PresetChip(
     name: String,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
     OutlinedButton(
         onClick = onClick,
+        enabled = enabled,
         shape = RoundedCornerShape(10.dp),
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
         modifier = modifier.height(32.dp)

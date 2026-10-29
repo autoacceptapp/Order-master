@@ -330,11 +330,6 @@ fun SubscriptionScreen(
                     }
                 }
             }
-
-            // 6. Hardware Lock & Security Info
-            item {
-                HardwareSecurityCard(hardwareId = hardwareId)
-            }
         }
     }
 
@@ -1270,90 +1265,3 @@ private fun UpiPaymentDialog(
     )
 }
 
-/**
- * 5. Hardware ID & Security Info Card
- */
-@Composable
-private fun HardwareSecurityCard(hardwareId: String) {
-    val clipboardManager = LocalClipboardManager.current
-
-    OutlinedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("subscription_security_card"),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.outlinedCardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Shield,
-                    contentDescription = null,
-                    tint = PrimaryEmerald,
-                    modifier = Modifier.size(18.dp)
-                )
-                Text(
-                    text = "Hardware Lock & Anti-Reset Policy",
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-                )
-            }
-
-            Text(
-                text = "Each physical phone receives exactly one 2-day free trial locked to its hardware signature. Reinstalling or clearing data does not grant additional trials. Subscriptions sync automatically to your Gmail account.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column {
-                        Text(
-                            text = "DEVICE HARDWARE ID",
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp, fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            text = hardwareId,
-                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-
-                    IconButton(
-                        onClick = {
-                            clipboardManager.setText(AnnotatedString(hardwareId))
-                        },
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ContentCopy,
-                            contentDescription = "Copy Hardware ID",
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}

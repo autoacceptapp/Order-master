@@ -27,7 +27,9 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CurrencyRupee
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.ui.draw.alpha
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -93,7 +95,8 @@ fun FareFilterCard(
     accentColor: Color = Color(0xFF00E676), // Emerald Green
     secondaryBadgeColor: Color? = null,
     validationWarning: String? = null,
-    testTag: String = "fare_filter_card"
+    testTag: String = "fare_filter_card",
+    isProMode: Boolean = true
 ) {
     val focusManager = LocalFocusManager.current
     val currentOnValueChange by rememberUpdatedState(onValueChange)
@@ -135,7 +138,8 @@ fun FareFilterCard(
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .testTag(testTag),
+            .testTag(testTag)
+            .alpha(if (isProMode) 1f else 0.55f),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
@@ -143,7 +147,7 @@ fun FareFilterCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         border = CardDefaults.outlinedCardBorder().copy(
             brush = Brush.linearGradient(
-                if (isEnabled) {
+                if (isEnabled && isProMode) {
                     listOf(
                         accentColor.copy(alpha = 0.5f),
                         MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
@@ -180,7 +184,7 @@ fun FareFilterCard(
                             .size(42.dp)
                             .clip(CircleShape)
                             .background(
-                                if (isEnabled) {
+                                if (isEnabled && isProMode) {
                                     accentColor.copy(alpha = 0.15f)
                                 } else {
                                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
@@ -191,19 +195,51 @@ fun FareFilterCard(
                         Icon(
                             imageVector = icon,
                             contentDescription = title,
-                            tint = if (isEnabled) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (isEnabled && isProMode) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(22.dp)
                         )
                     }
 
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
                             )
-                        )
+                            if (!isProMode) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.tertiaryContainer
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = "Pro Feature",
+                                            modifier = Modifier.size(12.dp),
+                                            tint = MaterialTheme.colorScheme.onTertiaryContainer
+                                        )
+                                        Text(
+                                            text = "Pro Feature",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                fontSize = 10.sp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = description,
@@ -218,8 +254,9 @@ fun FareFilterCard(
                 Spacer(modifier = Modifier.width(8.dp))
 
                 Switch(
-                    checked = isEnabled,
-                    onCheckedChange = currentOnToggle,
+                    checked = isEnabled && isProMode,
+                    onCheckedChange = if (isProMode) currentOnToggle else null,
+                    enabled = isProMode,
                     modifier = Modifier.testTag("${testTag}_switch"),
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = Color.White,
@@ -302,6 +339,7 @@ fun FareFilterCard(
                     ) {
                         OutlinedTextField(
                             value = textInput,
+                            enabled = isProMode,
                             onValueChange = { newText ->
                                 textInput = newText.filter { it.isDigit() }
                                 val parsed = textInput.toFloatOrNull()
@@ -359,6 +397,7 @@ fun FareFilterCard(
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Slider(
                             value = localSliderValue,
+                            enabled = isProMode,
                             onValueChange = { newVal ->
                                 isDraggingSlider = true
                                 localSliderValue = newVal
@@ -407,6 +446,7 @@ fun FareFilterCard(
                                 val isSelected = displayedRoundedFare == presetVal.roundToInt()
                                 FilterChip(
                                     selected = isSelected,
+                                    enabled = isProMode,
                                     onClick = {
                                         localSliderValue = presetVal
                                         currentOnValueChange(presetVal)
