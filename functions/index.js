@@ -340,6 +340,7 @@ exports.verifyUtrAndActivatePass = onCall({ enforceAppCheck: false }, async (req
     transaction.update(paymentDocRef, {
       isUsed: true,
       isClaimed: true,
+      claimedBy: uid,
       claimedByUid: uid,
       claimedAt: admin.firestore.FieldValue.serverTimestamp(),
       passTierId: tier.id,

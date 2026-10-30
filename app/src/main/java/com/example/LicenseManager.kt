@@ -14,7 +14,6 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -322,21 +321,18 @@ object LicenseManager {
     }
 
     /**
-     * Queries authoritative server time via getServerTime Cloud Function.
+     * Queries authoritative server time via Vercel getServerTime API endpoint.
      */
     suspend fun fetchServerTimeBaseline() = withContext(Dispatchers.IO) {
         val ctx = appContext ?: return@withContext
-        if (FirebaseApp.getApps(ctx).isEmpty()) return@withContext
         try {
-            val functions = FirebaseFunctions.getInstance()
-            val result = functions.getHttpsCallable("getServerTime").call().await()
-            val data = result.data as? Map<*, *>
-            val serverMs = (data?.get("serverTimestampMs") as? Number)?.toLong() ?: 0L
+            val json = VercelApiClient.post("getServerTime")
+            val serverMs = json.optLong("serverTimestampMs", 0L)
             if (serverMs > 0L) {
                 recordServerTimeSync(serverMs)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed fetching server time baseline: ${e.message}")
+            Log.w(TAG, "Failed fetching server time baseline from Vercel: ${e.message}")
         }
     }
 
@@ -465,26 +461,20 @@ object LicenseManager {
         }
 
         try {
-            val functions = FirebaseFunctions.getInstance()
-            val result = functions.getHttpsCallable("addPoints")
-                .call(mapOf("amount" to amount))
-                .await()
-
-            val data = result.data as? Map<*, *>
-            val newBalance = (data?.get("newPointsBalance") as? Number)?.toInt()
-                ?: (_pointsBalance.value + amount)
+            val json = VercelApiClient.post("addPoints", mapOf("amount" to amount, "reason" to "Wallet Top-up"))
+            val newBalance = json.optInt("newPointsBalance", _pointsBalance.value + amount)
 
             _pointsBalance.value = newBalance
-            Log.i(TAG, "Successfully added $amount points via Cloud Function. New balance: $newBalance")
+            Log.i(TAG, "Successfully added $amount points via Vercel API. New balance: $newBalance")
             Result.success(newBalance)
         } catch (e: Exception) {
-            Log.e(TAG, "Cloud addPoints failed: ${e.message}", e)
+            Log.e(TAG, "Vercel addPoints failed: ${e.message}", e)
             Result.failure(e)
         }
     }
 
     /**
-     * Purchases a Pass using the user's Points balance via secure Cloud Function purchasePassWithPoints.
+     * Purchases a Pass using the user's Points balance via secure Vercel API purchasePassWithPoints.
      * Zero local storage fallback. Server verifies balance and computes pass expiry.
      */
     suspend fun purchasePassWithPoints(passTier: PassTier): Result<Unit> = withContext(Dispatchers.IO) {
@@ -498,21 +488,11 @@ object LicenseManager {
             )
         }
 
-        if (FirebaseApp.getApps(ctx).isEmpty()) {
-            return@withContext Result.failure(IllegalStateException("Firebase is not initialized"))
-        }
-
         try {
-            val functions = FirebaseFunctions.getInstance()
-            val result = functions.getHttpsCallable("purchasePassWithPoints")
-                .call(mapOf("passTier" to passTier.id))
-                .await()
-
-            val data = result.data as? Map<*, *>
-            val newPoints = (data?.get("newPointsBalance") as? Number)?.toInt()
-                ?: (currentBalance - passTier.pointsCost)
-            val newExpiry = (data?.get("passExpiryTimestamp") as? Number)?.toLong() ?: 0L
-            val serverNow = (data?.get("serverTimeMs") as? Number)?.toLong() ?: 0L
+            val json = VercelApiClient.post("purchasePassWithPoints", mapOf("passTier" to passTier.id))
+            val newPoints = json.optInt("newPointsBalance", currentBalance - passTier.pointsCost)
+            val newExpiry = json.optLong("passExpiryTimestamp", 0L)
+            val serverNow = json.optLong("serverTimeMs", 0L)
 
             if (serverNow > 0L) {
                 recordServerTimeSync(serverNow)
@@ -523,17 +503,17 @@ object LicenseManager {
             serverPassExpiry = newExpiry
             refreshAccessStatus()
 
-            Log.i(TAG, "Successfully purchased ${passTier.title} via Cloud Function. New expiry: $newExpiry")
+            Log.i(TAG, "Successfully purchased ${passTier.title} via Vercel API. New expiry: $newExpiry")
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e(TAG, "Cloud purchasePassWithPoints failed: ${e.message}", e)
+            Log.e(TAG, "Vercel purchasePassWithPoints failed: ${e.message}", e)
             Result.failure(e)
         }
     }
 
     /**
      * Activates a Pass via payment reference. Delegates verification and activation
-     * to the secure verifyUtrAndActivatePass Cloud Function.
+     * to the secure verifyUtrAndActivatePass Vercel API endpoint.
      * Zero local storage fallback.
      */
     suspend fun activatePassViaPayment(
@@ -541,20 +521,12 @@ object LicenseManager {
         transactionId: String? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val ctx = appContext ?: return@withContext Result.failure(IllegalStateException("LicenseManager not initialized"))
-        if (FirebaseApp.getApps(ctx).isEmpty()) {
-            return@withContext Result.failure(IllegalStateException("Firebase is not initialized"))
-        }
         val cleanUtr = (transactionId ?: "").trim()
         if (cleanUtr.isNotBlank() && cleanUtr.length in 9..16) {
             try {
-                val functions = FirebaseFunctions.getInstance()
-                val result = functions.getHttpsCallable("verifyUtrAndActivatePass")
-                    .call(mapOf("utr" to cleanUtr, "passTier" to passTier.id))
-                    .await()
-
-                val data = result.data as? Map<*, *>
-                val expiry = (data?.get("passExpiryTimestamp") as? Number)?.toLong() ?: 0L
-                val serverNow = (data?.get("serverTimeMs") as? Number)?.toLong() ?: 0L
+                val json = VercelApiClient.post("verifyUtrAndActivatePass", mapOf("utr" to cleanUtr, "passTier" to passTier.id))
+                val expiry = json.optLong("passExpiryTimestamp", 0L)
+                val serverNow = json.optLong("serverTimeMs", 0L)
                 if (serverNow > 0L) {
                     recordServerTimeSync(serverNow)
                 }
@@ -563,7 +535,7 @@ object LicenseManager {
                 refreshAccessStatus()
                 return@withContext Result.success(Unit)
             } catch (e: Exception) {
-                Log.w(TAG, "Cloud verifyUtrAndActivatePass call encountered: ${e.message}")
+                Log.w(TAG, "Vercel verifyUtrAndActivatePass call encountered: ${e.message}")
             }
         }
 
@@ -636,30 +608,26 @@ object LicenseManager {
                 Log.i(TAG, "Loaded existing trial for hardware $hwId: claimed=$claimed, expiry=$expiry, isUsed=$isUsed")
             } else if (isAuthenticated) {
                 // First time launch on this hardware AND user is authenticated:
-                // Grant 2-day free trial strictly via Cloud Function claimHardwareTrial.
+                // Grant 2-day free trial strictly via Vercel API claimHardwareTrial.
                 // Zero client-side writes to hardware_trials or user_trials collections.
                 try {
-                    val functions = FirebaseFunctions.getInstance()
-                    val result = functions.getHttpsCallable("claimHardwareTrial")
-                        .call(mapOf(
-                            "hardwareId" to hwId,
-                            "deviceSpecs" to DeviceUtils.getHardwareSpecs()
-                        ))
-                        .await()
+                    val json = VercelApiClient.post("claimHardwareTrial", mapOf(
+                        "hardwareId" to hwId,
+                        "deviceSpecs" to DeviceUtils.getHardwareSpecs()
+                    ))
 
-                    val data = result.data as? Map<*, *>
-                    val claimed = (data?.get("firstClaimedTimestamp") as? Number)?.toLong() ?: getCurrentServerTimeMs()
-                    val expiry = (data?.get("trialExpiryTimestamp") as? Number)?.toLong() ?: (claimed + TRIAL_DURATION_MS)
-                    val isUsed = (data?.get("isUsed") as? Boolean) ?: true
+                    val claimed = json.optLong("firstClaimedTimestamp", getCurrentServerTimeMs())
+                    val expiry = json.optLong("trialExpiryTimestamp", claimed + TRIAL_DURATION_MS)
+                    val isUsed = json.optBoolean("isUsed", true)
 
                     recordServerTimeSync(claimed)
                     serverTrialClaimed = claimed
                     serverTrialExpiry = expiry
                     serverTrialUsed = isUsed
                     hasLoadedTrial = true
-                    Log.i(TAG, "Hardware trial claimed via Cloud Function for $hwId until $expiry")
+                    Log.i(TAG, "Hardware trial claimed via Vercel API for $hwId until $expiry")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to claim hardware trial via Cloud Function: ${e.message}", e)
+                    Log.e(TAG, "Failed to claim hardware trial via Vercel API: ${e.message}", e)
                     serverTrialClaimed = 0L
                     serverTrialExpiry = 0L
                     serverTrialUsed = true
@@ -698,7 +666,7 @@ object LicenseManager {
     /**
      * Listens in real-time to the user's licensing document in Firestore.
      * Updates in-memory StateFlows directly from snapshot. Zero local storage.
-     * Document initialization is handled strictly by Cloud Function initializeUserLicensing.
+     * Document initialization is handled strictly by Vercel API initializeUserLicensing.
      */
     private fun syncUserLicensingDocument(userKey: String, userEmail: String?) {
         val ctx = appContext
@@ -755,8 +723,11 @@ object LicenseManager {
                         // Request backend initialization/assignment of referral code
                         scope.launch {
                             try {
-                                val functions = FirebaseFunctions.getInstance()
-                                functions.getHttpsCallable("initializeUserLicensing").call().await()
+                                val json = VercelApiClient.post("initializeUserLicensing")
+                                val codeAssigned = json.optString("referralCode", "")
+                                if (codeAssigned.isNotBlank()) {
+                                    _referralCode.value = codeAssigned
+                                }
                             } catch (e: Exception) {
                                 Log.w(TAG, "Failed calling initializeUserLicensing for code assignment: ${e.message}")
                             }
@@ -766,22 +737,20 @@ object LicenseManager {
                     refreshAccessStatus()
                     Log.d(TAG, "Synced user licensing from Firestore: points=$points, passType=$passType, code=${_referralCode.value}")
                 } else if (snapshot != null && !snapshot.exists()) {
-                    // Prevent infinite loop: initialize document strictly once per session via Cloud Function
+                    // Prevent infinite loop: initialize document strictly once per session via Vercel API
                     if (docInitAttempted.compareAndSet(false, true)) {
                         scope.launch {
                             try {
-                                val functions = FirebaseFunctions.getInstance()
-                                val result = functions.getHttpsCallable("initializeUserLicensing").call().await()
-                                val data = result.data as? Map<*, *>
-                                val newCode = data?.get("referralCode") as? String
-                                if (!newCode.isNullOrBlank()) {
+                                val json = VercelApiClient.post("initializeUserLicensing")
+                                val newCode = json.optString("referralCode", "")
+                                if (newCode.isNotBlank()) {
                                     _referralCode.value = newCode
                                 }
                                 hasLoadedLicensing = true
                                 refreshAccessStatus()
-                                Log.i(TAG, "Initialized new user licensing document via Cloud Function for $userKey")
+                                Log.i(TAG, "Initialized new user licensing document via Vercel API for $userKey")
                             } catch (e: Exception) {
-                                Log.w(TAG, "Could not initialize user licensing doc on Firestore via Cloud Function: ${e.message}")
+                                Log.w(TAG, "Could not initialize user licensing doc on Firestore via Vercel API: ${e.message}")
                                 docInitAttempted.set(false)
                             }
                         }
@@ -1011,23 +980,15 @@ object LicenseManager {
             )
         }
 
-        if (FirebaseApp.getApps(ctx).isEmpty()) {
-            return@withContext Result.failure(IllegalStateException("Firebase is not initialized"))
-        }
-
         try {
-            val functions = FirebaseFunctions.getInstance()
-            val result = functions.getHttpsCallable("unlockFeatureWithPoints")
-                .call(mapOf(
-                    "featureId" to featureId,
-                    "hours" to hours
-                ))
-                .await()
+            val json = VercelApiClient.post("unlockFeatureWithPoints", mapOf(
+                "featureId" to featureId,
+                "hours" to hours
+            ))
 
-            val data = result.data as? Map<*, *>
-            val newPoints = (data?.get("newPointsBalance") as? Number)?.toInt() ?: (currentPoints - totalCost)
-            val newExpiry = (data?.get("expiryTimestamp") as? Number)?.toLong() ?: 0L
-            val serverNow = (data?.get("serverTimeMs") as? Number)?.toLong() ?: 0L
+            val newPoints = json.optInt("newPointsBalance", currentPoints - totalCost)
+            val newExpiry = json.optLong("expiryTimestamp", 0L)
+            val serverNow = json.optLong("serverTimeMs", 0L)
 
             if (serverNow > 0L) {
                 recordServerTimeSync(serverNow)
@@ -1041,7 +1002,7 @@ object LicenseManager {
             Log.i(TAG, "Successfully unlocked feature '$featureId' for $hours hr(s) until $newExpiry. New balance: $newPoints")
             Result.success(newExpiry)
         } catch (e: Exception) {
-            Log.e(TAG, "Cloud unlockFeatureWithPoints failed: ${e.message}", e)
+            Log.e(TAG, "Vercel unlockFeatureWithPoints failed: ${e.message}", e)
             Result.failure(e)
         }
     }

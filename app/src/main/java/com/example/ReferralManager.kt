@@ -3,22 +3,18 @@ package com.example
 import android.content.Context
 import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /**
  * ReferralManager
  *
- * Implements a zero-trust, server-enforced Refer & Earn system via Cloud Functions:
+ * Implements a zero-trust, server-enforced Refer & Earn system via Vercel Serverless API:
  * 1. Validate input (length 8, not empty).
  * 2. Block Self-Referral: Return failure if submittedCode equals LicenseManager.referralCode.value.
- * 3. Atomic Server Transaction (claimReferralCode Cloud Function):
+ * 3. Atomic Server Transaction (claimReferralCode Vercel API endpoint):
  *    - Validates code on backend.
  *    - Strictly checks hasClaimedReferral == false.
  *    - Updates referrer (+20 pts, +1 count) and referee (+50 pts).
@@ -27,7 +23,6 @@ import java.util.Locale
 object ReferralManager {
 
     private const val TAG = "ReferralManager"
-    private const val COLL_USERS_LICENSING = "users_licensing"
 
     const val REFERRAL_BONUS_POINTS = 20
     const val WELCOME_BONUS_POINTS = 50
@@ -36,7 +31,7 @@ object ReferralManager {
     val pendingInviteCode = MutableStateFlow<String>("")
 
     /**
-     * Executes the atomic referral claim transaction via Cloud Function.
+     * Executes the atomic referral claim transaction via Vercel API.
      */
     suspend fun claimReferralCode(context: Context, submittedCode: String): Result<Unit> = withContext(Dispatchers.IO) {
         val cleanCode = submittedCode.trim().uppercase(Locale.ROOT)
@@ -67,19 +62,13 @@ object ReferralManager {
         }
 
         try {
-            val functions = FirebaseFunctions.getInstance()
-            val result = functions.getHttpsCallable("claimReferralCode")
-                .call(mapOf("submittedCode" to cleanCode))
-                .await()
-
-            val data = result.data as? Map<*, *>
-            val newPoints = (data?.get("newPointsBalance") as? Number)?.toInt()
-                ?: (LicenseManager.pointsBalance.value + WELCOME_BONUS_POINTS)
+            val json = VercelApiClient.post("claimReferralCode", mapOf("submittedCode" to cleanCode))
+            val newPoints = json.optInt("newPointsBalance", LicenseManager.pointsBalance.value + WELCOME_BONUS_POINTS)
 
             // Update in-memory reactive state on success
             LicenseManager.notifyReferralClaimed(newPoints)
             pendingInviteCode.value = ""
-            Log.i(TAG, "Referral claimed via Cloud Function: referee +50 pts, referrer +20 pts")
+            Log.i(TAG, "Referral claimed via Vercel API: referee +50 pts, referrer +20 pts")
             Result.success(Unit)
         } catch (e: Exception) {
             val message = when {

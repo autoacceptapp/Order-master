@@ -1,0 +1,9 @@
+{
+  "name": "order-master-vercel-api",
+  "version": "1.0.0",
+  "description": "Vercel Serverless Functions backend for Order Master Android app",
+  "private": true,
+  "dependencies": {
+    "firebase-admin": "^12.0.0"
+  }
+}

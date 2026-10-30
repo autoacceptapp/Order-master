@@ -29,7 +29,6 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.functions.FirebaseFunctions
 import com.example.data.PaymentVerificationRepository
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -182,15 +181,13 @@ object PassManager {
     ): VerificationResult {
         val tier = preferredTier ?: PassTier.DAILY
         try {
-            val functions = FirebaseFunctions.getInstance()
-            val result = functions.getHttpsCallable("verifyUtrAndActivatePass")
-                .call(mapOf("utr" to cleanUtr, "passTier" to tier.id))
-                .await()
+            val json = VercelApiClient.post("verifyUtrAndActivatePass", mapOf("utr" to cleanUtr, "passTier" to tier.id))
 
-            val data = result.data as? Map<*, *>
-            val finalExpiryTimestamp = (data?.get("passExpiryTimestamp") as? Number)?.toLong()
-                ?: (LicenseManager.getCurrentServerTimeMs() + tier.durationMs)
-            val serverNow = (data?.get("serverTimeMs") as? Number)?.toLong() ?: 0L
+            val finalExpiryTimestamp = json.optLong(
+                "passExpiryTimestamp",
+                LicenseManager.getCurrentServerTimeMs() + tier.durationMs
+            )
+            val serverNow = json.optLong("serverTimeMs", 0L)
             if (serverNow > 0L) {
                 LicenseManager.recordServerTimeSync(serverNow)
             }
