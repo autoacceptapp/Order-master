@@ -26,7 +26,7 @@ object VercelApiClient {
 
     // Default Vercel production deployment URL.
     @Volatile
-    var baseUrl: String = "https://ordermaster-fawn.vercel.app/api/"
+    const var baseUrl: String = "https://ordermaster-fawn.vercel.app/api/"
 
     /**
      * Executes an HTTP POST request to the specified Vercel API endpoint.
