@@ -377,6 +377,17 @@ object LicenseManager {
         scope.launch {
             syncHardwareTrialAndLicensing()
         }
+
+        // 6. Safety timeout: prevent UI from being stuck indefinitely in Loading state
+        scope.launch {
+            kotlinx.coroutines.delay(4000L)
+            if (_accessStatus.value is AccessStatus.Loading) {
+                Log.w(TAG, "Cloud sync resolution timed out after 4s; releasing loading lock.")
+                hasLoadedTrial = true
+                hasLoadedLicensing = true
+                refreshAccessStatus()
+            }
+        }
     }
 
     /**
@@ -644,8 +655,9 @@ object LicenseManager {
             }
             refreshAccessStatus()
         } catch (e: Exception) {
-            Log.w(TAG, "Could not sync hardware trial from Firestore: ${e.message}")
-            // Zero local fallback: remains in Loading state if server unreachable
+            Log.w(TAG, "Could not sync hardware trial from Firestore/Vercel: ${e.message}")
+            hasLoadedTrial = true
+            refreshAccessStatus()
         }
 
         // Sync User Licensing Document
@@ -682,6 +694,8 @@ object LicenseManager {
             userDocListener = userDocRef.addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Log.w(TAG, "User licensing snapshot listener error: ${error.message}")
+                    hasLoadedLicensing = true
+                    refreshAccessStatus()
                     return@addSnapshotListener
                 }
 
@@ -752,13 +766,20 @@ object LicenseManager {
                             } catch (e: Exception) {
                                 Log.w(TAG, "Could not initialize user licensing doc on Firestore via Vercel API: ${e.message}")
                                 docInitAttempted.set(false)
+                                hasLoadedLicensing = true
+                                refreshAccessStatus()
                             }
                         }
+                    } else {
+                        hasLoadedLicensing = true
+                        refreshAccessStatus()
                     }
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed setting up licensing listener: ${e.message}")
+            hasLoadedLicensing = true
+            refreshAccessStatus()
         }
     }
 
