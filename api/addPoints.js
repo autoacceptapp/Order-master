@@ -1,8 +1,8 @@
-const { admin, db, authenticateRequest } = require("./utils/firebase");
+const { admin, db, authenticateRequest } = require("./_utils/firebase");
 
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
@@ -15,8 +15,13 @@ module.exports = async (req, res) => {
   }
 
   const uid = caller.uid;
-  const amount = parseInt((req.body && req.body.amount), 10);
-  const reason = (req.body && req.body.reason) || "Wallet Top-up";
+  let body = req.body;
+  if (typeof body === "string") {
+    try { body = JSON.parse(body); } catch (_) { body = {}; }
+  }
+  body = body || {};
+  const amount = parseInt(body.amount, 10);
+  const reason = body.reason || "Wallet Top-up";
 
   if (isNaN(amount) || amount <= 0 || amount > 10000) {
     return res.status(400).json({ error: "Amount must be a positive number up to 10,000." });

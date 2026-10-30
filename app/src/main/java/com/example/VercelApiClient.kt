@@ -42,7 +42,7 @@ object VercelApiClient {
      * @return Parsed JSONObject response from the server.
      */
     suspend fun post(endpoint: String, payload: Map<String, Any?> = emptyMap()): JSONObject = withContext(Dispatchers.IO) {
-        val cleanEndpoint = endpoint.trim().removePrefix("/").removePrefix("api/").removePrefix("/")
+        val cleanEndpoint = endpoint.trim().removePrefix("/").removePrefix("api/").removePrefix("/").removeSuffix(".js")
         val normalizedBase = if (baseUrl.trim().endsWith("/")) baseUrl.trim() else "${baseUrl.trim()}/"
         val fullBase = if (normalizedBase.endsWith("/api/")) normalizedBase else "${normalizedBase}api/"
         val urlString = "$fullBase$cleanEndpoint"
@@ -64,6 +64,25 @@ object VercelApiClient {
         }
 
         executeHttpPost(urlString, jsonBody, idToken)
+    }
+
+    /**
+     * Executes an HTTP GET request to the specified Vercel API endpoint.
+     */
+    suspend fun get(endpoint: String): JSONObject = withContext(Dispatchers.IO) {
+        val cleanEndpoint = endpoint.trim().removePrefix("/").removePrefix("api/").removePrefix("/").removeSuffix(".js")
+        val normalizedBase = if (baseUrl.trim().endsWith("/")) baseUrl.trim() else "${baseUrl.trim()}/"
+        val fullBase = if (normalizedBase.endsWith("/api/")) normalizedBase else "${normalizedBase}api/"
+        val urlString = "$fullBase$cleanEndpoint"
+
+        val idToken: String? = try {
+            val user = FirebaseAuth.getInstance().currentUser
+            user?.getIdToken(false)?.await()?.token
+        } catch (e: Exception) {
+            null
+        }
+
+        executeHttpGet(urlString, idToken)
     }
 
     private suspend fun executeHttpPost(
@@ -121,6 +140,54 @@ object VercelApiClient {
             val isSuccess = statusCode in 200..299
             val stream = if (isSuccess) conn.inputStream else conn.errorStream
 
+            val responseString = if (stream != null) {
+                BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
+                    reader.readText()
+                }
+            } else {
+                ""
+            }
+
+            val jsonResponse = try {
+                if (responseString.isNotBlank()) JSONObject(responseString) else JSONObject()
+            } catch (e: Exception) {
+                JSONObject().apply { put("rawResponse", responseString) }
+            }
+
+            if (!isSuccess) {
+                val errorMsg = jsonResponse.optString(
+                    "message",
+                    jsonResponse.optString("error", "HTTP error $statusCode from $urlString")
+                )
+                throw Exception(errorMsg)
+            }
+
+            return jsonResponse
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    private fun executeHttpGet(
+        urlString: String,
+        idToken: String?
+    ): JSONObject {
+        val url = URL(urlString)
+        val conn = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 10000
+            readTimeout = 10000
+            instanceFollowRedirects = true
+            setRequestProperty("Accept", "application/json")
+            if (!idToken.isNullOrBlank()) {
+                setRequestProperty("Authorization", "Bearer $idToken")
+            }
+        }
+
+        try {
+            val statusCode = conn.responseCode
+            val isSuccess = statusCode in 200..299
+            val stream = if (isSuccess) conn.inputStream else conn.errorStream
             val responseString = if (stream != null) {
                 BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
                     reader.readText()

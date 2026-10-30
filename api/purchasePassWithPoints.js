@@ -1,8 +1,8 @@
-const { admin, db, authenticateRequest, PASS_TIERS } = require("./utils/firebase");
+const { admin, db, authenticateRequest, PASS_TIERS } = require("./_utils/firebase");
 
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
@@ -15,7 +15,12 @@ module.exports = async (req, res) => {
   }
 
   const uid = caller.uid;
-  const passTierId = (req.body && (req.body.passTier || req.body.passTierId));
+  let body = req.body;
+  if (typeof body === "string") {
+    try { body = JSON.parse(body); } catch (_) { body = {}; }
+  }
+  body = body || {};
+  const passTierId = body.passTier || body.passTierId;
   const tier = PASS_TIERS[passTierId];
 
   if (!tier) {

@@ -1,8 +1,8 @@
-const { admin, db, authenticateRequest, TRIAL_DURATION_MS } = require("./utils/firebase");
+const { admin, db, authenticateRequest, TRIAL_DURATION_MS } = require("./_utils/firebase");
 
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
@@ -16,8 +16,13 @@ module.exports = async (req, res) => {
 
   const uid = caller.uid;
   const userEmail = caller.email || "";
-  const hardwareId = ((req.body && req.body.hardwareId) || "").trim();
-  const deviceSpecs = (req.body && req.body.deviceSpecs) || {};
+  let body = req.body;
+  if (typeof body === "string") {
+    try { body = JSON.parse(body); } catch (_) { body = {}; }
+  }
+  body = body || {};
+  const hardwareId = ((body.hardwareId) || "").trim();
+  const deviceSpecs = body.deviceSpecs || {};
 
   if (!hardwareId || hardwareId.length < 8) {
     return res.status(400).json({ error: "Valid hardware ID required." });

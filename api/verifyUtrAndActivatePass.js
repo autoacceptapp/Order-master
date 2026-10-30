@@ -1,8 +1,8 @@
-const { admin, db, authenticateRequest, PASS_TIERS } = require("./utils/firebase");
+const { admin, db, authenticateRequest, PASS_TIERS } = require("./_utils/firebase");
 
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
@@ -15,8 +15,13 @@ module.exports = async (req, res) => {
   }
 
   const uid = caller.uid;
-  const utr = ((req.body && req.body.utr) || "").trim();
-  const passTierId = (req.body && (req.body.passTier || req.body.passTierId)) || "daily_pass";
+  let body = req.body;
+  if (typeof body === "string") {
+    try { body = JSON.parse(body); } catch (_) { body = {}; }
+  }
+  body = body || {};
+  const utr = ((body.utr) || "").trim();
+  const passTierId = body.passTier || body.passTierId || "daily_pass";
   const tier = PASS_TIERS[passTierId] || PASS_TIERS.daily_pass;
 
   if (!/^\d{9,16}$/.test(utr)) {

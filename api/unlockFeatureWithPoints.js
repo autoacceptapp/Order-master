@@ -1,8 +1,8 @@
-const { admin, db, authenticateRequest, FEATURE_PRICING } = require("./utils/firebase");
+const { admin, db, authenticateRequest, FEATURE_PRICING } = require("./_utils/firebase");
 
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") {
@@ -15,8 +15,13 @@ module.exports = async (req, res) => {
   }
 
   const uid = caller.uid;
-  const featureId = ((req.body && req.body.featureId) || "").trim();
-  const hours = parseInt((req.body && req.body.hours), 10) || 1;
+  let body = req.body;
+  if (typeof body === "string") {
+    try { body = JSON.parse(body); } catch (_) { body = {}; }
+  }
+  body = body || {};
+  const featureId = ((body.featureId) || "").trim();
+  const hours = parseInt(body.hours, 10) || 1;
 
   if (isNaN(hours) || hours <= 0 || hours > 720) {
     return res.status(400).json({ error: "Hours must be a positive integer (max 720)." });

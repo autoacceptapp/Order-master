@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Order Master - Backend API</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 16px;
+      padding: 32px;
+      max-width: 520px;
+      width: 100%;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+    .badge {
+      display: inline-block;
+      background: #059669;
+      color: #ecfdf5;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      color: #ffffff;
+    }
+    p {
+      color: #94a3b8;
+      font-size: 14px;
+      margin-bottom: 24px;
+      line-height: 1.5;
+    }
+    ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    li {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin-bottom: 8px;
+      font-family: monospace;
+      font-size: 13px;
+      color: #38bdf8;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <span class="badge">● Online</span>
+    <h1>Order Master API</h1>
+    <p>Zero-Trust Serverless Backend powering the Order Master Android application.</p>
+    <ul>
+      <li>/api/getServerTime</li>
+      <li>/api/initializeUserLicensing</li>
+      <li>/api/claimHardwareTrial</li>
+      <li>/api/addPoints</li>
+      <li>/api/purchasePassWithPoints</li>
+      <li>/api/verifyUtrAndActivatePass</li>
+      <li>/api/unlockFeatureWithPoints</li>
+      <li>/api/claimReferralCode</li>
+    </ul>
+  </div>
+</body>
+</html>

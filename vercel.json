@@ -1,24 +1,17 @@
 {
-  "version": 2,
-  "rewrites": [
-    { "source": "/api/getServerTime", "destination": "/api/getServerTime.js" },
-    { "source": "/api/initializeUserLicensing", "destination": "/api/initializeUserLicensing.js" },
-    { "source": "/api/claimHardwareTrial", "destination": "/api/claimHardwareTrial.js" },
-    { "source": "/api/addPoints", "destination": "/api/addPoints.js" },
-    { "source": "/api/purchasePassWithPoints", "destination": "/api/purchasePassWithPoints.js" },
-    { "source": "/api/verifyUtrAndActivatePass", "destination": "/api/verifyUtrAndActivatePass.js" },
-    { "source": "/api/unlockFeatureWithPoints", "destination": "/api/unlockFeatureWithPoints.js" },
-    { "source": "/api/claimReferralCode", "destination": "/api/claimReferralCode.js" },
-    { "source": "/api/(.*)", "destination": "/api/$1.js" }
-  ],
   "headers": [
     {
       "source": "/api/(.*)",
       "headers": [
+        { "key": "Access-Control-Allow-Credentials", "value": "true" },
         { "key": "Access-Control-Allow-Origin", "value": "*" },
-        { "key": "Access-Control-Allow-Methods", "value": "GET,POST,OPTIONS" },
-        { "key": "Access-Control-Allow-Headers", "value": "Content-Type, Authorization" }
+        { "key": "Access-Control-Allow-Methods", "value": "GET, POST, OPTIONS" },
+        { "key": "Access-Control-Allow-Headers", "value": "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization" }
       ]
     }
+  ],
+  "rewrites": [
+    { "source": "/api", "destination": "/api/index" },
+    { "source": "/api/(.*)\\.js", "destination": "/api/$1" }
   ]
 }
