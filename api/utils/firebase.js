@@ -20,7 +20,7 @@ const db = admin.firestore();
 
 // Helper to authenticate caller via Firebase ID Token (Bearer <token>)
 async function authenticateRequest(req) {
-  const authHeader = req.headers.authorization || req.headers.Authorization || "";
+  const authHeader = req.headers?.authorization || req.headers?.Authorization || "";
   if (!authHeader.startsWith("Bearer ")) {
     return null;
   }
@@ -34,6 +34,22 @@ async function authenticateRequest(req) {
     console.warn("verifyIdToken error:", err.message);
     return null;
   }
+}
+
+// Robust CORS handler: sets headers and handles OPTIONS preflight gracefully
+function handleCors(req, res) {
+  if (res && typeof res.setHeader === "function") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept");
+  }
+  if (req && req.method === "OPTIONS") {
+    if (res && typeof res.status === "function") {
+      res.status(200).end();
+    }
+    return true;
+  }
+  return false;
 }
 
 // Pass Tier Definitions (Duration in Milliseconds)
@@ -101,6 +117,7 @@ module.exports = {
   admin,
   db,
   authenticateRequest,
+  handleCors,
   PASS_TIERS,
   TRIAL_DURATION_MS,
   FEATURE_PRICING,
