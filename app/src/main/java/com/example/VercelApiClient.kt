@@ -26,7 +26,7 @@ object VercelApiClient {
 
     // Default Vercel production deployment URL.
     @Volatile
-    const var baseUrl: String = "https://ordermaster-fawn.vercel.app/api/"
+    var baseUrl: String = "https://ordermaster-fawn.vercel.app"
 
     /**
      * Executes an HTTP POST request to the specified Vercel API endpoint.
@@ -37,7 +37,7 @@ object VercelApiClient {
      */
     suspend fun post(endpoint: String, payload: Map<String, Any?> = emptyMap()): JSONObject = withContext(Dispatchers.IO) {
         val cleanEndpoint = endpoint.trim().removePrefix("/").removePrefix("api/")
-        val cleanBase = baseUrl.trim().removeSuffix("/")
+        val cleanBase = baseUrl.trim().removeSuffix("/").removeSuffix("/api")
         val urlString = "$cleanBase/api/$cleanEndpoint"
         val url = URL(urlString)
 
@@ -78,10 +78,14 @@ object VercelApiClient {
 
             val statusCode = conn.responseCode
             val isSuccess = statusCode in 200..299
-            val stream = if (isSuccess) conn.inputStream else (conn.errorStream ?: conn.inputStream)
+            val stream = if (isSuccess) conn.inputStream else conn.errorStream
 
-            val responseString = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
-                reader.readText()
+            val responseString = if (stream != null) {
+                BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
+                    reader.readText()
+                }
+            } else {
+                ""
             }
 
             val jsonResponse = try {

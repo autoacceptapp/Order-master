@@ -420,6 +420,9 @@ fun OrderMasterApp(
                     onTriggerGoogleSignIn = { showGoogleSignInSheet = true },
                     onNavigateToPaymentVerification = {
                         navController.navigate(Screen.PaymentVerification.route)
+                    },
+                    onNavigateToCaptainStore = {
+                        navController.navigate(Screen.Subscription.route)
                     }
                 )
             }

@@ -33,6 +33,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -96,7 +97,12 @@ fun FareFilterCard(
     secondaryBadgeColor: Color? = null,
     validationWarning: String? = null,
     testTag: String = "fare_filter_card",
-    isProMode: Boolean = true
+    isProMode: Boolean = true,
+    isUnlocked: Boolean = isProMode,
+    featureId: String? = null,
+    onUnlockClick: (() -> Unit)? = null,
+    remainingTimeText: String? = null,
+    pointsPerHour: Int = 10
 ) {
     val focusManager = LocalFocusManager.current
     val currentOnValueChange by rememberUpdatedState(onValueChange)
@@ -139,7 +145,7 @@ fun FareFilterCard(
         modifier = modifier
             .fillMaxWidth()
             .testTag(testTag)
-            .alpha(if (isProMode) 1f else 0.55f),
+            .alpha(if (isUnlocked) 1f else 0.85f),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
@@ -147,7 +153,7 @@ fun FareFilterCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         border = CardDefaults.outlinedCardBorder().copy(
             brush = Brush.linearGradient(
-                if (isEnabled && isProMode) {
+                if (isEnabled && isUnlocked) {
                     listOf(
                         accentColor.copy(alpha = 0.5f),
                         MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
@@ -184,7 +190,7 @@ fun FareFilterCard(
                             .size(42.dp)
                             .clip(CircleShape)
                             .background(
-                                if (isEnabled && isProMode) {
+                                if (isEnabled && isUnlocked) {
                                     accentColor.copy(alpha = 0.15f)
                                 } else {
                                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
@@ -195,7 +201,7 @@ fun FareFilterCard(
                         Icon(
                             imageVector = icon,
                             contentDescription = title,
-                            tint = if (isEnabled && isProMode) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (isEnabled && isUnlocked) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(22.dp)
                         )
                     }
@@ -212,30 +218,70 @@ fun FareFilterCard(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                             )
-                            if (!isProMode) {
+                            if (isUnlocked && remainingTimeText != null) {
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.tertiaryContainer
+                                    color = accentColor.copy(alpha = 0.15f)
                                 ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    Text(
+                                        text = remainingTimeText,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = accentColor,
+                                            fontSize = 9.sp
+                                        ),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            } else if (!isUnlocked) {
+                                if (onUnlockClick != null) {
+                                    FilledTonalButton(
+                                        onClick = onUnlockClick,
+                                        shape = RoundedCornerShape(6.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        modifier = Modifier
+                                            .height(26.dp)
+                                            .testTag("${testTag}_unlock_button")
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Lock,
-                                            contentDescription = "Pro Feature",
-                                            modifier = Modifier.size(12.dp),
-                                            tint = MaterialTheme.colorScheme.onTertiaryContainer
+                                            contentDescription = null,
+                                            modifier = Modifier.size(11.dp)
                                         )
+                                        Spacer(modifier = Modifier.width(3.dp))
                                         Text(
-                                            text = "Pro Feature",
+                                            text = "Unlock ($pointsPerHour Pts/Hr)",
                                             style = MaterialTheme.typography.labelSmall.copy(
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                                fontSize = 10.sp
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold
                                             )
                                         )
+                                    }
+                                } else {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.tertiaryContainer
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Lock,
+                                                contentDescription = "Pro Feature",
+                                                modifier = Modifier.size(12.dp),
+                                                tint = MaterialTheme.colorScheme.onTertiaryContainer
+                                            )
+                                            Text(
+                                                text = "Pro Feature",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                    fontSize = 10.sp
+                                                )
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -254,9 +300,9 @@ fun FareFilterCard(
                 Spacer(modifier = Modifier.width(8.dp))
 
                 Switch(
-                    checked = isEnabled && isProMode,
-                    onCheckedChange = if (isProMode) currentOnToggle else null,
-                    enabled = isProMode,
+                    checked = isEnabled && isUnlocked,
+                    onCheckedChange = if (isUnlocked) currentOnToggle else null,
+                    enabled = isUnlocked,
                     modifier = Modifier.testTag("${testTag}_switch"),
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = Color.White,
@@ -339,7 +385,7 @@ fun FareFilterCard(
                     ) {
                         OutlinedTextField(
                             value = textInput,
-                            enabled = isProMode,
+                            enabled = isUnlocked,
                             onValueChange = { newText ->
                                 textInput = newText.filter { it.isDigit() }
                                 val parsed = textInput.toFloatOrNull()
@@ -397,7 +443,7 @@ fun FareFilterCard(
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Slider(
                             value = localSliderValue,
-                            enabled = isProMode,
+                            enabled = isUnlocked,
                             onValueChange = { newVal ->
                                 isDraggingSlider = true
                                 localSliderValue = newVal
@@ -446,7 +492,7 @@ fun FareFilterCard(
                                 val isSelected = displayedRoundedFare == presetVal.roundToInt()
                                 FilterChip(
                                     selected = isSelected,
-                                    enabled = isProMode,
+                                    enabled = isUnlocked,
                                     onClick = {
                                         localSliderValue = presetVal
                                         currentOnValueChange(presetVal)

@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.TouchApp
@@ -52,6 +53,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -104,7 +106,8 @@ import kotlinx.coroutines.launch
 fun AppSettingsScreen(
     onNavigateBack: () -> Unit = {},
     onTriggerGoogleSignIn: () -> Unit = {},
-    onNavigateToPaymentVerification: () -> Unit = {}
+    onNavigateToPaymentVerification: () -> Unit = {},
+    onNavigateToCaptainStore: () -> Unit = onNavigateToPaymentVerification
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -112,14 +115,11 @@ fun AppSettingsScreen(
 
     // Reactive licensing and operating mode (Free vs Pro)
     val accessStatus by LicenseManager.accessStatus.collectAsState()
-    val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
     val isProMode = when (val s = accessStatus) {
         is AccessStatus.PassActive -> s.remainingTimeMs > 0
         is AccessStatus.TrialActive -> s.remainingTimeMs > 0
         else -> false
     }
-
-    var featureToUnlock by remember { mutableStateOf<String?>(null) }
 
     // Live state of all permissions
     var permissionList by remember {
@@ -131,15 +131,6 @@ fun AppSettingsScreen(
     }
 
     var showRestrictedSettingsDialog by remember { mutableStateOf(false) }
-
-    // Feature Unlock Micro-transaction Dialog
-    featureToUnlock?.let { fId ->
-        FeatureUnlockDialog(
-            featureId = fId,
-            onDismiss = { featureToUnlock = null },
-            onSuccess = { featureToUnlock = null }
-        )
-    }
 
     // Refresh permission statuses
     val refreshPermissions = {
@@ -339,7 +330,7 @@ fun AppSettingsScreen(
                 }
             }
 
-            // Freemium Operating Mode & Order Filters Lock Status
+            // Freemium Operating Mode & Pro Pass Status Card
             item {
                 Card(
                     modifier = Modifier
@@ -363,7 +354,7 @@ fun AppSettingsScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -372,12 +363,12 @@ fun AppSettingsScreen(
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
                                 modifier = Modifier.weight(1f)
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(38.dp)
+                                        .size(40.dp)
                                         .clip(CircleShape)
                                         .background(
                                             if (isProMode) PrimaryEmerald.copy(alpha = 0.15f)
@@ -389,7 +380,7 @@ fun AppSettingsScreen(
                                         imageVector = if (isProMode) Icons.Default.Check else Icons.Default.Lock,
                                         contentDescription = null,
                                         tint = if (isProMode) PrimaryEmerald else MaterialTheme.colorScheme.onTertiaryContainer,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(22.dp)
                                     )
                                 }
                                 Column {
@@ -398,7 +389,7 @@ fun AppSettingsScreen(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         Text(
-                                            text = if (isProMode) "Pro Mode (Filters Unlocked)" else "Free Mode (Filters Locked)",
+                                            text = if (isProMode) "Pro Mode (Full Automation)" else "Free Mode (Filters Locked)",
                                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                                         )
                                         if (!isProMode) {
@@ -407,7 +398,7 @@ fun AppSettingsScreen(
                                                 color = MaterialTheme.colorScheme.tertiaryContainer
                                             ) {
                                                 Text(
-                                                    text = "PRO FEATURE",
+                                                    text = "PRO PASS",
                                                     style = MaterialTheme.typography.labelSmall.copy(
                                                         fontSize = 9.sp,
                                                         fontWeight = FontWeight.ExtraBold,
@@ -420,9 +411,9 @@ fun AppSettingsScreen(
                                     }
                                     Text(
                                         text = if (isProMode)
-                                            "Custom filters active. Orders are evaluated in 300-700ms with smart auto-reject."
+                                            "All automation filters active. Orders are evaluated in 300-700ms with smart auto-reject."
                                         else
-                                            "Blind auto-accept (1-2s delay). Filter configuration is locked to Pro subscribers.",
+                                            "Blind auto-accept with 1-2s delay. Configure filters and unlock rules in the Filter Rules tab or upgrade to Pro Pass.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -430,120 +421,50 @@ fun AppSettingsScreen(
                             }
                         }
 
-                        // Order Filter & Premium features list showing locked / unlocked state
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
-                                .padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf(
-                                Triple(FeatureIds.FARE_FILTERS, "Minimum Fare Filter", "Min fare threshold limit"),
-                                Triple(FeatureIds.FARE_FILTERS, "Maximum Fare Filter", "Surge ceiling limit"),
-                                Triple(FeatureIds.DISTANCE_FILTERS, "Max Pickup Distance Filter", "0.0 - 3.0 km radius"),
-                                Triple(FeatureIds.FARE_FILTERS, "Minimum Rate Per-KM Filter", "Trip rate threshold"),
-                                Triple(FeatureIds.DESTINATION_BLACKLIST, "Destination Blacklist", "Geofence blacklist"),
-                                Triple(FeatureIds.AUTO_CLICK, "Ultra-Fast Auto-Accept Speed", "Sub-second 300ms reaction"),
-                                Triple(FeatureIds.TTS_VOICE, "Voice Announcements (TTS)", "Audio alerts for orders"),
-                                Triple(FeatureIds.FLOATING_OVERLAY, "Floating HUD Overlay", "Draggable status widget")
-                            ).forEach { (fId, filterName, _) ->
-                                val isFeatureUnlocked = isProMode || LicenseManager.isFeatureUnlocked(fId)
-                                val remainingMs = LicenseManager.getFeatureRemainingTimeMs(fId)
-                                val pricing = FeatureIds.getPricing(fId)
-                                val pointsPerHour = pricing?.pointsPerHour ?: 10
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .alpha(if (isFeatureUnlocked) 1f else 0.85f),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        modifier = Modifier.weight(1f, fill = false)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (isFeatureUnlocked) Icons.Default.Check else Icons.Default.Lock,
-                                            contentDescription = null,
-                                            tint = if (isFeatureUnlocked) PrimaryEmerald else MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Text(
-                                            text = filterName,
-                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-                                            maxLines = 1
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.width(8.dp))
-
-                                    if (isFeatureUnlocked) {
-                                        val remainingText = if (isProMode) {
-                                            "UNLOCKED"
-                                        } else {
-                                            val totalMins = (remainingMs / 60000L).coerceAtLeast(1L)
-                                            val hrs = totalMins / 60
-                                            val mins = totalMins % 60
-                                            val timeStr = if (hrs > 0) "${hrs}h ${mins}m" else "${mins}m"
-                                            "UNLOCKED (expires in $timeStr)"
-                                        }
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = PrimaryEmerald.copy(alpha = 0.15f)
-                                        ) {
-                                            Text(
-                                                text = remainingText,
-                                                style = MaterialTheme.typography.labelSmall.copy(
-                                                    fontSize = 9.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = PrimaryEmeraldDark
-                                                ),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    } else {
-                                        FilledTonalButton(
-                                            onClick = { featureToUnlock = fId },
-                                            shape = RoundedCornerShape(6.dp),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier
-                                                .height(28.dp)
-                                                .testTag("unlock_feature_${fId}_button")
-                                        ) {
-                                            Text(
-                                                text = "Unlock ($pointsPerHour Pts/Hr)",
-                                                style = MaterialTheme.typography.labelSmall.copy(
-                                                    fontSize = 9.sp,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
                         if (!isProMode) {
                             FilledTonalButton(
-                                onClick = onNavigateToPaymentVerification,
+                                onClick = onNavigateToCaptainStore,
                                 shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .testTag("upgrade_to_pro_button")
+                                    .testTag("upgrade_to_pro_button"),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.primary,
+                                    contentColor = MaterialTheme.colorScheme.onPrimary
+                                )
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Lock,
+                                    imageVector = Icons.Default.ShoppingCart,
                                     contentDescription = null,
                                     modifier = Modifier.size(16.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Unlock Order Filters with Pro Pass",
+                                    text = "Upgrade to Pro Pass in Captain Store",
                                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                                )
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = onNavigateToCaptainStore,
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("manage_pass_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ShoppingCart,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = PrimaryEmerald
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Manage Pass in Captain Store",
+                                    style = MaterialTheme.typography.labelMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        color = PrimaryEmerald
+                                    )
                                 )
                             }
                         }

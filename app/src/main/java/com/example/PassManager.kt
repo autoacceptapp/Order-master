@@ -276,16 +276,21 @@ object PassManager {
             // SCENARIO B: App came first OR status == "Pending" / not yet "Verified"
             Log.i(TAG, "Scenario B: Real-time listener waiting for server confirmation for $cleanUtr...")
 
-            // 1. Create/Set the document with {"utr": cleanUtr, "status": "Pending", "isUsed": false}
-            paymentDocRef.set(
-                mapOf(
-                    "utr" to cleanUtr,
-                    "status" to "Pending",
-                    "isUsed" to false,
-                    "createdAt" to FieldValue.serverTimestamp()
-                ),
-                SetOptions.merge()
-            ).await()
+            // 1. Record pending entry in pending_verifications (permitted by security rules)
+            val pendingDocRef = firestore.collection("pending_verifications").document(cleanUtr)
+            try {
+                pendingDocRef.set(
+                    mapOf(
+                        "userId" to userId,
+                        "utr" to cleanUtr,
+                        "status" to "PENDING",
+                        "createdAt" to FieldValue.serverTimestamp()
+                    ),
+                    SetOptions.merge()
+                ).await()
+            } catch (e: Exception) {
+                Log.w(TAG, "Recording pending verification ignored or suppressed: ${e.message}")
+            }
 
             // 2. Suspend with real-time snapshot listener wrapped in 90-second timeout
             val waitOutcome = withTimeoutOrNull(90_000L) {

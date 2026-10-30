@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.app.Activity
+import androidx.activity.compose.BackHandler
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -133,6 +134,8 @@ fun SubscriptionScreen(
     var isProcessing by remember { mutableStateOf(false) }
 
     val hardwareId = remember { DeviceUtils.getDeviceHardwareId(context) }
+
+    BackHandler(onBack = onNavigateBack)
 
     Scaffold(
         modifier = modifier.fillMaxSize(),

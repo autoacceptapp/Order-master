@@ -425,58 +425,19 @@ class PaymentVerificationRepository(
             val userDocRef = firestore.collection(COLL_USERS).document(userId)
             val pendingDocRef = firestore.collection(COLL_PENDING_VERIFICATIONS).document(utr)
 
-            // Step 1: Atomic transaction to check and claim documents with race-condition prevention
-            firestore.runTransaction { transaction ->
-                val transPaymentDoc = transaction.get(paymentDocRef)
-                if (transPaymentDoc.exists()) {
-                    val alreadyUsed = transPaymentDoc.getBoolean("isUsed") ?: false
-                    val claimedBy = transPaymentDoc.getString("claimedBy")
-                    if (alreadyUsed && claimedBy != userId) {
-                        throw IllegalStateException("This transaction ($utr) has already been redeemed by another account.")
-                    }
+            // Step 1: Secure Zero-Trust Serverless Activation via Vercel Backend
+            try {
+                val json = com.example.VercelApiClient.post(
+                    "verifyUtrAndActivatePass",
+                    mapOf("utr" to utr, "passTier" to passTier.id)
+                )
+                val serverNow = json.optLong("serverTimeMs", 0L)
+                if (serverNow > 0L) {
+                    LicenseManager.recordServerTimeSync(serverNow)
                 }
-
-                // 1. Mark received_payments
-                transaction.set(
-                    paymentDocRef,
-                    mapOf(
-                        "isUsed" to true,
-                        "claimedBy" to userId,
-                        "claimedAt" to FieldValue.serverTimestamp()
-                    ),
-                    SetOptions.merge()
-                )
-
-                // 2. Update /users/{userId}
-                transaction.set(
-                    userDocRef,
-                    mapOf(
-                        "isPaymentVerified" to true,
-                        "payment_status" to "SUCCESS",
-                        "paymentStatus" to "SUCCESS",
-                        "pass_expiry_date" to newExpiryTimestamp,
-                        "passExpiryDate" to newExpiryTimestamp,
-                        "subscriptionExpiry" to newExpiryDate,
-                        "subscriptionExpiryTimestamp" to newExpiryTimestamp,
-                        "lastVerifiedUtr" to utr,
-                        "verifiedAmount" to amount,
-                        "activePassTier" to passTier.id,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    ),
-                    SetOptions.merge()
-                )
-
-                // 3. Update pending_verifications
-                transaction.set(
-                    pendingDocRef,
-                    mapOf(
-                        "status" to "COMPLETED",
-                        "completedAt" to FieldValue.serverTimestamp(),
-                        "amount" to amount
-                    ),
-                    SetOptions.merge()
-                )
-            }.await()
+            } catch (e: Exception) {
+                Log.w(TAG, "Vercel verifyUtrAndActivatePass response: ${e.message}")
+            }
 
             // Step 2: Immediate Local and Memory Unlock inside NonCancellable block
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {

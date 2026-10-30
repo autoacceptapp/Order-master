@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -161,6 +162,11 @@ fun PaymentVerificationScreen(
         onDispose {
             viewModel.cancelPending()
         }
+    }
+
+    BackHandler {
+        viewModel.cancelPending()
+        onNavigateBack()
     }
 
     Scaffold(
