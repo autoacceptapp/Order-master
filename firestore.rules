@@ -11,11 +11,6 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // App Check validation: enforces PlayIntegrity / AppCheck token
-    function hasAppCheck() {
-      return request.app != null || request.auth.token.app_check.token_type == 'PlayIntegrity';
-    }
-
     // Public / Read-Only Admin Settings (e.g. payment_config)
     match /admin_settings/{settingId} {
       allow read: if true;
@@ -24,54 +19,55 @@ service cloud.firestore {
 
     // Hardware Trials: 100% Locked Against Client Manipulation
     // Clients CANNOT create, update, or delete hardware trials directly.
-    // Trial creation and verification is strictly handled by the `claimHardwareTrial` Cloud Function.
+    // Read allowed for authenticated users. All trial writes handled strictly by Cloud Functions.
     match /hardware_trials/{hardwareId} {
-      allow read: if isAuthenticated() && hasAppCheck();
+      allow read: if isAuthenticated();
       allow write: if false;
     }
 
     // User Trials: Prevents single Google account from claiming multiple trials
-    // Managed exclusively by Cloud Functions
+    // Read allowed for account owner. Writes strictly denied for clients.
     match /user_trials/{userId} {
-      allow read: if isOwner(userId) && hasAppCheck();
+      allow read: if isOwner(userId);
       allow write: if false;
     }
 
-    // User Licensing: Stores Points Balance and Active Pass details
+    // User Licensing: Stores Points Balance, Active Pass, and Hourly Feature Unlocks
     // CLIENT WRITE IS STRICTLY DENIED (allow write: if false).
-    // All updates to points, activePassType, and passExpiryTimestamp must be executed
+    // All updates to points, activePassType, and unlocked_features must be executed
     // by trusted Cloud Functions using the Admin SDK.
     match /users_licensing/{userKey} {
-      allow read: if isAuthenticated() && hasAppCheck() && (
+      allow read: if isAuthenticated() && (
         request.auth.uid == userKey ||
         resource.data.userId == request.auth.uid ||
-        request.auth.token.email == resource.data.userEmail
+        request.auth.token.email == resource.data.userEmail ||
+        resource == null
       );
       allow write: if false;
     }
 
     // Received Bank UPI Payments:
-    // Clients can read status of their own UTR. Writes are only allowed by admin/backend webhooks.
+    // Clients can read status of their payment. Direct client writes are strictly denied.
     match /received_payments/{utr} {
-      allow read: if isAuthenticated() && hasAppCheck();
+      allow read: if isAuthenticated();
       allow write: if false;
     }
 
     // Pending UTR Verifications:
     // Client can submit UTR verification request if not already claimed. Updates/deletions denied.
     match /pending_verifications/{utr} {
-      allow read: if isAuthenticated() && hasAppCheck();
-      allow create: if isAuthenticated() && hasAppCheck() && request.resource.data.userId == request.auth.uid;
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
       allow update, delete: if false;
     }
 
-    // Users Collection (Legacy Referral Tracking)
+    // Users Collection (Referral Tracking)
     match /users/{userId} {
-      allow read: if isAuthenticated() && hasAppCheck();
+      allow read: if isAuthenticated();
       allow write: if false;
 
       match /referrals/{refereeId} {
-        allow read: if isAuthenticated() && hasAppCheck();
+        allow read: if isAuthenticated();
         allow write: if false;
       }
     }

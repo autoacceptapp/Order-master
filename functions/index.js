@@ -321,8 +321,12 @@ exports.verifyUtrAndActivatePass = onCall({ enforceAppCheck: false }, async (req
     }
 
     const paymentData = paymentSnap.data();
-    if (paymentData.isClaimed || paymentData.claimedByUid) {
-      throw new HttpsError("already-exists", "This UTR has already been claimed.");
+    if (paymentData.isClaimed || paymentData.claimedByUid || paymentData.isUsed) {
+      throw new HttpsError("already-exists", "This UTR has already been claimed or used.");
+    }
+
+    if (paymentData.status && paymentData.status !== "Verified" && paymentData.status !== "VERIFIED") {
+      throw new HttpsError("failed-precondition", "Payment has not been verified yet.");
     }
 
     const serverNow = Date.now();
@@ -332,8 +336,9 @@ exports.verifyUtrAndActivatePass = onCall({ enforceAppCheck: false }, async (req
     const baseTime = currentExpiry > serverNow ? currentExpiry : serverNow;
     const newExpiry = baseTime + tier.durationMs;
 
-    // Mark payment as claimed
+    // Mark payment as claimed and used
     transaction.update(paymentDocRef, {
+      isUsed: true,
       isClaimed: true,
       claimedByUid: uid,
       claimedAt: admin.firestore.FieldValue.serverTimestamp(),
