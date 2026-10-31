@@ -297,10 +297,14 @@ class PaymentVerificationRepository(
 
                     // 1. Save entry under /pending_verifications/{utr}
                     val pendingDocRef = firestore.collection(COLL_PENDING_VERIFICATIONS).document(utr)
+                    val tier = selectedTier ?: mapAmountToPassTier(9L)
                     val pendingPayload = hashMapOf<String, Any>(
-                        "userId" to userId,
-                        "utr" to utr,
                         "status" to "PENDING",
+                        "passName" to tier.title,
+                        "amount" to tier.priceInInr,
+                        "isUsed" to false,
+                        "utr" to utr,
+                        "userId" to userId,
                         "timestamp" to FieldValue.serverTimestamp(),
                         "deviceHardwareId" to DeviceUtils.getDeviceHardwareId(context)
                     )
@@ -413,6 +417,7 @@ class PaymentVerificationRepository(
             try {
                 paymentDocRef.set(
                     mapOf(
+                        "isUsed" to true,
                         "claimed" to true,
                         "claimedByUserId" to userId,
                         "claimedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
@@ -421,11 +426,19 @@ class PaymentVerificationRepository(
                     com.google.firebase.firestore.SetOptions.merge()
                 ).await()
 
-                firestore.collection("users_licensing").document(userId).set(
+                val newFolder = when (passTier) {
+                    PassTier.DAILY -> "daily"
+                    PassTier.WEEKLY -> "weekly"
+                    PassTier.MONTHLY -> "monthly"
+                }
+
+                firestore.collection("users").document(userId).set(
                     mapOf(
                         "userId" to userId,
                         "activePassType" to passTier.id,
                         "passExpiryTimestamp" to newExpiryTimestamp,
+                        "current_folder" to newFolder,
+                        "linkedHardwareId" to DeviceUtils.getDeviceHardwareId(context),
                         "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
                     ),
                     com.google.firebase.firestore.SetOptions.merge()

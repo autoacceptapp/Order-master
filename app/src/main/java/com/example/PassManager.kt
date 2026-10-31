@@ -24,6 +24,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.DocumentReference
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -181,19 +182,35 @@ object PassManager {
     ): VerificationResult = withContext(Dispatchers.IO) {
         val tier = preferredTier ?: PassTier.DAILY
         try {
-            val userLicensingDocRef = firestore.collection("users_licensing").document(userId)
+            val userLicensingDocRef = firestore.collection("users").document(userId)
+            val pendingDocRef = firestore.collection("pending_verifications").document(cleanUtr)
 
             val finalExpiryTimestamp = firestore.runTransaction { transaction ->
                 val paymentSnap = transaction.get(paymentDocRef)
-                if (!paymentSnap.exists()) {
+                val pendingSnap = transaction.get(pendingDocRef)
+
+                val targetDocRef: DocumentReference
+                val targetSnap: DocumentSnapshot
+
+                if (paymentSnap.exists()) {
+                    targetDocRef = paymentDocRef
+                    targetSnap = paymentSnap
+                } else if (pendingSnap.exists()) {
+                    targetDocRef = pendingDocRef
+                    targetSnap = pendingSnap
+                } else {
                     throw IllegalStateException("Payment record not found for UTR $cleanUtr")
                 }
 
-                val isClaimed = paymentSnap.getBoolean("claimed") ?: false
-                if (isClaimed) {
-                    val claimedBy = paymentSnap.getString("claimedByUserId") ?: ""
-                    if (claimedBy.isNotBlank() && claimedBy != userId) {
+                val status = targetSnap.getString("status") ?: ""
+                val isUsed = targetSnap.getBoolean("isUsed") ?: (targetSnap.getBoolean("claimed") ?: false)
+
+                // Must verify that status == "Verified" and isUsed == false
+                if (!status.equals("Verified", ignoreCase = true) || isUsed) {
+                    if (isUsed) {
                         throw IllegalStateException("This UTR has already been claimed on another account.")
+                    } else {
+                        throw IllegalStateException("Payment record found with status '$status'. Not verified yet.")
                     }
                 }
 
@@ -205,23 +222,48 @@ object PassManager {
 
                 val baseTime = if (currentExpiry > now) currentExpiry else now
                 val newExpiry = baseTime + tier.durationMs
+                val newFolder = when (tier) {
+                    PassTier.DAILY -> "daily"
+                    PassTier.WEEKLY -> "weekly"
+                    PassTier.MONTHLY -> "monthly"
+                }
 
-                // Update received_payments doc
-                transaction.update(
-                    paymentDocRef,
-                    mapOf(
-                        "claimed" to true,
-                        "claimedByUserId" to userId,
-                        "claimedAt" to FieldValue.serverTimestamp(),
-                        "passTier" to tier.id
-                    )
+                // Atomically set isUsed = true on the payment document
+                val paymentUpdates = mutableMapOf<String, Any>(
+                    "isUsed" to true,
+                    "claimed" to true,
+                    "claimedByUserId" to userId,
+                    "claimedBy" to userId,
+                    "claimedAt" to FieldValue.serverTimestamp(),
+                    "passTier" to tier.id
                 )
+                transaction.update(targetDocRef, paymentUpdates)
 
-                // Update users_licensing doc
+                // If both docs exist, sync isUsed = true on pendingDocRef as well
+                if (targetDocRef == paymentDocRef && pendingSnap.exists()) {
+                    transaction.update(
+                        pendingDocRef,
+                        mapOf(
+                            "isUsed" to true,
+                            "status" to "COMPLETED",
+                            "claimed" to true,
+                            "claimedByUserId" to userId,
+                            "claimedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                }
+
+                // Simultaneously activate the pass in the "users" collection and update current_folder
                 val licensingUpdates = mutableMapOf<String, Any>(
                     "userId" to userId,
                     "activePassType" to tier.id,
                     "passExpiryTimestamp" to newExpiry,
+                    "current_folder" to newFolder,
+                    "linkedHardwareId" to DeviceUtils.getDeviceHardwareId(context),
+                    "isPaymentVerified" to true,
+                    "payment_status" to "SUCCESS",
+                    "pass_expiry_date" to newExpiry,
+                    "subscriptionExpiryTimestamp" to newExpiry,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
                 if (userLicensingSnap.exists()) {
@@ -255,7 +297,7 @@ object PassManager {
             if (msg.contains("already been claimed", ignoreCase = true) || msg.contains("already claimed", ignoreCase = true)) {
                 return@withContext VerificationResult.AlreadyUsed("This UTR has already been claimed on another account.")
             }
-            if (msg.contains("not confirmed", ignoreCase = true) || msg.contains("not found", ignoreCase = true)) {
+            if (msg.contains("not confirmed", ignoreCase = true) || msg.contains("not found", ignoreCase = true) || msg.contains("not verified", ignoreCase = true)) {
                 return@withContext VerificationResult.NotFound("Payment not verified yet. Please wait a minute or check your UTR")
             }
             Log.e(TAG, "Direct Firestore claim failed: $msg", e)
@@ -288,17 +330,26 @@ object PassManager {
             val firestore = FirebaseFirestore.getInstance()
             val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
             val paymentDocRef = firestore.collection(PaymentVerificationRepository.COLL_RECEIVED_PAYMENTS).document(cleanUtr)
+            val pendingDocRef = firestore.collection("pending_verifications").document(cleanUtr)
             val userDocRef = firestore.collection("users").document(userId)
+            val tier = preferredTier ?: PassTier.DAILY
 
-            // Step 1: Check existing document in received_payments/{cleanUtr}
+            // Step 1: Check existing document in received_payments/{cleanUtr} or pending_verifications/{cleanUtr}
             val snapshot = paymentDocRef.get().await()
+            val pendingSnapshot = pendingDocRef.get().await()
 
-            if (snapshot.exists()) {
-                val status = snapshot.getString("status") ?: ""
-                val isUsed = snapshot.getBoolean("isUsed") ?: false
-                val claimedBy = snapshot.getString("claimedBy")
+            val existingSnap = when {
+                snapshot.exists() -> snapshot
+                pendingSnapshot.exists() -> pendingSnapshot
+                else -> null
+            }
 
-                if (isUsed && claimedBy != userId) {
+            if (existingSnap != null) {
+                val status = existingSnap.getString("status") ?: ""
+                val isUsed = existingSnap.getBoolean("isUsed") ?: (existingSnap.getBoolean("claimed") ?: false)
+                val claimedBy = existingSnap.getString("claimedBy") ?: existingSnap.getString("claimedByUserId")
+
+                if (isUsed && claimedBy != null && claimedBy.isNotBlank() && claimedBy != userId) {
                     Log.w(TAG, "Payment $cleanUtr already claimed by another user: '$claimedBy'.")
                     return@withContext VerificationResult.AlreadyUsed(
                         "This UTR has already been claimed on another account."
@@ -314,7 +365,7 @@ object PassManager {
                         userDocRef = userDocRef,
                         userId = userId,
                         cleanUtr = cleanUtr,
-                        preferredTier = preferredTier,
+                        preferredTier = tier,
                         context = context
                     )
                 }
@@ -323,14 +374,17 @@ object PassManager {
             // SCENARIO B: App came first OR status == "Pending" / not yet "Verified"
             Log.i(TAG, "Scenario B: Real-time listener waiting for server confirmation for $cleanUtr...")
 
-            // 1. Record pending entry in pending_verifications (permitted by security rules)
-            val pendingDocRef = firestore.collection("pending_verifications").document(cleanUtr)
+            // 1. Record pending entry in pending_verifications
+            // Strictly write: status: "PENDING", passName: preferredTier.title, amount: preferredTier.priceInInr, isUsed: false, utr: cleanUtr, userId: userId
             try {
                 pendingDocRef.set(
                     mapOf(
-                        "userId" to userId,
-                        "utr" to cleanUtr,
                         "status" to "PENDING",
+                        "passName" to tier.title,
+                        "amount" to tier.priceInInr,
+                        "isUsed" to false,
+                        "utr" to cleanUtr,
+                        "userId" to userId,
                         "createdAt" to FieldValue.serverTimestamp()
                     ),
                     SetOptions.merge()
@@ -340,63 +394,82 @@ object PassManager {
             }
 
             // 2. Suspend with real-time snapshot listener wrapped in 90-second timeout
+            // Wait until status equals "Verified" AND isUsed equals false
             val waitOutcome = withTimeoutOrNull(90_000L) {
                 suspendCancellableCoroutine<RealtimeWaitOutcome> { continuation ->
-                    var listener: ListenerRegistration? = null
+                    var paymentListener: ListenerRegistration? = null
+                    var pendingListener: ListenerRegistration? = null
                     val isResumed = AtomicBoolean(false)
 
-                    listener = paymentDocRef.addSnapshotListener { docSnap, error ->
-                        if (error != null) {
-                            Log.w(TAG, "Real-time snapshot listener error for $cleanUtr: ${error.message}")
-                            return@addSnapshotListener
-                        }
+                    fun removeListeners() {
+                        paymentListener?.remove()
+                        pendingListener?.remove()
+                        paymentListener = null
+                        pendingListener = null
+                    }
 
+                    fun handleSnapshot(docSnap: DocumentSnapshot?) {
                         if (docSnap != null && docSnap.exists()) {
                             val currentStatus = docSnap.getString("status") ?: ""
-                            val currentUsed = docSnap.getBoolean("isUsed") ?: false
-                            val currentClaimedBy = docSnap.getString("claimedBy")
+                            val currentUsed = docSnap.getBoolean("isUsed") ?: (docSnap.getBoolean("claimed") ?: false)
+                            val currentClaimedBy = docSnap.getString("claimedBy") ?: docSnap.getString("claimedByUserId")
 
                             // Check if claimed by another user
-                            if (currentUsed && currentClaimedBy != userId) {
+                            if (currentUsed && currentClaimedBy != null && currentClaimedBy.isNotBlank() && currentClaimedBy != userId) {
                                 if (isResumed.compareAndSet(false, true)) {
-                                    listener?.remove()
+                                    removeListeners()
                                     continuation.resume(
                                         RealtimeWaitOutcome.EarlyResult(
                                             VerificationResult.AlreadyUsed("This UTR has already been claimed on another account.")
                                         )
                                     )
                                 }
-                                return@addSnapshotListener
+                                return
                             }
 
-                            // The moment Server updates status to "Verified" (and isUsed is still false)
+                            // The moment status equals "Verified" AND isUsed equals false
                             if (currentStatus.equals("Verified", ignoreCase = true) && !currentUsed) {
                                 if (isResumed.compareAndSet(false, true)) {
-                                    // DETACH the listener immediately
-                                    listener?.remove()
+                                    removeListeners()
                                     continuation.resume(RealtimeWaitOutcome.VerifiedReadyToClaim)
                                 }
                             }
                         }
                     }
 
+                    paymentListener = paymentDocRef.addSnapshotListener { docSnap, error ->
+                        if (error != null) {
+                            Log.w(TAG, "Real-time payment snapshot listener error for $cleanUtr: ${error.message}")
+                            return@addSnapshotListener
+                        }
+                        handleSnapshot(docSnap)
+                    }
+
+                    pendingListener = pendingDocRef.addSnapshotListener { docSnap, error ->
+                        if (error != null) {
+                            Log.w(TAG, "Real-time pending snapshot listener error for $cleanUtr: ${error.message}")
+                            return@addSnapshotListener
+                        }
+                        handleSnapshot(docSnap)
+                    }
+
                     continuation.invokeOnCancellation {
                         Log.d(TAG, "Detaching real-time snapshot listener on cancellation/timeout for $cleanUtr")
-                        listener?.remove()
+                        removeListeners()
                     }
                 }
             }
 
             when (waitOutcome) {
                 is RealtimeWaitOutcome.VerifiedReadyToClaim -> {
-                    Log.i(TAG, "Real-time listener received 'Verified'. Executing claim transaction for $cleanUtr...")
+                    Log.i(TAG, "Real-time listener received 'Verified' & isUsed=false. Executing claim transaction for $cleanUtr...")
                     executeClaimTransaction(
                         firestore = firestore,
                         paymentDocRef = paymentDocRef,
                         userDocRef = userDocRef,
                         userId = userId,
                         cleanUtr = cleanUtr,
-                        preferredTier = preferredTier,
+                        preferredTier = tier,
                         context = context
                     )
                 }

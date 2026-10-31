@@ -69,7 +69,7 @@ object ReferralManager {
 
         try {
             val db = FirebaseFirestore.getInstance()
-            val querySnapshot = db.collection("users_licensing")
+            val querySnapshot = db.collection("users")
                 .whereEqualTo("referralCode", cleanCode)
                 .limit(1)
                 .get()
@@ -91,8 +91,8 @@ object ReferralManager {
                 return@withContext Result.failure(IllegalArgumentException("Cannot use your own code"))
             }
 
-            val currentUserDocRef = db.collection("users_licensing").document(currentUser.uid)
-            val referrerDocRef = db.collection("users_licensing").document(referrerId)
+            val currentUserDocRef = db.collection("users").document(currentUser.uid)
+            val referrerDocRef = db.collection("users").document(referrerId)
 
             val newPoints = db.runTransaction { transaction ->
                 val userSnap = transaction.get(currentUserDocRef)
