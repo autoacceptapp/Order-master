@@ -212,28 +212,12 @@ class PaymentVerificationRepository(
 
     /**
      * Resolves the primary unique identifier for the user:
-     * 1. Firebase Auth UID
-     * 2. Sanitized email address
-     * 3. Hardware device ID
+     * Strictly delegates to LicenseManager.resolveUserKey to ensure a single, consistent Document ID:
+     * - Firebase Auth UID when logged in
+     * - Hardware ID fallback only when logged out
      */
     fun resolveUserId(context: Context): String {
-        val authUser = try {
-            if (FirebaseApp.getApps(context).isNotEmpty()) {
-                FirebaseAuth.getInstance().currentUser
-            } else {
-                null
-            }
-        } catch (_: Exception) {
-            null
-        }
-        if (!authUser?.uid.isNullOrBlank()) {
-            return authUser!!.uid
-        }
-        val email = authUser?.email
-        if (!email.isNullOrBlank()) {
-            return "email_" + email.replace(".", "_").replace("@", "_at_")
-        }
-        return "hw_" + DeviceUtils.getDeviceHardwareId(context)
+        return LicenseManager.resolveUserKey(context)
     }
 
     /**

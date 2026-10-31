@@ -245,6 +245,7 @@ fun AppSettingsScreen(
             // Google Account & Cloud Sync Tile
             item {
                 val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
+                val referralCode by LicenseManager.referralCode.collectAsState()
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -297,6 +298,14 @@ fun AppSettingsScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                if (!referralCode.isNullOrBlank()) {
+                                    Text(
+                                        text = "Unique Profile ID: $referralCode",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(top = 2.dp)
+                                    )
+                                }
                             }
                         }
 

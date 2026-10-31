@@ -468,6 +468,7 @@ object LicenseManager {
             val userKey = resolveUserKey(ctx, user?.email, user?.uid)
             val docRef = db.collection(COLL_USERS_LICENSING).document(userKey)
 
+            val hwId = DeviceUtils.getDeviceHardwareId(ctx)
             val newBalance = db.runTransaction { tx ->
                 val snap = tx.get(docRef)
                 val current = (snap.getLong("pointsBalance") ?: 0L).toInt()
@@ -475,6 +476,7 @@ object LicenseManager {
                 if (snap.exists()) {
                     tx.update(docRef, mapOf(
                         "pointsBalance" to updated,
+                        "linkedHardwareId" to hwId,
                         "updatedAt" to FieldValue.serverTimestamp()
                     ))
                 } else {
@@ -482,6 +484,7 @@ object LicenseManager {
                     tx.set(docRef, mapOf(
                         "userId" to (user?.uid ?: userKey),
                         "userEmail" to (user?.email ?: ""),
+                        "linkedHardwareId" to hwId,
                         "pointsBalance" to updated,
                         "referralCode" to code,
                         "hasClaimedReferral" to false,
@@ -521,6 +524,7 @@ object LicenseManager {
             val user = FirebaseAuth.getInstance().currentUser
             val userKey = resolveUserKey(ctx, user?.email, user?.uid)
             val docRef = db.collection(COLL_USERS_LICENSING).document(userKey)
+            val hwId = DeviceUtils.getDeviceHardwareId(ctx)
 
             val (newPoints, newExpiry) = db.runTransaction { tx ->
                 val snap = tx.get(docRef)
@@ -540,6 +544,7 @@ object LicenseManager {
                         "pointsBalance" to updatedPoints,
                         "activePassType" to passTier.id,
                         "passExpiryTimestamp" to updatedExpiry,
+                        "linkedHardwareId" to hwId,
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                 )
@@ -603,6 +608,7 @@ object LicenseManager {
                             "userId" to userKey,
                             "activePassType" to passTier.id,
                             "passExpiryTimestamp" to newExpiry,
+                            "linkedHardwareId" to DeviceUtils.getDeviceHardwareId(ctx),
                             "updatedAt" to FieldValue.serverTimestamp()
                         ),
                         SetOptions.merge()
@@ -655,7 +661,7 @@ object LicenseManager {
         // Authoritative server clock synchronization
         fetchServerTimeBaseline()
 
-        // 1. Check user authentication
+        // 1. Check user authentication and resolve single consistent Document Key
         val authUser = try {
             FirebaseAuth.getInstance().currentUser
         } catch (_: Exception) {
@@ -663,6 +669,8 @@ object LicenseManager {
         }
         val authState = GoogleAuthManager.userAuthState.value
         val isAuthenticated = (authUser != null && !authUser.isAnonymous) || (authState.isLoggedIn && !authState.uid.isNullOrBlank())
+        val userKey = resolveUserKey(ctx, authUser?.email, authUser?.uid ?: authState.uid)
+        currentUserKey = userKey
 
         try {
             val db = FirebaseFirestore.getInstance()
@@ -686,9 +694,9 @@ object LicenseManager {
                 Log.i(TAG, "Loaded existing trial for hardware $hwId: claimed=$claimed, expiry=$expiry, isUsed=$isUsed")
             } else if (isAuthenticated) {
                 // First time launch on this hardware AND user is authenticated:
-                // Directly create hardware_trials and user_trials records via Firestore SDK.
+                // Directly create hardware_trials and user_trials records via Firestore SDK using consistent userKey.
                 try {
-                    val userTrialDocRef = db.collection("user_trials").document(authUser?.uid ?: hwId)
+                    val userTrialDocRef = db.collection("user_trials").document(userKey)
 
                     val (claimed, expiry, isUsed) = db.runTransaction { tx ->
                         val hwSnap = tx.get(trialDocRef)
@@ -708,8 +716,8 @@ object LicenseManager {
                             val exp = now + TRIAL_DURATION_MS
                             val hwRecord = hashMapOf<String, Any>(
                                 "hardwareId" to hwId,
-                                "userId" to (authUser?.uid ?: ""),
-                                "userEmail" to (authUser?.email ?: ""),
+                                "userId" to userKey,
+                                "userEmail" to (authUser?.email ?: authState.userEmail ?: ""),
                                 "firstClaimedTimestamp" to now,
                                 "trialExpiryTimestamp" to exp,
                                 "isUsed" to true,
@@ -718,7 +726,7 @@ object LicenseManager {
                                 "updatedAt" to FieldValue.serverTimestamp()
                             )
                             val userTrialRecord = hashMapOf<String, Any>(
-                                "userId" to (authUser?.uid ?: ""),
+                                "userId" to userKey,
                                 "hardwareId" to hwId,
                                 "firstClaimedTimestamp" to now,
                                 "trialExpiryTimestamp" to exp,
@@ -759,16 +767,9 @@ object LicenseManager {
             refreshAccessStatus()
         }
 
-        // Sync User Licensing Document
+        // Sync User Licensing Document using consistent userKey
         try {
-            val user = if (FirebaseApp.getApps(ctx).isNotEmpty()) {
-                FirebaseAuth.getInstance().currentUser
-            } else {
-                null
-            }
-            val userKey = resolveUserKey(ctx, user?.email, user?.uid)
-            currentUserKey = userKey
-            syncUserLicensingDocument(userKey, user?.email)
+            syncUserLicensingDocument(userKey, authUser?.email ?: authState.userEmail)
         } catch (e: Exception) {
             Log.w(TAG, "Could not sync user licensing: ${e.message}")
         }
@@ -830,6 +831,24 @@ object LicenseManager {
 
                     hasLoadedLicensing = true
 
+                    val currentHwId = ctx?.let { DeviceUtils.getDeviceHardwareId(it) } ?: ""
+                    val existingLinkedHw = snapshot.getString("linkedHardwareId")
+                    if (currentHwId.isNotBlank() && existingLinkedHw != currentHwId) {
+                        scope.launch {
+                            try {
+                                userDocRef.set(
+                                    mapOf(
+                                        "linkedHardwareId" to currentHwId,
+                                        "updatedAt" to FieldValue.serverTimestamp()
+                                    ),
+                                    SetOptions.merge()
+                                ).await()
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed updating linkedHardwareId on user licensing doc: ${e.message}")
+                            }
+                        }
+                    }
+
                     if (!code.isNullOrBlank()) {
                         _referralCode.value = code
                     } else {
@@ -840,6 +859,7 @@ object LicenseManager {
                                 userDocRef.set(
                                     mapOf(
                                         "referralCode" to generated,
+                                        "linkedHardwareId" to currentHwId,
                                         "updatedAt" to FieldValue.serverTimestamp()
                                     ),
                                     SetOptions.merge()
@@ -860,9 +880,11 @@ object LicenseManager {
                             try {
                                 val newCode = generateReferralCode()
                                 val currentUser = FirebaseAuth.getInstance().currentUser
+                                val currentHwId = ctx?.let { DeviceUtils.getDeviceHardwareId(it) } ?: ""
                                 val newDoc = hashMapOf<String, Any>(
                                     "userId" to (currentUser?.uid ?: userKey),
                                     "userEmail" to (userEmail ?: (currentUser?.email ?: "")),
+                                    "linkedHardwareId" to currentHwId,
                                     "pointsBalance" to 0,
                                     "referralCode" to newCode,
                                     "hasClaimedReferral" to false,
@@ -899,14 +921,26 @@ object LicenseManager {
     }
 
     /**
-     * Resolves a persistent key for the user:
-     * 1. Firebase Auth UID
-     * 2. Gmail address sanitized
-     * 3. Hardware ID fallback if not logged in
+     * Resolves a persistent, single consistent Document ID for the user across Firestore collections:
+     * - If uid is present (or user is logged in with Firebase UID), return it.
+     * - If not, fallback to "hw_" + DeviceUtils.getDeviceHardwareId(context).
      */
-    private fun resolveUserKey(context: Context, email: String?, uid: String?): String {
-        if (!uid.isNullOrBlank()) return uid
-        if (!email.isNullOrBlank()) return "email_" + email.replace(".", "_").replace("@", "_at_")
+    fun resolveUserKey(context: Context, email: String? = null, uid: String? = null): String {
+        val authUser = try {
+            if (FirebaseApp.getApps(context).isNotEmpty()) {
+                FirebaseAuth.getInstance().currentUser
+            } else null
+        } catch (_: Exception) {
+            null
+        }
+
+        // 1. Strictly prioritize Firebase Auth UID if present
+        val resolvedUid = authUser?.uid?.takeIf { it.isNotBlank() } ?: uid?.takeIf { it.isNotBlank() }
+        if (!resolvedUid.isNullOrBlank()) {
+            return resolvedUid
+        }
+
+        // 2. Strictly fallback to "hw_" + DeviceUtils.getDeviceHardwareId(context)
         return "hw_" + DeviceUtils.getDeviceHardwareId(context)
     }
 
@@ -1147,6 +1181,7 @@ object LicenseManager {
                     mapOf(
                         "pointsBalance" to updatedPoints,
                         "unlocked_features" to updatedMap,
+                        "linkedHardwareId" to DeviceUtils.getDeviceHardwareId(ctx),
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                 )
