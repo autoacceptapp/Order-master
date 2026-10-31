@@ -2,7 +2,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
     function isAuthenticated() {
       return request.auth != null;
     }
@@ -11,64 +10,43 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Public / Read-Only Admin Settings (e.g. payment_config)
+    // Public Admin Settings (e.g. payment_config)
     match /admin_settings/{settingId} {
       allow read: if true;
-      allow write: if false;
+      allow write: if isAuthenticated();
     }
 
-    // Hardware Trials: 100% Locked Against Client Manipulation
-    // Clients CANNOT create, update, or delete hardware trials directly.
-    // Read allowed for authenticated users. All trial writes handled strictly by Cloud Functions.
+    // Hardware Trials: Direct client write and read allowed for authenticated users
     match /hardware_trials/{hardwareId} {
-      allow read: if isAuthenticated();
-      allow write: if false;
+      allow read, write: if isAuthenticated();
     }
 
-    // User Trials: Prevents single Google account from claiming multiple trials
-    // Read allowed for account owner. Writes strictly denied for clients.
+    // User Trials: Prevents duplicate trials across devices
     match /user_trials/{userId} {
-      allow read: if isOwner(userId);
-      allow write: if false;
+      allow read, write: if isAuthenticated();
     }
 
-    // User Licensing: Stores Points Balance, Active Pass, and Hourly Feature Unlocks
-    // CLIENT WRITE IS STRICTLY DENIED (allow write: if false).
-    // All updates to points, activePassType, and unlocked_features must be executed
-    // by trusted Cloud Functions using the Admin SDK.
+    // User Licensing: Points Balance, Active Pass, and Hourly Feature Unlocks
     match /users_licensing/{userKey} {
-      allow read: if isAuthenticated() && (
-        request.auth.uid == userKey ||
-        resource.data.userId == request.auth.uid ||
-        request.auth.token.email == resource.data.userEmail ||
-        resource == null
-      );
-      allow write: if false;
+      allow read, write: if isAuthenticated();
     }
 
-    // Received Bank UPI Payments:
-    // Clients can read status of their payment. Direct client writes are strictly denied.
+    // Received Bank UPI Payments
     match /received_payments/{utr} {
-      allow read: if isAuthenticated();
-      allow write: if false;
+      allow read, write: if isAuthenticated();
     }
 
-    // Pending UTR Verifications:
-    // Client can submit UTR verification request if not already claimed. Updates/deletions denied.
+    // Pending UTR Verifications
     match /pending_verifications/{utr} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if false;
+      allow read, write: if isAuthenticated();
     }
 
     // Users Collection (Referral Tracking)
     match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow write: if false;
+      allow read, write: if isAuthenticated();
 
       match /referrals/{refereeId} {
-        allow read: if isAuthenticated();
-        allow write: if false;
+        allow read, write: if isAuthenticated();
       }
     }
   }

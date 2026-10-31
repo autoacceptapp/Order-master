@@ -178,19 +178,66 @@ object PassManager {
         cleanUtr: String,
         preferredTier: PassTier?,
         context: Context
-    ): VerificationResult {
+    ): VerificationResult = withContext(Dispatchers.IO) {
         val tier = preferredTier ?: PassTier.DAILY
         try {
-            val json = VercelApiClient.post("verifyUtrAndActivatePass", mapOf("utr" to cleanUtr, "passTier" to tier.id))
+            val userLicensingDocRef = firestore.collection("users_licensing").document(userId)
 
-            val finalExpiryTimestamp = json.optLong(
-                "passExpiryTimestamp",
-                LicenseManager.getCurrentServerTimeMs() + tier.durationMs
-            )
-            val serverNow = json.optLong("serverTimeMs", 0L)
-            if (serverNow > 0L) {
-                LicenseManager.recordServerTimeSync(serverNow)
-            }
+            val finalExpiryTimestamp = firestore.runTransaction { transaction ->
+                val paymentSnap = transaction.get(paymentDocRef)
+                if (!paymentSnap.exists()) {
+                    throw IllegalStateException("Payment record not found for UTR $cleanUtr")
+                }
+
+                val isClaimed = paymentSnap.getBoolean("claimed") ?: false
+                if (isClaimed) {
+                    val claimedBy = paymentSnap.getString("claimedByUserId") ?: ""
+                    if (claimedBy.isNotBlank() && claimedBy != userId) {
+                        throw IllegalStateException("This UTR has already been claimed on another account.")
+                    }
+                }
+
+                val now = System.currentTimeMillis()
+                val userLicensingSnap = transaction.get(userLicensingDocRef)
+                val currentExpiry = if (userLicensingSnap.exists()) {
+                    userLicensingSnap.getLong("passExpiryTimestamp") ?: 0L
+                } else 0L
+
+                val baseTime = if (currentExpiry > now) currentExpiry else now
+                val newExpiry = baseTime + tier.durationMs
+
+                // Update received_payments doc
+                transaction.update(
+                    paymentDocRef,
+                    mapOf(
+                        "claimed" to true,
+                        "claimedByUserId" to userId,
+                        "claimedAt" to FieldValue.serverTimestamp(),
+                        "passTier" to tier.id
+                    )
+                )
+
+                // Update users_licensing doc
+                val licensingUpdates = mutableMapOf<String, Any>(
+                    "userId" to userId,
+                    "activePassType" to tier.id,
+                    "passExpiryTimestamp" to newExpiry,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                if (userLicensingSnap.exists()) {
+                    transaction.update(userLicensingDocRef, licensingUpdates)
+                } else {
+                    licensingUpdates["pointsBalance"] = 0
+                    licensingUpdates["referralCode"] = LicenseManager.generateReferralCode()
+                    licensingUpdates["hasClaimedReferral"] = false
+                    licensingUpdates["referralCount"] = 0
+                    licensingUpdates["unlocked_features"] = emptyMap<String, Long>()
+                    licensingUpdates["createdAt"] = FieldValue.serverTimestamp()
+                    transaction.set(userLicensingDocRef, licensingUpdates)
+                }
+
+                newExpiry
+            }.await()
 
             withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
                 setPassStatus(context, true)
@@ -202,17 +249,17 @@ object PassManager {
                 )
             }
 
-            return VerificationResult.Success(tier, finalExpiryTimestamp)
+            VerificationResult.Success(tier, finalExpiryTimestamp)
         } catch (e: Exception) {
             val msg = e.message ?: ""
             if (msg.contains("already been claimed", ignoreCase = true) || msg.contains("already claimed", ignoreCase = true)) {
-                return VerificationResult.AlreadyUsed("This UTR has already been claimed on another account.")
+                return@withContext VerificationResult.AlreadyUsed("This UTR has already been claimed on another account.")
             }
             if (msg.contains("not confirmed", ignoreCase = true) || msg.contains("not found", ignoreCase = true)) {
-                return VerificationResult.NotFound("Payment not verified yet. Please wait a minute or check your UTR")
+                return@withContext VerificationResult.NotFound("Payment not verified yet. Please wait a minute or check your UTR")
             }
-            Log.e(TAG, "Cloud verifyUtrAndActivatePass failed: $msg", e)
-            return VerificationResult.Error("Verification failed: $msg")
+            Log.e(TAG, "Direct Firestore claim failed: $msg", e)
+            VerificationResult.Error("Verification failed: $msg")
         }
     }
 

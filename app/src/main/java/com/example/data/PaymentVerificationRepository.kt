@@ -425,18 +425,29 @@ class PaymentVerificationRepository(
             val userDocRef = firestore.collection(COLL_USERS).document(userId)
             val pendingDocRef = firestore.collection(COLL_PENDING_VERIFICATIONS).document(utr)
 
-            // Step 1: Secure Zero-Trust Serverless Activation via Vercel Backend
+            // Step 1: Direct Firestore Payment Claim & Expiry Update
             try {
-                val json = com.example.VercelApiClient.post(
-                    "verifyUtrAndActivatePass",
-                    mapOf("utr" to utr, "passTier" to passTier.id)
-                )
-                val serverNow = json.optLong("serverTimeMs", 0L)
-                if (serverNow > 0L) {
-                    LicenseManager.recordServerTimeSync(serverNow)
-                }
+                paymentDocRef.set(
+                    mapOf(
+                        "claimed" to true,
+                        "claimedByUserId" to userId,
+                        "claimedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+                        "passTier" to passTier.id
+                    ),
+                    com.google.firebase.firestore.SetOptions.merge()
+                ).await()
+
+                firestore.collection("users_licensing").document(userId).set(
+                    mapOf(
+                        "userId" to userId,
+                        "activePassType" to passTier.id,
+                        "passExpiryTimestamp" to newExpiryTimestamp,
+                        "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+                    ),
+                    com.google.firebase.firestore.SetOptions.merge()
+                ).await()
             } catch (e: Exception) {
-                Log.w(TAG, "Vercel verifyUtrAndActivatePass response: ${e.message}")
+                Log.w(TAG, "Direct Firestore payment claim update encountered: ${e.message}")
             }
 
             // Step 2: Immediate Local and Memory Unlock inside NonCancellable block
