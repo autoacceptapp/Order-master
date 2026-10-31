@@ -17,7 +17,7 @@ import java.net.URL
  * Lightweight, production-ready HTTP caller communicating with Vercel Serverless Functions.
  * - Enforces standard HTTP POST requests with JSON payload and Content-Type: application/json.
  * - Extracts current user's Firebase Auth ID token and sends via Authorization: Bearer <token>.
- * - Strictly constructs URLs without trailing slashes (e.g., https://ordermaster-fawn.vercel.app/api/getServerTime).
+ * - Strictly constructs URLs without trailing slashes (e.g., https://6122.vercel.app/api/getServerTime).
  * - Prevents default HttpURLConnection redirect downgrading from POST to GET.
  * - Parses and returns JSON responses, throwing informative errors on HTTP failures.
  */
@@ -26,7 +26,7 @@ object VercelApiClient {
     private const val TAG = "VercelApiClient"
 
     // Base URL strictly without trailing slash
-    const val BASE_URL: String = "https://ordermaster-fawn.vercel.app/api"
+    const val BASE_URL: String = "https://6122.vercel.app/api"
 
     @Volatile
     var baseUrl: String = BASE_URL
@@ -37,7 +37,7 @@ object VercelApiClient {
 
     /**
      * Resolves the canonical endpoint URL without any trailing slash.
-     * E.g., endpoint "getServerTime" -> "https://ordermaster-fawn.vercel.app/api/getServerTime"
+     * E.g., endpoint "getServerTime" -> "https://6122.vercel.app/api/getServerTime"
      */
     fun buildUrl(endpoint: String): String {
         val cleanEndpoint = endpoint.trim()

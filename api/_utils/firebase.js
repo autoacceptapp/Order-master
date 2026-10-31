@@ -36,22 +36,6 @@ async function authenticateRequest(req) {
   }
 }
 
-// Robust CORS handler: sets headers and handles OPTIONS preflight gracefully
-function handleCors(req, res) {
-  if (res && typeof res.setHeader === "function") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept");
-  }
-  if (req && req.method === "OPTIONS") {
-    if (res && typeof res.status === "function") {
-      res.status(200).end();
-    }
-    return true;
-  }
-  return false;
-}
-
 // Pass Tier Definitions (Duration in Milliseconds)
 const PASS_TIERS = {
   daily_pass: {
@@ -117,7 +101,6 @@ module.exports = {
   admin,
   db,
   authenticateRequest,
-  handleCors,
   PASS_TIERS,
   TRIAL_DURATION_MS,
   FEATURE_PRICING,
