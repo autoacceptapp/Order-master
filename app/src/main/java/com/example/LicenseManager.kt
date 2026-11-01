@@ -10,6 +10,7 @@ import android.util.Log
 import com.example.auth.GoogleAuthManager
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
@@ -21,6 +22,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -311,6 +314,7 @@ object LicenseManager {
     private var userDocListener: ListenerRegistration? = null
     private var currentUserKey: String? = null
     private val authLock = Any()
+    private val syncMutex = Mutex()
     private val docInitAttempted = AtomicBoolean(false)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
@@ -473,8 +477,8 @@ object LicenseManager {
                 hasLoadedLicensing = false
                 _unlockedFeatures.value = emptyMap()
                 _accessStatus.value = AccessStatus.Loading
-                syncUserLicensingDocument(customUserId, userEmail)
             }
+            syncHardwareTrialAndLicensing()
         }
     }
 
@@ -707,6 +711,364 @@ object LicenseManager {
     }
 
     /**
+     * Authoritative Data Migration Engine
+     *
+     * Enforces the seamless user migration rules:
+     * Condition A: Same Gmail, New Phone/New CustomUserId -> Migrates data from old document to customUserId.
+     * Condition B: Same Phone/HardwareId, New Gmail -> Migrates data on this phone to the new Gmail account.
+     * Condition C: Existing Match -> customUserId matches both firebaseUid and hardwareId, no migration needed.
+     * Condition D: Completely New -> No match for firebaseUid or hardwareId, initializes fresh profile.
+     * If both phone and Gmail change simultaneously, both Condition A and B fail, leading to Condition D (fresh profile).
+     */
+    private suspend fun checkAndMigrateUserData(
+        context: Context,
+        customUserId: String,
+        currentUser: FirebaseUser?,
+        hardwareId: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        val db = FirebaseFirestore.getInstance()
+        val firebaseUid = currentUser?.uid?.takeIf { it.isNotBlank() }
+        val userEmail = currentUser?.email ?: ""
+        val targetDocRef = db.collection(COLL_USERS).document(customUserId)
+
+        try {
+            val targetSnap = targetDocRef.get().await()
+
+            // 1. Query existing data across the "users" collection for Migration Check
+            val uidMatches = if (!firebaseUid.isNullOrBlank()) {
+                try {
+                    db.collection(COLL_USERS)
+                        .whereEqualTo("firebaseUid", firebaseUid)
+                        .get()
+                        .await()
+                        .documents
+                        .filter { it.id != customUserId && (it.getBoolean("isMigrated") != true) }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Query users by firebaseUid failed: ${e.message}")
+                    emptyList()
+                }
+            } else {
+                emptyList()
+            }
+
+            val hwMatches = try {
+                db.collection(COLL_USERS)
+                    .whereEqualTo("linkedHardwareId", hardwareId)
+                    .get()
+                    .await()
+                    .documents
+                    .filter { it.getBoolean("isMigrated") != true }
+            } catch (e: Exception) {
+                Log.w(TAG, "Query users by linkedHardwareId failed: ${e.message}")
+                emptyList()
+            }
+
+            // --- CONDITION A: Same Gmail, New Phone/New CustomUserId ---
+            // If a document exists with the same firebaseUid but a different Document ID
+            if (uidMatches.isNotEmpty()) {
+                val sourceDocSnap = uidMatches.first()
+                val sourceDocRef = sourceDocSnap.reference
+                Log.i(TAG, "Migration Condition A detected: Migrating from old doc ${sourceDocRef.id} to new phone doc $customUserId for UID $firebaseUid")
+
+                db.runTransaction { tx ->
+                    val sourceSnap = tx.get(sourceDocRef)
+                    val targetExistingSnap = tx.get(targetDocRef)
+
+                    val sourcePoints = (sourceSnap.getLong("pointsBalance") ?: 0L).toInt()
+                    val targetPoints = if (targetExistingSnap.exists()) (targetExistingSnap.getLong("pointsBalance") ?: 0L).toInt() else 0
+                    val finalPoints = if (targetPoints > 0) sourcePoints + targetPoints else sourcePoints
+
+                    val sourceExpiry = sourceSnap.getLong("passExpiryTimestamp") ?: 0L
+                    val targetExpiry = if (targetExistingSnap.exists()) targetExistingSnap.getLong("passExpiryTimestamp") ?: 0L else 0L
+                    val finalExpiry = maxOf(sourceExpiry, targetExpiry)
+
+                    val sourcePassType = sourceSnap.getString("activePassType") ?: ""
+                    val targetPassType = if (targetExistingSnap.exists()) targetExistingSnap.getString("activePassType") ?: "" else ""
+                    val finalPassType = if (finalExpiry == targetExpiry && targetExpiry > sourceExpiry) targetPassType else sourcePassType
+
+                    val sourceTrialClaimed = sourceSnap.getLong("trialClaimed") ?: sourceSnap.getLong("firstClaimedTimestamp") ?: 0L
+                    val targetTrialClaimed = if (targetExistingSnap.exists()) targetExistingSnap.getLong("trialClaimed") ?: 0L else 0L
+                    val finalTrialClaimed = if (sourceTrialClaimed > 0L) sourceTrialClaimed else targetTrialClaimed
+
+                    val sourceTrialExpiry = sourceSnap.getLong("trialExpiry") ?: sourceSnap.getLong("trialExpiryTimestamp") ?: 0L
+                    val targetTrialExpiry = if (targetExistingSnap.exists()) targetExistingSnap.getLong("trialExpiry") ?: 0L else 0L
+                    val finalTrialExpiry = if (sourceTrialExpiry > 0L) sourceTrialExpiry else targetTrialExpiry
+
+                    val sourceTrialUsed = sourceSnap.getBoolean("trialUsed") ?: (sourceTrialClaimed > 0L)
+                    val targetTrialUsed = if (targetExistingSnap.exists()) targetExistingSnap.getBoolean("trialUsed") ?: false else false
+                    val finalTrialUsed = sourceTrialUsed || targetTrialUsed
+
+                    val sourceRefCode = sourceSnap.getString("referralCode")
+                    val targetRefCode = if (targetExistingSnap.exists()) targetExistingSnap.getString("referralCode") else null
+                    val finalRefCode = sourceRefCode?.takeIf { it.isNotBlank() } ?: targetRefCode?.takeIf { it.isNotBlank() } ?: generateReferralCode()
+
+                    val sourceRefCount = (sourceSnap.getLong("referralCount") ?: 0L).toInt()
+                    val targetRefCount = if (targetExistingSnap.exists()) (targetExistingSnap.getLong("referralCount") ?: 0L).toInt() else 0
+                    val finalRefCount = maxOf(sourceRefCount, targetRefCount)
+
+                    val sourceHasClaimed = sourceSnap.getBoolean("hasClaimedReferral") ?: false
+                    val targetHasClaimed = if (targetExistingSnap.exists()) targetExistingSnap.getBoolean("hasClaimedReferral") ?: false else false
+                    val finalHasClaimed = sourceHasClaimed || targetHasClaimed
+
+                    val sourceFeatures = (sourceSnap.get("unlocked_features") as? Map<*, *>)?.mapNotNull { (k, v) ->
+                        val fk = k as? String ?: return@mapNotNull null
+                        val fe = (v as? Number)?.toLong() ?: return@mapNotNull null
+                        fk to fe
+                    }?.toMap() ?: emptyMap()
+
+                    val targetFeatures = if (targetExistingSnap.exists()) {
+                        (targetExistingSnap.get("unlocked_features") as? Map<*, *>)?.mapNotNull { (k, v) ->
+                            val fk = k as? String ?: return@mapNotNull null
+                            val fe = (v as? Number)?.toLong() ?: return@mapNotNull null
+                            fk to fe
+                        }?.toMap() ?: emptyMap()
+                    } else emptyMap()
+
+                    val mergedFeatures = (targetFeatures + sourceFeatures).toMutableMap()
+                    for ((k, v) in sourceFeatures) {
+                        val tExp = targetFeatures[k] ?: 0L
+                        mergedFeatures[k] = maxOf(v, tExp)
+                    }
+
+                    val now = System.currentTimeMillis()
+                    val tier = PassTier.fromId(finalPassType)
+                    val folder = computeCurrentFolder(tier, finalExpiry, finalTrialClaimed, finalTrialExpiry, now)
+
+                    val migratedData = hashMapOf<String, Any>(
+                        "userId" to customUserId,
+                        "firebaseUid" to (firebaseUid ?: ""),
+                        "userEmail" to userEmail,
+                        "linkedHardwareId" to hardwareId,
+                        "current_folder" to folder,
+                        "pointsBalance" to finalPoints,
+                        "activePassType" to finalPassType,
+                        "passExpiryTimestamp" to finalExpiry,
+                        "referralCode" to finalRefCode,
+                        "hasClaimedReferral" to finalHasClaimed,
+                        "referralCount" to finalRefCount,
+                        "trialClaimed" to finalTrialClaimed,
+                        "trialExpiry" to finalTrialExpiry,
+                        "trialUsed" to finalTrialUsed,
+                        "unlocked_features" to mergedFeatures,
+                        "migratedFrom" to sourceDocRef.id,
+                        "createdAt" to (sourceSnap.getTimestamp("createdAt") ?: FieldValue.serverTimestamp()),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+
+                    tx.set(targetDocRef, migratedData, SetOptions.merge())
+
+                    // Mark old document as migrated
+                    tx.update(
+                        sourceDocRef,
+                        mapOf(
+                            "isMigrated" to true,
+                            "migratedTo" to customUserId,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                }.await()
+
+                Log.i(TAG, "Condition A migration completed successfully: ${sourceDocRef.id} -> $customUserId")
+                return@withContext true
+            }
+
+            // --- CONDITION B: Same Phone/Same HardwareId, New Gmail ---
+            // If a document exists with the same linkedHardwareId but a different firebaseUid (meaning they switched Gmails on the same device)
+            val hwDocWithDifferentUid = hwMatches.firstOrNull { doc ->
+                val docUid = doc.getString("firebaseUid") ?: ""
+                !firebaseUid.isNullOrBlank() && docUid != firebaseUid
+            }
+
+            if (hwDocWithDifferentUid != null) {
+                Log.i(TAG, "Migration Condition B detected: Switching Gmail on same phone ($hardwareId) to $userEmail ($firebaseUid)")
+                val sourceDocRef = hwDocWithDifferentUid.reference
+
+                if (sourceDocRef.id == customUserId) {
+                    // Same document ID on this phone, simply update firebaseUid and userEmail
+                    db.runTransaction { tx ->
+                        val snap = tx.get(targetDocRef)
+                        if (snap.exists()) {
+                            tx.update(
+                                targetDocRef,
+                                mapOf(
+                                    "userId" to customUserId,
+                                    "firebaseUid" to (firebaseUid ?: ""),
+                                    "userEmail" to userEmail,
+                                    "linkedHardwareId" to hardwareId,
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                )
+                            )
+                        }
+                    }.await()
+                } else {
+                    // Different document ID on same phone, migrate data into customUserId
+                    db.runTransaction { tx ->
+                        val sourceSnap = tx.get(sourceDocRef)
+                        val targetExistingSnap = tx.get(targetDocRef)
+
+                        val sourcePoints = (sourceSnap.getLong("pointsBalance") ?: 0L).toInt()
+                        val targetPoints = if (targetExistingSnap.exists()) (targetExistingSnap.getLong("pointsBalance") ?: 0L).toInt() else 0
+                        val finalPoints = if (targetPoints > 0) sourcePoints + targetPoints else sourcePoints
+
+                        val sourceExpiry = sourceSnap.getLong("passExpiryTimestamp") ?: 0L
+                        val targetExpiry = if (targetExistingSnap.exists()) targetExistingSnap.getLong("passExpiryTimestamp") ?: 0L else 0L
+                        val finalExpiry = maxOf(sourceExpiry, targetExpiry)
+
+                        val sourcePassType = sourceSnap.getString("activePassType") ?: ""
+                        val targetPassType = if (targetExistingSnap.exists()) targetExistingSnap.getString("activePassType") ?: "" else ""
+                        val finalPassType = if (finalExpiry == targetExpiry && targetExpiry > sourceExpiry) targetPassType else sourcePassType
+
+                        val sourceTrialClaimed = sourceSnap.getLong("trialClaimed") ?: 0L
+                        val targetTrialClaimed = if (targetExistingSnap.exists()) targetExistingSnap.getLong("trialClaimed") ?: 0L else 0L
+                        val finalTrialClaimed = if (sourceTrialClaimed > 0L) sourceTrialClaimed else targetTrialClaimed
+
+                        val sourceTrialExpiry = sourceSnap.getLong("trialExpiry") ?: 0L
+                        val targetTrialExpiry = if (targetExistingSnap.exists()) targetExistingSnap.getLong("trialExpiry") ?: 0L else 0L
+                        val finalTrialExpiry = if (sourceTrialExpiry > 0L) sourceTrialExpiry else targetTrialExpiry
+
+                        val sourceTrialUsed = sourceSnap.getBoolean("trialUsed") ?: (sourceTrialClaimed > 0L)
+                        val targetTrialUsed = if (targetExistingSnap.exists()) targetExistingSnap.getBoolean("trialUsed") ?: false else false
+                        val finalTrialUsed = sourceTrialUsed || targetTrialUsed
+
+                        val sourceRefCode = sourceSnap.getString("referralCode")
+                        val targetRefCode = if (targetExistingSnap.exists()) targetExistingSnap.getString("referralCode") else null
+                        val finalRefCode = sourceRefCode?.takeIf { it.isNotBlank() } ?: targetRefCode?.takeIf { it.isNotBlank() } ?: generateReferralCode()
+
+                        val sourceRefCount = (sourceSnap.getLong("referralCount") ?: 0L).toInt()
+                        val targetRefCount = if (targetExistingSnap.exists()) (targetExistingSnap.getLong("referralCount") ?: 0L).toInt() else 0
+                        val finalRefCount = maxOf(sourceRefCount, targetRefCount)
+
+                        val sourceHasClaimed = sourceSnap.getBoolean("hasClaimedReferral") ?: false
+                        val targetHasClaimed = if (targetExistingSnap.exists()) targetExistingSnap.getBoolean("hasClaimedReferral") ?: false else false
+                        val finalHasClaimed = sourceHasClaimed || targetHasClaimed
+
+                        val sourceFeatures = (sourceSnap.get("unlocked_features") as? Map<*, *>)?.mapNotNull { (k, v) ->
+                            val fk = k as? String ?: return@mapNotNull null
+                            val fe = (v as? Number)?.toLong() ?: return@mapNotNull null
+                            fk to fe
+                        }?.toMap() ?: emptyMap()
+
+                        val targetFeatures = if (targetExistingSnap.exists()) {
+                            (targetExistingSnap.get("unlocked_features") as? Map<*, *>)?.mapNotNull { (k, v) ->
+                                val fk = k as? String ?: return@mapNotNull null
+                                val fe = (v as? Number)?.toLong() ?: return@mapNotNull null
+                                fk to fe
+                            }?.toMap() ?: emptyMap()
+                        } else emptyMap()
+
+                        val mergedFeatures = (targetFeatures + sourceFeatures).toMutableMap()
+                        for ((k, v) in sourceFeatures) {
+                            val tExp = targetFeatures[k] ?: 0L
+                            mergedFeatures[k] = maxOf(v, tExp)
+                        }
+
+                        val now = System.currentTimeMillis()
+                        val tier = PassTier.fromId(finalPassType)
+                        val folder = computeCurrentFolder(tier, finalExpiry, finalTrialClaimed, finalTrialExpiry, now)
+
+                        val migratedData = hashMapOf<String, Any>(
+                            "userId" to customUserId,
+                            "firebaseUid" to (firebaseUid ?: ""),
+                            "userEmail" to userEmail,
+                            "linkedHardwareId" to hardwareId,
+                            "current_folder" to folder,
+                            "pointsBalance" to finalPoints,
+                            "activePassType" to finalPassType,
+                            "passExpiryTimestamp" to finalExpiry,
+                            "referralCode" to finalRefCode,
+                            "hasClaimedReferral" to finalHasClaimed,
+                            "referralCount" to finalRefCount,
+                            "trialClaimed" to finalTrialClaimed,
+                            "trialExpiry" to finalTrialExpiry,
+                            "trialUsed" to finalTrialUsed,
+                            "unlocked_features" to mergedFeatures,
+                            "migratedFrom" to sourceDocRef.id,
+                            "createdAt" to (sourceSnap.getTimestamp("createdAt") ?: FieldValue.serverTimestamp()),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+
+                        tx.set(targetDocRef, migratedData, SetOptions.merge())
+
+                        // Mark old document as migrated
+                        tx.update(
+                            sourceDocRef,
+                            mapOf(
+                                "isMigrated" to true,
+                                "migratedTo" to customUserId,
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            )
+                        )
+                    }.await()
+                }
+
+                Log.i(TAG, "Condition B migration completed successfully on hardware $hardwareId for UID $firebaseUid")
+                return@withContext true
+            }
+
+            // --- CONDITION C: Existing Match ---
+            // If the customUserId document exists and matches both the firebaseUid and hardwareId, proceed normally
+            if (targetSnap != null && targetSnap.exists()) {
+                val targetHw = targetSnap.getString("linkedHardwareId") ?: ""
+                val targetUid = targetSnap.getString("firebaseUid") ?: ""
+                val matchesHw = targetHw.isBlank() || targetHw == hardwareId
+                val matchesUid = firebaseUid.isNullOrBlank() || targetUid.isBlank() || targetUid == firebaseUid
+
+                if (matchesHw && matchesUid) {
+                    Log.d(TAG, "Condition C: Existing match for $customUserId. No migration needed.")
+                    val updates = mutableMapOf<String, Any>()
+                    if (targetHw.isBlank() && hardwareId.isNotBlank()) {
+                        updates["linkedHardwareId"] = hardwareId
+                    }
+                    if (!firebaseUid.isNullOrBlank() && targetUid != firebaseUid) {
+                        updates["firebaseUid"] = firebaseUid
+                        updates["userEmail"] = userEmail
+                    }
+                    if (updates.isNotEmpty()) {
+                        updates["updatedAt"] = FieldValue.serverTimestamp()
+                        targetDocRef.set(updates, SetOptions.merge()).await()
+                    }
+                    return@withContext true
+                }
+            }
+
+            // --- CONDITION D: Completely New ---
+            // If no matching firebaseUid or linkedHardwareId exists, create a brand new user document under customUserId
+            if (targetSnap == null || !targetSnap.exists()) {
+                Log.i(TAG, "Condition D: No matching records found. Creating brand new user document for $customUserId")
+                val newCode = generateReferralCode()
+                val newDoc = hashMapOf<String, Any>(
+                    "userId" to customUserId,
+                    "userEmail" to userEmail,
+                    "firebaseUid" to (firebaseUid ?: ""),
+                    "linkedHardwareId" to hardwareId,
+                    "current_folder" to "free_mod",
+                    "trialClaimed" to 0L,
+                    "trialExpiry" to 0L,
+                    "trialUsed" to false,
+                    "pointsBalance" to 0,
+                    "referralCode" to newCode,
+                    "hasClaimedReferral" to false,
+                    "referralCount" to 0,
+                    "activePassType" to "",
+                    "passExpiryTimestamp" to 0L,
+                    "unlocked_features" to emptyMap<String, Long>(),
+                    "createdAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                targetDocRef.set(newDoc, SetOptions.merge()).await()
+                _referralCode.value = newCode
+                _currentFolder.value = "free_mod"
+                return@withContext true
+            }
+
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "checkAndMigrateUserData encountered error: ${e.message}", e)
+            false
+        }
+    }
+
+    /**
      * Performs cloud sync for trial and user licensing directly with Firestore in the single "users" collection.
      */
     private suspend fun syncHardwareTrialAndLicensing() {
@@ -726,83 +1088,93 @@ object LicenseManager {
             return
         }
 
-        // Authoritative server clock synchronization
-        fetchServerTimeBaseline()
+        syncMutex.withLock {
+            // Authoritative server clock synchronization
+            fetchServerTimeBaseline()
 
-        // 1. Resolve persistent custom User ID (OM-USER-XXXXXXXX)
-        val customUserId = resolveUserKey(ctx)
-        currentUserKey = customUserId
-        val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
-        val currentUser = try {
-            FirebaseAuth.getInstance().currentUser
-        } catch (_: Exception) {
-            null
-        }
-
-        try {
-            val db = FirebaseFirestore.getInstance()
-            val userDocRef = db.collection(COLL_USERS).document(customUserId)
-
-            val snapshot = userDocRef.get().await()
-            val now = getCurrentServerTimeMs()
-
-            if (snapshot != null && snapshot.exists()) {
-                val trialClaimed = snapshot.getLong("trialClaimed") ?: snapshot.getLong("firstClaimedTimestamp") ?: 0L
-                val trialExpiry = snapshot.getLong("trialExpiry") ?: snapshot.getLong("trialExpiryTimestamp") ?: 0L
-                val isUsed = snapshot.getBoolean("trialUsed") ?: snapshot.getBoolean("isUsed") ?: (trialClaimed > 0L)
-                val passType = snapshot.getString("activePassType")
-                val passExpiry = snapshot.getLong("passExpiryTimestamp") ?: 0L
-                val tier = PassTier.fromId(passType)
-
-                if (trialClaimed > 0L) {
-                    serverTrialClaimed = trialClaimed
-                    serverTrialExpiry = trialExpiry
-                    serverTrialUsed = isUsed
-                    hasLoadedTrial = true
-                    Log.i(TAG, "Loaded trial directly from users doc for $customUserId: claimed=$trialClaimed, expiry=$trialExpiry, isUsed=$isUsed")
-                } else {
-                    serverTrialClaimed = 0L
-                    serverTrialExpiry = 0L
-                    serverTrialUsed = false
-                    hasLoadedTrial = true
-                }
-
-                val folder = computeCurrentFolder(tier, passExpiry, serverTrialClaimed, serverTrialExpiry, now)
-                _currentFolder.value = folder
-                val savedFolder = snapshot.getString("current_folder")
-                val savedHwId = snapshot.getString("linkedHardwareId")
-
-                if (savedFolder != folder || savedHwId != hwId) {
-                    val updateData = mutableMapOf<String, Any>(
-                        "userId" to customUserId,
-                        "current_folder" to folder,
-                        "linkedHardwareId" to hwId,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                    if (currentUser != null && currentUser.uid.isNotBlank()) {
-                        updateData["firebaseUid"] = currentUser.uid
-                    }
-                    if (!currentUser?.email.isNullOrBlank()) {
-                        updateData["userEmail"] = currentUser?.email ?: ""
-                    }
-                    userDocRef.set(updateData, SetOptions.merge()).await()
-                }
-            } else {
-                hasLoadedTrial = true
-                _currentFolder.value = "free_mod"
+            // 1. Identify current environment
+            val customUserId = resolveUserKey(ctx)
+            currentUserKey = customUserId
+            val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
+            val currentUser = try {
+                FirebaseAuth.getInstance().currentUser
+            } catch (_: Exception) {
+                null
             }
-            refreshAccessStatus()
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not sync user document from Firestore: ${e.message}")
-            hasLoadedTrial = true
-            refreshAccessStatus()
-        }
 
-        // Sync real-time snapshot listener on users/{customUserId}
-        try {
-            syncUserLicensingDocument(customUserId, currentUser?.email)
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not sync user licensing: ${e.message}")
+            // 2. Perform Migration Check before reading/syncing
+            try {
+                checkAndMigrateUserData(ctx, customUserId, currentUser, hwId)
+            } catch (e: Exception) {
+                Log.w(TAG, "Migration check failed: ${e.message}")
+            }
+
+            // 3. Load authoritative user document from Firestore
+            try {
+                val db = FirebaseFirestore.getInstance()
+                val userDocRef = db.collection(COLL_USERS).document(customUserId)
+
+                val snapshot = userDocRef.get().await()
+                val now = getCurrentServerTimeMs()
+
+                if (snapshot != null && snapshot.exists()) {
+                    val trialClaimed = snapshot.getLong("trialClaimed") ?: snapshot.getLong("firstClaimedTimestamp") ?: 0L
+                    val trialExpiry = snapshot.getLong("trialExpiry") ?: snapshot.getLong("trialExpiryTimestamp") ?: 0L
+                    val isUsed = snapshot.getBoolean("trialUsed") ?: snapshot.getBoolean("isUsed") ?: (trialClaimed > 0L)
+                    val passType = snapshot.getString("activePassType")
+                    val passExpiry = snapshot.getLong("passExpiryTimestamp") ?: 0L
+                    val tier = PassTier.fromId(passType)
+
+                    if (trialClaimed > 0L) {
+                        serverTrialClaimed = trialClaimed
+                        serverTrialExpiry = trialExpiry
+                        serverTrialUsed = isUsed
+                        hasLoadedTrial = true
+                        Log.i(TAG, "Loaded trial directly from users doc for $customUserId: claimed=$trialClaimed, expiry=$trialExpiry, isUsed=$isUsed")
+                    } else {
+                        serverTrialClaimed = 0L
+                        serverTrialExpiry = 0L
+                        serverTrialUsed = false
+                        hasLoadedTrial = true
+                    }
+
+                    val folder = computeCurrentFolder(tier, passExpiry, serverTrialClaimed, serverTrialExpiry, now)
+                    _currentFolder.value = folder
+                    val savedFolder = snapshot.getString("current_folder")
+                    val savedHwId = snapshot.getString("linkedHardwareId")
+
+                    if (savedFolder != folder || savedHwId != hwId) {
+                        val updateData = mutableMapOf<String, Any>(
+                            "userId" to customUserId,
+                            "current_folder" to folder,
+                            "linkedHardwareId" to hwId,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                        if (currentUser != null && currentUser.uid.isNotBlank()) {
+                            updateData["firebaseUid"] = currentUser.uid
+                        }
+                        if (!currentUser?.email.isNullOrBlank()) {
+                            updateData["userEmail"] = currentUser?.email ?: ""
+                        }
+                        userDocRef.set(updateData, SetOptions.merge()).await()
+                    }
+                } else {
+                    hasLoadedTrial = true
+                    _currentFolder.value = "free_mod"
+                }
+                refreshAccessStatus()
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not sync user document from Firestore: ${e.message}")
+                hasLoadedTrial = true
+                refreshAccessStatus()
+            }
+
+            // 4. Sync real-time snapshot listener on users/{customUserId}
+            try {
+                syncUserLicensingDocument(customUserId, currentUser?.email)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not sync user licensing: ${e.message}")
+            }
         }
     }
 
@@ -931,36 +1303,10 @@ object LicenseManager {
                                     null
                                 }
                                 val context = ctx ?: return@launch
-                                val newCode = generateReferralCode()
                                 val permanentHardwareId = HardwareIdManager.getPermanentHardwareId(context)
-
-                                val newDoc = hashMapOf<String, Any>(
-                                    "userId" to customUserId,
-                                    "userEmail" to (userEmail ?: (currentAuthUser?.email ?: "")),
-                                    "linkedHardwareId" to permanentHardwareId,
-                                    "current_folder" to "free_mod",
-                                    "trialClaimed" to 0L,
-                                    "trialExpiry" to 0L,
-                                    "trialUsed" to false,
-                                    "pointsBalance" to 0,
-                                    "referralCode" to newCode,
-                                    "hasClaimedReferral" to false,
-                                    "referralCount" to 0,
-                                    "activePassType" to "",
-                                    "passExpiryTimestamp" to 0L,
-                                    "unlocked_features" to emptyMap<String, Long>(),
-                                    "createdAt" to FieldValue.serverTimestamp(),
-                                    "updatedAt" to FieldValue.serverTimestamp()
-                                )
-                                if (currentAuthUser != null && currentAuthUser.uid.isNotBlank()) {
-                                    newDoc["firebaseUid"] = currentAuthUser.uid
-                                }
-                                userDocRef.set(newDoc, SetOptions.merge()).await()
-                                _referralCode.value = newCode
-                                _currentFolder.value = "free_mod"
+                                checkAndMigrateUserData(context, customUserId, currentAuthUser, permanentHardwareId)
                                 hasLoadedLicensing = true
                                 refreshAccessStatus()
-                                Log.i(TAG, "Initialized new user document directly via Firestore for $customUserId (folder=free_mod)")
                             } catch (e: Exception) {
                                 Log.w(TAG, "Could not initialize user doc on Firestore: ${e.message}")
                                 docInitAttempted.set(false)
