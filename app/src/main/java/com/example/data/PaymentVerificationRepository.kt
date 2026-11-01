@@ -146,8 +146,8 @@ class PaymentVerificationRepository(
      */
     suspend fun checkIsPaymentVerified(context: Context): Boolean {
         val userId = resolveUserId(context)
-        if (!isNetworkAvailable(context)) {
-            Log.d(TAG, "Device is offline. Keeping cached pass status for user $userId")
+        if (userId.isBlank() || !isNetworkAvailable(context)) {
+            Log.d(TAG, "Device is offline or unauthenticated. Keeping cached pass status.")
             return PassManager.isPassActive(context)
         }
 
@@ -244,6 +244,14 @@ class PaymentVerificationRepository(
         cancelPendingListener()
 
         val userId = resolveUserId(context)
+        if (userId.isBlank()) {
+            _verificationState.value = PaymentVerificationState.Error(
+                message = "Please sign in with Google first before verifying payment.",
+                canRetry = false,
+                utr = utr
+            )
+            return
+        }
         _verificationState.value = PaymentVerificationState.Loading("Checking transaction reference with payment registry...")
 
         repoScope.launch {
@@ -306,7 +314,7 @@ class PaymentVerificationRepository(
                         "utr" to utr,
                         "userId" to userId,
                         "timestamp" to FieldValue.serverTimestamp(),
-                        "deviceHardwareId" to DeviceUtils.getDeviceHardwareId(context)
+                        "deviceHardwareId" to com.example.HardwareIdManager.getPermanentHardwareId(context)
                     )
                     pendingDocRef.set(pendingPayload, SetOptions.merge()).await()
 
@@ -438,7 +446,7 @@ class PaymentVerificationRepository(
                         "activePassType" to passTier.id,
                         "passExpiryTimestamp" to newExpiryTimestamp,
                         "current_folder" to newFolder,
-                        "linkedHardwareId" to DeviceUtils.getDeviceHardwareId(context),
+                        "linkedHardwareId" to com.example.HardwareIdManager.getPermanentHardwareId(context),
                         "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
                     ),
                     com.google.firebase.firestore.SetOptions.merge()

@@ -466,17 +466,34 @@ object LicenseManager {
     fun onUserAuthChanged(userEmail: String?, userUid: String?) {
         scope.launch {
             val ctx = appContext ?: return@launch
-            val newKey = resolveUserKey(ctx, userEmail, userUid)
-            synchronized(authLock) {
-                if (newKey != currentUserKey) {
+            val currentUser = try {
+                FirebaseAuth.getInstance().currentUser
+            } catch (_: Exception) {
+                null
+            }
+            val uid = currentUser?.uid?.takeIf { it.isNotBlank() } ?: userUid?.takeIf { it.isNotBlank() }
+            if (uid.isNullOrBlank()) {
+                Log.w(TAG, "onUserAuthChanged: No authenticated user UID. Aborting user document sync.")
+                synchronized(authLock) {
                     userDocListener?.remove()
                     userDocListener = null
-                    currentUserKey = newKey
+                    currentUserKey = ""
+                    _accessStatus.value = AccessStatus.Expired(isTrialUsed = false, hasHadPreviousPass = false, message = "Please sign in with Google to activate access.")
+                    _currentFolder.value = "free_mod"
+                }
+                return@launch
+            }
+
+            synchronized(authLock) {
+                if (uid != currentUserKey) {
+                    userDocListener?.remove()
+                    userDocListener = null
+                    currentUserKey = uid
                     docInitAttempted.set(false)
                     hasLoadedLicensing = false
                     _unlockedFeatures.value = emptyMap()
                     _accessStatus.value = AccessStatus.Loading
-                    syncUserLicensingDocument(newKey, userEmail)
+                    syncUserLicensingDocument(uid, userEmail ?: currentUser?.email)
                 }
             }
         }
@@ -495,11 +512,14 @@ object LicenseManager {
 
         try {
             val db = FirebaseFirestore.getInstance()
-            val user = FirebaseAuth.getInstance().currentUser
-            val userKey = resolveUserKey(ctx, user?.email, user?.uid)
-            val docRef = db.collection(COLL_USERS).document(userKey)
+            val currentUser = FirebaseAuth.getInstance().currentUser
+            if (currentUser == null || currentUser.uid.isBlank()) {
+                Log.w(TAG, "addPoints aborted: User is not authenticated")
+                return@withContext Result.failure(IllegalStateException("User is not authenticated"))
+            }
+            val docRef = db.collection(COLL_USERS).document(currentUser.uid)
 
-            val hwId = DeviceUtils.getDeviceHardwareId(ctx)
+            val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
             val (newBalance, updatedFolder) = db.runTransaction { tx ->
                 val snap = tx.get(docRef)
                 val current = (snap.getLong("pointsBalance") ?: 0L).toInt()
@@ -513,6 +533,7 @@ object LicenseManager {
 
                 if (snap.exists()) {
                     tx.update(docRef, mapOf(
+                        "userId" to currentUser.uid,
                         "pointsBalance" to updated,
                         "current_folder" to folder,
                         "linkedHardwareId" to hwId,
@@ -521,8 +542,8 @@ object LicenseManager {
                 } else {
                     val code = generateReferralCode()
                     tx.set(docRef, mapOf(
-                        "userId" to (user?.uid ?: userKey),
-                        "userEmail" to (user?.email ?: ""),
+                        "userId" to currentUser.uid,
+                        "userEmail" to (currentUser.email ?: ""),
                         "linkedHardwareId" to hwId,
                         "current_folder" to folder,
                         "trialClaimed" to trialClaimed,
@@ -568,10 +589,13 @@ object LicenseManager {
 
         try {
             val db = FirebaseFirestore.getInstance()
-            val user = FirebaseAuth.getInstance().currentUser
-            val userKey = resolveUserKey(ctx, user?.email, user?.uid)
-            val docRef = db.collection(COLL_USERS).document(userKey)
-            val hwId = DeviceUtils.getDeviceHardwareId(ctx)
+            val currentUser = FirebaseAuth.getInstance().currentUser
+            if (currentUser == null || currentUser.uid.isBlank()) {
+                Log.w(TAG, "purchasePassWithPoints aborted: User is not authenticated")
+                return@withContext Result.failure(IllegalStateException("User is not authenticated"))
+            }
+            val docRef = db.collection(COLL_USERS).document(currentUser.uid)
+            val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
 
             val newFolder = when (passTier) {
                 PassTier.DAILY -> "daily"
@@ -594,6 +618,7 @@ object LicenseManager {
                 tx.update(
                     docRef,
                     mapOf(
+                        "userId" to currentUser.uid,
                         "pointsBalance" to updatedPoints,
                         "activePassType" to passTier.id,
                         "passExpiryTimestamp" to updatedExpiry,
@@ -631,10 +656,14 @@ object LicenseManager {
         if (cleanUtr.isNotBlank() && cleanUtr.length in 9..16 && FirebaseApp.getApps(ctx).isNotEmpty()) {
             try {
                 val db = FirebaseFirestore.getInstance()
-                val user = FirebaseAuth.getInstance().currentUser
-                val userKey = resolveUserKey(ctx, user?.email, user?.uid)
+                val currentUser = FirebaseAuth.getInstance().currentUser
+                if (currentUser == null || currentUser.uid.isBlank()) {
+                    Log.w(TAG, "activatePassViaPayment aborted: User is not authenticated")
+                    return@withContext Result.failure(IllegalStateException("User is not authenticated"))
+                }
                 val paymentDocRef = db.collection(COLL_RECEIVED_PAYMENTS).document(cleanUtr)
-                val userDocRef = db.collection(COLL_USERS).document(userKey)
+                val userDocRef = db.collection(COLL_USERS).document(currentUser.uid)
+                val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
 
                 val newFolder = when (passTier) {
                     PassTier.DAILY -> "daily"
@@ -656,7 +685,7 @@ object LicenseManager {
                         paymentDocRef,
                         mapOf(
                             "claimed" to true,
-                            "claimedByUserId" to userKey,
+                            "claimedByUserId" to currentUser.uid,
                             "claimedAt" to FieldValue.serverTimestamp(),
                             "passTier" to passTier.id
                         ),
@@ -666,11 +695,11 @@ object LicenseManager {
                     tx.set(
                         userDocRef,
                         mapOf(
-                            "userId" to userKey,
+                            "userId" to currentUser.uid,
                             "activePassType" to passTier.id,
                             "passExpiryTimestamp" to newExpiry,
                             "current_folder" to newFolder,
-                            "linkedHardwareId" to DeviceUtils.getDeviceHardwareId(ctx),
+                            "linkedHardwareId" to hwId,
                             "updatedAt" to FieldValue.serverTimestamp()
                         ),
                         SetOptions.merge()
@@ -705,7 +734,6 @@ object LicenseManager {
      */
     private suspend fun syncHardwareTrialAndLicensing() {
         val ctx = appContext ?: return
-        val hwId = DeviceUtils.getDeviceHardwareId(ctx)
 
         if (FirebaseApp.getApps(ctx).isEmpty()) {
             try {
@@ -724,20 +752,33 @@ object LicenseManager {
         // Authoritative server clock synchronization
         fetchServerTimeBaseline()
 
-        // 1. Check user authentication and resolve single consistent Document Key
-        val authUser = try {
+        // 1. Strictly verify user authentication using FirebaseAuth.getInstance().currentUser
+        val currentUser = try {
             FirebaseAuth.getInstance().currentUser
         } catch (_: Exception) {
             null
         }
-        val authState = GoogleAuthManager.userAuthState.value
-        val isAuthenticated = (authUser != null && !authUser.isAnonymous) || (authState.isLoggedIn && !authState.uid.isNullOrBlank())
-        val userKey = resolveUserKey(ctx, authUser?.email, authUser?.uid ?: authState.uid)
-        currentUserKey = userKey
+
+        if (currentUser == null || currentUser.uid.isBlank()) {
+            Log.w(TAG, "syncHardwareTrialAndLicensing: User is not authenticated. Aborting document creation.")
+            currentUserKey = ""
+            serverTrialClaimed = 0L
+            serverTrialExpiry = 0L
+            serverTrialUsed = false
+            hasLoadedTrial = true
+            hasLoadedLicensing = true
+            _currentFolder.value = "free_mod"
+            refreshAccessStatus()
+            return
+        }
+
+        val userUid = currentUser.uid
+        currentUserKey = userUid
+        val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
 
         try {
             val db = FirebaseFirestore.getInstance()
-            val userDocRef = db.collection(COLL_USERS).document(userKey)
+            val userDocRef = db.collection(COLL_USERS).document(currentUser.uid)
 
             val snapshot = userDocRef.get().await()
             val now = getCurrentServerTimeMs()
@@ -755,30 +796,7 @@ object LicenseManager {
                     serverTrialExpiry = trialExpiry
                     serverTrialUsed = isUsed
                     hasLoadedTrial = true
-                    Log.i(TAG, "Loaded trial directly from users doc for $userKey: claimed=$trialClaimed, expiry=$trialExpiry, isUsed=$isUsed")
-                } else if (isAuthenticated) {
-                    // Authenticated user with no trial yet claimed: initialize trial in users document
-                    val exp = now + TRIAL_DURATION_MS
-                    serverTrialClaimed = now
-                    serverTrialExpiry = exp
-                    serverTrialUsed = true
-                    hasLoadedTrial = true
-
-                    val folder = computeCurrentFolder(tier, passExpiry, now, exp, now)
-                    _currentFolder.value = folder
-
-                    userDocRef.set(
-                        mapOf(
-                            "trialClaimed" to now,
-                            "trialExpiry" to exp,
-                            "trialUsed" to true,
-                            "linkedHardwareId" to hwId,
-                            "current_folder" to folder,
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        ),
-                        SetOptions.merge()
-                    ).await()
-                    Log.i(TAG, "Trial claimed directly in users doc for $userKey until $exp, folder=$folder")
+                    Log.i(TAG, "Loaded trial directly from users doc for ${currentUser.uid}: claimed=$trialClaimed, expiry=$trialExpiry, isUsed=$isUsed")
                 } else {
                     serverTrialClaimed = 0L
                     serverTrialExpiry = 0L
@@ -794,6 +812,7 @@ object LicenseManager {
                 if (savedFolder != folder || savedHwId != hwId) {
                     userDocRef.set(
                         mapOf(
+                            "userId" to currentUser.uid,
                             "current_folder" to folder,
                             "linkedHardwareId" to hwId,
                             "updatedAt" to FieldValue.serverTimestamp()
@@ -801,44 +820,7 @@ object LicenseManager {
                         SetOptions.merge()
                     ).await()
                 }
-            } else if (isAuthenticated) {
-                // First-time document creation for authenticated user in users collection
-                val exp = now + TRIAL_DURATION_MS
-                serverTrialClaimed = now
-                serverTrialExpiry = exp
-                serverTrialUsed = true
-                hasLoadedTrial = true
-
-                val folder = "trials"
-                _currentFolder.value = folder
-                val newCode = generateReferralCode()
-
-                val newDoc = hashMapOf<String, Any>(
-                    "userId" to userKey,
-                    "userEmail" to (authUser?.email ?: authState.userEmail ?: ""),
-                    "linkedHardwareId" to hwId,
-                    "trialClaimed" to now,
-                    "trialExpiry" to exp,
-                    "trialUsed" to true,
-                    "current_folder" to folder,
-                    "pointsBalance" to 0,
-                    "referralCode" to newCode,
-                    "hasClaimedReferral" to false,
-                    "referralCount" to 0,
-                    "activePassType" to "",
-                    "passExpiryTimestamp" to 0L,
-                    "unlocked_features" to emptyMap<String, Long>(),
-                    "createdAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-                userDocRef.set(newDoc, SetOptions.merge()).await()
-                _referralCode.value = newCode
-                Log.i(TAG, "Initialized new user in users collection: $userKey with trial and current_folder=$folder")
             } else {
-                Log.w(TAG, "Unauthenticated user: Trial not claimed without authentication.")
-                serverTrialClaimed = 0L
-                serverTrialExpiry = 0L
-                serverTrialUsed = false
                 hasLoadedTrial = true
                 _currentFolder.value = "free_mod"
             }
@@ -849,9 +831,9 @@ object LicenseManager {
             refreshAccessStatus()
         }
 
-        // Sync real-time snapshot listener on users/{userKey}
+        // Sync real-time snapshot listener on users/{currentUser.uid}
         try {
-            syncUserLicensingDocument(userKey, authUser?.email ?: authState.userEmail)
+            syncUserLicensingDocument(currentUser.uid, currentUser.email)
         } catch (e: Exception) {
             Log.w(TAG, "Could not sync user licensing: ${e.message}")
         }
@@ -868,9 +850,24 @@ object LicenseManager {
             Log.w(TAG, "FirebaseApp is not initialized; skipping syncUserLicensingDocument.")
             return
         }
+
+        val currentUser = try {
+            FirebaseAuth.getInstance().currentUser
+        } catch (_: Exception) {
+            null
+        }
+
+        if (currentUser == null || currentUser.uid.isBlank()) {
+            Log.w(TAG, "syncUserLicensingDocument: User is not authenticated; aborting.")
+            hasLoadedLicensing = true
+            _currentFolder.value = "free_mod"
+            refreshAccessStatus()
+            return
+        }
+
         try {
             val db = FirebaseFirestore.getInstance()
-            val userDocRef = db.collection(COLL_USERS).document(userKey)
+            val userDocRef = db.collection(COLL_USERS).document(currentUser.uid)
 
             userDocListener?.remove()
             userDocListener = userDocRef.addSnapshotListener { snapshot, error ->
@@ -931,7 +928,7 @@ object LicenseManager {
 
                     hasLoadedLicensing = true
 
-                    val currentHwId = ctx?.let { DeviceUtils.getDeviceHardwareId(it) } ?: ""
+                    val currentHwId = ctx?.let { HardwareIdManager.getPermanentHardwareId(it) } ?: ""
                     val existingLinkedHw = snapshot.getString("linkedHardwareId")
                     val existingFolder = snapshot.getString("current_folder")
 
@@ -968,25 +965,26 @@ object LicenseManager {
                     if (docInitAttempted.compareAndSet(false, true)) {
                         scope.launch {
                             try {
+                                val currentAuthUser = FirebaseAuth.getInstance().currentUser
+                                if (currentAuthUser == null || currentAuthUser.uid.isBlank()) {
+                                    Log.w(TAG, "Aborting document creation: currentUser is null or UID is empty")
+                                    docInitAttempted.set(false)
+                                    hasLoadedLicensing = true
+                                    refreshAccessStatus()
+                                    return@launch
+                                }
+                                val context = ctx ?: return@launch
                                 val newCode = generateReferralCode()
-                                val currentUser = FirebaseAuth.getInstance().currentUser
-                                val currentHwId = ctx?.let { DeviceUtils.getDeviceHardwareId(it) } ?: ""
-                                val now = System.currentTimeMillis()
-                                val isAuth = currentUser != null
-                                val trialClaimed = if (isAuth) now else 0L
-                                val trialExpiry = if (isAuth) now + TRIAL_DURATION_MS else 0L
-                                val trialUsed = isAuth
-                                val folder = if (isAuth) "trials" else "free_mod"
-                                _currentFolder.value = folder
+                                val permanentHardwareId = HardwareIdManager.getPermanentHardwareId(context)
 
                                 val newDoc = hashMapOf<String, Any>(
-                                    "userId" to (currentUser?.uid ?: userKey),
-                                    "userEmail" to (userEmail ?: (currentUser?.email ?: "")),
-                                    "linkedHardwareId" to currentHwId,
-                                    "current_folder" to folder,
-                                    "trialClaimed" to trialClaimed,
-                                    "trialExpiry" to trialExpiry,
-                                    "trialUsed" to trialUsed,
+                                    "userId" to currentAuthUser.uid,
+                                    "userEmail" to (userEmail ?: (currentAuthUser.email ?: "")),
+                                    "linkedHardwareId" to permanentHardwareId,
+                                    "current_folder" to "free_mod",
+                                    "trialClaimed" to 0L,
+                                    "trialExpiry" to 0L,
+                                    "trialUsed" to false,
                                     "pointsBalance" to 0,
                                     "referralCode" to newCode,
                                     "hasClaimedReferral" to false,
@@ -999,15 +997,10 @@ object LicenseManager {
                                 )
                                 userDocRef.set(newDoc, SetOptions.merge()).await()
                                 _referralCode.value = newCode
-                                if (isAuth) {
-                                    serverTrialClaimed = trialClaimed
-                                    serverTrialExpiry = trialExpiry
-                                    serverTrialUsed = trialUsed
-                                    hasLoadedTrial = true
-                                }
+                                _currentFolder.value = "free_mod"
                                 hasLoadedLicensing = true
                                 refreshAccessStatus()
-                                Log.i(TAG, "Initialized new user document directly via Firestore for $userKey (folder=$folder)")
+                                Log.i(TAG, "Initialized new user document directly via Firestore for ${currentAuthUser.uid} (folder=free_mod)")
                             } catch (e: Exception) {
                                 Log.w(TAG, "Could not initialize user doc on Firestore: ${e.message}")
                                 docInitAttempted.set(false)
@@ -1029,27 +1022,19 @@ object LicenseManager {
     }
 
     /**
-     * Resolves a persistent, single consistent Document ID for the user across Firestore collections:
-     * - If uid is present (or user is logged in with Firebase UID), return it.
-     * - If not, fallback to "hw_" + DeviceUtils.getDeviceHardwareId(context).
+     * Resolves the user Document ID for the "users" Firestore collection.
+     * MUST strictly use FirebaseAuth.getInstance().currentUser?.uid.
+     * If user is null or UID is empty, returns an empty string (aborting document creation).
      */
-    fun resolveUserKey(context: Context, email: String? = null, uid: String? = null): String {
+    fun resolveUserKey(context: Context? = null, email: String? = null, uid: String? = null): String {
         val authUser = try {
-            if (FirebaseApp.getApps(context).isNotEmpty()) {
-                FirebaseAuth.getInstance().currentUser
-            } else null
+            FirebaseAuth.getInstance().currentUser
         } catch (_: Exception) {
             null
         }
 
-        // 1. Strictly prioritize Firebase Auth UID if present
         val resolvedUid = authUser?.uid?.takeIf { it.isNotBlank() } ?: uid?.takeIf { it.isNotBlank() }
-        if (!resolvedUid.isNullOrBlank()) {
-            return resolvedUid
-        }
-
-        // 2. Strictly fallback to "hw_" + DeviceUtils.getDeviceHardwareId(context)
-        return "hw_" + DeviceUtils.getDeviceHardwareId(context)
+        return resolvedUid ?: ""
     }
 
     /**
@@ -1260,9 +1245,13 @@ object LicenseManager {
 
         try {
             val db = FirebaseFirestore.getInstance()
-            val user = FirebaseAuth.getInstance().currentUser
-            val userKey = resolveUserKey(ctx, user?.email, user?.uid)
-            val docRef = db.collection(COLL_USERS).document(userKey)
+            val currentUser = FirebaseAuth.getInstance().currentUser
+            if (currentUser == null || currentUser.uid.isBlank()) {
+                Log.w(TAG, "unlockFeature aborted: User is not authenticated")
+                return@withContext Result.failure(IllegalStateException("User is not authenticated"))
+            }
+            val docRef = db.collection(COLL_USERS).document(currentUser.uid)
+            val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
 
             val (newPoints, newExpiry) = db.runTransaction { tx ->
                 val snap = tx.get(docRef)
@@ -1288,9 +1277,10 @@ object LicenseManager {
                 tx.update(
                     docRef,
                     mapOf(
+                        "userId" to currentUser.uid,
                         "pointsBalance" to updatedPoints,
                         "unlocked_features" to updatedMap,
-                        "linkedHardwareId" to DeviceUtils.getDeviceHardwareId(ctx),
+                        "linkedHardwareId" to hwId,
                         "updatedAt" to FieldValue.serverTimestamp()
                     )
                 )

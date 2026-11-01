@@ -259,7 +259,7 @@ object PassManager {
                     "activePassType" to tier.id,
                     "passExpiryTimestamp" to newExpiry,
                     "current_folder" to newFolder,
-                    "linkedHardwareId" to DeviceUtils.getDeviceHardwareId(context),
+                    "linkedHardwareId" to HardwareIdManager.getPermanentHardwareId(context),
                     "isPaymentVerified" to true,
                     "payment_status" to "SUCCESS",
                     "pass_expiry_date" to newExpiry,
@@ -329,6 +329,9 @@ object PassManager {
             }
             val firestore = FirebaseFirestore.getInstance()
             val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
+            if (userId.isBlank()) {
+                return@withContext VerificationResult.Error("Please sign in with Google to verify payment.")
+            }
             val paymentDocRef = firestore.collection(PaymentVerificationRepository.COLL_RECEIVED_PAYMENTS).document(cleanUtr)
             val pendingDocRef = firestore.collection("pending_verifications").document(cleanUtr)
             val userDocRef = firestore.collection("users").document(userId)
@@ -542,6 +545,9 @@ object PassManager {
                 return@withContext isPassActive(context)
             }
             val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
+            if (userId.isBlank()) {
+                return@withContext isPassActive(context)
+            }
             val doc = FirebaseFirestore.getInstance()
                 .collection("users")
                 .document(userId)
