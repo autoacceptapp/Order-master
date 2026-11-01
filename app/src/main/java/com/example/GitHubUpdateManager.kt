@@ -379,9 +379,16 @@ object GitHubUpdateManager {
         currentVersionCode: Int = BuildConfig.VERSION_CODE,
         releaseTitle: String? = null
     ): Boolean {
-        val remoteCode = parseVersionCode(remoteVersion, releaseTitle)
-        if (remoteCode > 0) {
-            return remoteCode > currentVersionCode
+        // Explicit build/run tag check (e.g. "debug-apk-build-12-1" or releaseTitle "#12")
+        val isExplicitBuildTag = remoteVersion.contains("build", ignoreCase = true) ||
+            remoteVersion.contains("run", ignoreCase = true) ||
+            !releaseTitle.isNullOrBlank()
+
+        if (isExplicitBuildTag) {
+            val remoteCode = parseVersionCode(remoteVersion, releaseTitle)
+            if (remoteCode > 0) {
+                return remoteCode > currentVersionCode
+            }
         }
 
         val cleanRemote = cleanVersionString(remoteVersion)
@@ -401,9 +408,10 @@ object GitHubUpdateManager {
                 if (r > c) return true
                 if (r < c) return false
             }
+            return remoteNumbers.size > currentNumbers.size
         }
 
-        return cleanRemote != cleanCurrent && cleanRemote > cleanCurrent
+        return remoteNumbers.size > currentNumbers.size
     }
 
     fun extractVersionNumbers(versionStr: String): List<Int> {

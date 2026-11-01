@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -26,7 +27,6 @@ import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ElectricBolt
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -36,8 +36,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SheetState
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -74,7 +76,13 @@ fun GoogleSignInBottomSheet(
     onDismissRequest: () -> Unit,
     onSignInSuccess: () -> Unit,
     modifier: Modifier = Modifier,
-    sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    isMandatory: Boolean = true,
+    sheetState: SheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { newValue ->
+            if (isMandatory) newValue != SheetValue.Hidden else true
+        }
+    )
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -82,12 +90,24 @@ fun GoogleSignInBottomSheet(
     var isSigningIn by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    // Intercept hardware/gesture back press when authentication is mandatory
+    BackHandler(enabled = isMandatory) {
+        // Mandatory login: back press cannot dismiss the bottom sheet
+    }
+
     ModalBottomSheet(
-        onDismissRequest = onDismissRequest,
+        onDismissRequest = {
+            if (!isMandatory) {
+                onDismissRequest()
+            }
+        },
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         dragHandle = null,
+        properties = ModalBottomSheetDefaults.properties(
+            shouldDismissOnBackPress = false
+        ),
         modifier = modifier.testTag("google_sign_in_bottom_sheet")
     ) {
         Column(
@@ -98,19 +118,17 @@ fun GoogleSignInBottomSheet(
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top Bar with Close button
-            Row(
+            // Centered Header Badge (Close button removed to enforce mandatory authentication)
+            Box(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                contentAlignment = Alignment.Center
             ) {
-                // Header badge
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = PrimaryEmerald.copy(alpha = 0.12f)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
@@ -127,17 +145,6 @@ fun GoogleSignInBottomSheet(
                             color = PrimaryEmerald
                         )
                     }
-                }
-
-                IconButton(
-                    onClick = onDismissRequest,
-                    modifier = Modifier.testTag("dismiss_google_sheet_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Close,
-                        contentDescription = "Close",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
             }
 
@@ -340,30 +347,7 @@ fun GoogleSignInBottomSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Secondary "Skip for now" Button
-            TextButton(
-                onClick = {
-                    AppSettings.setLoginDismissed(context, true)
-                    onDismissRequest()
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .testTag("skip_google_sign_in_button"),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(
-                    text = "Skip for now",
-                    style = MaterialTheme.typography.labelLarge.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                )
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Security note
             Text(

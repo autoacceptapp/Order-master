@@ -11,6 +11,8 @@ import com.example.auth.GoogleAuthManager
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.Timestamp
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
@@ -22,13 +24,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.resume
 
 /**
  * Pass Tiers Configuration:
@@ -222,6 +228,10 @@ object LicenseManager {
     // Firestore Collections
     private const val COLL_USERS = "users"
     private const val COLL_RECEIVED_PAYMENTS = "received_payments"
+    private const val COLL_PENDING_ACTIONS = "pending_actions"
+
+    // Action Queue request timeout: 60 Seconds
+    private const val ACTION_TIMEOUT_MS = 60_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
@@ -269,6 +279,19 @@ object LicenseManager {
     private val _unlockedFeatures = MutableStateFlow<Map<String, Long>>(emptyMap())
     val unlockedFeatures: StateFlow<Map<String, Long>> = _unlockedFeatures.asStateFlow()
 
+    // Global Service Switch & User Ban StateFlows
+    private val _isServiceActiveFlow = MutableStateFlow(true)
+    val isServiceActiveFlow: StateFlow<Boolean> = _isServiceActiveFlow.asStateFlow()
+
+    private val _isBannedFlow = MutableStateFlow(false)
+    val isBannedFlow: StateFlow<Boolean> = _isBannedFlow.asStateFlow()
+
+    private val _banUntilTimestampFlow = MutableStateFlow<Long?>(null)
+    val banUntilTimestampFlow: StateFlow<Long?> = _banUntilTimestampFlow.asStateFlow()
+
+    private val _banReasonFlow = MutableStateFlow<String?>(null)
+    val banReasonFlow: StateFlow<String?> = _banReasonFlow.asStateFlow()
+
     /**
      * Dynamically determines the virtual folder based on the user's active plan:
      * - "daily" (Daily pass active)
@@ -315,11 +338,36 @@ object LicenseManager {
     private var hasLoadedTrial: Boolean = false
 
     private var userDocListener: ListenerRegistration? = null
+    private var globalSettingsListener: ListenerRegistration? = null
     private var currentUserKey: String? = null
     private val authLock = Any()
     private val syncMutex = Mutex()
     private val docInitAttempted = AtomicBoolean(false)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    /**
+     * Real-time listener for app_settings/global to read isServiceActive.
+     */
+    fun startGlobalSettingsListener() {
+        if (globalSettingsListener != null) return
+        val ctx = appContext ?: return
+        if (FirebaseApp.getApps(ctx).isEmpty()) return
+        try {
+            val db = FirebaseFirestore.getInstance()
+            globalSettingsListener = db.collection("app_settings").document("global")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "Global settings listener error: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    val isActive = snapshot?.getBoolean("isServiceActive") ?: true
+                    _isServiceActiveFlow.value = isActive
+                    Log.d(TAG, "LicenseManager: isServiceActive updated to $isActive")
+                }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to start global settings listener: ${e.message}")
+        }
+    }
 
     /**
      * Records a trusted server timestamp baseline and marks monotonic elapsed time.
@@ -390,6 +438,9 @@ object LicenseManager {
 
         // 2. Start recurring countdown ticker
         startStatusTicker()
+
+        // 2.5 Start real-time global service settings listener
+        startGlobalSettingsListener()
 
         // 3. Register network callback to automatically sync with Firestore upon reconnect
         registerNetworkCallback(ctx)
@@ -486,83 +537,128 @@ object LicenseManager {
     }
 
     /**
-     * Top-up / Recharge points directly via Firestore transaction.
+     * Dispatches an action request to the Zero-Trust `pending_actions` queue and suspends
+     * until the background Admin Server processes the action, marking it COMPLETED or FAILED.
+     * Enforces strict timeout of 60 seconds with automatic listener cleanup.
+     * Does NOT perform direct writes/transactions on `users` or `received_payments`.
      */
-    suspend fun addPoints(amount: Int): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun executeActionQueueRequest(
+        actionType: String,
+        payload: Map<String, Any>
+    ): Result<DocumentSnapshot> = withContext(Dispatchers.IO) {
         val ctx = appContext ?: return@withContext Result.failure(IllegalStateException("LicenseManager not initialized"))
-        if (amount <= 0) return@withContext Result.failure(IllegalArgumentException("Amount must be positive"))
+        val currentUser = FirebaseAuth.getInstance().currentUser
+        if (currentUser == null || currentUser.uid.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Please sign in with Google to perform this action."))
+        }
 
         if (FirebaseApp.getApps(ctx).isEmpty()) {
-            return@withContext Result.failure(IllegalStateException("Firebase is not initialized"))
+            return@withContext Result.failure(IllegalStateException("Firebase service is not initialized."))
         }
 
-        try {
-            val db = FirebaseFirestore.getInstance()
-            val customUserId = resolveUserKey(ctx)
-            val docRef = db.collection(COLL_USERS).document(customUserId)
-            val currentUser = FirebaseAuth.getInstance().currentUser
-            val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
-            val (newBalance, updatedFolder) = db.runTransaction { tx ->
-                val snap = tx.get(docRef)
-                val current = (snap.getLong("pointsBalance") ?: 0L).toInt()
-                val updated = current + amount
-                val passType = snap.getString("activePassType")
-                val passExpiry = snap.getLong("passExpiryTimestamp") ?: 0L
-                val trialClaimed = snap.getLong("trialClaimed") ?: serverTrialClaimed
-                val trialExpiry = snap.getLong("trialExpiry") ?: serverTrialExpiry
-                val tier = PassTier.fromId(passType) ?: serverPassTier
-                val folder = computeCurrentFolder(tier, passExpiry, trialClaimed, trialExpiry)
+        val customUserId = resolveUserKey(ctx)
+        val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
+        val db = FirebaseFirestore.getInstance()
 
-                if (snap.exists()) {
-                    tx.update(docRef, mapOf(
-                        "userId" to customUserId,
-                        "pointsBalance" to updated,
-                        "current_folder" to folder,
-                        "linkedHardwareId" to hwId,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    ))
-                } else {
-                    val code = generateReferralCode()
-                    tx.set(docRef, mapOf(
-                        "userId" to customUserId,
-                        "userEmail" to (currentUser?.email ?: ""),
-                        "firebaseUid" to (currentUser?.uid ?: ""),
-                        "linkedHardwareId" to hwId,
-                        "current_folder" to folder,
-                        "trialClaimed" to trialClaimed,
-                        "trialExpiry" to trialExpiry,
-                        "trialUsed" to (trialClaimed > 0L),
-                        "pointsBalance" to updated,
-                        "referralCode" to code,
-                        "hasClaimedReferral" to false,
-                        "referralCount" to 0,
-                        "activePassType" to "",
-                        "passExpiryTimestamp" to 0L,
-                        "unlocked_features" to emptyMap<String, Long>(),
-                        "createdAt" to FieldValue.serverTimestamp(),
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    ))
-                }
-                Pair(updated, folder)
-            }.await()
+        val actionData = hashMapOf<String, Any>(
+            "userId" to customUserId,
+            "firebaseUid" to currentUser.uid,
+            "userEmail" to (currentUser.email ?: ""),
+            "linkedHardwareId" to hwId,
+            "actionType" to actionType,
+            "status" to "PENDING",
+            "createdAt" to FieldValue.serverTimestamp()
+        )
+        actionData.putAll(payload)
 
-            _pointsBalance.value = newBalance
-            _currentFolder.value = updatedFolder
-            Log.i(TAG, "Successfully added $amount points directly via Firestore in users collection. New balance: $newBalance, folder=$updatedFolder")
-            Result.success(newBalance)
+        val docRef = try {
+            db.collection(COLL_PENDING_ACTIONS).add(actionData).await()
         } catch (e: Exception) {
-            Log.e(TAG, "Direct Firestore addPoints failed: ${e.message}", e)
-            Result.failure(e)
+            Log.e(TAG, "Failed to submit action $actionType to $COLL_PENDING_ACTIONS: ${e.message}", e)
+            return@withContext Result.failure(e)
         }
+
+        val outcome = withTimeoutOrNull(ACTION_TIMEOUT_MS) {
+            suspendCancellableCoroutine<Result<DocumentSnapshot>> { continuation ->
+                var listenerRegistration: ListenerRegistration? = null
+                val isResumed = AtomicBoolean(false)
+
+                listenerRegistration = docRef.addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "Action $actionType snapshot listener error: ${error.message}")
+                        if (isResumed.compareAndSet(false, true)) {
+                            listenerRegistration?.remove()
+                            continuation.resume(Result.failure(error))
+                        }
+                        return@addSnapshotListener
+                    }
+
+                    if (snapshot != null && snapshot.exists()) {
+                        val status = snapshot.getString("status") ?: "PENDING"
+                        if (status.equals("COMPLETED", ignoreCase = true)) {
+                            Log.i(TAG, "Action $actionType (doc ${docRef.id}) marked COMPLETED by Admin server.")
+                            if (isResumed.compareAndSet(false, true)) {
+                                listenerRegistration?.remove()
+                                continuation.resume(Result.success(snapshot))
+                            }
+                        } else if (status.equals("FAILED", ignoreCase = true)) {
+                            val errorMsg = snapshot.getString("errorMessage")
+                                ?: snapshot.getString("error")
+                                ?: "Action $actionType failed on server."
+                            Log.w(TAG, "Action $actionType (doc ${docRef.id}) marked FAILED: $errorMsg")
+                            if (isResumed.compareAndSet(false, true)) {
+                                listenerRegistration?.remove()
+                                continuation.resume(Result.failure(Exception(errorMsg)))
+                            }
+                        }
+                    }
+                }
+
+                continuation.invokeOnCancellation {
+                    Log.d(TAG, "Detaching snapshot listener for action $actionType (doc ${docRef.id}) due to cancellation/timeout")
+                    listenerRegistration?.remove()
+                }
+            }
+        }
+
+        outcome ?: Result.failure(TimeoutException("Request timed out. Admin server might be offline."))
     }
 
     /**
-     * Purchases a Pass using the user's Points balance directly via Firestore transaction.
+     * Top-up / Recharge points via Zero-Trust Action Queue.
+     * Enqueues ADD_POINTS request to `pending_actions` and awaits server completion.
+     */
+    suspend fun addPoints(amount: Int): Result<Int> = withContext(Dispatchers.IO) {
+        if (amount <= 0) return@withContext Result.failure(IllegalArgumentException("Amount must be positive"))
+
+        val result = executeActionQueueRequest(
+            actionType = "ADD_POINTS",
+            payload = mapOf(
+                "amount" to amount
+            )
+        )
+
+        result.fold(
+            onSuccess = { snap ->
+                val newBalance = snap.getLong("newBalance")?.toInt()
+                    ?: snap.getLong("pointsBalance")?.toInt()
+                    ?: (_pointsBalance.value + amount)
+                Log.i(TAG, "ADD_POINTS completed via Action Queue. New balance: $newBalance")
+                Result.success(newBalance)
+            },
+            onFailure = { err ->
+                Log.e(TAG, "ADD_POINTS action failed: ${err.message}", err)
+                Result.failure(err)
+            }
+        )
+    }
+
+    /**
+     * Purchases a Pass using the user's Points balance via Zero-Trust Action Queue.
+     * Enqueues PURCHASE_PASS request to `pending_actions` and awaits server completion.
      */
     suspend fun purchasePassWithPoints(passTier: PassTier): Result<Unit> = withContext(Dispatchers.IO) {
-        val ctx = appContext ?: return@withContext Result.failure(IllegalStateException("LicenseManager not initialized"))
         val currentBalance = _pointsBalance.value
-
         if (currentBalance < passTier.pointsCost) {
             val shortfall = passTier.pointsCost - currentBalance
             return@withContext Result.failure(
@@ -570,147 +666,65 @@ object LicenseManager {
             )
         }
 
-        try {
-            val db = FirebaseFirestore.getInstance()
-            val customUserId = resolveUserKey(ctx)
-            val docRef = db.collection(COLL_USERS).document(customUserId)
-            val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
-            val currentUser = try { FirebaseAuth.getInstance().currentUser } catch (_: Exception) { null }
+        val result = executeActionQueueRequest(
+            actionType = "PURCHASE_PASS",
+            payload = mapOf(
+                "passTier" to passTier.id,
+                "pointsCost" to passTier.pointsCost,
+                "durationDays" to passTier.durationDays,
+                "durationMs" to passTier.durationMs
+            )
+        )
 
-            val newFolder = when (passTier) {
-                PassTier.DAILY -> "daily"
-                PassTier.WEEKLY -> "weekly"
-                PassTier.MONTHLY -> "monthly"
+        result.fold(
+            onSuccess = {
+                Log.i(TAG, "PURCHASE_PASS completed via Action Queue for ${passTier.title}.")
+                Result.success(Unit)
+            },
+            onFailure = { err ->
+                Log.e(TAG, "PURCHASE_PASS action failed: ${err.message}", err)
+                Result.failure(err)
             }
-
-            val (newPoints, newExpiry) = db.runTransaction { tx ->
-                val snap = tx.get(docRef)
-                val points = (snap.getLong("pointsBalance") ?: 0L).toInt()
-                if (points < passTier.pointsCost) {
-                    throw IllegalStateException("Insufficient Points. You have $points pts, but ${passTier.title} requires ${passTier.pointsCost} pts.")
-                }
-                val updatedPoints = points - passTier.pointsCost
-                val currentExpiry = snap.getLong("passExpiryTimestamp") ?: 0L
-                val now = System.currentTimeMillis()
-                val base = if (currentExpiry > now) currentExpiry else now
-                val updatedExpiry = base + passTier.durationMs
-
-                val updateData = mutableMapOf<String, Any>(
-                    "userId" to customUserId,
-                    "pointsBalance" to updatedPoints,
-                    "activePassType" to passTier.id,
-                    "passExpiryTimestamp" to updatedExpiry,
-                    "current_folder" to newFolder,
-                    "linkedHardwareId" to hwId,
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-                if (currentUser != null && currentUser.uid.isNotBlank()) {
-                    updateData["firebaseUid"] = currentUser.uid
-                }
-
-                tx.set(docRef, updateData, SetOptions.merge())
-                Pair(updatedPoints, updatedExpiry)
-            }.await()
-
-            _pointsBalance.value = newPoints
-            serverPassTier = passTier
-            serverPassExpiry = newExpiry
-            _currentFolder.value = newFolder
-            refreshAccessStatus()
-
-            Log.i(TAG, "Successfully purchased ${passTier.title} directly via Firestore for $customUserId. New expiry: $newExpiry, folder=$newFolder")
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Log.e(TAG, "Direct Firestore purchasePassWithPoints failed: ${e.message}", e)
-            Result.failure(e)
-        }
+        )
     }
 
     /**
-     * Activates a Pass via payment reference directly using Firestore transaction.
+     * Activates a Pass via payment reference via Zero-Trust Action Queue.
+     * Enqueues ACTIVATE_PASS_PAYMENT request to `pending_actions` and awaits server completion.
      */
     suspend fun activatePassViaPayment(
         passTier: PassTier,
         transactionId: String? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        val ctx = appContext ?: return@withContext Result.failure(IllegalStateException("LicenseManager not initialized"))
         val cleanUtr = (transactionId ?: "").trim()
-        if (cleanUtr.isNotBlank() && cleanUtr.length in 9..16 && FirebaseApp.getApps(ctx).isNotEmpty()) {
-            try {
-                val db = FirebaseFirestore.getInstance()
-                val customUserId = resolveUserKey(ctx)
-                val paymentDocRef = db.collection(COLL_RECEIVED_PAYMENTS).document(cleanUtr)
-                val userDocRef = db.collection(COLL_USERS).document(customUserId)
-                val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
-                val currentUser = try { FirebaseAuth.getInstance().currentUser } catch (_: Exception) { null }
-
-                val newFolder = when (passTier) {
-                    PassTier.DAILY -> "daily"
-                    PassTier.WEEKLY -> "weekly"
-                    PassTier.MONTHLY -> "monthly"
-                }
-
-                val expiry = db.runTransaction { tx ->
-                    val now = System.currentTimeMillis()
-                    val userSnap = tx.get(userDocRef)
-                    val currentExpiry = if (userSnap.exists()) {
-                        userSnap.getLong("passExpiryTimestamp") ?: 0L
-                    } else 0L
-
-                    val base = if (currentExpiry > now) currentExpiry else now
-                    val newExpiry = base + passTier.durationMs
-
-                    tx.set(
-                        paymentDocRef,
-                        mapOf(
-                            "claimed" to true,
-                            "claimedByUserId" to customUserId,
-                            "claimedAt" to FieldValue.serverTimestamp(),
-                            "passTier" to passTier.id
-                        ),
-                        SetOptions.merge()
-                    )
-
-                    val userUpdates = mutableMapOf<String, Any>(
-                        "userId" to customUserId,
-                        "activePassType" to passTier.id,
-                        "passExpiryTimestamp" to newExpiry,
-                        "current_folder" to newFolder,
-                        "linkedHardwareId" to hwId,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                    if (currentUser != null && currentUser.uid.isNotBlank()) {
-                        userUpdates["firebaseUid"] = currentUser.uid
-                    }
-
-                    tx.set(
-                        userDocRef,
-                        userUpdates,
-                        SetOptions.merge()
-                    )
-
-                    newExpiry
-                }.await()
-
-                serverPassTier = passTier
-                serverPassExpiry = expiry
-                _currentFolder.value = newFolder
-                refreshAccessStatus()
-                return@withContext Result.success(Unit)
-            } catch (e: Exception) {
-                Log.w(TAG, "Direct Firestore activatePassViaPayment encountered: ${e.message}")
-            }
+        if (cleanUtr.isBlank() || cleanUtr.length !in 9..16) {
+            return@withContext Result.failure(
+                IllegalArgumentException("Invalid transaction reference: '$cleanUtr'. Must be between 9 and 16 characters.")
+            )
         }
 
-        // In-memory update if already verified by backend
-        val now = getCurrentServerTimeMs()
-        val currentExpiry = serverPassExpiry
-        val baseTime = if (currentExpiry > now) currentExpiry else now
-        val newExpiry = baseTime + passTier.durationMs
-        serverPassTier = passTier
-        serverPassExpiry = newExpiry
-        refreshAccessStatus()
-        Result.success(Unit)
+        val result = executeActionQueueRequest(
+            actionType = "ACTIVATE_PASS_PAYMENT",
+            payload = mapOf(
+                "passTier" to passTier.id,
+                "utr" to cleanUtr,
+                "transactionId" to cleanUtr,
+                "amount" to passTier.priceInInr,
+                "durationDays" to passTier.durationDays,
+                "durationMs" to passTier.durationMs
+            )
+        )
+
+        result.fold(
+            onSuccess = {
+                Log.i(TAG, "ACTIVATE_PASS_PAYMENT completed via Action Queue for ${passTier.title} (UTR: $cleanUtr).")
+                Result.success(Unit)
+            },
+            onFailure = { err ->
+                Log.e(TAG, "ACTIVATE_PASS_PAYMENT action failed: ${err.message}", err)
+                Result.failure(err)
+            }
+        )
     }
 
     /**
@@ -770,242 +784,42 @@ object LicenseManager {
             // If a document exists with the same firebaseUid but a different Document ID
             if (uidMatches.isNotEmpty()) {
                 val sourceDocSnap = uidMatches.first()
-                val sourceDocRef = sourceDocSnap.reference
-                Log.i(TAG, "Migration Condition A detected: Migrating from old doc ${sourceDocRef.id} to new phone doc $customUserId for UID $firebaseUid")
-
-                db.runTransaction { tx ->
-                    val sourceSnap = tx.get(sourceDocRef)
-                    val targetExistingSnap = tx.get(targetDocRef)
-
-                    val sourcePoints = (sourceSnap.getLong("pointsBalance") ?: 0L).toInt()
-                    val targetPoints = if (targetExistingSnap.exists()) (targetExistingSnap.getLong("pointsBalance") ?: 0L).toInt() else 0
-                    val finalPoints = if (targetPoints > 0) sourcePoints + targetPoints else sourcePoints
-
-                    val sourceExpiry = sourceSnap.getLong("passExpiryTimestamp") ?: 0L
-                    val targetExpiry = if (targetExistingSnap.exists()) targetExistingSnap.getLong("passExpiryTimestamp") ?: 0L else 0L
-                    val finalExpiry = maxOf(sourceExpiry, targetExpiry)
-
-                    val sourcePassType = sourceSnap.getString("activePassType") ?: ""
-                    val targetPassType = if (targetExistingSnap.exists()) targetExistingSnap.getString("activePassType") ?: "" else ""
-                    val finalPassType = if (finalExpiry == targetExpiry && targetExpiry > sourceExpiry) targetPassType else sourcePassType
-
-                    val sourceTrialClaimed = sourceSnap.getLong("trialClaimed") ?: sourceSnap.getLong("firstClaimedTimestamp") ?: 0L
-                    val targetTrialClaimed = if (targetExistingSnap.exists()) targetExistingSnap.getLong("trialClaimed") ?: 0L else 0L
-                    val finalTrialClaimed = if (sourceTrialClaimed > 0L) sourceTrialClaimed else targetTrialClaimed
-
-                    val sourceTrialExpiry = sourceSnap.getLong("trialExpiry") ?: sourceSnap.getLong("trialExpiryTimestamp") ?: 0L
-                    val targetTrialExpiry = if (targetExistingSnap.exists()) targetExistingSnap.getLong("trialExpiry") ?: 0L else 0L
-                    val finalTrialExpiry = if (sourceTrialExpiry > 0L) sourceTrialExpiry else targetTrialExpiry
-
-                    val sourceTrialUsed = sourceSnap.getBoolean("trialUsed") ?: (sourceTrialClaimed > 0L)
-                    val targetTrialUsed = if (targetExistingSnap.exists()) targetExistingSnap.getBoolean("trialUsed") ?: false else false
-                    val finalTrialUsed = sourceTrialUsed || targetTrialUsed
-
-                    val sourceRefCode = sourceSnap.getString("referralCode")
-                    val targetRefCode = if (targetExistingSnap.exists()) targetExistingSnap.getString("referralCode") else null
-                    val finalRefCode = sourceRefCode?.takeIf { it.isNotBlank() } ?: targetRefCode?.takeIf { it.isNotBlank() } ?: generateReferralCode()
-
-                    val sourceRefCount = (sourceSnap.getLong("referralCount") ?: 0L).toInt()
-                    val targetRefCount = if (targetExistingSnap.exists()) (targetExistingSnap.getLong("referralCount") ?: 0L).toInt() else 0
-                    val finalRefCount = maxOf(sourceRefCount, targetRefCount)
-
-                    val sourceHasClaimed = sourceSnap.getBoolean("hasClaimedReferral") ?: false
-                    val targetHasClaimed = if (targetExistingSnap.exists()) targetExistingSnap.getBoolean("hasClaimedReferral") ?: false else false
-                    val finalHasClaimed = sourceHasClaimed || targetHasClaimed
-
-                    val sourceFeatures = (sourceSnap.get("unlocked_features") as? Map<*, *>)?.mapNotNull { (k, v) ->
-                        val fk = k as? String ?: return@mapNotNull null
-                        val fe = (v as? Number)?.toLong() ?: return@mapNotNull null
-                        fk to fe
-                    }?.toMap() ?: emptyMap()
-
-                    val targetFeatures = if (targetExistingSnap.exists()) {
-                        (targetExistingSnap.get("unlocked_features") as? Map<*, *>)?.mapNotNull { (k, v) ->
-                            val fk = k as? String ?: return@mapNotNull null
-                            val fe = (v as? Number)?.toLong() ?: return@mapNotNull null
-                            fk to fe
-                        }?.toMap() ?: emptyMap()
-                    } else emptyMap()
-
-                    val mergedFeatures = (targetFeatures + sourceFeatures).toMutableMap()
-                    for ((k, v) in sourceFeatures) {
-                        val tExp = targetFeatures[k] ?: 0L
-                        mergedFeatures[k] = maxOf(v, tExp)
-                    }
-
-                    val now = System.currentTimeMillis()
-                    val tier = PassTier.fromId(finalPassType)
-                    val folder = computeCurrentFolder(tier, finalExpiry, finalTrialClaimed, finalTrialExpiry, now)
-
-                    val migratedData = hashMapOf<String, Any>(
-                        "userId" to customUserId,
+                val oldHwId = sourceDocSnap.getString("linkedHardwareId") ?: ""
+                Log.i(TAG, "Migration Condition A detected: Migrating from old doc ${sourceDocSnap.id} to new phone doc $customUserId for UID $firebaseUid")
+                val actionResult = executeActionQueueRequest(
+                    actionType = "MIGRATE_PROFILE",
+                    payload = mapOf(
+                        "oldDocumentId" to sourceDocSnap.id,
+                        "oldHardwareId" to oldHwId,
+                        "newHardwareId" to hardwareId,
                         "firebaseUid" to (firebaseUid ?: ""),
-                        "userEmail" to userEmail,
-                        "linkedHardwareId" to hardwareId,
-                        "current_folder" to folder,
-                        "pointsBalance" to finalPoints,
-                        "activePassType" to finalPassType,
-                        "passExpiryTimestamp" to finalExpiry,
-                        "referralCode" to finalRefCode,
-                        "hasClaimedReferral" to finalHasClaimed,
-                        "referralCount" to finalRefCount,
-                        "trialClaimed" to finalTrialClaimed,
-                        "trialExpiry" to finalTrialExpiry,
-                        "trialUsed" to finalTrialUsed,
-                        "unlocked_features" to mergedFeatures,
-                        "migratedFrom" to sourceDocRef.id,
-                        "createdAt" to (sourceSnap.getTimestamp("createdAt") ?: FieldValue.serverTimestamp()),
-                        "updatedAt" to FieldValue.serverTimestamp()
+                        "condition" to "CONDITION_A"
                     )
-
-                    tx.set(targetDocRef, migratedData, SetOptions.merge())
-
-                    // Mark old document as migrated
-                    tx.update(
-                        sourceDocRef,
-                        mapOf(
-                            "isMigrated" to true,
-                            "migratedTo" to customUserId,
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        )
-                    )
-                }.await()
-
-                Log.i(TAG, "Condition A migration completed successfully: ${sourceDocRef.id} -> $customUserId")
-                return@withContext true
+                )
+                return@withContext actionResult.isSuccess
             }
 
-            // --- CONDITION B: Same Phone/Same HardwareId, New Gmail ---
-            // If a document exists with the same linkedHardwareId but a different firebaseUid (meaning they switched Gmails on the same device)
+            // --- CONDITION B: Same Phone/Same HardwareId, New Gmail / Cleared Data ---
+            // Strictly match ANY existing document with the same linkedHardwareId (excluding current customUserId and already migrated docs)
             val hwDocWithDifferentUid = hwMatches.firstOrNull { doc ->
-                val docUid = doc.getString("firebaseUid") ?: ""
-                !firebaseUid.isNullOrBlank() && docUid != firebaseUid
+                doc.id != customUserId && (doc.getBoolean("isMigrated") != true)
             }
 
             if (hwDocWithDifferentUid != null) {
                 Log.i(TAG, "Migration Condition B detected: Switching Gmail on same phone ($hardwareId) to $userEmail ($firebaseUid)")
-                val sourceDocRef = hwDocWithDifferentUid.reference
-
-                if (sourceDocRef.id == customUserId) {
-                    // Same document ID on this phone, simply update firebaseUid and userEmail
-                    db.runTransaction { tx ->
-                        val snap = tx.get(targetDocRef)
-                        if (snap.exists()) {
-                            tx.update(
-                                targetDocRef,
-                                mapOf(
-                                    "userId" to customUserId,
-                                    "firebaseUid" to (firebaseUid ?: ""),
-                                    "userEmail" to userEmail,
-                                    "linkedHardwareId" to hardwareId,
-                                    "updatedAt" to FieldValue.serverTimestamp()
-                                )
-                            )
-                        }
-                    }.await()
-                } else {
-                    // Different document ID on same phone, migrate data into customUserId
-                    db.runTransaction { tx ->
-                        val sourceSnap = tx.get(sourceDocRef)
-                        val targetExistingSnap = tx.get(targetDocRef)
-
-                        val sourcePoints = (sourceSnap.getLong("pointsBalance") ?: 0L).toInt()
-                        val targetPoints = if (targetExistingSnap.exists()) (targetExistingSnap.getLong("pointsBalance") ?: 0L).toInt() else 0
-                        val finalPoints = if (targetPoints > 0) sourcePoints + targetPoints else sourcePoints
-
-                        val sourceExpiry = sourceSnap.getLong("passExpiryTimestamp") ?: 0L
-                        val targetExpiry = if (targetExistingSnap.exists()) targetExistingSnap.getLong("passExpiryTimestamp") ?: 0L else 0L
-                        val finalExpiry = maxOf(sourceExpiry, targetExpiry)
-
-                        val sourcePassType = sourceSnap.getString("activePassType") ?: ""
-                        val targetPassType = if (targetExistingSnap.exists()) targetExistingSnap.getString("activePassType") ?: "" else ""
-                        val finalPassType = if (finalExpiry == targetExpiry && targetExpiry > sourceExpiry) targetPassType else sourcePassType
-
-                        val sourceTrialClaimed = sourceSnap.getLong("trialClaimed") ?: 0L
-                        val targetTrialClaimed = if (targetExistingSnap.exists()) targetExistingSnap.getLong("trialClaimed") ?: 0L else 0L
-                        val finalTrialClaimed = if (sourceTrialClaimed > 0L) sourceTrialClaimed else targetTrialClaimed
-
-                        val sourceTrialExpiry = sourceSnap.getLong("trialExpiry") ?: 0L
-                        val targetTrialExpiry = if (targetExistingSnap.exists()) targetExistingSnap.getLong("trialExpiry") ?: 0L else 0L
-                        val finalTrialExpiry = if (sourceTrialExpiry > 0L) sourceTrialExpiry else targetTrialExpiry
-
-                        val sourceTrialUsed = sourceSnap.getBoolean("trialUsed") ?: (sourceTrialClaimed > 0L)
-                        val targetTrialUsed = if (targetExistingSnap.exists()) targetExistingSnap.getBoolean("trialUsed") ?: false else false
-                        val finalTrialUsed = sourceTrialUsed || targetTrialUsed
-
-                        val sourceRefCode = sourceSnap.getString("referralCode")
-                        val targetRefCode = if (targetExistingSnap.exists()) targetExistingSnap.getString("referralCode") else null
-                        val finalRefCode = sourceRefCode?.takeIf { it.isNotBlank() } ?: targetRefCode?.takeIf { it.isNotBlank() } ?: generateReferralCode()
-
-                        val sourceRefCount = (sourceSnap.getLong("referralCount") ?: 0L).toInt()
-                        val targetRefCount = if (targetExistingSnap.exists()) (targetExistingSnap.getLong("referralCount") ?: 0L).toInt() else 0
-                        val finalRefCount = maxOf(sourceRefCount, targetRefCount)
-
-                        val sourceHasClaimed = sourceSnap.getBoolean("hasClaimedReferral") ?: false
-                        val targetHasClaimed = if (targetExistingSnap.exists()) targetExistingSnap.getBoolean("hasClaimedReferral") ?: false else false
-                        val finalHasClaimed = sourceHasClaimed || targetHasClaimed
-
-                        val sourceFeatures = (sourceSnap.get("unlocked_features") as? Map<*, *>)?.mapNotNull { (k, v) ->
-                            val fk = k as? String ?: return@mapNotNull null
-                            val fe = (v as? Number)?.toLong() ?: return@mapNotNull null
-                            fk to fe
-                        }?.toMap() ?: emptyMap()
-
-                        val targetFeatures = if (targetExistingSnap.exists()) {
-                            (targetExistingSnap.get("unlocked_features") as? Map<*, *>)?.mapNotNull { (k, v) ->
-                                val fk = k as? String ?: return@mapNotNull null
-                                val fe = (v as? Number)?.toLong() ?: return@mapNotNull null
-                                fk to fe
-                            }?.toMap() ?: emptyMap()
-                        } else emptyMap()
-
-                        val mergedFeatures = (targetFeatures + sourceFeatures).toMutableMap()
-                        for ((k, v) in sourceFeatures) {
-                            val tExp = targetFeatures[k] ?: 0L
-                            mergedFeatures[k] = maxOf(v, tExp)
-                        }
-
-                        val now = System.currentTimeMillis()
-                        val tier = PassTier.fromId(finalPassType)
-                        val folder = computeCurrentFolder(tier, finalExpiry, finalTrialClaimed, finalTrialExpiry, now)
-
-                        val migratedData = hashMapOf<String, Any>(
-                            "userId" to customUserId,
-                            "firebaseUid" to (firebaseUid ?: ""),
-                            "userEmail" to userEmail,
-                            "linkedHardwareId" to hardwareId,
-                            "current_folder" to folder,
-                            "pointsBalance" to finalPoints,
-                            "activePassType" to finalPassType,
-                            "passExpiryTimestamp" to finalExpiry,
-                            "referralCode" to finalRefCode,
-                            "hasClaimedReferral" to finalHasClaimed,
-                            "referralCount" to finalRefCount,
-                            "trialClaimed" to finalTrialClaimed,
-                            "trialExpiry" to finalTrialExpiry,
-                            "trialUsed" to finalTrialUsed,
-                            "unlocked_features" to mergedFeatures,
-                            "migratedFrom" to sourceDocRef.id,
-                            "createdAt" to (sourceSnap.getTimestamp("createdAt") ?: FieldValue.serverTimestamp()),
-                            "updatedAt" to FieldValue.serverTimestamp()
-                        )
-
-                        tx.set(targetDocRef, migratedData, SetOptions.merge())
-
-                        // Mark old document as migrated
-                        tx.update(
-                            sourceDocRef,
-                            mapOf(
-                                "isMigrated" to true,
-                                "migratedTo" to customUserId,
-                                "updatedAt" to FieldValue.serverTimestamp()
-                            )
-                        )
-                    }.await()
-                }
-
-                Log.i(TAG, "Condition B migration completed successfully on hardware $hardwareId for UID $firebaseUid")
-                return@withContext true
+                val oldHwId = hwDocWithDifferentUid.getString("linkedHardwareId") ?: hardwareId
+                val actionResult = executeActionQueueRequest(
+                    actionType = "MIGRATE_PROFILE",
+                    payload = mapOf(
+                        "oldDocumentId" to hwDocWithDifferentUid.id,
+                        "oldHardwareId" to oldHwId,
+                        "newHardwareId" to hardwareId,
+                        "firebaseUid" to (firebaseUid ?: ""),
+                        "userEmail" to userEmail,
+                        "condition" to "CONDITION_B"
+                    )
+                )
+                return@withContext actionResult.isSuccess
             }
 
             // --- CONDITION C: Existing Match (Update Existing Record) ---
@@ -1021,50 +835,13 @@ object LicenseManager {
                     updates["userEmail"] = userEmail
                 }
                 if (updates.isNotEmpty()) {
-                    updates["updatedAt"] = FieldValue.serverTimestamp()
-                    targetDocRef.set(updates, SetOptions.merge()).await()
+                    val updateResult = executeActionQueueRequest("UPDATE_PROFILE", updates)
+                    return@withContext updateResult.isSuccess
                 }
                 return@withContext true
             }
 
-            // --- CONDITION D: Completely New (New User Profile) ---
-            // If no matching firebaseUid or linkedHardwareId exists, create a brand new user document under customUserId
-            if (targetSnap == null || !targetSnap.exists()) {
-                Log.i(TAG, "Condition D: No matching records found. Creating brand new user document for $customUserId with 48h trial and 50 points")
-                val now = System.currentTimeMillis()
-                val trialExpiry = now + (48L * 3600L * 1000L)
-                val newCode = generateReferralCode()
-                val newDoc = hashMapOf<String, Any>(
-                    "userId" to customUserId,
-                    "userEmail" to userEmail,
-                    "firebaseUid" to (firebaseUid ?: ""),
-                    "linkedHardwareId" to hardwareId,
-                    "current_folder" to "trials",
-                    "trialClaimed" to now,
-                    "trialExpiry" to trialExpiry,
-                    "trialUsed" to true,
-                    "pointsBalance" to 50,
-                    "referralCode" to newCode,
-                    "hasClaimedReferral" to false,
-                    "referralCount" to 0,
-                    "activePassType" to "",
-                    "passExpiryTimestamp" to 0L,
-                    "unlocked_features" to emptyMap<String, Long>(),
-                    "createdAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-                targetDocRef.set(newDoc, SetOptions.merge()).await()
-                _referralCode.value = newCode
-                _pointsBalance.value = 50
-                serverTrialClaimed = now
-                serverTrialExpiry = trialExpiry
-                serverTrialUsed = true
-                hasLoadedTrial = true
-                _currentFolder.value = "trials"
-                refreshAccessStatus()
-                return@withContext true
-            }
-
+            // If target does not exist, return true so syncUserLicensingDocument handles INIT_PROFILE
             true
         } catch (e: Exception) {
             Log.e(TAG, "checkAndMigrateUserData encountered error: ${e.message}", e)
@@ -1093,6 +870,8 @@ object LicenseManager {
         }
 
         syncMutex.withLock {
+            startGlobalSettingsListener()
+
             // Authoritative server clock synchronization
             fetchServerTimeBaseline()
 
@@ -1151,8 +930,7 @@ object LicenseManager {
                         val updateData = mutableMapOf<String, Any>(
                             "userId" to customUserId,
                             "current_folder" to folder,
-                            "linkedHardwareId" to hwId,
-                            "updatedAt" to FieldValue.serverTimestamp()
+                            "linkedHardwareId" to hwId
                         )
                         if (currentUser != null && currentUser.uid.isNotBlank()) {
                             updateData["firebaseUid"] = currentUser.uid
@@ -1160,7 +938,13 @@ object LicenseManager {
                         if (!currentUser?.email.isNullOrBlank()) {
                             updateData["userEmail"] = currentUser?.email ?: ""
                         }
-                        userDocRef.set(updateData, SetOptions.merge()).await()
+                        scope.launch {
+                            try {
+                                executeActionQueueRequest("UPDATE_PROFILE", updateData)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed updating profile in syncHardwareTrialAndLicensing: ${e.message}")
+                            }
+                        }
                     }
                 } else {
                     hasLoadedTrial = true
@@ -1262,6 +1046,28 @@ object LicenseManager {
                     }?.toMap() ?: emptyMap()
                     _unlockedFeatures.value = parsedFeatures
 
+                    // Read banUntil (Timestamp) field from user's document
+                    val banUntilObj = snapshot.get("banUntil")
+                    val banUntilMs: Long? = when (banUntilObj) {
+                        is Timestamp -> banUntilObj.toDate().time
+                        is java.util.Date -> banUntilObj.time
+                        is Number -> banUntilObj.toLong()
+                        else -> null
+                    }
+                    val banReason = snapshot.getString("banReason")
+                    val currentNowMs = getCurrentServerTimeMs()
+
+                    if (banUntilMs != null && banUntilMs > currentNowMs) {
+                        _isBannedFlow.value = true
+                        _banUntilTimestampFlow.value = banUntilMs
+                        _banReasonFlow.value = banReason
+                        Log.w(TAG, "User $customUserId is BANNED until $banUntilMs (now=$currentNowMs). Reason: $banReason")
+                    } else {
+                        _isBannedFlow.value = false
+                        _banUntilTimestampFlow.value = null
+                        _banReasonFlow.value = null
+                    }
+
                     hasLoadedLicensing = true
 
                     val currentHwId = ctx?.let { HardwareIdManager.getPermanentHardwareId(it) } ?: ""
@@ -1302,12 +1108,11 @@ object LicenseManager {
                     }
 
                     if (updatesNeeded.isNotEmpty()) {
-                        updatesNeeded["updatedAt"] = FieldValue.serverTimestamp()
                         scope.launch {
                             try {
-                                userDocRef.set(updatesNeeded, SetOptions.merge()).await()
+                                executeActionQueueRequest("UPDATE_PROFILE", updatesNeeded)
                             } catch (e: Exception) {
-                                Log.w(TAG, "Failed updating user document fields: ${e.message}")
+                                Log.w(TAG, "Failed updating user document fields via Action Queue: ${e.message}")
                             }
                         }
                     }
@@ -1325,42 +1130,42 @@ object LicenseManager {
                                     null
                                 }
                                 val context = ctx ?: return@launch
-                                val newCode = generateReferralCode()
                                 val permanentHardwareId = HardwareIdManager.getPermanentHardwareId(context)
-                                val now = System.currentTimeMillis()
-                                val trialExpiry = now + (48L * 3600L * 1000L)
+                                val email = userEmail ?: (currentAuthUser?.email ?: "")
 
-                                val newDoc = hashMapOf<String, Any>(
-                                    "userId" to customUserId,
-                                    "userEmail" to (userEmail ?: (currentAuthUser?.email ?: "")),
-                                    "firebaseUid" to (currentAuthUser?.uid ?: ""),
-                                    "linkedHardwareId" to permanentHardwareId,
-                                    "current_folder" to "trials",
-                                    "trialClaimed" to now,
-                                    "trialExpiry" to trialExpiry,
-                                    "trialUsed" to true,
-                                    "pointsBalance" to 50,
-                                    "referralCode" to newCode,
-                                    "hasClaimedReferral" to false,
-                                    "referralCount" to 0,
-                                    "activePassType" to "",
-                                    "passExpiryTimestamp" to 0L,
-                                    "unlocked_features" to emptyMap<String, Long>(),
-                                    "createdAt" to FieldValue.serverTimestamp(),
-                                    "updatedAt" to FieldValue.serverTimestamp()
+                                Log.i(TAG, "User document does not exist. Dispatching INIT_PROFILE to Action Queue for $customUserId...")
+                                val actionResult = executeActionQueueRequest(
+                                    actionType = "INIT_PROFILE",
+                                    payload = mapOf(
+                                        "userEmail" to email,
+                                        "linkedHardwareId" to permanentHardwareId,
+                                        "firebaseUid" to (currentAuthUser?.uid ?: "")
+                                    )
                                 )
-                                userDocRef.set(newDoc, SetOptions.merge()).await()
-                                _referralCode.value = newCode
-                                _pointsBalance.value = 50
-                                serverTrialClaimed = now
-                                serverTrialExpiry = trialExpiry
-                                serverTrialUsed = true
-                                _currentFolder.value = "trials"
-                                hasLoadedLicensing = true
-                                refreshAccessStatus()
-                                Log.i(TAG, "Initialized new user document directly via Firestore for $customUserId with 48h trial and 50 points")
+
+                                if (actionResult.isSuccess) {
+                                    val actionDoc = actionResult.getOrNull()
+                                    val newPoints = actionDoc?.getLong("pointsBalance")?.toInt() ?: 50
+                                    val newReferral = actionDoc?.getString("referralCode") ?: generateReferralCode()
+                                    _referralCode.value = newReferral
+                                    _pointsBalance.value = newPoints
+                                    val now = System.currentTimeMillis()
+                                    val trialExpiry = now + (48L * 3600L * 1000L)
+                                    serverTrialClaimed = now
+                                    serverTrialExpiry = trialExpiry
+                                    serverTrialUsed = true
+                                    _currentFolder.value = "trials"
+                                    hasLoadedLicensing = true
+                                    refreshAccessStatus()
+                                    Log.i(TAG, "INIT_PROFILE successfully completed via Action Queue for $customUserId")
+                                } else {
+                                    Log.w(TAG, "INIT_PROFILE action failed: ${actionResult.exceptionOrNull()?.message}")
+                                    docInitAttempted.set(false)
+                                    hasLoadedLicensing = true
+                                    refreshAccessStatus()
+                                }
                             } catch (e: Exception) {
-                                Log.w(TAG, "Could not initialize user doc on Firestore: ${e.message}")
+                                Log.w(TAG, "Could not initialize user doc via Action Queue: ${e.message}")
                                 docInitAttempted.set(false)
                                 hasLoadedLicensing = true
                                 refreshAccessStatus()
@@ -1488,6 +1293,12 @@ object LicenseManager {
     private fun startStatusTicker() {
         mainHandler.postDelayed(object : Runnable {
             override fun run() {
+                val banUntil = _banUntilTimestampFlow.value
+                if (banUntil != null && banUntil <= getCurrentServerTimeMs()) {
+                    _isBannedFlow.value = false
+                    _banUntilTimestampFlow.value = null
+                    _banReasonFlow.value = null
+                }
                 refreshAccessStatus()
                 mainHandler.postDelayed(this, 10000L) // updates every 10 seconds
             }
@@ -1580,11 +1391,11 @@ object LicenseManager {
     }
 
     /**
-     * Purchases an hourly micro-transaction unlock for a specific feature using wallet points.
-     * Atomically deducts points and updates the feature expiry in the users Firestore document.
+     * Purchases an hourly micro-transaction unlock for a specific feature using wallet points
+     * via the Zero-Trust Action Queue.
+     * Enqueues UNLOCK_FEATURE request to `pending_actions` and awaits server completion.
      */
     suspend fun unlockFeature(featureId: String, hours: Int = 1): Result<Long> = withContext(Dispatchers.IO) {
-        val ctx = appContext ?: return@withContext Result.failure(IllegalStateException("LicenseManager not initialized"))
         if (hours <= 0) return@withContext Result.failure(IllegalArgumentException("Hours must be positive"))
 
         val pricing = FeatureIds.getPricing(featureId)
@@ -1599,60 +1410,32 @@ object LicenseManager {
             )
         }
 
-        try {
-            val db = FirebaseFirestore.getInstance()
-            val customUserId = resolveUserKey(ctx)
-            val docRef = db.collection(COLL_USERS).document(customUserId)
-            val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
-            val currentUser = try { FirebaseAuth.getInstance().currentUser } catch (_: Exception) { null }
+        val result = executeActionQueueRequest(
+            actionType = "UNLOCK_FEATURE",
+            payload = mapOf(
+                "featureId" to featureId,
+                "hours" to hours,
+                "pointsCost" to totalCost,
+                "durationMs" to (hours * 3600L * 1000L)
+            )
+        )
 
-            val (newPoints, newExpiry) = db.runTransaction { tx ->
-                val snap = tx.get(docRef)
-                val points = (snap.getLong("pointsBalance") ?: 0L).toInt()
-                if (points < totalCost) {
-                    throw IllegalStateException("Insufficient points. Need $totalCost pts.")
-                }
-                val updatedPoints = points - totalCost
-
-                val rawFeatures = snap.get("unlocked_features") as? Map<*, *>
-                val currentExpiry = (rawFeatures?.get(featureId) as? Number)?.toLong() ?: 0L
-                val now = System.currentTimeMillis()
-                val base = if (currentExpiry > now) currentExpiry else now
-                val updatedExpiry = base + (hours * 3600L * 1000L)
-
-                val updatedMap = (rawFeatures?.mapNotNull { (k, v) ->
-                    val fk = k as? String ?: return@mapNotNull null
-                    val fe = (v as? Number)?.toLong() ?: return@mapNotNull null
-                    fk to fe
-                }?.toMap() ?: emptyMap()).toMutableMap()
-                updatedMap[featureId] = updatedExpiry
-
-                val updates = mutableMapOf<String, Any>(
-                    "userId" to customUserId,
-                    "pointsBalance" to updatedPoints,
-                    "unlocked_features" to updatedMap,
-                    "linkedHardwareId" to hwId,
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-                if (currentUser != null && currentUser.uid.isNotBlank()) {
-                    updates["firebaseUid"] = currentUser.uid
-                }
-
-                tx.set(docRef, updates, SetOptions.merge())
-                Pair(updatedPoints, updatedExpiry)
-            }.await()
-
-            _pointsBalance.value = newPoints
-            val updatedMap = _unlockedFeatures.value.toMutableMap()
-            updatedMap[featureId] = newExpiry
-            _unlockedFeatures.value = updatedMap
-
-            Log.i(TAG, "Successfully unlocked feature '$featureId' for $hours hr(s) until $newExpiry. New balance: $newPoints")
-            Result.success(newExpiry)
-        } catch (e: Exception) {
-            Log.e(TAG, "Direct Firestore unlockFeature failed: ${e.message}", e)
-            Result.failure(e)
-        }
+        result.fold(
+            onSuccess = { snap ->
+                val newExpiry = snap.getLong("featureExpiry")
+                    ?: snap.getLong("newExpiry")
+                    ?: (getCurrentServerTimeMs() + (hours * 3600L * 1000L))
+                val updatedMap = _unlockedFeatures.value.toMutableMap()
+                updatedMap[featureId] = newExpiry
+                _unlockedFeatures.value = updatedMap
+                Log.i(TAG, "UNLOCK_FEATURE completed via Action Queue for $featureId. New expiry: $newExpiry")
+                Result.success(newExpiry)
+            },
+            onFailure = { err ->
+                Log.e(TAG, "UNLOCK_FEATURE action failed: ${err.message}", err)
+                Result.failure(err)
+            }
+        )
     }
 }
 

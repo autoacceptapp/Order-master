@@ -60,6 +60,20 @@ class ExampleUnitTest {
   }
 
   @Test
+  fun testSemanticVersionComparison_numericMath() {
+    // 1.0.10 must be strictly newer than 1.0.9
+    assertTrue("1.0.10 must be newer than 1.0.9", GitHubUpdateManager.isVersionNewer("1.0.10", "1.0.9"))
+    assertFalse("1.0.9 must not be newer than 1.0.10", GitHubUpdateManager.isVersionNewer("1.0.9", "1.0.10"))
+
+    // Extra segment comparison (e.g. 1.0.0.1 > 1.0.0)
+    assertTrue("1.0.0.1 must be newer than 1.0.0", GitHubUpdateManager.isVersionNewer("1.0.0.1", "1.0.0"))
+    assertFalse("1.0.0 must not be newer than 1.0.0.1", GitHubUpdateManager.isVersionNewer("1.0.0", "1.0.0.1"))
+
+    // Identical versions
+    assertFalse("1.0.10 must not be newer than 1.0.10", GitHubUpdateManager.isVersionNewer("1.0.10", "1.0.10"))
+  }
+
+  @Test
   fun testAndroid13Check() {
     // PermissionUtils.isAndroid13OrHigher checks SDK_INT >= 33 (TIRAMISU)
     // On JVM test environment Build.VERSION.SDK_INT is accessible

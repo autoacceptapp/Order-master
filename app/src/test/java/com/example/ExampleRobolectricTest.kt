@@ -420,6 +420,12 @@ class ExampleRobolectricTest {
         assertFalse(GitHubUpdateManager.isVersionNewer("1.0", "1.0", 1))
         assertFalse(GitHubUpdateManager.isVersionNewer("v1.0", "1.0", 1))
         assertFalse(GitHubUpdateManager.isVersionNewer("v0.9.0", "1.0", 1))
+
+        // Semantic versioning comparisons (e.g. 1.0.10 > 1.0.9)
+        assertTrue(GitHubUpdateManager.isVersionNewer("1.0.10", "1.0.9"))
+        assertFalse(GitHubUpdateManager.isVersionNewer("1.0.9", "1.0.10"))
+        assertTrue(GitHubUpdateManager.isVersionNewer("1.0.0.1", "1.0.0"))
+        assertFalse(GitHubUpdateManager.isVersionNewer("1.0.0", "1.0.0.1"))
     }
 
     @Test

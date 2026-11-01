@@ -127,6 +127,7 @@ fun ReferAndEarnScreen(
 
     if (showSignInSheet) {
         GoogleSignInBottomSheet(
+            isMandatory = !userAuthState.isLoggedIn,
             onDismissRequest = { showSignInSheet = false },
             onSignInSuccess = {
                 showSignInSheet = false

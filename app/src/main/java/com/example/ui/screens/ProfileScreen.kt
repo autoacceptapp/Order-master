@@ -33,6 +33,13 @@ import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Stars
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material3.IconButton
+import com.google.firebase.auth.FirebaseAuth
 import androidx.compose.ui.platform.LocalContext
 import com.example.data.UserReferralRepository
 import androidx.compose.ui.text.font.FontFamily
@@ -352,6 +359,70 @@ fun ProfileScreen(
                                         )
                                     )
                                 }
+                            }
+                        }
+                    }
+
+                    // User's Firebase UID Display with Copy to Clipboard Button
+                    val firebaseUid = FirebaseAuth.getInstance().currentUser?.uid ?: userAuthState.uid ?: "Not Logged In"
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("profile_firebase_uid_card")
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "FIREBASE USER ID (UID)",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        letterSpacing = 0.5.sp
+                                    )
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = firebaseUid,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    ),
+                                    maxLines = 1,
+                                    modifier = Modifier.testTag("user_uid_text")
+                                )
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    if (firebaseUid != "Not Logged In") {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                        val clip = ClipData.newPlainText("Firebase UID", firebaseUid)
+                                        clipboard.setPrimaryClip(clip)
+                                        Toast.makeText(context, "ID Copied", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                enabled = firebaseUid != "Not Logged In",
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .testTag("copy_uid_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ContentCopy,
+                                    contentDescription = "Copy UID",
+                                    tint = if (firebaseUid != "Not Logged In") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                    modifier = Modifier.size(18.dp)
+                                )
                             }
                         }
                     }

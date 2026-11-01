@@ -391,6 +391,12 @@ class FloatingOverlayService : Service() {
      * Toggles between Full Automation (Green) and Voice-Only (Red) mode.
      */
     private fun toggleMode() {
+        if (!GlobalAdminManager.canExecuteActions(this)) {
+            Toast.makeText(this, "Action blocked: Service is offline or account is suspended.", Toast.LENGTH_SHORT).show()
+            updateVisualState(false)
+            return
+        }
+
         if (!PassManager.isAccessGranted(this)) {
             Toast.makeText(this, "Subscription Expired! Opening Captain Store...", Toast.LENGTH_LONG).show()
             AppSettings.addLog(

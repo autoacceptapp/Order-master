@@ -34,7 +34,8 @@ object ReferralManager {
     val pendingInviteCode = MutableStateFlow<String>("")
 
     /**
-     * Executes the atomic referral claim transaction directly using Firestore SDK.
+     * Executes the referral claim via the Zero-Trust Action Queue.
+     * Enqueues CLAIM_REFERRAL to `pending_actions` and awaits server completion.
      */
     suspend fun claimReferralCode(
         context: Context,
@@ -67,114 +68,38 @@ object ReferralManager {
             return@withContext Result.failure(IllegalStateException("Bonus Already Claimed"))
         }
 
-        try {
-            val db = FirebaseFirestore.getInstance()
-            val querySnapshot = db.collection("users")
-                .whereEqualTo("referralCode", cleanCode)
-                .limit(1)
-                .get()
-                .await()
+        // 3. Dispatch to Zero-Trust Action Queue
+        val actionResult = LicenseManager.executeActionQueueRequest(
+            actionType = "CLAIM_REFERRAL",
+            payload = mapOf(
+                "referralCode" to cleanCode
+            )
+        )
 
-            if (querySnapshot.isEmpty) {
-                return@withContext Result.failure(IllegalArgumentException("Invalid Code"))
-            }
-
-            val referrerDocSnap = querySnapshot.documents[0]
-            val referrerId = referrerDocSnap.id
-            val referrerUserId = referrerDocSnap.getString("userId") ?: referrerId
-            val referrerUserEmail = referrerDocSnap.getString("userEmail") ?: ""
-
-            if (referrerId == currentUser.uid ||
-                referrerUserId == currentUser.uid ||
-                (!currentUser.email.isNullOrBlank() && referrerUserEmail.equals(currentUser.email, ignoreCase = true))
-            ) {
-                return@withContext Result.failure(IllegalArgumentException("Cannot use your own code"))
-            }
-
-            val currentUserDocRef = db.collection("users").document(currentUser.uid)
-            val referrerDocRef = db.collection("users").document(referrerId)
-
-            val newPoints = db.runTransaction { transaction ->
-                val userSnap = transaction.get(currentUserDocRef)
-                if (userSnap.exists() && userSnap.getBoolean("hasClaimedReferral") == true) {
-                    throw IllegalStateException("Bonus Already Claimed")
+        actionResult.fold(
+            onSuccess = { snap ->
+                val newPoints = snap.getLong("newBalance")?.toInt()
+                    ?: (LicenseManager.pointsBalance.value + WELCOME_BONUS_POINTS)
+                LicenseManager.notifyReferralClaimed(newPoints)
+                pendingInviteCode.value = ""
+                Log.i(TAG, "CLAIM_REFERRAL completed via Action Queue.")
+                Result.success(Unit)
+            },
+            onFailure = { e ->
+                val message = when {
+                    e.message?.contains("Cannot use your own", ignoreCase = true) == true -> "Cannot use your own code"
+                    e.message?.contains("Bonus Already Claimed", ignoreCase = true) == true -> "Bonus Already Claimed"
+                    e.message?.contains("Invalid referral code", ignoreCase = true) == true ||
+                    e.message?.contains("Invalid Code", ignoreCase = true) == true ||
+                    e.message?.contains("not found", ignoreCase = true) == true -> "Invalid Code"
+                    e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ->
+                        "Server security policy prevented referral claim. Please try again."
+                    else -> e.message ?: "Failed to process referral code. Please check your connection."
                 }
-
-                val currentPoints = (userSnap.getLong("pointsBalance") ?: 0L).toInt()
-                val updatedPoints = currentPoints + WELCOME_BONUS_POINTS
-
-                val referrerSnap = transaction.get(referrerDocRef)
-                val referrerPoints = (referrerSnap.getLong("pointsBalance") ?: 0L).toInt() + REFERRAL_BONUS_POINTS
-                val referrerCount = (referrerSnap.getLong("referralCount") ?: 0L).toInt() + 1
-
-                // Update current user doc
-                val userUpdates = mutableMapOf<String, Any>(
-                    "hasClaimedReferral" to true,
-                    "claimedReferralCode" to cleanCode,
-                    "referredBy" to referrerId,
-                    "pointsBalance" to updatedPoints,
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-                if (userSnap.exists()) {
-                    transaction.update(currentUserDocRef, userUpdates)
-                } else {
-                    userUpdates["userId"] = currentUser.uid
-                    userUpdates["userEmail"] = currentUser.email ?: ""
-                    userUpdates["referralCode"] = LicenseManager.generateReferralCode()
-                    userUpdates["referralCount"] = 0
-                    userUpdates["activePassType"] = ""
-                    userUpdates["passExpiryTimestamp"] = 0L
-                    userUpdates["unlocked_features"] = emptyMap<String, Long>()
-                    userUpdates["createdAt"] = FieldValue.serverTimestamp()
-                    transaction.set(currentUserDocRef, userUpdates)
-                }
-
-                // Update referrer doc
-                transaction.update(
-                    referrerDocRef,
-                    mapOf(
-                        "pointsBalance" to referrerPoints,
-                        "referralCount" to referrerCount,
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                )
-
-                // Add referral audit record
-                val auditRef = db.collection("users")
-                    .document(referrerId)
-                    .collection("referrals")
-                    .document(currentUser.uid)
-                transaction.set(
-                    auditRef,
-                    mapOf(
-                        "refereeId" to currentUser.uid,
-                        "refereeEmail" to (currentUser.email ?: ""),
-                        "claimedAt" to FieldValue.serverTimestamp()
-                    )
-                )
-
-                updatedPoints
-            }.await()
-
-            // Update in-memory reactive state on success
-            LicenseManager.notifyReferralClaimed(newPoints)
-            pendingInviteCode.value = ""
-            Log.i(TAG, "Referral claimed directly via Firestore SDK: referee +50 pts, referrer +20 pts")
-            Result.success(Unit)
-        } catch (e: Exception) {
-            val message = when {
-                e.message?.contains("Cannot use your own", ignoreCase = true) == true -> "Cannot use your own code"
-                e.message?.contains("Bonus Already Claimed", ignoreCase = true) == true -> "Bonus Already Claimed"
-                e.message?.contains("Invalid referral code", ignoreCase = true) == true ||
-                e.message?.contains("Invalid Code", ignoreCase = true) == true ||
-                e.message?.contains("not found", ignoreCase = true) == true -> "Invalid Code"
-                e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true ->
-                    "Server security policy prevented referral claim. Please try again."
-                else -> e.message ?: "Failed to process referral code. Please check your connection."
+                Log.e(TAG, "Referral claim failed: $message", e)
+                Result.failure(Exception(message, e))
             }
-            Log.e(TAG, "Referral transaction failed: $message", e)
-            Result.failure(Exception(message, e))
-        }
+        )
     }
 
     /**

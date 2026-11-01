@@ -171,6 +171,11 @@ open class MyAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
+        // 0. Strict Global Kill Switch & Ban Check: Block all background MacroDroid / Accessibility actions immediately
+        if (!GlobalAdminManager.canExecuteActions(this)) {
+            return
+        }
+
         // 1. Strict Target Package Filtering (Prevent Self-Scanning & Infinite Loops)
         // If event.packageName is null, empty, equals this app's own packageName, or DOES NOT equal "com.rapido.rider", ignore it immediately.
         val eventPkg = event.packageName?.toString() ?: ""
@@ -1051,6 +1056,10 @@ open class MyAccessibilityService : AccessibilityService() {
 
     private fun dispatchTapAtCoordinates(x: Float, y: Float): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
+        if (!GlobalAdminManager.canExecuteActions(this)) {
+            Log.w(TAG, "dispatchTapAtCoordinates blocked: Service offline or user is banned.")
+            return false
+        }
         return try {
             val clickPath = Path().apply {
                 moveTo(x, y)

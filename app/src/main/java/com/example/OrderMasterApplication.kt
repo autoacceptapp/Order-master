@@ -107,6 +107,7 @@ class OrderMasterApplication : Application() {
             try {
                 AppSettings.init(this)
                 LicenseManager.init(this)
+                GlobalAdminManager.init(this)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to initialize core engines synchronously in test: ${e.message}", e)
             }
@@ -117,6 +118,7 @@ class OrderMasterApplication : Application() {
             try {
                 AppSettings.init(this@OrderMasterApplication)
                 LicenseManager.init(this@OrderMasterApplication)
+                GlobalAdminManager.init(this@OrderMasterApplication)
                 Log.d(TAG, "Core engines initialized successfully on background thread.")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to initialize core engines in Application.onCreate: ${e.message}", e)

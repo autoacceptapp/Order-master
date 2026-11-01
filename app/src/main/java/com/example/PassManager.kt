@@ -171,6 +171,11 @@ object PassManager {
      * Executes the secure Cloud Function verifyUtrAndActivatePass to claim an already verified UTR payment,
      * update the user's pass expiry on server, and unlock pass access locally.
      */
+    /**
+     * Executes the payment claim via the Zero-Trust Action Queue.
+     * Delegates activation to LicenseManager.activatePassViaPayment which enqueues
+     * an ACTIVATE_PASS_PAYMENT request in pending_actions and awaits server processing.
+     */
     private suspend fun executeClaimTransaction(
         firestore: FirebaseFirestore,
         paymentDocRef: DocumentReference,
@@ -182,116 +187,33 @@ object PassManager {
     ): VerificationResult = withContext(Dispatchers.IO) {
         val tier = preferredTier ?: PassTier.DAILY
         try {
-            val userLicensingDocRef = firestore.collection("users").document(userId)
-            val pendingDocRef = firestore.collection("pending_verifications").document(cleanUtr)
-
-            val finalExpiryTimestamp = firestore.runTransaction { transaction ->
-                val paymentSnap = transaction.get(paymentDocRef)
-                val pendingSnap = transaction.get(pendingDocRef)
-
-                val targetDocRef: DocumentReference
-                val targetSnap: DocumentSnapshot
-
-                if (paymentSnap.exists()) {
-                    targetDocRef = paymentDocRef
-                    targetSnap = paymentSnap
-                } else if (pendingSnap.exists()) {
-                    targetDocRef = pendingDocRef
-                    targetSnap = pendingSnap
-                } else {
-                    throw IllegalStateException("Payment record not found for UTR $cleanUtr")
-                }
-
-                val status = targetSnap.getString("status") ?: ""
-                val isUsed = targetSnap.getBoolean("isUsed") ?: (targetSnap.getBoolean("claimed") ?: false)
-
-                // Must verify that status == "Verified" and isUsed == false
-                if (!status.equals("Verified", ignoreCase = true) || isUsed) {
-                    if (isUsed) {
-                        throw IllegalStateException("This UTR has already been claimed on another account.")
-                    } else {
-                        throw IllegalStateException("Payment record found with status '$status'. Not verified yet.")
-                    }
-                }
-
+            val result = LicenseManager.activatePassViaPayment(tier, cleanUtr)
+            if (result.isSuccess) {
                 val now = System.currentTimeMillis()
-                val userLicensingSnap = transaction.get(userLicensingDocRef)
-                val currentExpiry = if (userLicensingSnap.exists()) {
-                    userLicensingSnap.getLong("passExpiryTimestamp") ?: 0L
-                } else 0L
+                val currentExpiry = LicenseManager.activePassInfo.value?.expiryTimestamp ?: 0L
+                val finalExpiryTimestamp = if (currentExpiry > now) currentExpiry else (now + tier.durationMs)
 
-                val baseTime = if (currentExpiry > now) currentExpiry else now
-                val newExpiry = baseTime + tier.durationMs
-                val newFolder = when (tier) {
-                    PassTier.DAILY -> "daily"
-                    PassTier.WEEKLY -> "weekly"
-                    PassTier.MONTHLY -> "monthly"
-                }
-
-                // Atomically set isUsed = true on the payment document
-                val paymentUpdates = mutableMapOf<String, Any>(
-                    "isUsed" to true,
-                    "claimed" to true,
-                    "claimedByUserId" to userId,
-                    "claimedBy" to userId,
-                    "claimedAt" to FieldValue.serverTimestamp(),
-                    "passTier" to tier.id
-                )
-                transaction.update(targetDocRef, paymentUpdates)
-
-                // If both docs exist, sync isUsed = true on pendingDocRef as well
-                if (targetDocRef == paymentDocRef && pendingSnap.exists()) {
-                    transaction.update(
-                        pendingDocRef,
-                        mapOf(
-                            "isUsed" to true,
-                            "status" to "COMPLETED",
-                            "claimed" to true,
-                            "claimedByUserId" to userId,
-                            "claimedAt" to FieldValue.serverTimestamp()
-                        )
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
+                    setPassStatus(context, true)
+                    AppSettings.addLog(
+                        title = "Pass Activated",
+                        message = "${tier.title} activated via UTR $cleanUtr. Valid for ${tier.durationDays} day(s).",
+                        severity = LogSeverity.MATCH_ACCEPTED
                     )
                 }
 
-                // Simultaneously activate the pass in the "users" collection and update current_folder
-                val licensingUpdates = mutableMapOf<String, Any>(
-                    "userId" to userId,
-                    "activePassType" to tier.id,
-                    "passExpiryTimestamp" to newExpiry,
-                    "current_folder" to newFolder,
-                    "linkedHardwareId" to HardwareIdManager.getPermanentHardwareId(context),
-                    "isPaymentVerified" to true,
-                    "payment_status" to "SUCCESS",
-                    "pass_expiry_date" to newExpiry,
-                    "subscriptionExpiryTimestamp" to newExpiry,
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-                if (userLicensingSnap.exists()) {
-                    transaction.update(userLicensingDocRef, licensingUpdates)
+                VerificationResult.Success(tier, finalExpiryTimestamp)
+            } else {
+                val err = result.exceptionOrNull()
+                val msg = err?.message ?: "Action Queue verification failed"
+                if (msg.contains("already been claimed", ignoreCase = true) || msg.contains("already claimed", ignoreCase = true) || msg.contains("ALREADY_USED", ignoreCase = true)) {
+                    VerificationResult.AlreadyUsed("This UTR has already been claimed on another account.")
+                } else if (msg.contains("not confirmed", ignoreCase = true) || msg.contains("not found", ignoreCase = true) || msg.contains("not verified", ignoreCase = true)) {
+                    VerificationResult.NotFound("Payment not verified yet. Please wait a minute or check your UTR")
                 } else {
-                    licensingUpdates["pointsBalance"] = 0
-                    licensingUpdates["referralCode"] = LicenseManager.generateReferralCode()
-                    licensingUpdates["hasClaimedReferral"] = false
-                    licensingUpdates["referralCount"] = 0
-                    licensingUpdates["unlocked_features"] = emptyMap<String, Long>()
-                    licensingUpdates["createdAt"] = FieldValue.serverTimestamp()
-                    transaction.set(userLicensingDocRef, licensingUpdates)
+                    VerificationResult.Error(msg)
                 }
-
-                newExpiry
-            }.await()
-
-            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
-                setPassStatus(context, true)
-                LicenseManager.activatePassViaPayment(tier, cleanUtr)
-                AppSettings.addLog(
-                    title = "Pass Activated",
-                    message = "${tier.title} activated via UTR $cleanUtr. Valid for ${tier.durationDays} day(s).",
-                    severity = LogSeverity.MATCH_ACCEPTED
-                )
             }
-
-            VerificationResult.Success(tier, finalExpiryTimestamp)
         } catch (e: Exception) {
             val msg = e.message ?: ""
             if (msg.contains("already been claimed", ignoreCase = true) || msg.contains("already claimed", ignoreCase = true)) {
@@ -300,7 +222,7 @@ object PassManager {
             if (msg.contains("not confirmed", ignoreCase = true) || msg.contains("not found", ignoreCase = true) || msg.contains("not verified", ignoreCase = true)) {
                 return@withContext VerificationResult.NotFound("Payment not verified yet. Please wait a minute or check your UTR")
             }
-            Log.e(TAG, "Direct Firestore claim failed: $msg", e)
+            Log.e(TAG, "Zero-Trust Action Queue claim failed: $msg", e)
             VerificationResult.Error("Verification failed: $msg")
         }
     }
@@ -338,12 +260,22 @@ object PassManager {
             val tier = preferredTier ?: PassTier.DAILY
 
             // Step 1: Check existing document in received_payments/{cleanUtr} or pending_verifications/{cleanUtr}
-            val snapshot = paymentDocRef.get().await()
-            val pendingSnapshot = pendingDocRef.get().await()
+            val snapshot = try {
+                paymentDocRef.get().await()
+            } catch (e: Exception) {
+                Log.d(TAG, "Direct get on received_payments suppressed (collection locked down in zero-trust): ${e.message}")
+                null
+            }
+            val pendingSnapshot = try {
+                pendingDocRef.get().await()
+            } catch (e: Exception) {
+                Log.w(TAG, "Direct get on pending_verifications failed: ${e.message}")
+                null
+            }
 
             val existingSnap = when {
-                snapshot.exists() -> snapshot
-                pendingSnapshot.exists() -> pendingSnapshot
+                snapshot != null && snapshot.exists() -> snapshot
+                pendingSnapshot != null && pendingSnapshot.exists() -> pendingSnapshot
                 else -> null
             }
 
@@ -440,12 +372,16 @@ object PassManager {
                         }
                     }
 
-                    paymentListener = paymentDocRef.addSnapshotListener { docSnap, error ->
-                        if (error != null) {
-                            Log.w(TAG, "Real-time payment snapshot listener error for $cleanUtr: ${error.message}")
-                            return@addSnapshotListener
+                    try {
+                        paymentListener = paymentDocRef.addSnapshotListener { docSnap, error ->
+                            if (error != null) {
+                                Log.w(TAG, "Real-time payment snapshot listener error for $cleanUtr: ${error.message}")
+                                return@addSnapshotListener
+                            }
+                            handleSnapshot(docSnap)
                         }
-                        handleSnapshot(docSnap)
+                    } catch (e: Exception) {
+                        Log.d(TAG, "Attaching listener to received_payments suppressed: ${e.message}")
                     }
 
                     pendingListener = pendingDocRef.addSnapshotListener { docSnap, error ->
@@ -685,6 +621,16 @@ object PassManager {
             Log.i(TAG, "Pass ${passTier.title} activated via payment successfully.")
         }
         return result
+    }
+
+    /**
+     * Overload for activating pass directly via LicenseManager Action Queue.
+     */
+    suspend fun activatePassViaPayment(
+        passTier: PassTier,
+        transactionId: String? = null
+    ): Result<Unit> {
+        return LicenseManager.activatePassViaPayment(passTier, transactionId)
     }
 
     // =========================================================================

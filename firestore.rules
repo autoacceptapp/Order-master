@@ -6,34 +6,17 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+    // App Settings (e.g. global kill switch app_settings/global)
+    // All client apps can read; client writes are strictly disallowed (Admin only).
+    match /app_settings/{settingId} {
+      allow read: if true;
+      allow write: if false;
     }
 
     // Public Admin Settings (e.g. payment_config)
     match /admin_settings/{settingId} {
       allow read: if true;
-      allow write: if isAuthenticated();
-    }
-
-    // Hardware Trials: Direct client write and read allowed for authenticated users
-    match /hardware_trials/{hardwareId} {
-      allow read, write: if isAuthenticated();
-    }
-
-    // User Trials: Prevents duplicate trials across devices
-    match /user_trials/{userId} {
-      allow read, write: if isAuthenticated();
-    }
-
-    // User Licensing: Points Balance, Active Pass, and Hourly Feature Unlocks
-    match /users_licensing/{userKey} {
-      allow read, write: if isAuthenticated();
-    }
-
-    // Received Bank UPI Payments
-    match /received_payments/{utr} {
-      allow read, write: if isAuthenticated();
+      allow write: if false;
     }
 
     // Pending UTR Verifications
@@ -41,13 +24,29 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
-    // Users Collection (Referral Tracking)
+    // 100% Locked down for clients.
+    // Client has read-only access; users cannot modify banUntil, points, or licensing.
+    // Only Admin (via Firebase Admin SDK or Cloud Functions) can write here.
     match /users/{userId} {
-      allow read, write: if isAuthenticated();
+      allow read: if request.auth != null;
+      allow write: if false;
 
       match /referrals/{refereeId} {
-        allow read, write: if isAuthenticated();
+        allow read: if request.auth != null;
+        allow write: if false;
       }
+    }
+
+    // Action Queue: Client creates requests, listens to their own status, no updates/deletions
+    match /pending_actions/{docId} {
+      allow create: if request.auth != null;
+      allow read: if request.auth != null && request.auth.uid == resource.data.firebaseUid;
+      allow update, delete: if false;
+    }
+
+    // UTRs are entirely hidden from the client side.
+    match /received_payments/{utr} {
+      allow read, write: if false;
     }
   }
 }

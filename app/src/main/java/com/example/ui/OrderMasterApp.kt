@@ -1,5 +1,6 @@
 package com.example.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -67,6 +68,7 @@ import com.example.AppSettingsScreen
 import com.example.LicenseManager
 import com.example.RestrictedSettingsGuideDialog
 import com.example.auth.GoogleAuthManager
+import com.example.ui.components.GlobalBlockingOverlay
 import com.example.ui.components.GoogleSignInBottomSheet
 import com.example.ui.screens.FilterSettingsScreen
 import com.example.ui.screens.HomeScreen
@@ -103,11 +105,12 @@ fun OrderMasterApp(
 
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
 
-    // Non-blocking prompt on first launch if unauthenticated
-    LaunchedEffect(Unit) {
-        if (!userAuthState.isLoggedIn && !AppSettings.isLoginDismissed(context)) {
-            showGoogleSignInSheet = true
-        }
+    // Mandatory Authentication: sheet is strictly forced whenever user is not logged in
+    val shouldShowAuthSheet = !userAuthState.isLoggedIn || showGoogleSignInSheet
+
+    // Block back press from bypassing mandatory authentication
+    BackHandler(enabled = !userAuthState.isLoggedIn) {
+        // Mandatory login active; back gestures are consumed
     }
 
     // Sync cloud licensing and points whenever Gmail auth state updates
@@ -127,8 +130,9 @@ fun OrderMasterApp(
 
     val isMainTab = currentRoute in listOf(Screen.Home.route, Screen.Filters.route, Screen.History.route)
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             if (currentRoute != Screen.Subscription.route) {
@@ -440,15 +444,23 @@ fun OrderMasterApp(
         )
     }
 
-    // Google Sign-In Non-Blocking Bottom Sheet Dialog
-    if (showGoogleSignInSheet) {
+    // Google Sign-In Mandatory Bottom Sheet Dialog
+    if (shouldShowAuthSheet) {
         GoogleSignInBottomSheet(
+            isMandatory = !userAuthState.isLoggedIn,
             onDismissRequest = {
-                showGoogleSignInSheet = false
+                // If user is not logged in, dismissing is strictly blocked
+                if (userAuthState.isLoggedIn) {
+                    showGoogleSignInSheet = false
+                }
             },
             onSignInSuccess = {
                 showGoogleSignInSheet = false
             }
         )
     }
+
+    // Global Service Offline / User Ban Blocking Overlay (on top of all activities/screens)
+    GlobalBlockingOverlay()
+}
 }

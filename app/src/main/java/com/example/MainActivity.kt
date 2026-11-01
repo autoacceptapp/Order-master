@@ -51,6 +51,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         AppSettings.init(this)
         LicenseManager.init(this)
+        GlobalAdminManager.init(this)
         refreshServiceStatus()
 
         // Strict Real-Time Firebase Session Check on app launch
