@@ -213,6 +213,9 @@ object LicenseManager {
     // 2-Day Free Trial Duration: 48 Hours
     private const val TRIAL_DURATION_MS = 48L * 3600L * 1000L
 
+    // Welcome Bonus Points for new users upon registration
+    private const val WELCOME_BONUS_POINTS = 50
+
     // Maximum allowed offline validity before forcing cloud sync re-check
     const val OFFLINE_GRACE_PERIOD_MS = 2L * 3600L * 1000L // 2 Hours
 
@@ -1005,47 +1008,42 @@ object LicenseManager {
                 return@withContext true
             }
 
-            // --- CONDITION C: Existing Match ---
-            // If the customUserId document exists and matches both the firebaseUid and hardwareId, proceed normally
+            // --- CONDITION C: Existing Match (Update Existing Record) ---
             if (targetSnap != null && targetSnap.exists()) {
+                val updates = mutableMapOf<String, Any>()
                 val targetHw = targetSnap.getString("linkedHardwareId") ?: ""
                 val targetUid = targetSnap.getString("firebaseUid") ?: ""
-                val matchesHw = targetHw.isBlank() || targetHw == hardwareId
-                val matchesUid = firebaseUid.isNullOrBlank() || targetUid.isBlank() || targetUid == firebaseUid
-
-                if (matchesHw && matchesUid) {
-                    Log.d(TAG, "Condition C: Existing match for $customUserId. No migration needed.")
-                    val updates = mutableMapOf<String, Any>()
-                    if (targetHw.isBlank() && hardwareId.isNotBlank()) {
-                        updates["linkedHardwareId"] = hardwareId
-                    }
-                    if (!firebaseUid.isNullOrBlank() && targetUid != firebaseUid) {
-                        updates["firebaseUid"] = firebaseUid
-                        updates["userEmail"] = userEmail
-                    }
-                    if (updates.isNotEmpty()) {
-                        updates["updatedAt"] = FieldValue.serverTimestamp()
-                        targetDocRef.set(updates, SetOptions.merge()).await()
-                    }
-                    return@withContext true
+                if (targetHw != hardwareId && hardwareId.isNotBlank()) {
+                    updates["linkedHardwareId"] = hardwareId
                 }
+                if (!firebaseUid.isNullOrBlank() && targetUid != firebaseUid) {
+                    updates["firebaseUid"] = firebaseUid
+                    updates["userEmail"] = userEmail
+                }
+                if (updates.isNotEmpty()) {
+                    updates["updatedAt"] = FieldValue.serverTimestamp()
+                    targetDocRef.set(updates, SetOptions.merge()).await()
+                }
+                return@withContext true
             }
 
-            // --- CONDITION D: Completely New ---
+            // --- CONDITION D: Completely New (New User Profile) ---
             // If no matching firebaseUid or linkedHardwareId exists, create a brand new user document under customUserId
             if (targetSnap == null || !targetSnap.exists()) {
-                Log.i(TAG, "Condition D: No matching records found. Creating brand new user document for $customUserId")
+                Log.i(TAG, "Condition D: No matching records found. Creating brand new user document for $customUserId with 48h trial and 50 points")
+                val now = System.currentTimeMillis()
+                val trialExpiry = now + (48L * 3600L * 1000L)
                 val newCode = generateReferralCode()
                 val newDoc = hashMapOf<String, Any>(
                     "userId" to customUserId,
                     "userEmail" to userEmail,
                     "firebaseUid" to (firebaseUid ?: ""),
                     "linkedHardwareId" to hardwareId,
-                    "current_folder" to "free_mod",
-                    "trialClaimed" to 0L,
-                    "trialExpiry" to 0L,
-                    "trialUsed" to false,
-                    "pointsBalance" to 0,
+                    "current_folder" to "trials",
+                    "trialClaimed" to now,
+                    "trialExpiry" to trialExpiry,
+                    "trialUsed" to true,
+                    "pointsBalance" to 50,
                     "referralCode" to newCode,
                     "hasClaimedReferral" to false,
                     "referralCount" to 0,
@@ -1057,7 +1055,13 @@ object LicenseManager {
                 )
                 targetDocRef.set(newDoc, SetOptions.merge()).await()
                 _referralCode.value = newCode
-                _currentFolder.value = "free_mod"
+                _pointsBalance.value = 50
+                serverTrialClaimed = now
+                serverTrialExpiry = trialExpiry
+                serverTrialUsed = true
+                hasLoadedTrial = true
+                _currentFolder.value = "trials"
+                refreshAccessStatus()
                 return@withContext true
             }
 
@@ -1279,6 +1283,24 @@ object LicenseManager {
                         _referralCode.value = code
                     }
 
+                    // Check if current user's UID or Email differs from the ones stored in snapshot
+                    val currentAuthUser = try {
+                        FirebaseAuth.getInstance().currentUser
+                    } catch (_: Exception) {
+                        null
+                    }
+                    val currentUid = currentAuthUser?.uid ?: ""
+                    val currentEmail = currentAuthUser?.email ?: (userEmail ?: "")
+                    val storedUid = snapshot.getString("firebaseUid") ?: ""
+                    val storedEmail = snapshot.getString("userEmail") ?: ""
+
+                    if (currentUid.isNotBlank() && storedUid != currentUid) {
+                        updatesNeeded["firebaseUid"] = currentUid
+                    }
+                    if (currentEmail.isNotBlank() && storedEmail != currentEmail) {
+                        updatesNeeded["userEmail"] = currentEmail
+                    }
+
                     if (updatesNeeded.isNotEmpty()) {
                         updatesNeeded["updatedAt"] = FieldValue.serverTimestamp()
                         scope.launch {
@@ -1303,10 +1325,40 @@ object LicenseManager {
                                     null
                                 }
                                 val context = ctx ?: return@launch
+                                val newCode = generateReferralCode()
                                 val permanentHardwareId = HardwareIdManager.getPermanentHardwareId(context)
-                                checkAndMigrateUserData(context, customUserId, currentAuthUser, permanentHardwareId)
+                                val now = System.currentTimeMillis()
+                                val trialExpiry = now + (48L * 3600L * 1000L)
+
+                                val newDoc = hashMapOf<String, Any>(
+                                    "userId" to customUserId,
+                                    "userEmail" to (userEmail ?: (currentAuthUser?.email ?: "")),
+                                    "firebaseUid" to (currentAuthUser?.uid ?: ""),
+                                    "linkedHardwareId" to permanentHardwareId,
+                                    "current_folder" to "trials",
+                                    "trialClaimed" to now,
+                                    "trialExpiry" to trialExpiry,
+                                    "trialUsed" to true,
+                                    "pointsBalance" to 50,
+                                    "referralCode" to newCode,
+                                    "hasClaimedReferral" to false,
+                                    "referralCount" to 0,
+                                    "activePassType" to "",
+                                    "passExpiryTimestamp" to 0L,
+                                    "unlocked_features" to emptyMap<String, Long>(),
+                                    "createdAt" to FieldValue.serverTimestamp(),
+                                    "updatedAt" to FieldValue.serverTimestamp()
+                                )
+                                userDocRef.set(newDoc, SetOptions.merge()).await()
+                                _referralCode.value = newCode
+                                _pointsBalance.value = 50
+                                serverTrialClaimed = now
+                                serverTrialExpiry = trialExpiry
+                                serverTrialUsed = true
+                                _currentFolder.value = "trials"
                                 hasLoadedLicensing = true
                                 refreshAccessStatus()
+                                Log.i(TAG, "Initialized new user document directly via Firestore for $customUserId with 48h trial and 50 points")
                             } catch (e: Exception) {
                                 Log.w(TAG, "Could not initialize user doc on Firestore: ${e.message}")
                                 docInitAttempted.set(false)
