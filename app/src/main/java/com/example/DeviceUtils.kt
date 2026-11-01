@@ -24,12 +24,44 @@ object DeviceUtils {
     private const val TAG = "DeviceUtils"
     private const val PREFS_NAME = "device_security_prefs"
     private const val KEY_CACHED_HW_ID = "cached_device_hw_id"
+    private const val KEY_CUSTOM_USER_ID = "custom_user_id"
 
     // Widevine DRM Scheme UUID (Standard Android hardware enclave)
     private val WIDEVINE_UUID: UUID = UUID.fromString("edef8ba9-79d6-4ace-a3c8-27dcd51d21ed")
 
     @Volatile
     private var cachedHardwareId: String? = null
+
+    @Volatile
+    private var cachedCustomUserId: String? = null
+
+    /**
+     * Returns a persistent custom User ID formatted as "OM-USER-XXXXXXXX" (8 uppercase alphanumeric characters).
+     * Saved in SharedPreferences so it remains permanent for the app installation.
+     */
+    @Synchronized
+    fun getCustomUserId(context: Context): String {
+        cachedCustomUserId?.let { return it }
+
+        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedId = prefs.getString(KEY_CUSTOM_USER_ID, null)
+        if (!savedId.isNullOrBlank()) {
+            cachedCustomUserId = savedId
+            return savedId
+        }
+
+        // Generate 8-character random uppercase alphanumeric string
+        val allowedChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        val randomSuffix = (1..8)
+            .map { allowedChars.random() }
+            .joinToString("")
+        val newUserId = "OM-USER-$randomSuffix"
+
+        prefs.edit().putString(KEY_CUSTOM_USER_ID, newUserId).apply()
+        cachedCustomUserId = newUserId
+        Log.i(TAG, "Generated and stored permanent Custom User ID: $newUserId")
+        return newUserId
+    }
 
     /**
      * Returns an immutable, hardware-locked Device Hardware Fingerprint.
