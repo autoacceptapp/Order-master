@@ -52,6 +52,7 @@ class MainActivity : ComponentActivity() {
         AppSettings.init(this)
         LicenseManager.init(this)
         GlobalAdminManager.init(this)
+        InAppMessageManager.init(this)
         refreshServiceStatus()
 
         // Strict Real-Time Firebase Session Check on app launch

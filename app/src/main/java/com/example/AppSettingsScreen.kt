@@ -312,7 +312,13 @@ fun AppSettingsScreen(
                                     )
                                 }
 
-                                val firebaseUid = FirebaseAuth.getInstance().currentUser?.uid ?: userAuthState.uid
+                                val firebaseUid = userAuthState.uid ?: try {
+                                    if (com.google.firebase.FirebaseApp.getApps(context).isNotEmpty()) {
+                                        FirebaseAuth.getInstance().currentUser?.uid
+                                    } else null
+                                } catch (_: Exception) {
+                                    null
+                                }
                                 if (!firebaseUid.isNullOrBlank()) {
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,

@@ -24,12 +24,24 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Global Announcements & In-App Popups for all users
+    match /global_messages/{messageId} {
+      allow read: if isAuthenticated();
+      allow write: if false; // Admin only
+    }
+
     // 100% Locked down for clients.
     // Client has read-only access; users cannot modify banUntil, points, or licensing.
     // Only Admin (via Firebase Admin SDK or Cloud Functions) can write here.
     match /users/{userId} {
       allow read: if request.auth != null;
       allow write: if false;
+
+      // Targeted In-App Messages for specific user
+      match /messages/{messageId} {
+        allow read: if request.auth != null && (request.auth.uid == userId || resource.data.targetUid == request.auth.uid);
+        allow write: if false; // Admin only
+      }
 
       match /referrals/{refereeId} {
         allow read: if request.auth != null;

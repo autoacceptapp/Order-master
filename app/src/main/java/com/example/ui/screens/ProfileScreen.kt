@@ -363,8 +363,13 @@ fun ProfileScreen(
                         }
                     }
 
-                    // User's Firebase UID Display with Copy to Clipboard Button
-                    val firebaseUid = FirebaseAuth.getInstance().currentUser?.uid ?: userAuthState.uid ?: "Not Logged In"
+                    val firebaseUid = userAuthState.uid ?: try {
+                        if (com.google.firebase.FirebaseApp.getApps(context).isNotEmpty()) {
+                            FirebaseAuth.getInstance().currentUser?.uid
+                        } else null
+                    } catch (_: Exception) {
+                        null
+                    } ?: "Not Logged In"
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),

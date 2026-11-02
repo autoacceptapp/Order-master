@@ -70,6 +70,7 @@ import com.example.RestrictedSettingsGuideDialog
 import com.example.auth.GoogleAuthManager
 import com.example.ui.components.GlobalBlockingOverlay
 import com.example.ui.components.GoogleSignInBottomSheet
+import com.example.ui.components.InAppMessageDialog
 import com.example.ui.screens.FilterSettingsScreen
 import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.OrderHistoryScreen
@@ -459,6 +460,9 @@ fun OrderMasterApp(
             }
         )
     }
+
+    // In-App Popup Messages (Global announcements & user-targeted alerts)
+    InAppMessageDialog()
 
     // Global Service Offline / User Ban Blocking Overlay (on top of all activities/screens)
     GlobalBlockingOverlay()

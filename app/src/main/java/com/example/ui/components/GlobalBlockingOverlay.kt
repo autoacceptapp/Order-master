@@ -219,7 +219,13 @@ private fun UserBannedContent(
     banReason: String?
 ) {
     val context = LocalContext.current
-    val currentUid = FirebaseAuth.getInstance().currentUser?.uid ?: ""
+    val currentUid = try {
+        if (com.google.firebase.FirebaseApp.getApps(context).isNotEmpty()) {
+            FirebaseAuth.getInstance().currentUser?.uid ?: ""
+        } else ""
+    } catch (_: Exception) {
+        ""
+    }
     val formattedDate = banUntilTimestamp?.let {
         SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(it))
     } ?: "Further notice"
