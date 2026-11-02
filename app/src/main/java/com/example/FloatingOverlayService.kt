@@ -9,6 +9,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -140,6 +141,12 @@ class FloatingOverlayService : Service() {
 
     private val accessVerificationRunnable = object : Runnable {
         override fun run() {
+            val status = LicenseManager.accessStatus.value
+            if (status is AccessStatus.Loading) {
+                // If cloud synchronization is still loading, postpone check
+                mainHandler.postDelayed(this, 10_000L)
+                return
+            }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)) {
                 Log.w(TAG, "Periodic check: Floating overlay access expired in background. Dismissing floating overlay.")
                 removeOverlayView()
@@ -165,14 +172,36 @@ class FloatingOverlayService : Service() {
         mainHandler.postDelayed(accessVerificationRunnable, 30_000L)
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val params = windowLayoutParams ?: return
+        val root = overlayRoot ?: return
+        if (!isViewAttached) return
+
+        val displayMetrics = resources.displayMetrics
+        val sizePx = dpToPx(70f)
+        val maxX = (displayMetrics.widthPixels - sizePx).coerceAtLeast(0)
+        val maxY = (displayMetrics.heightPixels - sizePx).coerceAtLeast(0)
+
+        params.x = params.x.coerceIn(0, maxX)
+        params.y = params.y.coerceIn(0, maxY)
+
+        try {
+            windowManager?.updateViewLayout(root, params)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update overlay layout on configuration changed: ${e.message}")
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY
         }
 
-        // Strict feature check: dismiss overlay immediately if floating_overlay feature is not unlocked
-        if (!LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)) {
+        // Strict feature check: dismiss overlay only if not in Loading state and feature is locked
+        val currentStatus = LicenseManager.accessStatus.value
+        if (currentStatus !is AccessStatus.Loading && !LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)) {
             Log.i(TAG, "Floating overlay feature not unlocked on startCommand. Stopping FloatingOverlayService.")
             removeOverlayView()
             stopSelf()
@@ -193,9 +222,8 @@ class FloatingOverlayService : Service() {
         if (intent?.hasExtra(EXTRA_FARE) == true) {
             val fare = intent.getDoubleExtra(EXTRA_FARE, -1.0)
             if (fare >= 0) {
-                AppSettings.updateLastAcceptedFare(this, fare)
                 updateFareText(fare)
-                Log.d(TAG, "Floating overlay updated fare to: ₹$fare and refreshed tvFare UI")
+                Log.d(TAG, "Floating overlay received fare intent: ₹ $fare and refreshed tvFare UI")
             }
         }
 
@@ -280,7 +308,10 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             layoutType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -454,11 +485,11 @@ class FloatingOverlayService : Service() {
     }
 
     /**
-     * Formats fare into currency format (e.g., "₹95") or "--" if null.
+     * Formats fare into currency format (e.g., "₹ 150") or "--" if null.
      */
     private fun formatFare(fare: Double?): String {
         return if (fare != null && fare > 0) {
-            "₹${fare.toInt()}"
+            "₹ ${fare.toInt()}"
         } else {
             "--"
         }
@@ -466,16 +497,46 @@ class FloatingOverlayService : Service() {
 
     /**
      * Dynamically updates fare in center text.
+     * Enforces strict single UI-thread execution, cancels any ongoing scaling animations,
+     * explicitly resets the TextView buffer before setting the new formatted fare string,
+     * and forces an immediate layout recalculation and redraw to eliminate text mixing or ghosting.
      */
     private fun updateFareText(fare: Double?) {
-        val text = formatFare(fare)
-        tvFare?.text = text
-        // Subtle pulse animation on new fare update
-        tvFare?.animate()
-            ?.scaleX(1.15f)?.scaleY(1.15f)?.setDuration(120)
-            ?.withEndAction {
-                tvFare?.animate()?.scaleX(1.0f)?.scaleY(1.0f)?.setDuration(120)?.start()
-            }?.start()
+        val runnable = Runnable {
+            val tv = tvFare ?: return@Runnable
+            val text = formatFare(fare)
+
+            // Cancel any pending animations to reset transformation matrix
+            tv.animate().cancel()
+            tv.scaleX = 1.0f
+            tv.scaleY = 1.0f
+
+            // Safeguard: explicitly reset previous text before writing the new fare
+            tv.text = ""
+            tv.text = text
+            tv.requestLayout()
+            tv.invalidate()
+
+            // Subtle pulse animation on new fare update
+            tv.animate()
+                .scaleX(1.15f)
+                .scaleY(1.15f)
+                .setDuration(120)
+                .withEndAction {
+                    tv.animate()
+                        .scaleX(1.0f)
+                        .scaleY(1.0f)
+                        .setDuration(120)
+                        .start()
+                }
+                .start()
+        }
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            runnable.run()
+        } else {
+            mainHandler.post(runnable)
+        }
     }
 
     /**
@@ -499,7 +560,7 @@ class FloatingOverlayService : Service() {
             }
         }
 
-        serviceScope.launch {
+        serviceScope.launch(Dispatchers.Main) {
             AppSettings.lastAcceptedFareFlow.collectLatest { fare ->
                 updateFareText(fare)
             }

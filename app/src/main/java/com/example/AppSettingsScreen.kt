@@ -312,48 +312,41 @@ fun AppSettingsScreen(
                                     )
                                 }
 
-                                val firebaseUid = userAuthState.uid ?: try {
-                                    if (com.google.firebase.FirebaseApp.getApps(context).isNotEmpty()) {
-                                        FirebaseAuth.getInstance().currentUser?.uid
-                                    } else null
-                                } catch (_: Exception) {
-                                    null
-                                }
-                                if (!firebaseUid.isNullOrBlank()) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        modifier = Modifier.padding(top = 2.dp)
+                                val customUserId = LicenseManager.resolveUserKey(context)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.padding(top = 2.dp)
+                                ) {
+                                    Text(
+                                        text = "Profile ID: $customUserId",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontWeight = FontWeight.SemiBold
+                                        ),
+                                        maxLines = 1,
+                                        modifier = Modifier
+                                            .weight(1f, fill = false)
+                                            .testTag("settings_firebase_uid_text")
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            val clip = ClipData.newPlainText("Profile ID", customUserId)
+                                            clipboard.setPrimaryClip(clip)
+                                            Toast.makeText(context, "Profile ID Copied", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .testTag("settings_copy_uid_button")
                                     ) {
-                                        Text(
-                                            text = "UID: $firebaseUid",
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 10.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            ),
-                                            maxLines = 1,
-                                            modifier = Modifier
-                                                .weight(1f, fill = false)
-                                                .testTag("settings_firebase_uid_text")
+                                        Icon(
+                                            imageVector = Icons.Default.ContentCopy,
+                                            contentDescription = "Copy Profile ID",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(12.dp)
                                         )
-                                        IconButton(
-                                            onClick = {
-                                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                                val clip = ClipData.newPlainText("Firebase UID", firebaseUid)
-                                                clipboard.setPrimaryClip(clip)
-                                                Toast.makeText(context, "User ID Copied", Toast.LENGTH_SHORT).show()
-                                            },
-                                            modifier = Modifier
-                                                .size(20.dp)
-                                                .testTag("settings_copy_uid_button")
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.ContentCopy,
-                                                contentDescription = "Copy User ID",
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(12.dp)
-                                            )
-                                        }
                                     }
                                 }
                             }

@@ -363,20 +363,14 @@ fun ProfileScreen(
                         }
                     }
 
-                    val firebaseUid = userAuthState.uid ?: try {
-                        if (com.google.firebase.FirebaseApp.getApps(context).isNotEmpty()) {
-                            FirebaseAuth.getInstance().currentUser?.uid
-                        } else null
-                    } catch (_: Exception) {
-                        null
-                    } ?: "Not Logged In"
+                    val customProfileId = LicenseManager.resolveUserKey(context)
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("profile_firebase_uid_card")
+                            .testTag("profile_custom_id_card")
                     ) {
                         Row(
                             modifier = Modifier
@@ -387,7 +381,7 @@ fun ProfileScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "FIREBASE USER ID (UID)",
+                                    text = "CUSTOM PROFILE ID",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 10.sp,
@@ -397,7 +391,7 @@ fun ProfileScreen(
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = firebaseUid,
+                                    text = customProfileId,
                                     style = MaterialTheme.typography.bodyMedium.copy(
                                         fontFamily = FontFamily.Monospace,
                                         fontWeight = FontWeight.SemiBold,
@@ -410,22 +404,19 @@ fun ProfileScreen(
 
                             IconButton(
                                 onClick = {
-                                    if (firebaseUid != "Not Logged In") {
-                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        val clip = ClipData.newPlainText("Firebase UID", firebaseUid)
-                                        clipboard.setPrimaryClip(clip)
-                                        Toast.makeText(context, "ID Copied", Toast.LENGTH_SHORT).show()
-                                    }
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = ClipData.newPlainText("Custom Profile ID", customProfileId)
+                                    clipboard.setPrimaryClip(clip)
+                                    Toast.makeText(context, "Profile ID Copied", Toast.LENGTH_SHORT).show()
                                 },
-                                enabled = firebaseUid != "Not Logged In",
                                 modifier = Modifier
                                     .size(38.dp)
                                     .testTag("copy_uid_button")
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.ContentCopy,
-                                    contentDescription = "Copy UID",
-                                    tint = if (firebaseUid != "Not Logged In") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                    contentDescription = "Copy Profile ID",
+                                    tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(18.dp)
                                 )
                             }

@@ -442,6 +442,11 @@ object LicenseManager {
         // 2.5 Start real-time global service settings listener
         startGlobalSettingsListener()
 
+        // 2.7 Immediately start user document real-time listener for current profile key
+        val customKey = resolveUserKey(ctx)
+        currentUserKey = customKey
+        syncUserLicensingDocument(customKey, null)
+
         // 3. Register network callback to automatically sync with Firestore upon reconnect
         registerNetworkCallback(ctx)
 
@@ -600,6 +605,17 @@ object LicenseManager {
                             if (isResumed.compareAndSet(false, true)) {
                                 listenerRegistration?.remove()
                                 continuation.resume(Result.success(snapshot))
+
+                                // Delayed 60-second database cleanup of processed action document
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        kotlinx.coroutines.delay(60_000L)
+                                        docRef.delete().await()
+                                        Log.d(TAG, "Delayed cleanup: Deleted completed action document ${docRef.id}")
+                                    } catch (cleanupEx: Exception) {
+                                        Log.w(TAG, "Notice: pending_actions cleanup suppressed for ${docRef.id}: ${cleanupEx.message}")
+                                    }
+                                }
                             }
                         } else if (status.equals("FAILED", ignoreCase = true)) {
                             val errorMsg = snapshot.getString("errorMessage")
@@ -609,6 +625,17 @@ object LicenseManager {
                             if (isResumed.compareAndSet(false, true)) {
                                 listenerRegistration?.remove()
                                 continuation.resume(Result.failure(Exception(errorMsg)))
+
+                                // Delayed 60-second database cleanup of processed action document
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        kotlinx.coroutines.delay(60_000L)
+                                        docRef.delete().await()
+                                        Log.d(TAG, "Delayed cleanup: Deleted failed action document ${docRef.id}")
+                                    } catch (cleanupEx: Exception) {
+                                        Log.w(TAG, "Notice: pending_actions cleanup suppressed for ${docRef.id}: ${cleanupEx.message}")
+                                    }
+                                }
                             }
                         }
                     }
@@ -999,9 +1026,14 @@ object LicenseManager {
                 }
 
                 if (snapshot != null && snapshot.exists()) {
-                    val points = snapshot.getLong("pointsBalance")?.toInt() ?: 0
+                    val points = snapshot.getLong("pointsBalance")?.toInt()
+                        ?: snapshot.getLong("points")?.toInt()
+                        ?: 0
                     val passType = snapshot.getString("activePassType")
-                    val passExpiry = snapshot.getLong("passExpiryTimestamp") ?: 0L
+                        ?: snapshot.getString("passType")
+                    val passExpiry = snapshot.getLong("passExpiryTimestamp")
+                        ?: snapshot.getLong("passExpiry")
+                        ?: 0L
                     val code = snapshot.getString("referralCode")
                     val hasClaimed = snapshot.getBoolean("hasClaimedReferral") ?: false
                     val refCount = snapshot.getLong("referralCount")?.toInt() ?: 0
@@ -1015,12 +1047,11 @@ object LicenseManager {
                         recordServerTimeSync(serverTimestamp)
                     }
 
-                    if (trialClaimed > 0L) {
-                        serverTrialClaimed = trialClaimed
-                        serverTrialExpiry = trialExpiry
-                        serverTrialUsed = isTrialUsed
-                        hasLoadedTrial = true
-                    }
+                    // Always sync trial and licensing state unconditionally for real-time Firestore updates
+                    serverTrialClaimed = trialClaimed
+                    serverTrialExpiry = trialExpiry
+                    serverTrialUsed = isTrialUsed
+                    hasLoadedTrial = true
 
                     // Update in-memory reactive state directly from Firestore snapshot
                     _pointsBalance.value = points

@@ -30,12 +30,9 @@ service cloud.firestore {
       allow write: if false; // Admin only
     }
 
-    // 100% Locked down for clients.
-    // Client has read-only access; users cannot modify banUntil, points, or licensing.
-    // Only Admin (via Firebase Admin SDK or Cloud Functions) can write here.
+    // Users collection & referral subcollections
     match /users/{userId} {
-      allow read: if request.auth != null;
-      allow write: if false;
+      allow read, write: if request.auth != null;
 
       // Targeted In-App Messages for specific user
       match /messages/{messageId} {
@@ -44,16 +41,15 @@ service cloud.firestore {
       }
 
       match /referrals/{refereeId} {
-        allow read: if request.auth != null;
-        allow write: if false;
+        allow read, write: if request.auth != null;
       }
     }
 
-    // Action Queue: Client creates requests, listens to their own status, no updates/deletions
+    // Action Queue: Client creates requests, listens to their own status, and deletes after completion
     match /pending_actions/{docId} {
       allow create: if request.auth != null;
-      allow read: if request.auth != null && request.auth.uid == resource.data.firebaseUid;
-      allow update, delete: if false;
+      allow read, delete: if request.auth != null && request.auth.uid == resource.data.firebaseUid;
+      allow update: if false;
     }
 
     // UTRs are entirely hidden from the client side.

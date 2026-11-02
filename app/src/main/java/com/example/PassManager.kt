@@ -202,6 +202,17 @@ object PassManager {
                     )
                 }
 
+                // Automatic database cleanup: delete pending verification document after 60 seconds delay
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        kotlinx.coroutines.delay(60_000L)
+                        firestore.collection("pending_verifications").document(cleanUtr).delete().await()
+                        Log.d(TAG, "Delayed cleanup: Deleted pending_verifications/$cleanUtr after 60s")
+                    } catch (cleanupEx: Exception) {
+                        Log.w(TAG, "Notice: pending_verifications cleanup suppressed for $cleanUtr: ${cleanupEx.message}")
+                    }
+                }
+
                 VerificationResult.Success(tier, finalExpiryTimestamp)
             } else {
                 val err = result.exceptionOrNull()

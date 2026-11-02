@@ -219,13 +219,7 @@ private fun UserBannedContent(
     banReason: String?
 ) {
     val context = LocalContext.current
-    val currentUid = try {
-        if (com.google.firebase.FirebaseApp.getApps(context).isNotEmpty()) {
-            FirebaseAuth.getInstance().currentUser?.uid ?: ""
-        } else ""
-    } catch (_: Exception) {
-        ""
-    }
+    val customUserId = com.example.LicenseManager.resolveUserKey(context)
     val formattedDate = banUntilTimestamp?.let {
         SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(it))
     } ?: "Further notice"
@@ -349,14 +343,14 @@ private fun UserBannedContent(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Your Firebase UID:",
+                                text = "Your Profile ID:",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 11.sp
                                 )
                             )
                             Text(
-                                text = currentUid,
+                                text = customUserId,
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     fontWeight = FontWeight.Bold,
                                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
@@ -368,15 +362,15 @@ private fun UserBannedContent(
                         IconButton(
                             onClick = {
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                val clip = ClipData.newPlainText("Firebase UID", currentUid)
+                                val clip = ClipData.newPlainText("Profile ID", customUserId)
                                 clipboard.setPrimaryClip(clip)
-                                Toast.makeText(context, "User ID Copied", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Profile ID Copied", Toast.LENGTH_SHORT).show()
                             },
                             modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.ContentCopy,
-                                contentDescription = "Copy UID",
+                                contentDescription = "Copy Profile ID",
                                 modifier = Modifier.size(16.dp),
                                 tint = MaterialTheme.colorScheme.primary
                             )
