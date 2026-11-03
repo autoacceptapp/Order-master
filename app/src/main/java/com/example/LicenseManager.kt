@@ -1235,8 +1235,8 @@ object LicenseManager {
      * ZERO local storage reads.
      */
     fun refreshAccessStatus() {
-        // If neither user licensing nor hardware trial has loaded from Firestore, remain Loading
-        if (!hasLoadedLicensing && !hasLoadedTrial) {
+        // If user licensing has not yet loaded from Firestore, remain Loading
+        if (!hasLoadedLicensing) {
             _accessStatus.value = AccessStatus.Loading
             return
         }

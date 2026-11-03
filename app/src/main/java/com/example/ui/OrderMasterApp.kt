@@ -103,40 +103,13 @@ sealed class Screen(val route: String, val title: String) {
 fun OrderMasterApp(
     viewModel: OrderMasterViewModel = viewModel()
 ) {
-    val context = LocalContext.current
-    val navController = rememberNavController()
-    val navBackStackEntry by navController.currentBackStackEntryAsState()
-    val currentRoute = navBackStackEntry?.destination?.route ?: Screen.Home.route
-
-    var showRestrictedSettingsGuide by remember { mutableStateOf(false) }
-    var showGoogleSignInSheet by remember { mutableStateOf(false) }
-
+    val accessStatus by LicenseManager.accessStatus.collectAsState()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
-
-    // Mandatory Authentication: sheet is strictly forced whenever user is not logged in
-    val shouldShowAuthSheet = !userAuthState.isLoggedIn || showGoogleSignInSheet
-
-    // Block back press from bypassing mandatory authentication
-    BackHandler(enabled = !userAuthState.isLoggedIn) {
-        // Mandatory login active; back gestures are consumed
-    }
 
     // Sync cloud licensing and points whenever Gmail auth state updates
     LaunchedEffect(userAuthState.userEmail, userAuthState.uid) {
         LicenseManager.onUserAuthChanged(userAuthState.userEmail, userAuthState.uid)
     }
-
-    // Auto-navigate to Refer & Earn screen if opened via invite deep link
-    val pendingInvite by com.example.ReferralManager.pendingInviteCode.collectAsState()
-    LaunchedEffect(pendingInvite) {
-        if (!pendingInvite.isNullOrBlank() && currentRoute != Screen.ReferAndEarn.route) {
-            navController.navigate(Screen.ReferAndEarn.route) {
-                launchSingleTop = true
-            }
-        }
-    }
-
-    val accessStatus by LicenseManager.accessStatus.collectAsState()
 
     // Startup Loading Screen: Gate main dashboard while verifying initial cloud sync
     if (accessStatus is AccessStatus.Loading) {
@@ -213,6 +186,32 @@ fun OrderMasterApp(
             }
         }
         return
+    }
+
+    val context = LocalContext.current
+    val navController = rememberNavController()
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route ?: Screen.Home.route
+
+    var showRestrictedSettingsGuide by remember { mutableStateOf(false) }
+    var showGoogleSignInSheet by remember { mutableStateOf(false) }
+
+    // Mandatory Authentication: sheet is strictly forced whenever user is not logged in
+    val shouldShowAuthSheet = !userAuthState.isLoggedIn || showGoogleSignInSheet
+
+    // Block back press from bypassing mandatory authentication
+    BackHandler(enabled = !userAuthState.isLoggedIn) {
+        // Mandatory login active; back gestures are consumed
+    }
+
+    // Auto-navigate to Refer & Earn screen if opened via invite deep link
+    val pendingInvite by com.example.ReferralManager.pendingInviteCode.collectAsState()
+    LaunchedEffect(pendingInvite) {
+        if (!pendingInvite.isNullOrBlank() && currentRoute != Screen.ReferAndEarn.route) {
+            navController.navigate(Screen.ReferAndEarn.route) {
+                launchSingleTop = true
+            }
+        }
     }
 
     val isMainTab = currentRoute in listOf(Screen.Home.route, Screen.Filters.route, Screen.History.route)

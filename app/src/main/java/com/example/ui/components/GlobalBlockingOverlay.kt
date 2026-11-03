@@ -327,8 +327,8 @@ private fun UserBannedContent(
                 }
             }
 
-            // UID Display & Copy for support reference
-            if (currentUid.isNotBlank()) {
+            // Profile ID Display & Copy for support reference
+            if (customUserId.isNotBlank()) {
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
