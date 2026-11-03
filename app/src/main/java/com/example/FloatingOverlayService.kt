@@ -690,25 +690,63 @@ class FloatingOverlayService : Service() {
             .build()
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                try {
+                    // Strictly use ONLY ONE valid and declared ForegroundServiceType matching manifest
                     startForeground(
                         NOTIFICATION_ID,
                         notification,
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                     )
-                } else {
+                    Log.d(TAG, "Foreground service started with FOREGROUND_SERVICE_TYPE_SPECIAL_USE")
+                } catch (e: SecurityException) {
+                    Log.e(TAG, "SecurityException starting foreground service with SPECIAL_USE: ${e.message}", e)
+                    fallbackStartForeground(notification)
+                } catch (e: android.app.InvalidForegroundServiceTypeException) {
+                    Log.e(TAG, "InvalidForegroundServiceTypeException starting foreground service with SPECIAL_USE: ${e.message}", e)
+                    fallbackStartForeground(notification)
+                } catch (e: IllegalArgumentException) {
+                    Log.e(TAG, "IllegalArgumentException starting foreground service with SPECIAL_USE: ${e.message}", e)
+                    fallbackStartForeground(notification)
+                }
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
                     startForeground(
                         NOTIFICATION_ID,
                         notification,
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                     )
+                    Log.d(TAG, "Foreground service started with FOREGROUND_SERVICE_TYPE_DATA_SYNC")
+                } catch (e: SecurityException) {
+                    Log.e(TAG, "SecurityException starting foreground service with DATA_SYNC: ${e.message}", e)
+                    fallbackStartForeground(notification)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error starting foreground service with DATA_SYNC: ${e.message}", e)
+                    fallbackStartForeground(notification)
                 }
             } else {
-                startForeground(NOTIFICATION_ID, notification)
+                fallbackStartForeground(notification)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "startForeground failed: ${e.message}")
+        } catch (e: SecurityException) {
+            Log.e(TAG, "SecurityException in startAsForeground: ${e.message}", e)
+            fallbackStartForeground(notification)
+        } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "IllegalArgumentException / InvalidForegroundServiceTypeException in startAsForeground: ${e.message}", e)
+            fallbackStartForeground(notification)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Unexpected error in startAsForeground: ${t.message}", t)
+            fallbackStartForeground(notification)
+        }
+    }
+
+    private fun fallbackStartForeground(notification: Notification) {
+        try {
+            Log.w(TAG, "Attempting fallback startForeground without type parameter...")
+            @Suppress("DEPRECATION")
+            startForeground(NOTIFICATION_ID, notification)
+            Log.i(TAG, "Fallback startForeground succeeded.")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Fallback startForeground without type parameter failed: ${t.message}", t)
         }
     }
 

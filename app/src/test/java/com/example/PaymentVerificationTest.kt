@@ -125,4 +125,27 @@ class PaymentVerificationTest {
         val activityClass = PaymentActivity::class.java
         assertTrue(android.app.Activity::class.java.isAssignableFrom(activityClass))
     }
+
+    @Test
+    fun testPaymentActivityPaymentMethodsSupportPassTier() {
+        val activityClass = PaymentActivity::class.java
+
+        // Verify onPaymentSuccess method exists with String and PassTier parameters
+        val onPaymentSuccessMethods = activityClass.declaredMethods.filter { it.name == "onPaymentSuccess" }
+        assertTrue("onPaymentSuccess must be declared", onPaymentSuccessMethods.isNotEmpty())
+
+        val hasTierParamOnPaymentSuccess = onPaymentSuccessMethods.any { method ->
+            method.parameterTypes.contains(PassTier::class.java)
+        }
+        assertTrue("onPaymentSuccess must accept PassTier parameter", hasTierParamOnPaymentSuccess)
+
+        // Verify verifyPaymentWithBackend method exists with PassTier parameter
+        val verifyBackendMethods = activityClass.declaredMethods.filter { it.name == "verifyPaymentWithBackend" }
+        assertTrue("verifyPaymentWithBackend must be declared", verifyBackendMethods.isNotEmpty())
+
+        val hasTierParamVerifyBackend = verifyBackendMethods.any { method ->
+            method.parameterTypes.contains(PassTier::class.java)
+        }
+        assertTrue("verifyPaymentWithBackend must accept PassTier parameter", hasTierParamVerifyBackend)
+    }
 }

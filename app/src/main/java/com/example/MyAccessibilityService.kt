@@ -49,12 +49,12 @@ open class MyAccessibilityService : AccessibilityService() {
 
         // Compiled regular expressions for resilient multi-language offer action detection
         val ACCEPT_REGEX = Regex(
-            pattern = """(?i)^(?:.*?\b(?:accept|auto[\s_-]*accept|confirm|select|take\s*(?:the\s*)?(?:ride|order)|swipe\s*to\s*accept)\b.*?|^go$|(?:.*?(?:स्वीकार|स्वीकारें|कन्फर्म|चुनें|चुने|राइड\s*लें|ऑर्डर\s*लें|sweekar|sweekarein|swikar|swikarein|accept\s*karein|confirm\s*karein).*?))$""",
+            pattern = """\b(?:accept|auto[\s_-]*accept|confirm|select|take\s*(?:the\s*)?(?:ride|order)|swipe\s*to\s*accept)\b|^go$|स्वीकार|स्वीकारें|कन्फर्म|चुनें|चुने|राइड\s*लें|ऑर्डर\s*लें|sweekar|sweekarein|swikar|swikarein|accept\s*karein|confirm\s*karein""",
             options = setOf(RegexOption.IGNORE_CASE)
         )
 
         val REJECT_REGEX = Regex(
-            pattern = """(?i)^(?:.*?\b(?:reject|decline|skip|cancel|pass)\b.*?|(?:.*?(?:अस्वीकार|अस्वीकारें|छोड़ें|छोड़े|रद्द|रद्द\s*करें|मना\s*करें|नकारें|asveekar|asweekar|aswikar|chhodein|chodein|radd|cancel\s*karein|reject\s*karein|decline\s*karein|mana\s*karein).*?))$""",
+            pattern = """\b(?:reject|decline|skip|cancel|pass)\b|अस्वीकार|अस्वीकारें|छोड़ें|छोड़े|रद्द|रद्द\s*करें|मना\s*करें|नकारें|asveekar|asweekar|aswikar|chhodein|chodein|radd|cancel\s*karein|reject\s*karein|decline\s*karein|mana\s*karein""",
             options = setOf(RegexOption.IGNORE_CASE)
         )
 
@@ -850,17 +850,26 @@ open class MyAccessibilityService : AccessibilityService() {
             try {
                 val currentWindows = windows
                 for (window in currentWindows) {
-                    if (seenWindowIds.contains(window.id)) {
-                        continue
+                    try {
+                        val windowId = window.id
+                        if (seenWindowIds.contains(windowId)) {
+                            continue
+                        }
+                        val windowRoot = window.root ?: continue
+                        val winPkg = windowRoot.packageName?.toString() ?: ""
+                        if (winPkg == packageName || (winPkg.isNotEmpty() && winPkg != TARGET_PACKAGE)) {
+                            recycleNode(windowRoot)
+                            continue
+                        }
+                        rootList.add(windowRoot)
+                        seenWindowIds.add(windowId)
+                    } finally {
+                        @Suppress("DEPRECATION")
+                        try {
+                            window.recycle()
+                        } catch (_: Exception) {
+                        }
                     }
-                    val windowRoot = window.root ?: continue
-                    val winPkg = windowRoot.packageName?.toString() ?: ""
-                    if (winPkg == packageName || (winPkg.isNotEmpty() && winPkg != TARGET_PACKAGE)) {
-                        recycleNode(windowRoot)
-                        continue
-                    }
-                    rootList.add(windowRoot)
-                    seenWindowIds.add(window.id)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Error traversing multi-window hierarchy", e)
@@ -1193,7 +1202,7 @@ open class MyAccessibilityService : AccessibilityService() {
     fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
-        return ACCEPT_REGEX.matches(trimmed)
+        return ACCEPT_REGEX.containsMatchIn(trimmed)
     }
 
     fun isRapidoAcceptId(viewId: String): Boolean {
@@ -1204,7 +1213,7 @@ open class MyAccessibilityService : AccessibilityService() {
     fun isRejectAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
-        return REJECT_REGEX.matches(trimmed)
+        return REJECT_REGEX.containsMatchIn(trimmed)
     }
 
     fun isRapidoRejectId(viewId: String): Boolean {

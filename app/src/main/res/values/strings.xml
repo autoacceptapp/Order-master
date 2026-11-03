@@ -140,7 +140,7 @@
     <string name="payment_utr_need_more">Need at least 9 characters (%1$d more)</string>
     <string name="payment_utr_hint">Found on GPay/PhonePe receipt</string>
     <string name="payment_char_count_format">%1$d/16</string>
-    <string name="payment_verifying_msg">Waiting for bank confirmation... This may take up to 90 seconds.</string>
+    <string name="payment_verifying_msg">Waiting for bank confirmation... This may take up to 2 minutes.</string>
     <string name="payment_success_msg">Pass Activated! Valid for %1$d day(s).</string>
     <string name="payment_toast_success">✅ Pass Activated Successfully!</string>
     <string name="payment_btn_verify">Verify Payment</string>

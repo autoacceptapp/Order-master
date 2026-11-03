@@ -431,7 +431,7 @@ object RideOfferParser {
     private fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
-        return MyAccessibilityService.ACCEPT_REGEX.matches(trimmed)
+        return MyAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)
     }
 
     private fun isRapidoAcceptId(viewId: String): Boolean {

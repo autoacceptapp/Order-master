@@ -243,7 +243,7 @@ object PassManager {
      * Implements a Real-time Waiting & Claiming architecture:
      * - SCENARIO A (Backend verified first): Claims immediately if already "Verified" and unused.
      * - SCENARIO B (App came first): Sets status to "Pending", attaches a real-time snapshot listener,
-     *   waits up to 90 seconds for Backend to mark "Verified", and claims instantly when confirmed.
+     *   waits up to 120 seconds (2 minutes) for Backend to mark "Verified", and claims instantly when confirmed.
      */
     suspend fun verifyPaymentWithBackendDetailed(
         context: Context,
@@ -339,9 +339,9 @@ object PassManager {
                 Log.w(TAG, "Recording pending verification ignored or suppressed: ${e.message}")
             }
 
-            // 2. Suspend with real-time snapshot listener wrapped in 90-second timeout
+            // 2. Suspend with real-time snapshot listener wrapped in 120-second (2 minutes) timeout
             // Wait until status equals "Verified" AND isUsed equals false
-            val waitOutcome = withTimeoutOrNull(90_000L) {
+            val waitOutcome = withTimeoutOrNull(120_000L) {
                 suspendCancellableCoroutine<RealtimeWaitOutcome> { continuation ->
                     var paymentListener: ListenerRegistration? = null
                     var pendingListener: ListenerRegistration? = null
@@ -427,9 +427,9 @@ object PassManager {
                     waitOutcome.result
                 }
                 null -> {
-                    // 90-second timeout expired
-                    Log.w(TAG, "Real-time verification timed out after 90 seconds for $cleanUtr")
-                    VerificationResult.NotFound("Verification timeout. Please check your UTR or try again later.")
+                    // 120-second (2 minutes) timeout expired
+                    Log.w(TAG, "Real-time verification timed out after 120 seconds (2 minutes) for $cleanUtr")
+                    VerificationResult.NotFound("Verification timed out after 2 minutes. Please check your UTR or try again later.")
                 }
             }
 

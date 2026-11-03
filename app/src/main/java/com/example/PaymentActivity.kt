@@ -159,12 +159,15 @@ class PaymentActivity : ComponentActivity() {
         }
     }
 
+    private var currentSelectedTier: PassTier? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
         val initialTierId = intent.getStringExtra(EXTRA_PASS_TIER_ID)
         val initialTier = PassTier.fromId(initialTierId) ?: PassTier.DAILY
+        currentSelectedTier = initialTier
 
         setContent {
             CaptainAutoAcceptTheme {
@@ -178,6 +181,9 @@ class PaymentActivity : ComponentActivity() {
                         onSuccessDone = {
                             setResult(Activity.RESULT_OK)
                             finish()
+                        },
+                        onTierChanged = { tier ->
+                            currentSelectedTier = tier
                         }
                     )
                 }
@@ -185,8 +191,9 @@ class PaymentActivity : ComponentActivity() {
         }
     }
 
-    fun onPaymentSuccess(paymentId: String) {
-        PassManager.onPaymentSuccess(this@PaymentActivity, paymentId) { isSuccess ->
+    fun onPaymentSuccess(paymentId: String, selectedTier: PassTier? = null) {
+        val tierToUse = selectedTier ?: currentSelectedTier ?: PassTier.fromId(intent?.getStringExtra(EXTRA_PASS_TIER_ID))
+        PassManager.onPaymentSuccess(this@PaymentActivity, paymentId, tierToUse) { isSuccess ->
             if (isSuccess) {
                 setResult(Activity.RESULT_OK)
                 finish()
@@ -194,8 +201,13 @@ class PaymentActivity : ComponentActivity() {
         }
     }
 
+    fun verifyPaymentWithBackend(paymentId: String, selectedTier: PassTier? = null, callback: (Boolean) -> Unit) {
+        val tierToUse = selectedTier ?: currentSelectedTier ?: PassTier.fromId(intent?.getStringExtra(EXTRA_PASS_TIER_ID))
+        PassManager.verifyPaymentWithBackend(this@PaymentActivity, paymentId, tierToUse, callback)
+    }
+
     fun verifyPaymentWithBackend(paymentId: String, callback: (Boolean) -> Unit) {
-        PassManager.verifyPaymentWithBackend(this@PaymentActivity, paymentId, callback)
+        verifyPaymentWithBackend(paymentId, null, callback)
     }
 }
 
@@ -213,7 +225,8 @@ private enum class VerificationUiState {
 private fun PaymentVerificationScreenContent(
     initialTier: PassTier,
     onBack: () -> Unit,
-    onSuccessDone: () -> Unit
+    onSuccessDone: () -> Unit,
+    onTierChanged: (PassTier) -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -281,6 +294,7 @@ private fun PaymentVerificationScreenContent(
                 selectedTier = selectedTier,
                 onSelectTier = { tier ->
                     selectedTier = tier
+                    onTierChanged(tier)
                     uiState = VerificationUiState.IDLE
                     statusMessage = ""
                 }
