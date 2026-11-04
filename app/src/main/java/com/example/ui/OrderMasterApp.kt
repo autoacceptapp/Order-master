@@ -546,9 +546,6 @@ fun OrderMasterApp(
         )
     }
 
-    // In-App Popup Messages (Global announcements & user-targeted alerts)
-    InAppMessageDialog()
-
     // Global Service Offline / User Ban Blocking Overlay (on top of all activities/screens)
     GlobalBlockingOverlay()
 }

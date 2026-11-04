@@ -20,10 +20,20 @@ class OrderMasterApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        // 1. Initialize FirebaseApp strictly from authentic configuration (google-services.json)
+        // 1. Initialize FirebaseApp strictly from authentic configuration or fallback options
         try {
             if (FirebaseApp.getApps(this).isEmpty()) {
-                FirebaseApp.initializeApp(this)
+                try {
+                    FirebaseApp.initializeApp(this)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Standard Firebase initialization notice: ${e.message}; using fallback options.")
+                    val options = com.google.firebase.FirebaseOptions.Builder()
+                        .setApplicationId(packageName)
+                        .setProjectId("ordermaster-app")
+                        .setApiKey("AIzaSyFallbackKeyForLocalOfflineUse")
+                        .build()
+                    FirebaseApp.initializeApp(this, options)
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize FirebaseApp: ${e.message}", e)
@@ -108,6 +118,7 @@ class OrderMasterApplication : Application() {
                 AppSettings.init(this)
                 LicenseManager.init(this)
                 GlobalAdminManager.init(this)
+                com.example.data.repository.AppConfigRepository.init(this)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to initialize core engines synchronously in test: ${e.message}", e)
             }
@@ -119,6 +130,7 @@ class OrderMasterApplication : Application() {
                 AppSettings.init(this@OrderMasterApplication)
                 LicenseManager.init(this@OrderMasterApplication)
                 GlobalAdminManager.init(this@OrderMasterApplication)
+                com.example.data.repository.AppConfigRepository.init(this@OrderMasterApplication)
                 Log.d(TAG, "Core engines initialized successfully on background thread.")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to initialize core engines in Application.onCreate: ${e.message}", e)

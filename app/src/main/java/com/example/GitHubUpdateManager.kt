@@ -229,9 +229,14 @@ object GitHubUpdateManager {
                 }
             }
 
-            // Fallback direct URL format if no explicit asset was indexed yet in the array
+            // Fallback direct URL format using unified dynamicAppDownloadUrl or GitHub direct release URL
             if (apkDownloadUrl.isNullOrEmpty()) {
-                apkDownloadUrl = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tagName/app-debug.apk"
+                val dynamicConfigUrl = com.example.data.repository.AppConfigRepository.currentAppConfig.value.dynamicAppDownloadUrl.trim()
+                if (dynamicConfigUrl.isNotEmpty()) {
+                    apkDownloadUrl = dynamicConfigUrl
+                } else {
+                    apkDownloadUrl = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tagName/app-debug.apk"
+                }
                 apkFileName = "app-debug.apk"
             }
 

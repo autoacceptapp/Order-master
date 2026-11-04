@@ -38,6 +38,8 @@ import androidx.compose.material.icons.filled.Paid
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stars
+import com.example.data.repository.AppConfig
+import com.example.data.repository.AppConfigRepository
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -110,6 +112,7 @@ fun ReferAndEarnScreen(
     val hasClaimedReferral by LicenseManager.hasClaimedReferral.collectAsState()
     val referralCount by LicenseManager.referralCount.collectAsState()
     val pendingInvite by ReferralManager.pendingInviteCode.collectAsState()
+    val appConfig by AppConfigRepository.observeAppConfig().collectAsState(initial = AppConfig())
 
     var inputCode by remember { mutableStateOf("") }
     var isSubmitting by remember { mutableStateOf(false) }
@@ -170,14 +173,14 @@ fun ReferAndEarnScreen(
                     },
                     onShareGeneral = {
                         if (!referralCode.isNullOrBlank()) {
-                            shareGeneral(context, referralCode!!)
+                            shareGeneral(context, referralCode!!, appConfig.dynamicAppDownloadUrl)
                         } else if (!userAuthState.isLoggedIn) {
                             showSignInSheet = true
                         }
                     },
                     onShareWhatsApp = {
                         if (!referralCode.isNullOrBlank()) {
-                            shareOnWhatsApp(context, referralCode!!)
+                            shareOnWhatsApp(context, referralCode!!, appConfig.dynamicAppDownloadUrl)
                         } else if (!userAuthState.isLoggedIn) {
                             showSignInSheet = true
                         }
@@ -1021,11 +1024,16 @@ private fun copyReferralCode(context: Context, code: String) {
 }
 
 /**
- * Shares referral link via Android system share sheet.
+ * Shares referral link via Android system share sheet using dynamic download link.
  */
-private fun shareGeneral(context: Context, code: String) {
-    val inviteUrl = "https://ordermaster.app/invite?code=$code"
-    val message = "Get 50 free points in Order Master! Use my invite code: $code or tap $inviteUrl"
+private fun shareGeneral(context: Context, code: String, downloadUrl: String? = null) {
+    val dynamicUrl = downloadUrl?.trim().takeIf { !it.isNullOrBlank() }
+    val inviteUrl = if (dynamicUrl != null) {
+        if (dynamicUrl.contains("?")) "$dynamicUrl&code=$code" else "$dynamicUrl?code=$code"
+    } else {
+        "https://ordermaster.app/invite?code=$code"
+    }
+    val message = "Get 50 free points in Order Master! Use my invite code: $code\nDownload the app: $inviteUrl"
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
         putExtra(Intent.EXTRA_SUBJECT, "Order Master Invite")
@@ -1035,11 +1043,16 @@ private fun shareGeneral(context: Context, code: String) {
 }
 
 /**
- * Shares referral link via WhatsApp.
+ * Shares referral link via WhatsApp using dynamic download link.
  */
-private fun shareOnWhatsApp(context: Context, code: String) {
-    val inviteUrl = "https://ordermaster.app/invite?code=$code"
-    val message = "Get 50 free points in Order Master! Use my invite code: $code or tap $inviteUrl"
+private fun shareOnWhatsApp(context: Context, code: String, downloadUrl: String? = null) {
+    val dynamicUrl = downloadUrl?.trim().takeIf { !it.isNullOrBlank() }
+    val inviteUrl = if (dynamicUrl != null) {
+        if (dynamicUrl.contains("?")) "$dynamicUrl&code=$code" else "$dynamicUrl?code=$code"
+    } else {
+        "https://ordermaster.app/invite?code=$code"
+    }
+    val message = "Get 50 free points in Order Master! Use my invite code: $code\nDownload the app: $inviteUrl"
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
         `package` = "com.whatsapp"
@@ -1048,6 +1061,6 @@ private fun shareOnWhatsApp(context: Context, code: String) {
     try {
         context.startActivity(intent)
     } catch (_: Exception) {
-        shareGeneral(context, code)
+        shareGeneral(context, code, downloadUrl)
     }
 }
