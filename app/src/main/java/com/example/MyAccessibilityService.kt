@@ -14,12 +14,15 @@ import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import kotlin.coroutines.resume
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.Locale
 
 /**
@@ -502,7 +505,9 @@ open class MyAccessibilityService : AccessibilityService() {
             broadcastLog("Auto-clicking Accept for best offer (₹${bestOffer.totalFare?.toInt() ?: 0}) in ${acceptDelayMs}ms [$speedLabel]...")
 
             mainHandler.postDelayed({
-                executeCardAcceptClick(bestOffer, bestEvaluation)
+                serviceScope.launch {
+                    executeCardAcceptClick(bestOffer, bestEvaluation)
+                }
             }, acceptDelayMs)
         } else if (isAutoAccept && evaluatedOffers.isNotEmpty()) {
             // Smart Auto-Reject: Only execute if FARE_FILTERS or another relevant filter is unlocked
@@ -517,7 +522,9 @@ open class MyAccessibilityService : AccessibilityService() {
                         kotlin.random.Random.nextLong(1000L, 2000L)
                     }
                     mainHandler.postDelayed({
-                        executeCardRejectClick(rejectedOffer, rejectedEval)
+                        serviceScope.launch {
+                            executeCardRejectClick(rejectedOffer, rejectedEval)
+                        }
                     }, delayMs)
                 }
             } else {
@@ -527,10 +534,35 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Checks if the currently active window's package is TARGET_PACKAGE (Rapido).
+     * If not, dispatches an Intent to bring the target app to the foreground
+     * so that gesture dispatches hit the correct application.
+     */
+    fun bringTargetAppToForeground() {
+        try {
+            val currentPkg = rootInActiveWindow?.packageName?.toString()
+            if (currentPkg != TARGET_PACKAGE) {
+                Log.i(TAG, "Current active window package ($currentPkg) is not $TARGET_PACKAGE. Bringing target app to foreground.")
+                val launchIntent = packageManager.getLaunchIntentForPackage(TARGET_PACKAGE)?.apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                }
+                if (launchIntent != null) {
+                    startActivity(launchIntent)
+                    Log.i(TAG, "Dispatched startActivity for $TARGET_PACKAGE")
+                } else {
+                    Log.w(TAG, "Launch intent for $TARGET_PACKAGE returned null.")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error in bringTargetAppToForeground: ${e.message}", e)
+        }
+    }
+
+    /**
      * Executes ACTION_CLICK strictly targeting the Reject/Pass button node
      * located inside the spatial bounds of an invalid/rejected order card to clear the screen.
      */
-    private fun executeCardRejectClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
+    private suspend fun executeCardRejectClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
         // Security check: Active pass/trial OR relevant filter feature unlocked
         val hasAnyFilterUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.FARE_FILTERS) ||
                 LicenseManager.isFeatureUnlocked(FeatureIds.DISTANCE_FILTERS) ||
@@ -561,6 +593,8 @@ open class MyAccessibilityService : AccessibilityService() {
                         clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                         Log.i(TAG, "executeCardRejectClick: in-bounds ACTION_CLICK success=$clicked")
                         if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                            bringTargetAppToForeground()
+                            delay(250L)
                             clicked = dispatchTapGesture(clickable)
                             Log.i(TAG, "executeCardRejectClick: fallback gesture success=$clicked")
                         }
@@ -593,6 +627,8 @@ open class MyAccessibilityService : AccessibilityService() {
                 val tapY = rawTapY.coerceIn(cardBounds.top.toFloat(), (cardBounds.bottom - 1).toFloat())
                     .coerceIn(0f, screenHeight - 1f)
 
+                bringTargetAppToForeground()
+                delay(250L)
                 clicked = dispatchTapAtCoordinates(tapX, tapY)
                 Log.i(TAG, "executeCardRejectClick: coordinate fallback tap at ($tapX, $tapY) success=$clicked")
             }
@@ -673,7 +709,7 @@ open class MyAccessibilityService : AccessibilityService() {
      * Executes the ACTION_CLICK strictly targeting the Accept button node
      * located inside the spatial bounds of the selected best matching order card.
      */
-    private fun executeCardAcceptClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
+    private suspend fun executeCardAcceptClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
         isPendingExecution = false
         lastProcessTime = System.currentTimeMillis()
 
@@ -707,6 +743,8 @@ open class MyAccessibilityService : AccessibilityService() {
                             clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                             Log.i(TAG, "executeCardAcceptClick: in-bounds ACTION_CLICK success=$clicked")
                             if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                bringTargetAppToForeground()
+                                delay(250L)
                                 clicked = dispatchTapGesture(clickable)
                                 Log.i(TAG, "executeCardAcceptClick: fallback gesture success=$clicked")
                             }
@@ -740,6 +778,8 @@ open class MyAccessibilityService : AccessibilityService() {
                 val tapY = rawTapY.coerceIn(cardBounds.top.toFloat(), (cardBounds.bottom - 1).toFloat())
                     .coerceIn(0f, screenHeight - 1f)
 
+                bringTargetAppToForeground()
+                delay(250L)
                 clicked = dispatchTapAtCoordinates(tapX, tapY)
                 Log.i(TAG, "executeCardAcceptClick: coordinate fallback tap at ($tapX, $tapY) success=$clicked")
             }
@@ -951,7 +991,7 @@ open class MyAccessibilityService : AccessibilityService() {
     /**
      * Searches for specific UI target labels and executes click on nearest clickable container.
      */
-    fun executeAssistiveClick(
+    suspend fun executeAssistiveClick(
         root: AccessibilityNodeInfo? = null,
         targetLabels: List<String> = listOf("Confirm", "Accept", "Select", "Auto Accept")
     ): Boolean {
@@ -1046,7 +1086,7 @@ open class MyAccessibilityService : AccessibilityService() {
         return null
     }
 
-    fun dispatchTapGesture(node: AccessibilityNodeInfo): Boolean {
+    suspend fun dispatchTapGesture(node: AccessibilityNodeInfo): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
             return false
         }
@@ -1063,38 +1103,54 @@ open class MyAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun dispatchTapAtCoordinates(x: Float, y: Float): Boolean {
+    private suspend fun dispatchTapAtCoordinates(x: Float, y: Float): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
         if (!GlobalAdminManager.canExecuteActions(this)) {
             Log.w(TAG, "dispatchTapAtCoordinates blocked: Service offline or user is banned.")
             return false
         }
-        return try {
-            val clickPath = Path().apply {
-                moveTo(x, y)
+        return suspendCancellableCoroutine { continuation ->
+            try {
+                val clickPath = Path().apply {
+                    moveTo(x, y)
+                }
+                val stroke = GestureDescription.StrokeDescription(clickPath, 0L, 50L)
+                val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+                val dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
+                        super.onCompleted(gestureDescription)
+                        Log.d(TAG, "dispatchTapAtCoordinates completed at ($x, $y)")
+                        if (continuation.isActive) {
+                            continuation.resume(true)
+                        }
+                    }
+
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        super.onCancelled(gestureDescription)
+                        Log.w(TAG, "dispatchTapAtCoordinates cancelled at ($x, $y)")
+                        if (continuation.isActive) {
+                            continuation.resume(false)
+                        }
+                    }
+                }, null)
+
+                if (!dispatched) {
+                    Log.w(TAG, "dispatchGesture returned false immediately at ($x, $y)")
+                    if (continuation.isActive) {
+                        continuation.resume(false)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in dispatchTapAtCoordinates", e)
+                if (continuation.isActive) {
+                    continuation.resume(false)
+                }
             }
-            val stroke = GestureDescription.StrokeDescription(clickPath, 0L, 50L)
-            val gesture = GestureDescription.Builder().addStroke(stroke).build()
-
-            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    super.onCompleted(gestureDescription)
-                    Log.d(TAG, "dispatchTapAtCoordinates completed at ($x, $y)")
-                }
-
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    super.onCancelled(gestureDescription)
-                    Log.w(TAG, "dispatchTapAtCoordinates cancelled at ($x, $y)")
-                }
-            }, null)
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Error in dispatchTapAtCoordinates", e)
-            false
         }
     }
 
-    fun findAndClickAcceptButton(root: AccessibilityNodeInfo? = null): Boolean {
+    suspend fun findAndClickAcceptButton(root: AccessibilityNodeInfo? = null): Boolean {
         val rootsToSearch = if (root != null) {
             listOf(root)
         } else {
