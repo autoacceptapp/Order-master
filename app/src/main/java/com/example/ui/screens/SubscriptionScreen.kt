@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Payment
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Warning
@@ -92,6 +93,7 @@ import com.example.LicenseManager
 import com.example.PassManager
 import com.example.PassTier
 import com.example.R
+import com.example.RewardedAdManager
 import com.example.auth.GoogleAuthManager
 import com.example.ui.theme.AmberAccent
 import com.example.ui.theme.PrimaryEmerald
@@ -231,7 +233,37 @@ fun SubscriptionScreen(
                 )
             }
 
-            // 3. Section Title: Choose a Pass
+            // 3. Earn Free Points (Rewarded Ad) Card
+            item {
+                EarnFreePointsCard(
+                    isLoggedIn = userAuthState.isLoggedIn,
+                    onTriggerGoogleSignIn = onTriggerGoogleSignIn,
+                    onRewardEarned = {
+                        coroutineScope.launch {
+                            Toast.makeText(context, "Video completed! Claiming 5 Points...", Toast.LENGTH_SHORT).show()
+                            val res = LicenseManager.claimAdReward()
+                            res.fold(
+                                onSuccess = { newBal ->
+                                    Toast.makeText(
+                                        context,
+                                        "🎉 5 Points claimed successfully! New Balance: $newBal pts",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                },
+                                onFailure = { err ->
+                                    Toast.makeText(
+                                        context,
+                                        "Failed to add points: ${err.message ?: "Unknown error"}",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            )
+                        }
+                    }
+                )
+            }
+
+            // 4. Section Title: Choose a Pass
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -919,6 +951,7 @@ private fun PassCard(
     val hasEnoughPoints = pointsBalance >= passTier.pointsCost
     val isWeekly = passTier == PassTier.WEEKLY
     val isMonthly = passTier == PassTier.MONTHLY
+    val isRemoveAds = passTier == PassTier.REMOVE_ADS
 
     Card(
         modifier = Modifier
@@ -932,10 +965,12 @@ private fun PassCard(
             BorderStroke(2.dp, AmberAccent.copy(alpha = 0.7f))
         } else if (isMonthly) {
             BorderStroke(2.dp, PrimaryEmerald.copy(alpha = 0.7f))
+        } else if (isRemoveAds) {
+            BorderStroke(2.dp, Color(0xFF8B5CF6).copy(alpha = 0.8f))
         } else {
             BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
         },
-        elevation = CardDefaults.cardElevation(defaultElevation = if (isWeekly || isMonthly) 3.dp else 1.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isWeekly || isMonthly || isRemoveAds) 3.dp else 1.dp)
     ) {
         Column(
             modifier = Modifier
@@ -1267,4 +1302,154 @@ private fun UpiPaymentDialog(
         }
     )
 }
+
+/**
+ * Helper extension to resolve Activity from Compose Context hierarchy.
+ */
+private fun android.content.Context.findActivity(): Activity? {
+    var currentContext = this
+    while (currentContext is android.content.ContextWrapper) {
+        if (currentContext is Activity) return currentContext
+        currentContext = currentContext.baseContext
+    }
+    return null
+}
+
+/**
+ * EarnFreePointsCard - Prominently displays the AdMob Rewarded Video Ad option.
+ * Captains can watch a short ad to earn 5 free Points credited directly via Zero-Trust Action Queue.
+ */
+@Composable
+fun EarnFreePointsCard(
+    isLoggedIn: Boolean,
+    onTriggerGoogleSignIn: () -> Unit,
+    onRewardEarned: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+
+    val handleEarnPointsClick: () -> Unit = {
+        if (!isLoggedIn) {
+            Toast.makeText(
+                context,
+                "Please sign in with Google first to store earned points in your wallet.",
+                Toast.LENGTH_SHORT
+            ).show()
+            onTriggerGoogleSignIn()
+        } else {
+            val activity = context.findActivity()
+            if (activity == null) {
+                Toast.makeText(context, "Activity unavailable to show video ad.", Toast.LENGTH_SHORT).show()
+            } else if (RewardedAdManager.isAdLoaded()) {
+                RewardedAdManager.showAd(activity) {
+                    onRewardEarned()
+                }
+            } else {
+                Toast.makeText(
+                    context,
+                    "Loading video ad... Please try again in a moment.",
+                    Toast.LENGTH_SHORT
+                ).show()
+                RewardedAdManager.loadAd(context)
+            }
+        }
+    }
+
+    ElevatedCard(
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { handleEarnPointsClick() }
+            .testTag("earn_free_points_card"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = AmberAccent.copy(alpha = 0.18f),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.CardGiftcard,
+                        contentDescription = "Earn Free Points",
+                        tint = AmberAccent,
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            }
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Earn Free Points",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = AmberAccent.copy(alpha = 0.2f)
+                    ) {
+                        Text(
+                            text = "+5 PTS",
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                color = AmberAccent
+                            )
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Watch a short video ad to earn 5 reward points for your wallet",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Button(
+                onClick = handleEarnPointsClick,
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = AmberAccent,
+                    contentColor = Color.Black
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                modifier = Modifier.testTag("earn_points_ad_button")
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "Watch Ad for +5 Points",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
 

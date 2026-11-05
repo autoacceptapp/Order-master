@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import android.content.Context
 import android.util.Log
+import com.example.BuildConfig
 import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.channels.awaitClose
@@ -74,12 +75,15 @@ object AppConfigRepository {
                 try {
                     FirebaseApp.initializeApp(context)
                 } catch (_: Exception) {
-                    val options = com.google.firebase.FirebaseOptions.Builder()
-                        .setApplicationId(context.packageName)
-                        .setProjectId("ordermaster-app")
-                        .setApiKey("AIzaSyFallbackKeyForLocalOfflineUse")
-                        .build()
-                    FirebaseApp.initializeApp(context, options)
+                    val fallbackApiKey = BuildConfig.FIREBASE_FALLBACK_API_KEY
+                    if (fallbackApiKey.isNotBlank()) {
+                        val options = com.google.firebase.FirebaseOptions.Builder()
+                            .setApplicationId(context.packageName)
+                            .setProjectId("ordermaster-app")
+                            .setApiKey(fallbackApiKey)
+                            .build()
+                        FirebaseApp.initializeApp(context, options)
+                    }
                 }
             }
             FirebaseApp.getApps(context).isNotEmpty()

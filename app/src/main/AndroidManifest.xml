@@ -37,6 +37,10 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
+    <!-- 11. AdServices permissions required for Privacy Sandbox attribution and measurement -->
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID" />
+
     <!-- Package visibility queries for UPI payment apps on Android 11+ (API 30+) -->
     <queries>
         <intent>
@@ -90,6 +94,29 @@
         <meta-data
             android:name="firebase_analytics_collection_deactivated"
             android:value="true" />
+
+        <!-- Google Mobile Ads (AdMob) App ID & Optimization Flags -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-5657835600587543~6848626057" />
+        <meta-data
+            android:name="com.google.android.gms.ads.flag.OPTIMIZE_INITIALIZATION"
+            android:value="true" />
+        <meta-data
+            android:name="com.google.android.gms.ads.flag.OPTIMIZE_AD_LOADING"
+            android:value="true" />
+        <meta-data
+            android:name="google_analytics_adid_collection_enabled"
+            android:value="false" />
+        <meta-data
+            android:name="com.google.android.gms.ads.DELAY_APP_MEASUREMENT_INIT"
+            android:value="true" />
+
+        <!-- AdServices Privacy Sandbox configuration -->
+        <property
+            android:name="android.adservices.AD_SERVICES_CONFIG"
+            android:resource="@xml/gma_ad_services_config"
+            tools:replace="android:resource" />
 
         <activity
             android:name=".MainActivity"

@@ -27,6 +27,15 @@ import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.PinDrop
+import android.app.Activity
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import com.example.RewardedAdManager
+import com.example.LicenseManager
+import com.example.ui.theme.AmberAccent
+import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -77,6 +86,49 @@ fun OrderHistoryScreen(
     val searchQuery by viewModel.historySearchQuery.collectAsState()
     val statusFilter by viewModel.historyStatusFilter.collectAsState()
     var showClearConfirmDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    val handleWatchAd: () -> Unit = {
+        var act: Activity? = null
+        var ctx = context
+        while (ctx is android.content.ContextWrapper) {
+            if (ctx is Activity) {
+                act = ctx
+                break
+            }
+            ctx = ctx.baseContext
+        }
+        if (act == null) {
+            Toast.makeText(context, "Activity unavailable to display ad.", Toast.LENGTH_SHORT).show()
+        } else if (RewardedAdManager.isAdLoaded()) {
+            RewardedAdManager.showAd(act) {
+                coroutineScope.launch {
+                    Toast.makeText(context, "Video completed! Claiming 5 Points...", Toast.LENGTH_SHORT).show()
+                    val result = LicenseManager.claimAdReward()
+                    result.fold(
+                        onSuccess = { newBal ->
+                            Toast.makeText(
+                                context,
+                                "🎉 5 Points claimed successfully! New Balance: $newBal pts",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        },
+                        onFailure = { err ->
+                            Toast.makeText(
+                                context,
+                                "Failed to claim points: ${err.message ?: "Unknown error"}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
+                }
+            }
+        } else {
+            Toast.makeText(context, "Loading video ad... Please try again in a moment.", Toast.LENGTH_SHORT).show()
+            RewardedAdManager.loadAd(context)
+        }
+    }
 
     val dateFormat = remember { SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()) }
 
@@ -184,6 +236,63 @@ fun OrderHistoryScreen(
                 },
                 shape = RoundedCornerShape(10.dp)
             )
+        }
+
+        // Earn Free Points Banner in History
+        Card(
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("history_reward_ad_card")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CardGiftcard,
+                        contentDescription = null,
+                        tint = AmberAccent,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "Need more points?",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                Button(
+                    onClick = handleWatchAd,
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = AmberAccent,
+                        contentColor = Color.Black
+                    ),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    modifier = Modifier.testTag("history_watch_ad_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Watch Ad for +5 Points",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
         }
 
         // Order List or Empty State

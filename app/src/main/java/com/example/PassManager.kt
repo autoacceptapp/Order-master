@@ -54,6 +54,59 @@ object PassManager {
     private var lastExpiredAlertTimestamp = 0L
     private const val ALERT_THROTTLE_WINDOW_MS = 30_000L
 
+    const val PREFS_UTR_RATE_LIMIT = "utr_rate_limit_prefs"
+    const val KEY_UTR_ATTEMPT_TIMESTAMPS = "utr_attempt_timestamps"
+    const val MAX_UTR_ATTEMPTS_PER_MINUTE = 3
+    const val UTR_RATE_LIMIT_WINDOW_MS = 60_000L
+
+    /**
+     * Local client-side rate limit checking: allows a maximum of 3 verification attempts per minute.
+     * Prevents spamming UTR verification calls to the backend.
+     * Handles empty or corrupted SharedPreferences gracefully without crashing.
+     */
+    @Synchronized
+    fun checkAndRecordUtrRateLimit(
+        context: Context,
+        now: Long = System.currentTimeMillis()
+    ): Boolean {
+        return try {
+            val prefs = context.getSharedPreferences(PREFS_UTR_RATE_LIMIT, Context.MODE_PRIVATE)
+            val raw = try {
+                prefs.getString(KEY_UTR_ATTEMPT_TIMESTAMPS, "") ?: ""
+            } catch (e: Exception) {
+                Log.w(TAG, "Corrupted UTR rate limit prefs; resetting: ${e.message}")
+                ""
+            }
+            val timestamps = if (raw.isBlank()) {
+                emptyList()
+            } else {
+                raw.split(",")
+                    .mapNotNull { it.trim().toLongOrNull() }
+            }
+            val cutoff = now - UTR_RATE_LIMIT_WINDOW_MS
+            val recentAttempts = timestamps.filter { it in (cutoff + 1)..now }
+            if (recentAttempts.size >= MAX_UTR_ATTEMPTS_PER_MINUTE) {
+                false
+            } else {
+                val updated = recentAttempts + now
+                prefs.edit().putString(KEY_UTR_ATTEMPT_TIMESTAMPS, updated.joinToString(",")).commit()
+                true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error evaluating UTR rate limit; failing open gracefully: ${e.message}", e)
+            true
+        }
+    }
+
+    fun resetUtrRateLimit(context: Context) {
+        try {
+            context.getSharedPreferences(PREFS_UTR_RATE_LIMIT, Context.MODE_PRIVATE)
+                .edit().clear().commit()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error clearing UTR rate limit prefs: ${e.message}")
+        }
+    }
+
     private val _isPassActiveFlow = MutableStateFlow(false)
 
     init {
@@ -253,6 +306,12 @@ object PassManager {
         val cleanUtr = utr.trim().filter { it.isLetterOrDigit() }.uppercase()
         if (cleanUtr.length !in 9..16) {
             return@withContext VerificationResult.Invalid("Please enter a valid 9 to 16-character UTR / UPI reference number.")
+        }
+
+        // Local client-side rate limit: Max 3 verification attempts per minute to prevent UTR spamming
+        if (!checkAndRecordUtrRateLimit(context)) {
+            Log.w(TAG, "UTR verification rate limit exceeded for attempt on $cleanUtr")
+            return@withContext VerificationResult.Error("Too many attempts. Please try again after 1 minute.")
         }
 
         try {
@@ -865,4 +924,10 @@ object PassManager {
             Log.e(TAG, "Could not open CaptainStoreActivity: ${e.message}")
         }
     }
+
+    /**
+     * Checks if ads should be removed for the current user.
+     * Returns true if REMOVE_ADS pass or monthly Pro pass is active.
+     */
+    fun isAdsRemoved(): Boolean = LicenseManager.isAdsRemoved()
 }

@@ -21,6 +21,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.graphics.asImageBitmap
 import com.example.QrCodeGenerator
 import androidx.compose.foundation.layout.Arrangement
@@ -135,6 +137,7 @@ import java.util.Locale
 fun PaymentVerificationScreen(
     onNavigateBack: () -> Unit,
     onVerificationSuccess: () -> Unit = onNavigateBack,
+    initialTier: PassTier? = null,
     viewModel: PaymentVerificationViewModel = viewModel(),
     modifier: Modifier = Modifier
 ) {
@@ -149,6 +152,12 @@ fun PaymentVerificationScreen(
 
     var merchantVpa by remember { mutableStateOf("") }
     var merchantName by remember { mutableStateOf("OrderMaster Captain Store") }
+
+    LaunchedEffect(initialTier) {
+        if (initialTier != null) {
+            viewModel.onSelectTier(initialTier)
+        }
+    }
 
     LaunchedEffect(Unit) {
         val (upi, name) = com.example.PaymentActivity.fetchPaymentConfig()
@@ -294,7 +303,9 @@ fun PaymentVerificationScreen(
                         )
 
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             PassTier.entries.forEach { tier ->
@@ -321,8 +332,7 @@ fun PaymentVerificationScreen(
                                         selectedContainerColor = PrimaryEmerald.copy(alpha = 0.15f),
                                         selectedLabelColor = Color(0xFF047857),
                                         selectedLeadingIconColor = PrimaryEmerald
-                                    ),
-                                    modifier = Modifier.weight(1f)
+                                    )
                                 )
                             }
                         }

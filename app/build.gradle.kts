@@ -38,6 +38,11 @@ android {
     buildConfigField("String", "APP_VERSION_NAME", "\"$appVersionName\"")
     buildConfigField("int", "APP_VERSION_CODE", "$appVersionCode")
 
+    val fallbackApiKey = project.findProperty("FIREBASE_FALLBACK_API_KEY")?.toString()
+        ?: System.getenv("FIREBASE_FALLBACK_API_KEY")
+        ?: ""
+    buildConfigField("String", "FIREBASE_FALLBACK_API_KEY", "\"$fallbackApiKey\"")
+
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
@@ -126,6 +131,10 @@ secrets {
 
 googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
 
+configurations.all {
+    exclude(group = "androidx.privacysandbox.ads")
+}
+
 dependencies {
   // Core Android & View Architecture
   implementation(libs.androidx.core.ktx)
@@ -167,6 +176,11 @@ dependencies {
   // Coroutines
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
+
+  // Google Mobile Ads (AdMob)
+  implementation("com.google.android.gms:play-services-ads:23.1.0") {
+    exclude(group = "androidx.privacysandbox.ads")
+  }
 
   // Unit Testing & Robolectric
   testImplementation(libs.androidx.core)

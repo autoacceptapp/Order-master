@@ -26,13 +26,19 @@ class OrderMasterApplication : Application() {
                 try {
                     FirebaseApp.initializeApp(this)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Standard Firebase initialization notice: ${e.message}; using fallback options.")
-                    val options = com.google.firebase.FirebaseOptions.Builder()
-                        .setApplicationId(packageName)
-                        .setProjectId("ordermaster-app")
-                        .setApiKey("AIzaSyFallbackKeyForLocalOfflineUse")
-                        .build()
-                    FirebaseApp.initializeApp(this, options)
+                    Log.w(TAG, "Standard Firebase initialization notice: ${e.message}")
+                    val fallbackApiKey = BuildConfig.FIREBASE_FALLBACK_API_KEY
+                    if (fallbackApiKey.isNotBlank()) {
+                        val options = com.google.firebase.FirebaseOptions.Builder()
+                            .setApplicationId(packageName)
+                            .setProjectId("ordermaster-app")
+                            .setApiKey(fallbackApiKey)
+                            .build()
+                        FirebaseApp.initializeApp(this, options)
+                        Log.i(TAG, "Initialized Firebase with fallback options from BuildConfig.")
+                    } else {
+                        Log.w(TAG, "No Firebase fallback API key configured; skipping unauthenticated fallback.")
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -47,6 +53,18 @@ class OrderMasterApplication : Application() {
 
         // 4. Initialize core managers at Application level for background services
         initCoreEngines()
+
+        // 5. Initialize Google Mobile Ads SDK asynchronously
+        try {
+            val requestConfig = com.google.android.gms.ads.RequestConfiguration.Builder()
+                .setTestDeviceIds(listOf(com.google.android.gms.ads.AdRequest.DEVICE_ID_EMULATOR))
+                .build()
+            com.google.android.gms.ads.MobileAds.setRequestConfiguration(requestConfig)
+            com.google.android.gms.ads.MobileAds.initialize(this) {}
+            Log.d(TAG, "Google Mobile Ads initialized successfully.")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to initialize Google Mobile Ads: ${e.message}")
+        }
     }
 
     /**

@@ -81,6 +81,16 @@ enum class PassTier(
         durationMs = 28L * 24L * 3600L * 1000L,
         tag = "Best Value",
         description = "28 Days full automation + VIP cross-device cloud sync"
+    ),
+    REMOVE_ADS(
+        id = "remove_ads_pass",
+        title = "Remove Ads Pass",
+        priceInInr = 199,
+        pointsCost = 1600,
+        durationDays = 28,
+        durationMs = 28L * 24L * 3600L * 1000L,
+        tag = "Ad Free",
+        description = "28 Days complete Ad-Free uninterrupted experience"
     );
 
     companion object {
@@ -233,6 +243,23 @@ object LicenseManager {
     // Action Queue request timeout: 60 Seconds
     private const val ACTION_TIMEOUT_MS = 60_000L
 
+    // Local UI Fast-Boot Licensing Cache (SharedPreferences)
+    const val LICENSE_CACHE_PREFS = "LICENSE_CACHE_PREFS"
+    const val KEY_CACHED_PASS_TIER = "cachedPassTier"
+    const val KEY_CACHED_PASS_EXPIRY = "cachedPassExpiry"
+    const val KEY_CACHED_TRIAL_CLAIMED = "cachedTrialClaimed"
+    const val KEY_CACHED_TRIAL_EXPIRY = "cachedTrialExpiry"
+    const val KEY_CACHED_TRIAL_USED = "cachedTrialUsed"
+    const val KEY_LAST_SERVER_SYNC_TIME = "cachedLastServerSyncTime"
+
+    data class CachedLicensingData(
+        val passTier: PassTier?,
+        val passExpiry: Long,
+        val trialClaimed: Long,
+        val trialExpiry: Long,
+        val trialUsed: Boolean
+    )
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
 
@@ -312,6 +339,7 @@ object LicenseManager {
                 PassTier.DAILY -> "daily"
                 PassTier.WEEKLY -> "weekly"
                 PassTier.MONTHLY -> "monthly"
+                PassTier.REMOVE_ADS -> "remove_ads"
             }
         }
         if (trialClaimed > 0L && trialExpiry > now) {
@@ -333,7 +361,8 @@ object LicenseManager {
     @Volatile
     private var serverTrialUsed: Boolean = false
     @Volatile
-    private var hasLoadedLicensing: Boolean = false
+    var hasLoadedLicensing: Boolean = false
+        internal set
     @Volatile
     private var hasLoadedTrial: Boolean = false
 
@@ -378,6 +407,14 @@ object LicenseManager {
             serverTimeBaselineMs = serverMs
             serverTimeBaselineElapsedMs = nowElapsed
             lastSuccessfulServerSyncElapsedMs = nowElapsed
+            appContext?.let { ctx ->
+                try {
+                    ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+                        .edit()
+                        .putLong(KEY_LAST_SERVER_SYNC_TIME, System.currentTimeMillis())
+                        .apply()
+                } catch (_: Exception) {}
+            }
             Log.d(TAG, "Monotonic server clock synced: baseline=$serverMs, elapsed=$nowElapsed")
         }
     }
@@ -400,11 +437,117 @@ object LicenseManager {
     /**
      * Checks if the maximum allowed offline grace period (2 hours) has expired.
      */
-    fun isOfflineGracePeriodExpired(): Boolean {
+    fun isOfflineGracePeriodExpired(context: Context? = null): Boolean {
         val lastSync = lastSuccessfulServerSyncElapsedMs
-        if (lastSync <= 0L) return false
-        val offlineDuration = SystemClock.elapsedRealtime() - lastSync
-        return offlineDuration > OFFLINE_GRACE_PERIOD_MS
+        if (lastSync > 0L) {
+            val offlineDuration = SystemClock.elapsedRealtime() - lastSync
+            if (offlineDuration > OFFLINE_GRACE_PERIOD_MS) return true
+        }
+        val ctx = context ?: appContext
+        if (ctx != null) {
+            try {
+                val prefs = ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+                val lastServerSyncTime = prefs.getLong(KEY_LAST_SERVER_SYNC_TIME, 0L)
+                if (lastServerSyncTime > 0L) {
+                    val offlineWallDuration = System.currentTimeMillis() - lastServerSyncTime
+                    if (offlineWallDuration > OFFLINE_GRACE_PERIOD_MS) {
+                        return true
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        return false
+    }
+
+    /**
+     * Saves authoritative licensing and trial data to SharedPreferences local UI cache.
+     * Prevents time-reset and loading flicker during app startup.
+     */
+    fun saveAuthoritativeLicensingCache(
+        context: Context,
+        passTier: PassTier?,
+        passExpiry: Long,
+        trialClaimed: Long,
+        trialExpiry: Long,
+        trialUsed: Boolean
+    ) {
+        try {
+            lastSuccessfulServerSyncElapsedMs = SystemClock.elapsedRealtime()
+            val prefs = context.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+            prefs.edit()
+                .putString(KEY_CACHED_PASS_TIER, passTier?.id ?: "")
+                .putLong(KEY_CACHED_PASS_EXPIRY, passExpiry)
+                .putLong(KEY_CACHED_TRIAL_CLAIMED, trialClaimed)
+                .putLong(KEY_CACHED_TRIAL_EXPIRY, trialExpiry)
+                .putBoolean(KEY_CACHED_TRIAL_USED, trialUsed)
+                .putLong(KEY_LAST_SERVER_SYNC_TIME, System.currentTimeMillis())
+                .commit()
+            Log.d(TAG, "Saved authoritative licensing cache: passTier=${passTier?.id}, passExpiry=$passExpiry, trialClaimed=$trialClaimed, trialExpiry=$trialExpiry, trialUsed=$trialUsed")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed saving licensing cache: ${e.message}")
+        }
+    }
+
+    /**
+     * Reads cached licensing data from SharedPreferences.
+     */
+    fun getCachedLicensingData(context: Context): CachedLicensingData {
+        return try {
+            val prefs = context.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+            val passTierId = prefs.getString(KEY_CACHED_PASS_TIER, null)
+            val passTier = if (!passTierId.isNullOrBlank()) PassTier.fromId(passTierId) else null
+            val passExpiry = prefs.getLong(KEY_CACHED_PASS_EXPIRY, 0L)
+            val trialClaimed = prefs.getLong(KEY_CACHED_TRIAL_CLAIMED, 0L)
+            val trialExpiry = prefs.getLong(KEY_CACHED_TRIAL_EXPIRY, 0L)
+            val trialUsed = prefs.getBoolean(KEY_CACHED_TRIAL_USED, false)
+            CachedLicensingData(passTier, passExpiry, trialClaimed, trialExpiry, trialUsed)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed reading licensing cache: ${e.message}")
+            CachedLicensingData(null, 0L, 0L, 0L, false)
+        }
+    }
+
+    fun clearLicensingCache(context: Context) {
+        try {
+            val prefs = context.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+            prefs.edit().clear().commit()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed clearing licensing cache: ${e.message}")
+        }
+    }
+
+    fun resetStateForTesting(context: Context) {
+        detachListeners()
+        try {
+            mainHandler.removeCallbacksAndMessages(null)
+        } catch (_: Exception) {}
+        appContext = context.applicationContext
+        clearLicensingCache(context)
+        serverPassTier = null
+        serverPassExpiry = 0L
+        serverTrialClaimed = 0L
+        serverTrialExpiry = 0L
+        serverTrialUsed = false
+        serverTimeBaselineMs = 0L
+        serverTimeBaselineElapsedMs = 0L
+        hasLoadedLicensing = false
+        hasLoadedTrial = false
+        lastSuccessfulServerSyncElapsedMs = 0L
+        _accessStatus.value = AccessStatus.Loading
+        _activePassInfo.value = null
+        _trialInfo.value = null
+    }
+
+    fun setLastServerSyncForTesting(elapsedMs: Long, wallClockMs: Long? = null) {
+        lastSuccessfulServerSyncElapsedMs = elapsedMs
+        wallClockMs?.let { wallMs ->
+            appContext?.let { ctx ->
+                ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putLong(KEY_LAST_SERVER_SYNC_TIME, wallMs)
+                    .commit()
+            }
+        }
     }
 
     /**
@@ -433,8 +576,10 @@ object LicenseManager {
         val ctx = context.applicationContext
         appContext = ctx
 
-        // 1. Initial state is strictly Loading
-        _accessStatus.value = AccessStatus.Loading
+        // Fast UI Boot: Immediately populate UI state from local cache while Firestore background sync connects
+        if (!hasLoadedLicensing) {
+            refreshAccessStatus()
+        }
 
         // 2. Start recurring countdown ticker
         startStatusTicker()
@@ -507,6 +652,8 @@ object LicenseManager {
         synchronized(authLock) {
             userDocListener?.remove()
             userDocListener = null
+            globalSettingsListener?.remove()
+            globalSettingsListener = null
         }
     }
 
@@ -606,12 +753,12 @@ object LicenseManager {
                                 listenerRegistration?.remove()
                                 continuation.resume(Result.success(snapshot))
 
-                                // Delayed 60-second database cleanup of processed action document
+                                // Delayed 30-second database cleanup of processed action document
                                 scope.launch(Dispatchers.IO) {
                                     try {
-                                        kotlinx.coroutines.delay(60_000L)
+                                        kotlinx.coroutines.delay(30_000L)
                                         docRef.delete().await()
-                                        Log.d(TAG, "Delayed cleanup: Deleted completed action document ${docRef.id}")
+                                        Log.d(TAG, "Delayed cleanup: Deleted completed action document ${docRef.id} after 30s")
                                     } catch (cleanupEx: Exception) {
                                         Log.w(TAG, "Notice: pending_actions cleanup suppressed for ${docRef.id}: ${cleanupEx.message}")
                                     }
@@ -626,12 +773,12 @@ object LicenseManager {
                                 listenerRegistration?.remove()
                                 continuation.resume(Result.failure(Exception(errorMsg)))
 
-                                // Delayed 60-second database cleanup of processed action document
+                                // Delayed 30-second database cleanup of processed action document
                                 scope.launch(Dispatchers.IO) {
                                     try {
-                                        kotlinx.coroutines.delay(60_000L)
+                                        kotlinx.coroutines.delay(30_000L)
                                         docRef.delete().await()
-                                        Log.d(TAG, "Delayed cleanup: Deleted failed action document ${docRef.id}")
+                                        Log.d(TAG, "Delayed cleanup: Deleted failed action document ${docRef.id} after 30s")
                                     } catch (cleanupEx: Exception) {
                                         Log.w(TAG, "Notice: pending_actions cleanup suppressed for ${docRef.id}: ${cleanupEx.message}")
                                     }
@@ -675,6 +822,32 @@ object LicenseManager {
             },
             onFailure = { err ->
                 Log.e(TAG, "ADD_POINTS action failed: ${err.message}", err)
+                Result.failure(err)
+            }
+        )
+    }
+
+    /**
+     * Securely claims 5 points for watching a Rewarded Ad via the Zero-Trust Action Queue.
+     * Enqueues REWARD_AD_WATCHED request to `pending_actions` with empty payload and awaits server completion.
+     */
+    suspend fun claimAdReward(): Result<Int> = withContext(Dispatchers.IO) {
+        val result = executeActionQueueRequest(
+            actionType = "REWARD_AD_WATCHED",
+            payload = emptyMap()
+        )
+
+        result.fold(
+            onSuccess = { snap ->
+                val newBalance = snap.getLong("newBalance")?.toInt()
+                    ?: snap.getLong("pointsBalance")?.toInt()
+                    ?: (_pointsBalance.value + 5)
+                _pointsBalance.value = newBalance
+                Log.i(TAG, "REWARD_AD_WATCHED action completed via Action Queue. New balance: $newBalance")
+                Result.success(newBalance)
+            },
+            onFailure = { err ->
+                Log.e(TAG, "REWARD_AD_WATCHED action failed: ${err.message}", err)
                 Result.failure(err)
             }
         )
@@ -1060,6 +1233,18 @@ object LicenseManager {
                     serverPassTier = PassTier.fromId(passType)
                     serverPassExpiry = passExpiry
 
+                    // Save authoritative data to local SharedPreferences cache
+                    ctx?.let { c ->
+                        saveAuthoritativeLicensingCache(
+                            context = c,
+                            passTier = serverPassTier,
+                            passExpiry = serverPassExpiry,
+                            trialClaimed = serverTrialClaimed,
+                            trialExpiry = serverTrialExpiry,
+                            trialUsed = serverTrialUsed
+                        )
+                    }
+
                     val expectedFolder = computeCurrentFolder(
                         passTier = serverPassTier,
                         passExpiry = serverPassExpiry,
@@ -1234,15 +1419,10 @@ object LicenseManager {
      * Enforces anti-clock-tampering with monotonic elapsed time and 2-hour offline limit.
      * ZERO local storage reads.
      */
-    fun refreshAccessStatus() {
-        // If user licensing has not yet loaded from Firestore, remain Loading
-        if (!hasLoadedLicensing) {
-            _accessStatus.value = AccessStatus.Loading
-            return
-        }
-
+    fun refreshAccessStatus(context: Context? = null) {
+        val ctx = context ?: appContext
         // Strict 2-hour offline grace check:
-        if (isOfflineGracePeriodExpired()) {
+        if (isOfflineGracePeriodExpired(ctx)) {
             Log.w(TAG, "Offline grace period expired (limit: 2 hours). Enforcing zero-trust lock.")
             _accessStatus.value = AccessStatus.Expired(
                 isTrialUsed = serverTrialUsed || serverTrialClaimed > 0L,
@@ -1253,6 +1433,64 @@ object LicenseManager {
         }
 
         val now = getCurrentServerTimeMs()
+
+        // Fast UI Boot: If user licensing has not yet loaded from Firestore, read from local UI cache to prevent time reset flicker
+        if (!hasLoadedLicensing) {
+            if (ctx != null) {
+                val cached = getCachedLicensingData(ctx)
+
+                // 1. Check cached Paid Subscription Pass
+                if (cached.passTier != null && cached.passExpiry > now) {
+                    val timeLeft = cached.passExpiry - now
+                    val formatted = formatRemainingTime(timeLeft)
+                    _currentFolder.value = computeCurrentFolder(
+                        passTier = cached.passTier,
+                        passExpiry = cached.passExpiry,
+                        now = now
+                    )
+                    _activePassInfo.value = ActivePassInfo(
+                        passTier = cached.passTier,
+                        expiryTimestamp = cached.passExpiry,
+                        remainingTimeMs = timeLeft,
+                        isExpired = false
+                    )
+                    _accessStatus.value = AccessStatus.PassActive(
+                        passTier = cached.passTier,
+                        remainingTimeMs = timeLeft,
+                        expiryTimestamp = cached.passExpiry,
+                        formattedRemaining = formatted
+                    )
+                    Log.d(TAG, "Fast UI Boot: Populated PassActive (${cached.passTier.title}) from local UI cache while Firestore syncs.")
+                    return
+                }
+
+                // 2. Check cached 2-Day Free Trial
+                if (cached.trialClaimed > 0L && cached.trialExpiry > now) {
+                    val timeLeft = cached.trialExpiry - now
+                    val formatted = formatRemainingTime(timeLeft)
+                    _currentFolder.value = "trials"
+                    _trialInfo.value = TrialInfo(
+                        firstClaimedTimestamp = cached.trialClaimed,
+                        trialExpiryTimestamp = cached.trialExpiry,
+                        isUsed = cached.trialUsed,
+                        isExpired = false,
+                        remainingMs = timeLeft
+                    )
+                    _accessStatus.value = AccessStatus.TrialActive(
+                        remainingTimeMs = timeLeft,
+                        expiryTimestamp = cached.trialExpiry,
+                        formattedRemaining = formatted
+                    )
+                    Log.d(TAG, "Fast UI Boot: Populated TrialActive from local UI cache while Firestore syncs.")
+                    return
+                }
+            }
+
+            // No valid active cached pass or trial found; remain in Loading state until Firestore responds
+            _accessStatus.value = AccessStatus.Loading
+            return
+        }
+
         val tier = serverPassTier
         val passExpiry = serverPassExpiry
         val trialClaimed = serverTrialClaimed
@@ -1401,6 +1639,19 @@ object LicenseManager {
         if (isAccessGranted()) return true
         val expiry = _unlockedFeatures.value[featureId] ?: return false
         return expiry > getCurrentServerTimeMs()
+    }
+
+    /**
+     * Checks if ads should be suppressed.
+     * Returns true if user has an active Remove Ads pass or feature unlock,
+     * or active Pro access.
+     */
+    fun isAdsRemoved(): Boolean {
+        val status = _accessStatus.value
+        if (status is AccessStatus.PassActive && (status.passTier == PassTier.REMOVE_ADS || status.passTier == PassTier.MONTHLY)) {
+            return status.remainingTimeMs > 0
+        }
+        return isFeatureUnlocked("remove_ads_pass")
     }
 
     /**

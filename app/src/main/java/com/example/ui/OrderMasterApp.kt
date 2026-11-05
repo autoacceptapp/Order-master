@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -27,12 +28,14 @@ import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.CardGiftcard
+import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material.icons.outlined.ElectricBolt
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.WorkspacePremium
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -69,10 +72,14 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import com.example.AccessStatus
 import com.example.AppSettings
 import com.example.AppSettingsScreen
 import com.example.LicenseManager
+import com.example.PassTier
+import com.example.ui.components.BannerAdView
 import com.example.RestrictedSettingsGuideDialog
 import com.example.auth.GoogleAuthManager
 import com.example.ui.components.GlobalBlockingOverlay
@@ -104,7 +111,9 @@ fun OrderMasterApp(
     viewModel: OrderMasterViewModel = viewModel()
 ) {
     val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
+    val isAdsRemoved = remember(accessStatus, unlockedFeatures) { LicenseManager.isAdsRemoved() }
 
     // Sync cloud licensing and points whenever Gmail auth state updates
     LaunchedEffect(userAuthState.userEmail, userAuthState.uid) {
@@ -191,7 +200,7 @@ fun OrderMasterApp(
     val context = LocalContext.current
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
-    val currentRoute = navBackStackEntry?.destination?.route ?: Screen.Home.route
+    val currentRoute = (navBackStackEntry?.destination?.route ?: Screen.Home.route).substringBefore("?")
 
     var showRestrictedSettingsGuide by remember { mutableStateOf(false) }
     var showGoogleSignInSheet by remember { mutableStateOf(false) }
@@ -306,6 +315,22 @@ fun OrderMasterApp(
                             )
                         }
 
+                        // Remove Ads Icon Button
+                        IconButton(
+                            onClick = {
+                                navController.navigate("payment_verification?tier=remove_ads_pass") {
+                                    launchSingleTop = true
+                                }
+                            },
+                            modifier = Modifier.testTag("top_bar_remove_ads_button")
+                        ) {
+                            Icon(
+                                imageVector = if (isAdsRemoved) Icons.Filled.WorkspacePremium else Icons.Outlined.WorkspacePremium,
+                                contentDescription = if (isAdsRemoved) "Ads Removed" else "Remove Ads",
+                                tint = if (isAdsRemoved) AmberAccent else Color(0xFF8B5CF6)
+                            )
+                        }
+
                         // Profile Icon Button
                         IconButton(
                             onClick = {
@@ -352,12 +377,16 @@ fun OrderMasterApp(
             }
         },
         bottomBar = {
-            AnimatedVisibility(
-                visible = isMainTab,
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
-                NavigationBar(
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (!isAdsRemoved) {
+                    BannerAdView()
+                }
+                AnimatedVisibility(
+                    visible = isMainTab,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    NavigationBar(
                     containerColor = MaterialTheme.colorScheme.surface,
                     tonalElevation = 6.dp,
                     modifier = Modifier.testTag("bottom_nav_bar")
@@ -436,6 +465,7 @@ fun OrderMasterApp(
                 }
             }
         }
+    }
     ) { innerPadding ->
         NavHost(
             navController = navController,
@@ -486,8 +516,20 @@ fun OrderMasterApp(
                 )
             }
 
-            composable(Screen.PaymentVerification.route) {
+            composable(
+                route = "payment_verification?tier={tier}",
+                arguments = listOf(
+                    navArgument("tier") {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    }
+                )
+            ) { backStackEntry ->
+                val tierId = backStackEntry.arguments?.getString("tier")
+                val initialTier = PassTier.fromId(tierId)
                 PaymentVerificationScreen(
+                    initialTier = initialTier,
                     onNavigateBack = { navController.popBackStack() },
                     onVerificationSuccess = {
                         navController.navigate(Screen.Home.route) {

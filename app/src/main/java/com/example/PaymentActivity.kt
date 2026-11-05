@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -456,14 +458,16 @@ private fun PlanSelectionSection(
         )
 
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             PassTier.entries.forEach { tier ->
                 val isSelected = selectedTier == tier
                 OutlinedCard(
                     modifier = Modifier
-                        .weight(1f)
+                        .widthIn(min = 100.dp)
                         .clickable { onSelectTier(tier) }
                         .testTag("tier_card_${tier.id}"),
                     shape = RoundedCornerShape(12.dp),

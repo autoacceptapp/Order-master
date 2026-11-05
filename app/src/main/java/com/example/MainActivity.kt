@@ -83,6 +83,13 @@ class MainActivity : ComponentActivity() {
         AppConfigRepository.init(this)
         refreshServiceStatus()
 
+        // Pre-cache Rewarded Video Ads in the background
+        try {
+            RewardedAdManager.loadAd(this)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to pre-load RewardedAd: ${e.message}", e)
+        }
+
         // Strict Real-Time Firebase Session Check on app launch
         lifecycleScope.launch(Dispatchers.IO) {
             try {

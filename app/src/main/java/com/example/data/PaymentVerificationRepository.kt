@@ -109,6 +109,7 @@ class PaymentVerificationRepository(
          */
         fun mapAmountToPassTier(amount: Long): PassTier {
             return when {
+                amount == 199L -> PassTier.REMOVE_ADS
                 amount >= 179 -> PassTier.MONTHLY
                 amount >= 49 -> PassTier.WEEKLY
                 else -> PassTier.DAILY
@@ -438,6 +439,7 @@ class PaymentVerificationRepository(
                     PassTier.DAILY -> "daily"
                     PassTier.WEEKLY -> "weekly"
                     PassTier.MONTHLY -> "monthly"
+                    PassTier.REMOVE_ADS -> "remove_ads"
                 }
 
                 firestore.collection("users").document(userId).set(
