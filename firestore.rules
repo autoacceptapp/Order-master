@@ -32,29 +32,43 @@ service cloud.firestore {
 
     // Users collection & referral subcollections
     match /users/{userId} {
-      allow read, write: if request.auth != null;
+      // Authenticated users can read their own or query their migration record
+      allow read: if isAuthenticated();
+      
+      // User can only write to their own profile (matching auth.uid or firebaseUid)
+      allow write: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        request.resource.data.firebaseUid == request.auth.uid ||
+        (resource != null && resource.data.firebaseUid == request.auth.uid)
+      );
 
       // Targeted In-App Messages for specific user
       match /messages/{messageId} {
-        allow read: if request.auth != null && (request.auth.uid == userId || resource.data.targetUid == request.auth.uid);
+        allow read: if isAuthenticated() && (request.auth.uid == userId || resource.data.targetUid == request.auth.uid);
         allow write: if false; // Admin only
       }
 
       match /referrals/{refereeId} {
-        allow read, write: if request.auth != null;
+        allow read, write: if isAuthenticated();
       }
     }
 
     // Action Queue: Client creates requests, listens to their own status, and deletes after completion
     match /pending_actions/{docId} {
-      allow create: if request.auth != null;
-      allow read, delete: if request.auth != null && request.auth.uid == resource.data.firebaseUid;
+      allow create: if isAuthenticated() && request.resource.data.firebaseUid == request.auth.uid;
+      allow read, delete: if isAuthenticated() && resource.data.firebaseUid == request.auth.uid;
       allow update: if false;
     }
 
-    // UTRs are entirely hidden from the client side.
+    // Received payments: Authenticated users can read to verify payment and claim their own pass
     match /received_payments/{utr} {
-      allow read, write: if false;
+      allow read: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        !resource.data.isUsed ||
+        resource.data.claimedByUserId == request.auth.uid ||
+        request.resource.data.claimedByUserId == request.auth.uid
+      );
+      allow create, delete: if false;
     }
   }
 }

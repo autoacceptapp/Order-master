@@ -799,4 +799,22 @@ class ExampleRobolectricTest {
         AppSettings.removeBlockedLocation(context, "Airport")
         assertFalse(AppSettings.getBlockedLocations(context).contains("Airport"))
     }
+
+    @Test
+    fun `test zero local storage for auto accept master toggle`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = context.getSharedPreferences(AppSettings.PREFS_NAME, Context.MODE_PRIVATE)
+
+        // Ensure changing autoAcceptEnabled updates in-memory state but NEVER writes to SharedPreferences
+        AppSettings.setAutoAcceptEnabled(context, false)
+        assertFalse(AppSettings.isAutoAcceptEnabled(context))
+        assertFalse(prefs.contains(AppSettings.KEY_AUTO_ACCEPT_ENABLED))
+        assertFalse(prefs.contains(AppSettings.KEY_SERVICE_ENABLED))
+
+        AppSettings.setAutoAcceptEnabled(context, true)
+        assertTrue(AppSettings.isAutoAcceptEnabled(context))
+        assertFalse(prefs.contains(AppSettings.KEY_AUTO_ACCEPT_ENABLED))
+        assertFalse(prefs.contains(AppSettings.KEY_SERVICE_ENABLED))
+    }
 }
+

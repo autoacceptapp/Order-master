@@ -69,9 +69,11 @@ open class MyAccessibilityService : AccessibilityService() {
             pattern = """(?i)(?=.*(?:reject|decline|cancel|skip|pass))(?!.*(?:accept|confirm)).*"""
         )
 
-        // Low-cost signal detection regex for fast event pre-filtering
+        // Low-cost signal detection regex for fast event pre-filtering.
+        // Tolerant to Indian Rupee symbol variants ('₹', '\u20B9', '\u20A8'), currency abbreviations ('rs', 'inr'),
+        // currency digits patterns (₹50, 50₹, Rs. 50), distances, and ride-offer keywords.
         private val OFFER_SIGNAL_REGEX = Regex(
-            pattern = """(?i)(?:[₹₹]|inr|rs\.?|\bkm\b|pickup|drop|accept|reject|confirm|decline|pass|skip|order|ride|fare|cash|स्वीकार|अस्वीकार|sweekar|asweekar|captain)"""
+            pattern = """(?i)(?:[\u20B9\u20A8₹]|inr|rs\.?|fare|ride|trip|order|request|pickup|drop|cash|online|pay|paid|payment|\bkm\b|\bmin\b|\bmins\b|accept|confirm|reject|skip|pass|decline|captain|स्वीकार|अस्वीकार|छोड़ें|छोड़े|रद्द|sweekar|asweekar|chhodein|[\u20B9\u20A8₹]\s*\d+|\d+\s*[\u20B9\u20A8₹]|\b\d+(?:\.\d+)?\s*(?:km|inr|rs|min)\b)"""
         )
 
         // Class names that indicate high-frequency telemetry / map rendering events that should be dropped immediately
@@ -293,6 +295,18 @@ open class MyAccessibilityService : AccessibilityService() {
             return false
         }
 
+        // Permit presentation containers like dialogs, bottom sheets, alert cards, or popups
+        val classNameLower = className.lowercase(Locale.ROOT)
+        if (classNameLower.contains("dialog") ||
+            classNameLower.contains("bottomsheet") ||
+            classNameLower.contains("popup") ||
+            classNameLower.contains("alert") ||
+            classNameLower.contains("banner") ||
+            classNameLower.contains("sheet")
+        ) {
+            return true
+        }
+
         // 1. Fast inspection of event text and content description for offer indicators
         val eventContent = buildString {
             if (event.text.isNotEmpty()) {
@@ -313,7 +327,7 @@ open class MyAccessibilityService : AccessibilityService() {
             }
         }
 
-        // 2. Shallow inspection of event source node (depth <= 1, max 8 children)
+        // 2. Shallow inspection of event source node (depth <= 2, bounded nodes)
         val source = try {
             event.source
         } catch (_: Exception) {
@@ -334,22 +348,48 @@ open class MyAccessibilityService : AccessibilityService() {
                     return true
                 }
 
-                // Check immediate children only (bounded to 8 nodes max)
-                val childLimit = minOf(source.childCount, 8)
+                // Check immediate children (bounded to 10 nodes max)
+                val childLimit = minOf(source.childCount, 10)
                 for (i in 0 until childLimit) {
                     val child = source.getChild(i)
                     if (child != null) {
-                        val cText = child.text?.toString() ?: ""
-                        val cDesc = child.contentDescription?.toString() ?: ""
-                        val cId = child.viewIdResourceName ?: ""
+                        try {
+                            val cText = child.text?.toString() ?: ""
+                            val cDesc = child.contentDescription?.toString() ?: ""
+                            val cId = child.viewIdResourceName ?: ""
 
-                        val match = isAcceptAction(cText) || isAcceptAction(cDesc) || isRapidoAcceptId(cId) ||
-                                isRejectAction(cText) || isRejectAction(cDesc) || isRapidoRejectId(cId) ||
-                                OFFER_SIGNAL_REGEX.containsMatchIn(cText) ||
-                                OFFER_SIGNAL_REGEX.containsMatchIn(cDesc)
-                        recycleNode(child)
-                        if (match) {
-                            return true
+                            val match = isAcceptAction(cText) || isAcceptAction(cDesc) || isRapidoAcceptId(cId) ||
+                                    isRejectAction(cText) || isRejectAction(cDesc) || isRapidoRejectId(cId) ||
+                                    OFFER_SIGNAL_REGEX.containsMatchIn(cText) ||
+                                    OFFER_SIGNAL_REGEX.containsMatchIn(cDesc)
+                            if (match) {
+                                return true
+                            }
+
+                            // Shallow inspection of grandchildren (bounded to 6 max)
+                            val grandChildLimit = minOf(child.childCount, 6)
+                            for (j in 0 until grandChildLimit) {
+                                val gc = child.getChild(j)
+                                if (gc != null) {
+                                    try {
+                                        val gcText = gc.text?.toString() ?: ""
+                                        val gcDesc = gc.contentDescription?.toString() ?: ""
+                                        val gcId = gc.viewIdResourceName ?: ""
+
+                                        val gcMatch = isAcceptAction(gcText) || isAcceptAction(gcDesc) || isRapidoAcceptId(gcId) ||
+                                                isRejectAction(gcText) || isRejectAction(gcDesc) || isRapidoRejectId(gcId) ||
+                                                OFFER_SIGNAL_REGEX.containsMatchIn(gcText) ||
+                                                OFFER_SIGNAL_REGEX.containsMatchIn(gcDesc)
+                                        if (gcMatch) {
+                                            return true
+                                        }
+                                    } finally {
+                                        recycleNode(gc)
+                                    }
+                                }
+                            }
+                        } finally {
+                            recycleNode(child)
                         }
                     }
                 }

@@ -450,7 +450,8 @@ object LicenseManager {
                 val lastServerSyncTime = prefs.getLong(KEY_LAST_SERVER_SYNC_TIME, 0L)
                 if (lastServerSyncTime > 0L) {
                     val offlineWallDuration = System.currentTimeMillis() - lastServerSyncTime
-                    if (offlineWallDuration > OFFLINE_GRACE_PERIOD_MS) {
+                    if (offlineWallDuration < -60_000L || offlineWallDuration > OFFLINE_GRACE_PERIOD_MS) {
+                        Log.w(TAG, "Offline grace period expired or clock tampering detected: duration=$offlineWallDuration")
                         return true
                     }
                 }

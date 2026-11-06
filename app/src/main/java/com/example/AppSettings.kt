@@ -16,6 +16,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
@@ -240,7 +241,9 @@ object AppSettings {
      */
     fun init(context: Context) {
         val prefs = getPrefs(context)
-        val enabled = prefs.getBoolean(KEY_AUTO_ACCEPT_ENABLED, prefs.getBoolean(KEY_SERVICE_ENABLED, DEFAULT_AUTO_ACCEPT_ENABLED))
+        // Zero-Trust Cloud-Only: Do not consult local SharedPreferences for master automation toggles.
+        // Gated strictly by LicenseManager.isServiceActiveFlow and in-memory intent.
+        val enabled = LicenseManager.isServiceActiveFlow.value && autoAcceptEnabled
         val minFareEnabled = prefs.getBoolean(KEY_MIN_FARE_ENABLED, DEFAULT_MIN_FARE_ENABLED)
         val minFare = prefs.getFloat(KEY_MIN_FARE, prefs.getFloat(KEY_MIN_VALUE, DEFAULT_MIN_FARE))
         val maxFareEnabled = prefs.getBoolean(KEY_MAX_FARE_ENABLED, DEFAULT_MAX_FARE_ENABLED)
@@ -343,7 +346,12 @@ object AppSettings {
 
         // 100% Cloud-Only: Observe LicenseManager's authoritative in-memory server state
         appScope.launch {
-            LicenseManager.accessStatus.collect { status ->
+            combine(
+                LicenseManager.accessStatus,
+                LicenseManager.isServiceActiveFlow
+            ) { status, isServiceActive ->
+                Pair(status, isServiceActive)
+            }.collect { (status, isServiceActive) ->
                 when (status) {
                     is AccessStatus.PassActive -> {
                         _passExpiryTimestampFlow.value = status.expiryTimestamp
@@ -357,6 +365,10 @@ object AppSettings {
                         _passExpiryTimestampFlow.value = 0L
                         _isPassActiveFlow.value = false
                     }
+                }
+                val effectiveEnabled = isServiceActive && autoAcceptEnabled
+                if (_settingsState.value.isAutoAcceptEnabled != effectiveEnabled) {
+                    _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = effectiveEnabled)
                 }
             }
         }
@@ -485,17 +497,16 @@ object AppSettings {
     }
 
     fun isAutoAcceptEnabled(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_AUTO_ACCEPT_ENABLED, prefs.getBoolean(KEY_SERVICE_ENABLED, DEFAULT_AUTO_ACCEPT_ENABLED))
+        // Zero-Trust Cloud-Only: Never read master automation state from SharedPreferences.
+        // Relies 100% on LicenseManager.isServiceActiveFlow and in-memory intent.
+        return LicenseManager.isServiceActiveFlow.value && autoAcceptEnabled
     }
 
     fun setAutoAcceptEnabled(context: Context, enabled: Boolean) {
         autoAcceptEnabled = enabled
-        _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = enabled)
-        persistAsync(context) {
-            putBoolean(KEY_AUTO_ACCEPT_ENABLED, enabled)
-            putBoolean(KEY_SERVICE_ENABLED, enabled)
-        }
+        val effectiveEnabled = LicenseManager.isServiceActiveFlow.value && enabled
+        _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = effectiveEnabled)
+        // Strictly DO NOT persist master enablement toggles to SharedPreferences.
         syncOverlayService(context)
     }
 

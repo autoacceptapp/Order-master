@@ -21,9 +21,12 @@ import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
 object RewardedAdManager {
     private const val TAG = "RewardedAdManager"
 
-    // Google's official Test Ad Unit ID for Rewarded Video Ads
-    const val TEST_AD_UNIT_ID = "ca-app-pub-3940256099942544/5224354917"
-    const val REWARDED_AD_UNIT_ID = TEST_AD_UNIT_ID
+    // Delegated to centralized AdConfig (switches between official test ID in DEBUG and production in RELEASE)
+    val TEST_AD_UNIT_ID: String
+        get() = AdConfig.TEST_REWARDED_AD_UNIT_ID
+
+    val REWARDED_AD_UNIT_ID: String
+        get() = AdConfig.rewardedAdUnitId
 
     @Volatile
     private var rewardedAd: RewardedAd? = null
@@ -40,6 +43,10 @@ object RewardedAdManager {
      * Checks if an ad request is currently in progress.
      */
     fun isLoading(): Boolean = isLoading
+
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+    private var retryCount = 0
+    private const val MAX_RETRIES = 3
 
     /**
      * Pre-caches a Rewarded Ad using the AdMob SDK on background worker threads.
@@ -69,22 +76,31 @@ object RewardedAdManager {
                     override fun onAdLoaded(ad: RewardedAd) {
                         rewardedAd = ad
                         isLoading = false
+                        retryCount = 0
                         Log.i(TAG, "RewardedAd loaded successfully with adUnitId: $REWARDED_AD_UNIT_ID")
                     }
 
                     override fun onAdFailedToLoad(adError: LoadAdError) {
                         rewardedAd = null
                         isLoading = false
-                        Log.e(
+                        Log.w(
                             TAG,
-                            "Ad Failed to load. Error Code: ${adError.code}, Message: ${adError.message}, Domain: ${adError.domain}"
+                            "RewardedAd notice: ${adError.message} (Code: ${adError.code}, Domain: ${adError.domain})."
                         )
+                        if (retryCount < MAX_RETRIES) {
+                            retryCount++
+                            val delayMs = 5000L * retryCount
+                            Log.d(TAG, "Scheduling RewardedAd auto-retry in ${delayMs / 1000}s (attempt $retryCount of $MAX_RETRIES)...")
+                            mainHandler.postDelayed({
+                                loadAd(context)
+                            }, delayMs)
+                        }
                     }
                 }
             )
         } catch (t: Throwable) {
             isLoading = false
-            Log.e(TAG, "Error initiating RewardedAd load for adUnitId $REWARDED_AD_UNIT_ID: ${t.message}", t)
+            Log.w(TAG, "Notice initiating RewardedAd load for adUnitId $REWARDED_AD_UNIT_ID: ${t.message}")
         }
     }
 

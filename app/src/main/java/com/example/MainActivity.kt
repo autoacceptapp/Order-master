@@ -84,15 +84,13 @@ class MainActivity : ComponentActivity() {
         AppConfigRepository.init(this)
         com.google.android.gms.ads.MobileAds.initialize(this) { status ->
             android.util.Log.i("MainActivity", "AdMob SDK Initialized: $status")
+            try {
+                RewardedAdManager.loadAd(this@MainActivity)
+            } catch (e: Throwable) {
+                Log.w(TAG, "Notice pre-caching RewardedAd after init: ${e.message}")
+            }
         }
         refreshServiceStatus()
-
-        // Pre-cache Rewarded Video Ads in the background
-        try {
-            RewardedAdManager.loadAd(this)
-        } catch (e: Throwable) {
-            Log.e(TAG, "Failed to pre-load RewardedAd: ${e.message}", e)
-        }
 
         // Strict Real-Time Firebase Session Check on app launch
         lifecycleScope.launch(Dispatchers.IO) {

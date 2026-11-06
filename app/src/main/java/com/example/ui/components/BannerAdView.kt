@@ -21,27 +21,28 @@ import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.example.AdConfig
 import com.google.android.gms.ads.AdListener
 import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.AdSize
 import com.google.android.gms.ads.AdView
 import com.google.android.gms.ads.LoadAdError
 
-// Google's official Test Ad Unit ID for standard Banner Ads (320x50)
-const val ADMOB_BANNER_TEST_AD_UNIT_ID = "ca-app-pub-3940256099942544/6300978111"
-const val ADMOB_BANNER_AD_UNIT_ID = ADMOB_BANNER_TEST_AD_UNIT_ID
+// Delegated to centralized AdConfig
+val ADMOB_BANNER_TEST_AD_UNIT_ID: String get() = AdConfig.TEST_BANNER_AD_UNIT_ID
+val ADMOB_BANNER_AD_UNIT_ID: String get() = AdConfig.bannerAdUnitId
 
 /**
  * BannerAdView
  *
  * Renders a Google Mobile Ads (AdMob) Banner Ad using AndroidView in Jetpack Compose.
- * Strictly uses Google's official Test Ad Unit ID during development for guaranteed 100% fill rate.
+ * Automatically switches between Google Test ID and Production ID via AdConfig.
  * Safely manages lifecycle cleanup with destroy() on disposal.
  */
 @Composable
 fun BannerAdView(
     modifier: Modifier = Modifier,
-    adUnitId: String = ADMOB_BANNER_TEST_AD_UNIT_ID
+    adUnitId: String = AdConfig.bannerAdUnitId
 ) {
     val isInPreview = LocalInspectionMode.current
     val isTestEnv = remember {
@@ -100,9 +101,9 @@ fun BannerAdView(
                         }
 
                         override fun onAdFailedToLoad(error: LoadAdError) {
-                            Log.e(
+                            Log.w(
                                 "BannerAdView",
-                                "AdMob Banner Ad failed to load: code=${error.code}, message='${error.message}', domain='${error.domain}'"
+                                "Banner ad notice: code=${error.code}, message='${error.message}', domain='${error.domain}'"
                             )
                         }
 
