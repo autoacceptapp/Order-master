@@ -1213,12 +1213,6 @@ object LicenseManager {
                     val trialClaimed = snapshot.getLong("trialClaimed") ?: snapshot.getLong("firstClaimedTimestamp") ?: 0L
                     val trialExpiry = snapshot.getLong("trialExpiry") ?: snapshot.getLong("trialExpiryTimestamp") ?: 0L
                     val isTrialUsed = snapshot.getBoolean("trialUsed") ?: snapshot.getBoolean("isUsed") ?: (trialClaimed > 0L)
-                    val serverTimestamp = snapshot.getTimestamp("updatedAt")?.toDate()?.time
-                        ?: snapshot.getTimestamp("createdAt")?.toDate()?.time
-
-                    if (serverTimestamp != null && serverTimestamp > 0L) {
-                        recordServerTimeSync(serverTimestamp)
-                    }
 
                     // Always sync trial and licensing state unconditionally for real-time Firestore updates
                     serverTrialClaimed = trialClaimed

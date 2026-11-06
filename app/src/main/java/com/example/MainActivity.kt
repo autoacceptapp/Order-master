@@ -43,6 +43,7 @@ import com.example.data.repository.AppConfigRepository
 import androidx.lifecycle.lifecycleScope
 import com.example.ui.theme.CaptainAutoAcceptTheme
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -81,6 +82,9 @@ class MainActivity : ComponentActivity() {
         GlobalAdminManager.init(this)
         InAppMessageManager.init(this)
         AppConfigRepository.init(this)
+        com.google.android.gms.ads.MobileAds.initialize(this) { status ->
+            android.util.Log.i("MainActivity", "AdMob SDK Initialized: $status")
+        }
         refreshServiceStatus()
 
         // Pre-cache Rewarded Video Ads in the background
@@ -102,8 +106,8 @@ class MainActivity : ComponentActivity() {
                 if (user != null) {
                     try {
                         user.reload().await()
-                    } catch (e: Exception) {
-                        // reload() throws an exception if the user was deleted or the project is dead
+                    } catch (e: FirebaseAuthInvalidUserException) {
+                        // User was explicitly deleted or disabled in Firebase Auth: enforce Zero-Trust sign out
                         withContext(Dispatchers.Main) {
                             AppSettings.signOut(applicationContext)
                             PassManager.setPassStatus(applicationContext, false)
@@ -114,6 +118,9 @@ class MainActivity : ComponentActivity() {
                                 Toast.LENGTH_LONG
                             ).show()
                         }
+                    } catch (e: Exception) {
+                        // Network drop or temporary outage: preserve user session and driver state
+                        Log.w(TAG, "Firebase session check failed (likely network drop): ${e.message}")
                     }
                 } else {
                     // currentUser is null: ensure local cache matches the logged-out state

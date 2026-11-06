@@ -14,6 +14,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
+import com.google.android.gms.ads.MobileAds
+import com.google.android.gms.ads.initialization.InitializationStatus
+
 class OrderMasterApplication : Application() {
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -45,26 +48,31 @@ class OrderMasterApplication : Application() {
             Log.e(TAG, "Failed to initialize FirebaseApp: ${e.message}", e)
         }
 
-        // 2. Initialize App Check in strict sequence
+        // 2. Initialize Google Mobile Ads SDK explicitly immediately after Firebase
+        try {
+            if (!isUnitTestEnvironment()) {
+                val requestConfig = com.google.android.gms.ads.RequestConfiguration.Builder()
+                    .setTestDeviceIds(listOf(com.google.android.gms.ads.AdRequest.DEVICE_ID_EMULATOR))
+                    .build()
+                MobileAds.setRequestConfiguration(requestConfig)
+                MobileAds.initialize(this) { initializationStatus: InitializationStatus ->
+                    Log.i("OrderMasterApp", "AdMob SDK Initialized: $initializationStatus")
+                }
+            } else {
+                Log.d("OrderMasterApp", "Skipping MobileAds initialization in unit test environment.")
+            }
+        } catch (e: Throwable) {
+            Log.w("OrderMasterApp", "Failed to initialize Google Mobile Ads: ${e.message}")
+        }
+
+        // 3. Initialize App Check in strict sequence
         initFirebaseAppCheck()
 
-        // 3. Configure Firestore global offline persistence settings
+        // 4. Configure Firestore global offline persistence settings
         initFirestoreSettings()
 
-        // 4. Initialize core managers at Application level for background services
+        // 5. Initialize core managers at Application level for background services
         initCoreEngines()
-
-        // 5. Initialize Google Mobile Ads SDK asynchronously
-        try {
-            val requestConfig = com.google.android.gms.ads.RequestConfiguration.Builder()
-                .setTestDeviceIds(listOf(com.google.android.gms.ads.AdRequest.DEVICE_ID_EMULATOR))
-                .build()
-            com.google.android.gms.ads.MobileAds.setRequestConfiguration(requestConfig)
-            com.google.android.gms.ads.MobileAds.initialize(this) {}
-            Log.d(TAG, "Google Mobile Ads initialized successfully.")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to initialize Google Mobile Ads: ${e.message}")
-        }
     }
 
     /**
