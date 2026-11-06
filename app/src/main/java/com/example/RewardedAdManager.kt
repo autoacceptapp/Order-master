@@ -15,17 +15,15 @@ import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
 
 /**
  * RewardedAdManager - Singleton manager for loading and showing AdMob Rewarded Video Ads.
+ * Strictly uses Google's official Test Ad Unit ID during development for guaranteed 100% fill rate.
  * Rewards users with Points via the Zero-Trust Action Queue.
  */
 object RewardedAdManager {
     private const val TAG = "RewardedAdManager"
 
-    // Primary Production Ad Unit ID (strictly Rewarded Ads)
-    const val REWARDED_AD_UNIT_ID = "ca-app-pub-5657835600587543/4664462217"
-    const val PROD_AD_UNIT_ID = REWARDED_AD_UNIT_ID
-
-    // Standard Google AdMob Test Ad Unit ID for Rewarded Ads
+    // Google's official Test Ad Unit ID for Rewarded Video Ads
     const val TEST_AD_UNIT_ID = "ca-app-pub-3940256099942544/5224354917"
+    const val REWARDED_AD_UNIT_ID = TEST_AD_UNIT_ID
 
     @Volatile
     private var rewardedAd: RewardedAd? = null
@@ -44,9 +42,8 @@ object RewardedAdManager {
     fun isLoading(): Boolean = isLoading
 
     /**
-     * Pre-caches a Rewarded Ad using the AdMob SDK.
+     * Pre-caches a Rewarded Ad using the AdMob SDK on background worker threads.
      * Safe to call multiple times; will not re-trigger if an ad is already loaded or in-flight.
-     * Catches and logs LoadAdError with full details and attempts fallback for test/emulator safety.
      */
     fun loadAd(context: Context) {
         if (isLoading || rewardedAd != null) {
@@ -60,47 +57,34 @@ object RewardedAdManager {
         }
 
         isLoading = true
-        loadAdInternal(context.applicationContext, PROD_AD_UNIT_ID, isRetryWithFallback = false)
-    }
-
-    private fun loadAdInternal(context: Context, adUnitId: String, isRetryWithFallback: Boolean) {
         try {
             val adRequest = AdRequest.Builder().build()
-            Log.d(TAG, "Requesting RewardedAd with adUnitId: $adUnitId (isRetryWithFallback=$isRetryWithFallback)")
+            Log.d(TAG, "Requesting RewardedAd with official Google Test Unit ID: $REWARDED_AD_UNIT_ID")
 
             RewardedAd.load(
-                context,
-                adUnitId,
+                context.applicationContext,
+                REWARDED_AD_UNIT_ID,
                 adRequest,
                 object : RewardedAdLoadCallback() {
                     override fun onAdLoaded(ad: RewardedAd) {
                         rewardedAd = ad
                         isLoading = false
-                        Log.i(TAG, "RewardedAd loaded successfully with adUnitId: $adUnitId")
+                        Log.i(TAG, "RewardedAd loaded successfully with adUnitId: $REWARDED_AD_UNIT_ID")
                     }
 
                     override fun onAdFailedToLoad(adError: LoadAdError) {
+                        rewardedAd = null
+                        isLoading = false
                         Log.e(
                             TAG,
                             "Ad Failed to load. Error Code: ${adError.code}, Message: ${adError.message}, Domain: ${adError.domain}"
                         )
-
-                        if (!isRetryWithFallback && adUnitId != TEST_AD_UNIT_ID) {
-                            Log.w(
-                                TAG,
-                                "Production ad unit failed to load (code: ${adError.code}). Retrying with test ad unit: $TEST_AD_UNIT_ID"
-                            )
-                            loadAdInternal(context, TEST_AD_UNIT_ID, isRetryWithFallback = true)
-                        } else {
-                            rewardedAd = null
-                            isLoading = false
-                        }
                     }
                 }
             )
         } catch (t: Throwable) {
             isLoading = false
-            Log.e(TAG, "Error initiating RewardedAd load for adUnitId $adUnitId: ${t.message}", t)
+            Log.e(TAG, "Error initiating RewardedAd load for adUnitId $REWARDED_AD_UNIT_ID: ${t.message}", t)
         }
     }
 
@@ -113,7 +97,7 @@ object RewardedAdManager {
     fun showAd(activity: Activity, onRewardEarned: () -> Unit) {
         val ad = rewardedAd
         if (ad == null) {
-            Log.w(TAG, "Rewarded ad is not ready. Showing toast and triggering background load.")
+            Log.w(TAG, "Rewarded ad is not ready yet. Showing toast and triggering background load.")
             Toast.makeText(activity, "Ad is still loading, please try again", Toast.LENGTH_SHORT).show()
             loadAd(activity)
             return

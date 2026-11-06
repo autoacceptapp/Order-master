@@ -330,7 +330,7 @@ class PaymentVerificationTest {
     @Test
     fun testRewardedAdManagerConfigurationAndSafety() {
         val context: Context = ApplicationProvider.getApplicationContext()
-        assertEquals("ca-app-pub-5657835600587543/4664462217", RewardedAdManager.REWARDED_AD_UNIT_ID)
+        assertEquals("ca-app-pub-3940256099942544/5224354917", RewardedAdManager.REWARDED_AD_UNIT_ID)
         RewardedAdManager.loadAd(context)
         assertFalse(RewardedAdManager.isAdLoaded())
 
