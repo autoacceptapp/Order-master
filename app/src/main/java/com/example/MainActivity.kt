@@ -47,6 +47,7 @@ import com.example.ui.theme.CaptainAutoAcceptTheme
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthInvalidUserException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -151,6 +152,17 @@ class MainActivity : ComponentActivity() {
                 val isLanguageSelected by AppSettings.isLanguageSelectedFlow.collectAsState()
                 val isOnboardingCompleted by AppSettings.isOnboardingCompletedFlow.collectAsState()
                 val accessStatus by LicenseManager.accessStatus.collectAsState()
+
+                // Fallback timeout: if LicenseManager remains stuck in AccessStatus.Loading for >4s, force-release it
+                LaunchedEffect(accessStatus) {
+                    if (accessStatus is AccessStatus.Loading) {
+                        delay(4000L)
+                        if (LicenseManager.accessStatus.value is AccessStatus.Loading) {
+                            Log.w(TAG, "LicenseManager stuck in AccessStatus.Loading after 4000ms; forcing transition to dashboard.")
+                            LicenseManager.forceReleaseLoadingState()
+                        }
+                    }
+                }
 
                 if (!isLanguageSelected) {
                     SplashScreen(

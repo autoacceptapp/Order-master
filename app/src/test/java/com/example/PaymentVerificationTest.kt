@@ -340,4 +340,23 @@ class PaymentVerificationTest {
         assertEquals("remove_ads_pass", PassTier.REMOVE_ADS.id)
         assertEquals(PassManager.isAdsRemoved(), LicenseManager.isAdsRemoved())
     }
+
+    @Test
+    fun testLicenseManagerForceReleaseLoadingState() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        try {
+            LicenseManager.resetStateForTesting(context)
+            assertEquals(AccessStatus.Loading, LicenseManager.accessStatus.value)
+
+            // Force release loading lock
+            LicenseManager.forceReleaseLoadingState()
+
+            // Status must transition out of Loading
+            val status = LicenseManager.accessStatus.value
+            assertTrue("Status must not be Loading after forceReleaseLoadingState but was $status", status !is AccessStatus.Loading)
+            assertTrue("Status should be Expired for fresh testing state", status is AccessStatus.Expired)
+        } finally {
+            LicenseManager.resetStateForTesting(context)
+        }
+    }
 }

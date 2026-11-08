@@ -564,6 +564,37 @@ object LicenseManager {
      */
     fun getAppContext(): Context? = appContext
 
+    @Volatile
+    private var loadingTimeoutJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Strictly forces LicenseManager out of the AccessStatus.Loading state.
+     * Transitions to active pass, active trial, or expired status so the UI is never permanently blocked.
+     */
+    fun forceReleaseLoadingState() {
+        if (_accessStatus.value is AccessStatus.Loading) {
+            Log.w(TAG, "Force releasing AccessStatus.Loading state; unlocking UI navigation.")
+            hasLoadedTrial = true
+            hasLoadedLicensing = true
+            refreshAccessStatus()
+        }
+    }
+
+    /**
+     * Ensures an active 4-second safety timeout is running whenever status is Loading.
+     */
+    fun ensureLoadingTimeout() {
+        if (_accessStatus.value !is AccessStatus.Loading) return
+        if (loadingTimeoutJob?.isActive == true) return
+        loadingTimeoutJob = scope.launch {
+            kotlinx.coroutines.delay(4000L)
+            if (_accessStatus.value is AccessStatus.Loading) {
+                Log.w(TAG, "Cloud sync resolution timed out after 4s; releasing loading lock.")
+                forceReleaseLoadingState()
+            }
+        }
+    }
+
     /**
      * Initializes LicenseManager.
      * ZERO local storage used: initial state is strictly Loading until Firestore responds.
@@ -572,6 +603,7 @@ object LicenseManager {
     fun init(context: Context) {
         if (appContext != null) {
             refreshAccessStatus()
+            ensureLoadingTimeout()
             return
         }
         val ctx = context.applicationContext
@@ -612,15 +644,7 @@ object LicenseManager {
         }
 
         // 6. Safety timeout: prevent UI from being stuck indefinitely in Loading state
-        scope.launch {
-            kotlinx.coroutines.delay(4000L)
-            if (_accessStatus.value is AccessStatus.Loading) {
-                Log.w(TAG, "Cloud sync resolution timed out after 4s; releasing loading lock.")
-                hasLoadedTrial = true
-                hasLoadedLicensing = true
-                refreshAccessStatus()
-            }
-        }
+        ensureLoadingTimeout()
     }
 
     /**
@@ -1149,12 +1173,14 @@ object LicenseManager {
                     }
                 } else {
                     hasLoadedTrial = true
+                    hasLoadedLicensing = true
                     _currentFolder.value = "free_mod"
                 }
                 refreshAccessStatus()
             } catch (e: Exception) {
                 Log.w(TAG, "Could not sync user document from Firestore: ${e.message}")
                 hasLoadedTrial = true
+                hasLoadedLicensing = true
                 refreshAccessStatus()
             }
 
@@ -1176,6 +1202,9 @@ object LicenseManager {
         val ctx = appContext
         if (ctx != null && FirebaseApp.getApps(ctx).isEmpty()) {
             Log.w(TAG, "FirebaseApp is not initialized; skipping syncUserLicensingDocument.")
+            hasLoadedTrial = true
+            hasLoadedLicensing = true
+            refreshAccessStatus()
             return
         }
 
@@ -1455,6 +1484,7 @@ object LicenseManager {
                         expiryTimestamp = cached.passExpiry,
                         formattedRemaining = formatted
                     )
+                    hasLoadedLicensing = true
                     Log.d(TAG, "Fast UI Boot: Populated PassActive (${cached.passTier.title}) from local UI cache while Firestore syncs.")
                     return
                 }
@@ -1476,13 +1506,16 @@ object LicenseManager {
                         expiryTimestamp = cached.trialExpiry,
                         formattedRemaining = formatted
                     )
+                    hasLoadedLicensing = true
+                    hasLoadedTrial = true
                     Log.d(TAG, "Fast UI Boot: Populated TrialActive from local UI cache while Firestore syncs.")
                     return
                 }
             }
 
-            // No valid active cached pass or trial found; remain in Loading state until Firestore responds
+            // No valid active cached pass or trial found; remain in Loading state temporarily until Firestore responds or timeout fires
             _accessStatus.value = AccessStatus.Loading
+            ensureLoadingTimeout()
             return
         }
 
