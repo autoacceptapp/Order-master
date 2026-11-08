@@ -32,8 +32,10 @@ service cloud.firestore {
 
     // Users collection & referral subcollections
     match /users/{userId} {
-      // Authenticated users can read their own or query their migration record
-      allow read: if isAuthenticated();
+      // Allow get for anyone to inspect device licensing and trial status by document ID
+      allow get: if true;
+      // Listing or querying collection requires authentication
+      allow list: if isAuthenticated();
       
       // User can only write to their own profile (matching auth.uid or firebaseUid)
       allow write: if isAuthenticated() && (

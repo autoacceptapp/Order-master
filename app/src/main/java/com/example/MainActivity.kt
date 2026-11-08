@@ -32,6 +32,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -153,14 +156,14 @@ class MainActivity : ComponentActivity() {
                 val isOnboardingCompleted by AppSettings.isOnboardingCompletedFlow.collectAsState()
                 val accessStatus by LicenseManager.accessStatus.collectAsState()
 
-                // Fallback timeout: if LicenseManager remains stuck in AccessStatus.Loading for >4s, force-release it
-                LaunchedEffect(accessStatus) {
-                    if (accessStatus is AccessStatus.Loading) {
-                        delay(4000L)
-                        if (LicenseManager.accessStatus.value is AccessStatus.Loading) {
-                            Log.w(TAG, "LicenseManager stuck in AccessStatus.Loading after 4000ms; forcing transition to dashboard.")
-                            LicenseManager.forceReleaseLoadingState()
-                        }
+                // Fail-safe splash timeout: Never hold user on loading screen for more than 2.5 seconds
+                var isSplashTimedOut by remember { mutableStateOf(false) }
+                LaunchedEffect(Unit) {
+                    delay(2500L)
+                    isSplashTimedOut = true
+                    if (LicenseManager.accessStatus.value is AccessStatus.Loading) {
+                        Log.w(TAG, "Splash loading timeout reached (2.5s); forcing transition to dashboard.")
+                        LicenseManager.forceReleaseLoadingState()
                     }
                 }
 
@@ -177,7 +180,7 @@ class MainActivity : ComponentActivity() {
                             AppSettings.setOnboardingCompleted(applicationContext, true)
                         }
                     )
-                } else if (accessStatus is AccessStatus.Loading) {
+                } else if (accessStatus is AccessStatus.Loading && !isSplashTimedOut) {
                     SplashScreen(
                         isFirstLaunch = false,
                         onLanguageSelected = {}

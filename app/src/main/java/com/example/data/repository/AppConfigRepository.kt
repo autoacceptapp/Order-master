@@ -99,9 +99,11 @@ object AppConfigRepository {
      * Never rethrows or crashes if Firebase is uninitialized or unavailable.
      */
     fun observeAppConfig(): Flow<AppConfig> = callbackFlow {
+        // Immediately emit current in-memory / default configuration
+        trySend(_currentAppConfig.value)
+
         if (!isFirebaseReady()) {
-            Log.w(TAG, "FirebaseApp is not ready; emitting default AppConfig without error.")
-            trySend(_currentAppConfig.value)
+            Log.w(TAG, "FirebaseApp is not ready; emitted default AppConfig without error.")
             awaitClose { }
             return@callbackFlow
         }
@@ -110,7 +112,6 @@ object AppConfigRepository {
             FirebaseFirestore.getInstance()
         } catch (t: Throwable) {
             Log.w(TAG, "FirebaseFirestore instance not available: ${t.message}")
-            trySend(_currentAppConfig.value)
             awaitClose { }
             return@callbackFlow
         }

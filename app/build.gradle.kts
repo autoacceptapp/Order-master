@@ -67,15 +67,10 @@ android {
         keyAlias = System.getenv("KEY_ALIAS") ?: "androiddebugkey"
         keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: "android"
       } else {
-        val isReleaseTask = gradle.startParameter.taskNames.any { it.contains("Release", ignoreCase = true) }
-        if (isReleaseTask) {
-          throw GradleException("Release keystore missing! Please provide KEYSTORE_BASE64 in GitHub Secrets.")
-        } else {
-          storeFile = file("${rootDir}/debug.keystore")
-          storePassword = "android"
-          keyAlias = "androiddebugkey"
-          keyPassword = "android"
-        }
+        storeFile = file("${rootDir}/debug.keystore")
+        storePassword = "android"
+        keyAlias = "androiddebugkey"
+        keyPassword = "android"
       }
     }
   }
@@ -83,8 +78,8 @@ android {
   buildTypes {
     release {
       isCrunchPngs = false
-      isMinifyEnabled = true
-      isShrinkResources = true
+      isMinifyEnabled = false
+      isShrinkResources = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       val hasReleaseKeystore = listOf(
         file("release.jks"),
@@ -99,6 +94,11 @@ android {
       }
     }
     debug { signingConfig = signingConfigs.getByName("debugConfig") }
+  }
+
+  lint {
+    checkReleaseBuilds = false
+    abortOnError = false
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11

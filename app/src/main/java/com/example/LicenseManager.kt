@@ -968,9 +968,14 @@ object LicenseManager {
         currentUser: FirebaseUser?,
         hardwareId: String
     ): Boolean = withContext(Dispatchers.IO) {
+        if (currentUser == null || currentUser.uid.isBlank()) {
+            Log.d(TAG, "checkAndMigrateUserData: No authenticated Firebase user; skipping migration check.")
+            return@withContext true
+        }
+
         val db = FirebaseFirestore.getInstance()
-        val firebaseUid = currentUser?.uid?.takeIf { it.isNotBlank() }
-        val userEmail = currentUser?.email ?: ""
+        val firebaseUid = currentUser.uid
+        val userEmail = currentUser.email ?: ""
         val targetDocRef = db.collection(COLL_USERS).document(customUserId)
 
         try {

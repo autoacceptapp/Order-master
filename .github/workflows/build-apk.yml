@@ -50,6 +50,8 @@ jobs:
           elif [ -f "./debug.keystore.base64" ]; then
             echo "Restoring debug.keystore from ./debug.keystore.base64 file..."
             base64 -d ./debug.keystore.base64 > ./debug.keystore
+          elif [ -f "./debug.keystore" ]; then
+            echo "Using existing ./debug.keystore..."
           fi
 
           if [ ! -s "./debug.keystore" ]; then
@@ -64,7 +66,12 @@ jobs:
           if [ -n "${GOOGLE_SERVICES_JSON}" ]; then
             echo "Writing GOOGLE_SERVICES_JSON secret to app/google-services.json..."
             echo "${GOOGLE_SERVICES_JSON}" > app/google-services.json
-          elif [ ! -f "app/google-services.json" ]; then
+          elif [ -f "app/google-services.json" ]; then
+            echo "Using existing app/google-services.json..."
+          elif [ -f "public/assets/aistudio/google-services__1__037de27d.json" ]; then
+            echo "Restoring app/google-services.json from public assets..."
+            cp public/assets/aistudio/google-services__1__037de27d.json app/google-services.json
+          else
             echo "::warning::app/google-services.json is missing and GOOGLE_SERVICES_JSON secret is not set."
           fi
 
