@@ -134,9 +134,14 @@ jobs:
           VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
           VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
         run: |
-          echo "=== Building Release APK with Gradle Wrapper ==="
-          # FIX: Added 'clean' and '--no-build-cache' to prevent KSP Null Pointer Exceptions
-          ./gradlew clean assembleRelease --stacktrace --no-daemon --no-build-cache
+          echo "=== Building Release APK ==="
+          if command -v gradle >/dev/null 2>&1; then
+            echo "Using pre-installed Gradle CLI ($(gradle --version | head -n 3 | tr '\n' ' '))"
+            gradle clean assembleRelease --stacktrace --no-daemon --no-build-cache
+          else
+            echo "Falling back to Gradle Wrapper..."
+            ./gradlew clean assembleRelease --stacktrace --no-daemon --no-build-cache
+          fi
 
       # Step 9: Verify and Locate Generated APKs
       - name: Verify Generated APK Outputs

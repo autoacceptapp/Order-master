@@ -95,8 +95,14 @@ jobs:
           VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
           VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
         run: |
-          echo "=== Building Debug APK with Gradle Wrapper ==="
-          ./gradlew clean assembleDebug --stacktrace --no-daemon
+          echo "=== Building Debug APK ==="
+          if command -v gradle >/dev/null 2>&1; then
+            echo "Using pre-installed Gradle CLI ($(gradle --version | head -n 3 | tr '\n' ' '))"
+            gradle clean assembleDebug --stacktrace --no-daemon
+          else
+            echo "Falling back to Gradle Wrapper..."
+            ./gradlew clean assembleDebug --stacktrace --no-daemon
+          fi
 
       - name: Locate and Prepare Debug APK Outputs
         id: prepare_apk
