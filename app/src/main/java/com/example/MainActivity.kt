@@ -41,6 +41,8 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.data.repository.AppConfig
 import com.example.data.repository.AppConfigRepository
 import androidx.lifecycle.lifecycleScope
+import com.example.ui.screens.OnboardingScreen
+import com.example.ui.screens.SplashScreen
 import com.example.ui.theme.CaptainAutoAcceptTheme
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthInvalidUserException
@@ -146,11 +148,34 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             CaptainAutoAcceptTheme {
-                val appConfig by AppConfigRepository.observeAppConfig().collectAsState(initial = AppConfig())
-                val isForceUpdateRequired = BuildConfig.VERSION_CODE < appConfig.minSupportedVersionCode
+                val isLanguageSelected by AppSettings.isLanguageSelectedFlow.collectAsState()
+                val isOnboardingCompleted by AppSettings.isOnboardingCompletedFlow.collectAsState()
+                val accessStatus by LicenseManager.accessStatus.collectAsState()
 
-                // 1. Force Update Dialog (Strict, non-dismissible, blocks the app if version is too old)
-                if (isForceUpdateRequired) {
+                if (!isLanguageSelected) {
+                    SplashScreen(
+                        isFirstLaunch = true,
+                        onLanguageSelected = { selectedCode ->
+                            AppSettings.setAppLanguage(applicationContext, selectedCode)
+                        }
+                    )
+                } else if (!isOnboardingCompleted) {
+                    OnboardingScreen(
+                        onFinish = {
+                            AppSettings.setOnboardingCompleted(applicationContext, true)
+                        }
+                    )
+                } else if (accessStatus is AccessStatus.Loading) {
+                    SplashScreen(
+                        isFirstLaunch = false,
+                        onLanguageSelected = {}
+                    )
+                } else {
+                    val appConfig by AppConfigRepository.observeAppConfig().collectAsState(initial = AppConfig())
+                    val isForceUpdateRequired = BuildConfig.VERSION_CODE < appConfig.minSupportedVersionCode
+
+                    // 1. Force Update Dialog (Strict, non-dismissible, blocks the app if version is too old)
+                    if (isForceUpdateRequired) {
                     ForceUpdateDialog(
                         appConfig = appConfig,
                         onUpdateClick = { url ->
@@ -267,6 +292,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
 
     override fun onResume() {
         super.onResume()

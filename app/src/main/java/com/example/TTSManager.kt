@@ -74,22 +74,29 @@ object TTSManager {
     fun applySettings(context: Context) {
         val tts = textToSpeech ?: return
         val lang = AppSettings.getVoiceLanguage(context)
-        val targetLocale = if (lang.equals("hi", ignoreCase = true)) {
-            Locale.Builder().setLanguage("hi").setRegion("IN").build()
-        } else {
-            Locale.Builder().setLanguage("en").setRegion("IN").build()
+        val targetLocale = when (lang.lowercase(Locale.ROOT)) {
+            "hi" -> Locale.Builder().setLanguage("hi").setRegion("IN").build()
+            "gu" -> Locale.Builder().setLanguage("gu").setRegion("IN").build()
+            "mr" -> Locale.Builder().setLanguage("mr").setRegion("IN").build()
+            "bn" -> Locale.Builder().setLanguage("bn").setRegion("IN").build()
+            "ta" -> Locale.Builder().setLanguage("ta").setRegion("IN").build()
+            "te" -> Locale.Builder().setLanguage("te").setRegion("IN").build()
+            "kn" -> Locale.Builder().setLanguage("kn").setRegion("IN").build()
+            "ml" -> Locale.Builder().setLanguage("ml").setRegion("IN").build()
+            "pa" -> Locale.Builder().setLanguage("pa").setRegion("IN").build()
+            else -> Locale.Builder().setLanguage("en").setRegion("IN").build()
         }
 
         try {
             val result = tts.setLanguage(targetLocale)
             if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                Log.w(TAG, "Language $targetLocale not supported/missing data, falling back to English.")
+                Log.w(TAG, "Language $targetLocale not supported or missing voice data, falling back to English.")
                 tts.setLanguage(Locale.ENGLISH)
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error applying TTS language to $targetLocale", e)
             try {
-                tts.setLanguage(Locale.getDefault())
+                tts.setLanguage(Locale.ENGLISH)
             } catch (_: Exception) {}
         }
 
@@ -188,12 +195,17 @@ object TTSManager {
         }
 
         val target = offer.targetOffer ?: TextAnalysisEngine.parseTargetOffer(offer.rawText)
+        val lang = AppSettings.getVoiceLanguage(context)
         val message = if (target != null && target.fare > 0.0) {
-            formatCleanVoiceAnnouncement(target)
+            formatCleanVoiceAnnouncement(target, lang)
         } else {
             val fare = offer.totalFare?.let { if (it % 1.0 == 0.0) it.toInt().toString() else String.format(Locale.US, "%.1f", it) } ?: "0"
             val dist = (offer.pickupDistanceKm ?: offer.dropDistanceKm)?.let { if (it % 1.0 == 0.0) it.toInt().toString() else String.format(Locale.US, "%.1f", it) } ?: "0"
-            "Kiraya $fare rupaye. Pickup $dist kilometer."
+            if (lang.equals("hi", ignoreCase = true)) {
+                "किराया $fare रुपये। पिकअप $dist किलोमीटर।"
+            } else {
+                "Fare $fare rupees. Pickup $dist km."
+            }
         }
 
         speak(context, message, queueMode)
@@ -225,10 +237,35 @@ object TTSManager {
     }
 
     /**
+     * Speaks the given text with flush control.
+     * When flush is true, cancels ongoing speech to immediately read out new slide or alert.
+     */
+    fun speak(context: Context, text: String, flush: Boolean) {
+        val queueMode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+        speak(context, text, queueMode)
+    }
+
+    /**
+     * Immediately stops any ongoing speech playback.
+     */
+    fun stop() {
+        try {
+            textToSpeech?.stop()
+            Log.d(TAG, "TTS playback stopped.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping TTS", e)
+        }
+    }
+
+    /**
      * Formats the voice announcement to speak strictly the 5 extracted clean fields in natural spoken Hindi/Hinglish:
      * "Kiraya {fare} rupaye. Pickup {pickupDistance} kilometer {pickupLocation}. Drop {dropDistance} kilometer {dropLocation}."
      */
-    fun formatCleanVoiceAnnouncement(target: TargetRideOffer): String {
+    /**
+     * Formats the voice announcement to speak strictly the 5 extracted clean fields in natural spoken regional language:
+     * "Fare {fare} rupees. Pickup {pickupDistance} km {pickupLocation}. Drop {dropDistance} km {dropLocation}."
+     */
+    fun formatCleanVoiceAnnouncement(target: TargetRideOffer, lang: String = "hi"): String {
         val fareStr = if (target.fare % 1.0 == 0.0) target.fare.toInt().toString() else String.format(Locale.US, "%.1f", target.fare)
         val pickupDistStr = if (target.pickupDistance % 1.0 == 0.0) target.pickupDistance.toInt().toString() else String.format(Locale.US, "%.1f", target.pickupDistance)
         val dropDistStr = if (target.dropDistance % 1.0 == 0.0) target.dropDistance.toInt().toString() else String.format(Locale.US, "%.1f", target.dropDistance)
@@ -236,77 +273,163 @@ object TTSManager {
         val pickupLoc = target.pickupLocation.trim()
         val dropLoc = target.dropLocation.trim()
 
-        val sb = StringBuilder()
-        sb.append("Kiraya $fareStr rupaye.")
-
-        if (pickupLoc.isNotEmpty()) {
-            sb.append(" Pickup $pickupDistStr kilometer $pickupLoc.")
-        } else {
-            sb.append(" Pickup $pickupDistStr kilometer.")
+        return when (lang.lowercase(Locale.ROOT)) {
+            "en" -> {
+                val sb = StringBuilder("Fare $fareStr rupees.")
+                if (pickupLoc.isNotEmpty()) sb.append(" Pickup $pickupDistStr km $pickupLoc.")
+                else sb.append(" Pickup $pickupDistStr km.")
+                if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) sb.append(" Drop $dropDistStr km $dropLoc.")
+                else if (target.dropDistance > 0.0) sb.append(" Drop $dropDistStr km.")
+                else if (dropLoc.isNotEmpty()) sb.append(" Drop $dropLoc.")
+                sb.toString().trim()
+            }
+            "gu" -> {
+                val sb = StringBuilder("ભાડું $fareStr રૂપિયા.")
+                if (pickupLoc.isNotEmpty()) sb.append(" પીકઅપ $pickupDistStr કિલોમીટર $pickupLoc.")
+                else sb.append(" પીકઅપ $pickupDistStr કિલોમીટર.")
+                if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) sb.append(" ડ્રોપ $dropDistStr કિલોમીટર $dropLoc.")
+                else if (target.dropDistance > 0.0) sb.append(" ડ્રોપ $dropDistStr કિલોમીટર.")
+                else if (dropLoc.isNotEmpty()) sb.append(" ડ્રોપ $dropLoc.")
+                sb.toString().trim()
+            }
+            "mr" -> {
+                val sb = StringBuilder("भाडे $fareStr रुपये.")
+                if (pickupLoc.isNotEmpty()) sb.append(" पिकअप $pickupDistStr किलोमीटर $pickupLoc.")
+                else sb.append(" पिकअप $pickupDistStr किलोमीटर.")
+                if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) sb.append(" ड्रॉप $dropDistStr किलोमीटर $dropLoc.")
+                else if (target.dropDistance > 0.0) sb.append(" ड्रॉप $dropDistStr किलोमीटर.")
+                else if (dropLoc.isNotEmpty()) sb.append(" ड्रॉप $dropLoc.")
+                sb.toString().trim()
+            }
+            "bn" -> {
+                val sb = StringBuilder("ভাড়া $fareStr টাকা।")
+                if (pickupLoc.isNotEmpty()) sb.append(" পিকআপ $pickupDistStr কিলোমিটার $pickupLoc।")
+                else sb.append(" পিকআপ $pickupDistStr কিলোমিটার।")
+                if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) sb.append(" ড্রপ $dropDistStr কিলোমিটার $dropLoc।")
+                else if (target.dropDistance > 0.0) sb.append(" ড্রপ $dropDistStr কিলোমিটার।")
+                else if (dropLoc.isNotEmpty()) sb.append(" ড্রপ $dropLoc।")
+                sb.toString().trim()
+            }
+            "ta" -> {
+                val sb = StringBuilder("கட்டணம் $fareStr ரூபாய்.")
+                if (pickupLoc.isNotEmpty()) sb.append(" பிக்கப் $pickupDistStr கிலோமீட்டர் $pickupLoc.")
+                else sb.append(" பிக்கப் $pickupDistStr கிலோமீட்டர்.")
+                if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) sb.append(" டிராப் $dropDistStr கிலோமீட்டர் $dropLoc.")
+                else if (target.dropDistance > 0.0) sb.append(" டிராப் $dropDistStr கிலோமீட்டர்.")
+                else if (dropLoc.isNotEmpty()) sb.append(" டிராப் $dropLoc.")
+                sb.toString().trim()
+            }
+            "te" -> {
+                val sb = StringBuilder("ఛార్జీ $fareStr రూపాయలు.")
+                if (pickupLoc.isNotEmpty()) sb.append(" పికప్ $pickupDistStr కిలోమీటర్లు $pickupLoc.")
+                else sb.append(" పికప్ $pickupDistStr కిలోమీటర్లు.")
+                if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) sb.append(" డ్రాప్ $dropDistStr కిలోమీటర్లు $dropLoc.")
+                else if (target.dropDistance > 0.0) sb.append(" డ్రాప్ $dropDistStr కిలోమీటర్లు.")
+                else if (dropLoc.isNotEmpty()) sb.append(" డ్రాప్ $dropLoc.")
+                sb.toString().trim()
+            }
+            "kn" -> {
+                val sb = StringBuilder("ಬಾಡಿಗೆ $fareStr ರೂಪಾಯಿ.")
+                if (pickupLoc.isNotEmpty()) sb.append(" ಪಿಕಪ್ $pickupDistStr ಕಿಲೋಮೀಟರ್ $pickupLoc.")
+                else sb.append(" ಪಿಕಪ್ $pickupDistStr ಕಿಲೋಮೀಟರ್.")
+                if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) sb.append(" ಡ್ರಾಪ್ $dropDistStr ಕಿಲೋಮೀಟರ್ $dropLoc.")
+                else if (target.dropDistance > 0.0) sb.append(" ಡ್ರಾಪ್ $dropDistStr ಕಿಲೋಮೀಟರ್.")
+                else if (dropLoc.isNotEmpty()) sb.append(" ಡ್ರಾಪ್ $dropLoc.")
+                sb.toString().trim()
+            }
+            "ml" -> {
+                val sb = StringBuilder("കൂലി $fareStr രൂപ.")
+                if (pickupLoc.isNotEmpty()) sb.append(" പിക്കപ്പ് $pickupDistStr കിലോമീറ്റർ $pickupLoc.")
+                else sb.append(" പിക്കപ്പ് $pickupDistStr കിലോമീറ്റർ.")
+                if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) sb.append(" ഡ്രോപ്പ് $dropDistStr കിലോമീറ്റർ $dropLoc.")
+                else if (target.dropDistance > 0.0) sb.append(" ഡ്രോപ്പ് $dropDistStr കിലോമീറ്റർ.")
+                else if (dropLoc.isNotEmpty()) sb.append(" ഡ്രോപ്പ് $dropLoc.")
+                sb.toString().trim()
+            }
+            "pa" -> {
+                val sb = StringBuilder("ਕਿਰਾਇਆ $fareStr ਰੁਪਏ।")
+                if (pickupLoc.isNotEmpty()) sb.append(" ਪਿਕਅੱਪ $pickupDistStr ਕਿਲੋਮੀਟਰ $pickupLoc।")
+                else sb.append(" ਪਿਕਅੱਪ $pickupDistStr ਕਿਲੋਮੀਟਰ।")
+                if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) sb.append(" ਡ੍ਰੌਪ $dropDistStr ਕਿਲੋਮੀਟਰ $dropLoc।")
+                else if (target.dropDistance > 0.0) sb.append(" ਡ੍ਰੌਪ $dropDistStr ਕਿਲੋਮੀਟਰ।")
+                else if (dropLoc.isNotEmpty()) sb.append(" ਡ੍ਰੌਪ $dropLoc।")
+                sb.toString().trim()
+            }
+            else -> {
+                // Natural spoken Hindi/Hinglish format
+                val sb = StringBuilder()
+                sb.append("Kiraya $fareStr rupaye.")
+                if (pickupLoc.isNotEmpty()) {
+                    sb.append(" Pickup $pickupDistStr kilometer $pickupLoc.")
+                } else {
+                    sb.append(" Pickup $pickupDistStr kilometer.")
+                }
+                if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) {
+                    sb.append(" Drop $dropDistStr kilometer $dropLoc.")
+                } else if (target.dropDistance > 0.0) {
+                    sb.append(" Drop $dropDistStr kilometer.")
+                } else if (dropLoc.isNotEmpty()) {
+                    sb.append(" Drop $dropLoc.")
+                }
+                sb.toString().trim()
+            }
         }
-
-        if (target.dropDistance > 0.0 && dropLoc.isNotEmpty()) {
-            sb.append(" Drop $dropDistStr kilometer $dropLoc.")
-        } else if (target.dropDistance > 0.0) {
-            sb.append(" Drop $dropDistStr kilometer.")
-        } else if (dropLoc.isNotEmpty()) {
-            sb.append(" Drop $dropLoc.")
-        }
-
-        return sb.toString().trim()
     }
 
     /**
-     * Announces an order acceptance confirmation.
+     * Announces an order acceptance confirmation in the selected language.
      */
     fun announceRideAccepted(context: Context, fare: Double?, distance: Double?) {
         if (!AppSettings.isVoiceAnnouncerEnabled(context)) return
 
-        val lang = AppSettings.getVoiceLanguage(context)
+        val lang = AppSettings.getVoiceLanguage(context).lowercase(Locale.ROOT)
         val fareInt = fare?.toInt()
 
-        val message = if (lang.equals("hi", ignoreCase = true)) {
-            if (fareInt != null) {
-                "राइड स्वीकार कर लिया गया! किराया $fareInt रुपये।"
-            } else {
-                "राइड स्वीकार कर लिया गया!"
-            }
-        } else {
-            if (fareInt != null) {
-                "Ride accepted! Fare is $fareInt rupees."
-            } else {
-                "Ride accepted!"
-            }
+        val message = when (lang) {
+            "hi" -> if (fareInt != null) "राइड स्वीकार कर लिया गया! किराया $fareInt रुपये।" else "राइड स्वीकार कर लिया गया!"
+            "gu" -> if (fareInt != null) "રાઇડ સ્વીકારવામાં આવી! ભાડું $fareInt રૂપિયા." else "રાઇડ સ્વીકારવામાં આવી!"
+            "mr" -> if (fareInt != null) "राइड स्वीकारली गेली! भाडे $fareInt रुपये." else "राइड स्वीकारली गेली!"
+            "bn" -> if (fareInt != null) "রাইড গ্রহণ করা হয়েছে! ভাড়া $fareInt টাকা।" else "রাইড গ্রহণ করা হয়েছে!"
+            "ta" -> if (fareInt != null) "சவாரி ஏற்கப்பட்டது! கட்டணம் $fareInt ரூபாய்." else "சவாரி ஏற்கப்பட்டது!"
+            "te" -> if (fareInt != null) "రైడ్ ఆమోదించబడింది! ఛార్జీ $fareInt రూపాయలు." else "రైడ్ ఆమోదించబడింది!"
+            "kn" -> if (fareInt != null) "ರೈಡ್ ಸ್ವೀಕರಿಸಲಾಗಿದೆ! ಬಾಡಿಗೆ $fareInt ರೂಪಾಯಿ." else "ರೈಡ್ ಸ್ವೀಕರಿಸಲಾಗಿದೆ!"
+            "ml" -> if (fareInt != null) "റൈഡ് സ്വീകരിച്ചു! കൂലി $fareInt രൂപ." else "റൈഡ് സ്വീകരിച്ചു!"
+            "pa" -> if (fareInt != null) "ਰਾਈਡ ਸਵੀਕਾਰ ਕਰ ਲਈ ਗਈ! ਕਿਰਾਇਆ $fareInt ਰੁਪਏ।" else "ਰਾਈਡ ਸਵੀਕਾਰ ਕਰ ਲਈ ਗਈ!"
+            else -> if (fareInt != null) "Ride accepted! Fare is $fareInt rupees." else "Ride accepted!"
         }
 
         speak(context, message, TextToSpeech.QUEUE_ADD)
     }
 
     /**
-     * Announces when an offer does not meet captain criteria.
+     * Announces when an offer does not meet captain criteria in the selected language.
      */
     fun announceRideSkipped(context: Context, reason: String, queueMode: Int = TextToSpeech.QUEUE_ADD) {
         if (!AppSettings.isVoiceAnnouncerEnabled(context)) return
 
-        val lang = AppSettings.getVoiceLanguage(context)
-        val isHindi = lang.equals("hi", ignoreCase = true)
+        val lang = AppSettings.getVoiceLanguage(context).lowercase(Locale.ROOT)
 
-        val message = when {
-            reason.contains("< Min Limit", ignoreCase = true) || reason.contains("below minimum", ignoreCase = true) -> {
-                if (isHindi) "राइड छोड़ दिया गया: किराया न्यूनतम से कम है।"
-                else "Ride skipped: fare is below minimum."
+        val message = when (lang) {
+            "hi" -> when {
+                reason.contains("< Min Limit", ignoreCase = true) || reason.contains("below minimum", ignoreCase = true) -> "राइड छोड़ दिया गया: किराया न्यूनतम से कम है।"
+                reason.contains("> Max Limit", ignoreCase = true) || reason.contains("exceeds maximum", ignoreCase = true) -> "राइड छोड़ दिया गया: किराया अधिकतम सीमा से अधिक है।"
+                reason.contains("Pickup distance", ignoreCase = true) || reason.contains("exceeds set maximum limit", ignoreCase = true) -> "राइड छोड़ दिया गया: पिकअप दूरी सीमा से अधिक है।"
+                else -> "राइड छोड़ दिया गया।"
             }
-            reason.contains("> Max Limit", ignoreCase = true) || reason.contains("exceeds maximum", ignoreCase = true) -> {
-                if (isHindi) "राइड छोड़ दिया गया: किराया अधिकतम सीमा से अधिक है।"
-                else "Ride skipped: fare exceeds maximum limit."
+            "gu" -> when {
+                reason.contains("< Min Limit", ignoreCase = true) || reason.contains("below minimum", ignoreCase = true) -> "રાઇડ છોડી દેવામાં આવી: ભાડું ન્યૂનતમથી ઓછું છે."
+                reason.contains("> Max Limit", ignoreCase = true) || reason.contains("exceeds maximum", ignoreCase = true) -> "રાઇડ છોડી દેવામાં આવી: ભાડું મહત્તમથી વધુ છે."
+                else -> "રાઇડ છોડી દેવામાં આવી."
             }
-            reason.contains("Pickup distance", ignoreCase = true) || reason.contains("exceeds set maximum limit", ignoreCase = true) -> {
-                if (isHindi) "राइड छोड़ दिया गया: पिकअप दूरी सीमा से अधिक है।"
-                else "Ride skipped: pickup distance exceeds maximum limit threshold."
+            "mr" -> when {
+                reason.contains("< Min Limit", ignoreCase = true) || reason.contains("below minimum", ignoreCase = true) -> "राइड सोडली गेली: भाडे किमान पेक्षा कमी आहे."
+                else -> "राइड सोडली गेली."
             }
-            else -> {
-                if (isHindi) "राइड छोड़ दिया गया।"
-                else "Ride skipped."
+            else -> when {
+                reason.contains("< Min Limit", ignoreCase = true) || reason.contains("below minimum", ignoreCase = true) -> "Ride skipped: fare is below minimum."
+                reason.contains("> Max Limit", ignoreCase = true) || reason.contains("exceeds maximum", ignoreCase = true) -> "Ride skipped: fare exceeds maximum limit."
+                reason.contains("Pickup distance", ignoreCase = true) || reason.contains("exceeds set maximum limit", ignoreCase = true) -> "Ride skipped: pickup distance exceeds maximum limit threshold."
+                else -> "Ride skipped."
             }
         }
 
@@ -317,11 +440,18 @@ object TTSManager {
      * Helper to test the voice announcer from UI.
      */
     fun testAnnouncement(context: Context, customMessage: String? = null) {
-        val lang = AppSettings.getVoiceLanguage(context)
-        val message = customMessage ?: if (lang.equals("hi", ignoreCase = true)) {
-            "आवाज़ उद्घोषक चालू है! किराया 120 रुपये, दूरी 3 किलोमीटर।"
-        } else {
-            "Voice announcer is active! Fare is 120 rupees, distance 3 kilometers."
+        val lang = AppSettings.getVoiceLanguage(context).lowercase(Locale.ROOT)
+        val message = customMessage ?: when (lang) {
+            "hi" -> "आवाज़ उद्घोषक चालू है! किराया 120 रुपये, दूरी 3 किलोमीटर।"
+            "gu" -> "અવાજ ઉદ્ઘોષક ચાલુ છે! ભાડું 120 રૂપિયા, અંતર 3 કિલોમીટર."
+            "mr" -> "व्हॉइस अनाउंसर चालू आहे! भाडे 120 रुपये, अंतर 3 किलोमीटर."
+            "bn" -> "ভয়েস অ্যানাউন্সার চালু আছে! ভাড়া 120 টাকা, দূরত্ব 3 কিলোমিটার।"
+            "ta" -> "குரல் அறிவிப்பாளர் செயல்படுகிறது! கட்டணம் 120 ரூபாய், தூரம் 3 கிலோமீட்டர்."
+            "te" -> "వాయిస్ అనౌన్సర్ యాక్టివ్‌గా ఉంది! ఛార్జీ 120 రూపాయలు, దూరం 3 కిలోమీటర్లు."
+            "kn" -> "ಧ್ವನಿ ಘೋಷಕ ಸಕ್ರಿಯವಾಗಿದೆ! ಬಾಡಿಗೆ 120 ರೂಪಾಯಿ, ದೂರ 3 ಕಿಲೋಮೀಟರ್."
+            "ml" -> "വോയ്‌സ് അനൗൺസർ പ്രവർത്തനക്ഷമമാണ്! കൂലി 120 രൂപ, ദൂരം 3 കിലോമീറ്റർ."
+            "pa" -> "ਵਾਇਸ ਅਨਾਊਂਸਰ ਸਰਗਰਮ ਹੈ! ਕਿਰਾਇਆ 120 ਰੁਪਏ, ਦੂਰੀ 3 ਕਿਲੋਮੀਟਰ।"
+            else -> "Voice announcer is active! Fare is 120 rupees, distance 3 kilometers."
         }
         speak(context, message, TextToSpeech.QUEUE_FLUSH)
     }

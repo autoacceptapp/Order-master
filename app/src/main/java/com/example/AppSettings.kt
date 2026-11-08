@@ -19,9 +19,32 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+@Immutable
+data class SupportedLanguage(
+    val code: String,
+    val nativeName: String,
+    val englishName: String,
+    val sampleGreeting: String
+)
+
+val SUPPORTED_LANGUAGES = listOf(
+    SupportedLanguage("en", "English", "English", "Hello"),
+    SupportedLanguage("hi", "हिन्दी", "Hindi", "नमस्ते"),
+    SupportedLanguage("gu", "ગુજરાતી", "Gujarati", "નમસ્તે"),
+    SupportedLanguage("mr", "मराठी", "Marathi", "नमस्कार"),
+    SupportedLanguage("bn", "বাংলা", "Bengali", "নমস্কার"),
+    SupportedLanguage("ta", "தமிழ்", "Tamil", "வணக்கம்"),
+    SupportedLanguage("te", "తెలుగు", "Telugu", "నమస్కారం"),
+    SupportedLanguage("kn", "ಕನ್ನಡ", "Kannada", "ನಮಸ್ಕಾರ"),
+    SupportedLanguage("ml", "മലയാളം", "Malayalam", "നമസ്കാരം"),
+    SupportedLanguage("pa", "ਪੰਜਾਬੀ", "Punjabi", "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ")
+)
 
 enum class LogSeverity {
     INFO,
@@ -85,6 +108,8 @@ data class UserAuthState(
 object AppSettings {
     const val PREFS_NAME = "captain_auto_accept_prefs"
 
+    val SUPPORTED_LANGUAGES get() = com.example.SUPPORTED_LANGUAGES
+
     // Primary preference keys
     const val KEY_AUTO_ACCEPT_ENABLED = "key_auto_accept_enabled"
     const val KEY_MIN_FARE_ENABLED = "key_min_fare_enabled"
@@ -102,6 +127,9 @@ object AppSettings {
     const val KEY_BLOCKED_LOCATIONS = "key_blocked_locations"
     const val KEY_VOICE_ANNOUNCER_ENABLED = "key_voice_announcer_enabled"
     const val KEY_VOICE_LANGUAGE = "key_voice_language"
+    const val KEY_APP_LANGUAGE = "key_app_language"
+    const val KEY_LANGUAGE_SELECTED = "key_language_selected"
+    const val KEY_ONBOARDING_COMPLETED = "key_onboarding_completed"
     const val KEY_SPEECH_RATE = "key_speech_rate"
     const val KEY_SPEECH_PITCH = "key_speech_pitch"
     const val KEY_FLOATING_OVERLAY_ENABLED = "key_floating_overlay_enabled"
@@ -227,6 +255,17 @@ object AppSettings {
     private val _isPassActiveFlow = MutableStateFlow(false)
     val isPassActiveFlow: StateFlow<Boolean> = _isPassActiveFlow.asStateFlow()
 
+    // Reactive StateFlows for App & Voice Language Selection
+    private val _isLanguageSelectedFlow = MutableStateFlow(false)
+    val isLanguageSelectedFlow: StateFlow<Boolean> = _isLanguageSelectedFlow.asStateFlow()
+
+    private val _appLanguageFlow = MutableStateFlow(DEFAULT_VOICE_LANGUAGE)
+    val appLanguageFlow: StateFlow<String> = _appLanguageFlow.asStateFlow()
+
+    // Reactive StateFlow for First-Time Onboarding Tutorial
+    private val _isOnboardingCompletedFlow = MutableStateFlow(false)
+    val isOnboardingCompletedFlow: StateFlow<Boolean> = _isOnboardingCompletedFlow.asStateFlow()
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile
     private var isAuthListenerRegistered = false
@@ -260,7 +299,18 @@ object AppSettings {
         val blockedLocationsSet = prefs.getStringSet(KEY_BLOCKED_LOCATIONS, emptySet()) ?: emptySet()
         val blockedLocations = blockedLocationsSet.toList().sorted()
         val voiceEnabled = prefs.getBoolean(KEY_VOICE_ANNOUNCER_ENABLED, DEFAULT_VOICE_ANNOUNCER_ENABLED)
-        val voiceLang = prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE) ?: DEFAULT_VOICE_LANGUAGE
+        val hasSelectedLang = prefs.getBoolean(KEY_LANGUAGE_SELECTED, false) || prefs.contains(KEY_APP_LANGUAGE)
+        val appLang = prefs.getString(KEY_APP_LANGUAGE, prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE)) ?: DEFAULT_VOICE_LANGUAGE
+        val voiceLang = appLang
+
+        _isLanguageSelectedFlow.value = hasSelectedLang
+        _appLanguageFlow.value = appLang
+        if (hasSelectedLang) {
+            applyLocale(appLang)
+        }
+
+        val onboardingCompleted = prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
+        _isOnboardingCompletedFlow.value = onboardingCompleted
         val speechRate = prefs.getFloat(KEY_SPEECH_RATE, DEFAULT_SPEECH_RATE)
         val speechPitch = prefs.getFloat(KEY_SPEECH_PITCH, DEFAULT_SPEECH_PITCH)
         val overlayEnabled = prefs.getBoolean(KEY_FLOATING_OVERLAY_ENABLED, DEFAULT_FLOATING_OVERLAY_ENABLED)
@@ -522,15 +572,60 @@ object AppSettings {
         }
     }
 
-    fun getVoiceLanguage(context: Context): String {
+    fun isLanguageSelected(context: Context): Boolean {
         val prefs = getPrefs(context)
-        return prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE) ?: DEFAULT_VOICE_LANGUAGE
+        return prefs.getBoolean(KEY_LANGUAGE_SELECTED, false) || prefs.contains(KEY_APP_LANGUAGE)
+    }
+
+    fun getAppLanguage(context: Context): String {
+        val prefs = getPrefs(context)
+        return prefs.getString(KEY_APP_LANGUAGE, prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE)) ?: DEFAULT_VOICE_LANGUAGE
+    }
+
+    fun setAppLanguage(context: Context, languageCode: String) {
+        val cleanCode = languageCode.trim().lowercase(Locale.ROOT)
+        _isLanguageSelectedFlow.value = true
+        _appLanguageFlow.value = cleanCode
+        _settingsState.value = _settingsState.value.copy(voiceLanguage = cleanCode)
+        persistAsync(context) {
+            putBoolean(KEY_LANGUAGE_SELECTED, true)
+            putString(KEY_APP_LANGUAGE, cleanCode)
+            putString(KEY_VOICE_LANGUAGE, cleanCode)
+        }
+        applyLocale(cleanCode)
+        try {
+            TTSManager.applySettings(context)
+        } catch (e: Exception) {
+            Log.w("AppSettings", "Failed to update TTS settings on language change: ${e.message}")
+        }
+    }
+
+    fun applyLocale(languageCode: String) {
+        try {
+            val appLocale = LocaleListCompat.forLanguageTags(languageCode)
+            AppCompatDelegate.setApplicationLocales(appLocale)
+        } catch (e: Exception) {
+            Log.w("AppSettings", "Failed to apply application locales: ${e.message}")
+        }
+    }
+
+    fun getVoiceLanguage(context: Context): String {
+        return getAppLanguage(context)
     }
 
     fun setVoiceLanguage(context: Context, language: String) {
-        _settingsState.value = _settingsState.value.copy(voiceLanguage = language)
+        setAppLanguage(context, language)
+    }
+
+    fun isOnboardingCompleted(context: Context): Boolean {
+        val prefs = getPrefs(context)
+        return prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
+    }
+
+    fun setOnboardingCompleted(context: Context, completed: Boolean) {
+        _isOnboardingCompletedFlow.value = completed
         persistAsync(context) {
-            putString(KEY_VOICE_LANGUAGE, language)
+            putBoolean(KEY_ONBOARDING_COMPLETED, completed)
         }
     }
 

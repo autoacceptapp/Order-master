@@ -6,6 +6,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import com.example.SUPPORTED_LANGUAGES
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -738,13 +739,16 @@ fun FilterSettingsScreen(
                         )
 
                         // Language Selection Dropdown
+                        val currentLangObj = remember(settingsState.voiceLanguage) {
+                            SUPPORTED_LANGUAGES.find { it.code.equals(settingsState.voiceLanguage, ignoreCase = true) } ?: SUPPORTED_LANGUAGES.first()
+                        }
                         ExposedDropdownMenuBox(
                             expanded = languageDropdownExpanded && isTtsUnlocked,
                             onExpandedChange = { if (isTtsUnlocked) languageDropdownExpanded = it },
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             OutlinedTextField(
-                                value = if (settingsState.voiceLanguage == "hi") "Hinglish / Hindi (हिंदी)" else "English (India)",
+                                value = "${currentLangObj.nativeName} (${currentLangObj.englishName})",
                                 onValueChange = {},
                                 readOnly = true,
                                 enabled = isTtsUnlocked,
@@ -758,20 +762,15 @@ fun FilterSettingsScreen(
                                 expanded = languageDropdownExpanded && isTtsUnlocked,
                                 onDismissRequest = { languageDropdownExpanded = false }
                             ) {
-                                DropdownMenuItem(
-                                    text = { Text("English (India)") },
-                                    onClick = {
-                                        viewModel.setVoiceLanguage("en")
-                                        languageDropdownExpanded = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Hinglish / Hindi (हिंदी)") },
-                                    onClick = {
-                                        viewModel.setVoiceLanguage("hi")
-                                        languageDropdownExpanded = false
-                                    }
-                                )
+                                SUPPORTED_LANGUAGES.forEach { lang ->
+                                    DropdownMenuItem(
+                                        text = { Text("${lang.nativeName} (${lang.englishName})") },
+                                        onClick = {
+                                            viewModel.setVoiceLanguage(lang.code)
+                                            languageDropdownExpanded = false
+                                        }
+                                    )
+                                }
                             }
                         }
 

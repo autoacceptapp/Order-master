@@ -816,5 +816,66 @@ class ExampleRobolectricTest {
         assertFalse(prefs.contains(AppSettings.KEY_AUTO_ACCEPT_ENABLED))
         assertFalse(prefs.contains(AppSettings.KEY_SERVICE_ENABLED))
     }
+
+    @Test
+    fun `test first launch language selection and regional TTS synchronization`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // Verify 10 supported Indian languages
+        assertEquals(10, SUPPORTED_LANGUAGES.size)
+        val expectedCodes = listOf("en", "hi", "gu", "mr", "bn", "ta", "te", "kn", "ml", "pa")
+        assertTrue(SUPPORTED_LANGUAGES.map { it.code }.containsAll(expectedCodes))
+
+        // First launch selection
+        AppSettings.setAppLanguage(context, "gu")
+        assertTrue(AppSettings.isLanguageSelected(context))
+        assertEquals("gu", AppSettings.getAppLanguage(context))
+        assertEquals("gu", AppSettings.getVoiceLanguage(context))
+        assertEquals("gu", AppSettings.settingsState.value.voiceLanguage)
+
+        // Gujarati TTS Announcement test
+        val target = TargetRideOffer(
+            fare = 85.0,
+            pickupDistance = 1.2,
+            dropDistance = 6.2,
+            pickupLocation = "Station",
+            dropLocation = "Market"
+        )
+        val guAnnouncement = TTSManager.formatCleanVoiceAnnouncement(target, "gu")
+        assertTrue(guAnnouncement.contains("ભાડું 85 રૂપિયા"))
+        assertTrue(guAnnouncement.contains("પીકઅપ 1.2 કિલોમીટર Station"))
+        assertTrue(guAnnouncement.contains("ડ્રોપ 6.2 કિલોમીટર Market"))
+
+        // Hindi / Hinglish TTS Announcement test
+        val hiAnnouncement = TTSManager.formatCleanVoiceAnnouncement(target, "hi")
+        assertTrue(hiAnnouncement.contains("Kiraya 85 rupaye"))
+        assertTrue(hiAnnouncement.contains("Pickup 1.2 kilometer Station"))
+        assertTrue(hiAnnouncement.contains("Drop 6.2 kilometer Market"))
+    }
+
+    @Test
+    fun `test onboarding completion state flow and TTS controls`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // Initially false
+        assertFalse(AppSettings.isOnboardingCompleted(context))
+        assertFalse(AppSettings.isOnboardingCompletedFlow.value)
+
+        // Complete onboarding
+        AppSettings.setOnboardingCompleted(context, true)
+        assertTrue(AppSettings.isOnboardingCompleted(context))
+        assertTrue(AppSettings.isOnboardingCompletedFlow.value)
+
+        // Re-read via init
+        AppSettings.init(context)
+        assertTrue(AppSettings.isOnboardingCompleted(context))
+        assertTrue(AppSettings.isOnboardingCompletedFlow.value)
+
+        // Verify TTSManager stop and flush speak handle gracefully without throwing
+        TTSManager.stop()
+        TTSManager.speak(context, "Welcome to Order Master", flush = true)
+        TTSManager.stop()
+    }
 }
+
 
