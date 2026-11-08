@@ -10,6 +10,7 @@ import com.example.LogSeverity
 import com.example.ParsedRideOffer
 import com.example.RideEvaluation
 import com.example.SettingsState
+import com.example.TTSManager
 import com.example.TargetRideOffer
 import com.example.TextAnalysisEngine
 import com.example.data.OrderEntity
@@ -203,19 +204,14 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
     fun setVoiceLanguage(lang: String) {
         val app = getApplication<Application>()
         AppSettings.setVoiceLanguage(app, lang)
-        val targetLocale = if (lang == "hi") Locale("hi", "IN") else Locale.US
+        val targetLocale = TTSManager.parseLocale(lang)
         tts?.language = targetLocale
-        _ttsStatus.value = "TTS Active (${lang.uppercase()})"
+        _ttsStatus.value = "TTS Active (${lang.uppercase(Locale.ROOT)})"
     }
 
     fun testTtsAnnouncement() {
-        val lang = settingsState.value.voiceLanguage
-        val message = if (lang == "hi") {
-            "नया राइड प्रस्ताव: एक सौ बीस रुपये, पिकअप एक दशमलव दो किलोमीटर"
-        } else {
-            "New ride offer detected: Fare 120 rupees, pickup 1.2 kilometers"
-        }
-        tts?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "TEST_TTS")
+        val app = getApplication<Application>()
+        TTSManager.testAnnouncement(app)
     }
 
     fun applyPreset(presetName: String) {

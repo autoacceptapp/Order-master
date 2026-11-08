@@ -69,36 +69,100 @@ object TTSManager {
     }
 
     /**
-     * Applies the configured voice language (Hindi / English), speech rate, and pitch from AppSettings.
+     * Parses a regional or ISO language code into a canonical Locale with Indian region targeting.
+     */
+    fun parseLocale(languageCode: String): Locale {
+        val clean = languageCode.trim().lowercase(Locale.ROOT)
+        return when (clean) {
+            "hi" -> Locale("hi", "IN")
+            "gu" -> Locale("gu", "IN")
+            "mr" -> Locale("mr", "IN")
+            "bn" -> Locale("bn", "IN")
+            "ta" -> Locale("ta", "IN")
+            "te" -> Locale("te", "IN")
+            "kn" -> Locale("kn", "IN")
+            "ml" -> Locale("ml", "IN")
+            "pa" -> Locale("pa", "IN")
+            "en" -> Locale("en", "IN")
+            else -> {
+                if (clean.contains("-")) {
+                    val parts = clean.split("-")
+                    Locale(parts[0], parts.getOrElse(1) { "IN" })
+                } else {
+                    Locale(clean, "IN")
+                }
+            }
+        }
+    }
+
+    /**
+     * Explicitly switches the Android Text-To-Speech engine to the given regional language code.
+     * Enforces fallback to language-only locale and then English if voice data is missing.
+     *
+     * @return true if target regional language was successfully applied, false if fell back to English.
+     */
+    fun setLanguage(context: Context, languageCode: String): Boolean {
+        if (!isTtsReady || textToSpeech == null) {
+            Log.w(TAG, "setLanguage called while TTS not ready. Initializing engine for language: $languageCode")
+            init(context)
+        }
+        val tts = textToSpeech ?: return false
+        val targetLocale = parseLocale(languageCode)
+
+        return try {
+            var result = tts.setLanguage(targetLocale)
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                // Try language-only without region code
+                val langOnly = Locale(targetLocale.language)
+                result = tts.setLanguage(langOnly)
+                if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    Log.w(TAG, "Voice data for $targetLocale is missing or not supported on this device. Gracefully falling back to English.")
+                    tts.setLanguage(Locale.ENGLISH)
+                    false
+                } else {
+                    Log.i(TAG, "Applied TTS language using language-only fallback: $langOnly")
+                    true
+                }
+            } else {
+                Log.i(TAG, "Applied TTS regional language successfully: $targetLocale")
+                true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception applying TTS language for $targetLocale: ${e.message}", e)
+            try {
+                tts.setLanguage(Locale.ENGLISH)
+            } catch (_: Exception) {}
+            false
+        }
+    }
+
+    /**
+     * Speaks an immediate greeting in the selected regional language.
+     */
+    fun speakGreeting(context: Context, languageCode: String) {
+        val langObj = AppSettings.SUPPORTED_LANGUAGES.find { it.code.equals(languageCode, ignoreCase = true) }
+        val greeting = langObj?.sampleGreeting ?: when (languageCode.trim().lowercase(Locale.ROOT)) {
+            "hi" -> "नमस्ते"
+            "gu" -> "નમસ્તે"
+            "mr" -> "नमस्कार"
+            "bn" -> "নমস্কার"
+            "ta" -> "வணக்கம்"
+            "te" -> "నమస్కారం"
+            "kn" -> "ನಮಸ್ಕಾರ"
+            "ml" -> "നമസ്കാരം"
+            "pa" -> "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ"
+            else -> "Hello"
+        }
+        speak(context, greeting, TextToSpeech.QUEUE_FLUSH)
+    }
+
+    /**
+     * Applies the configured voice language, speech rate, and pitch from AppSettings.
      */
     fun applySettings(context: Context) {
         val tts = textToSpeech ?: return
         val lang = AppSettings.getVoiceLanguage(context)
-        val targetLocale = when (lang.lowercase(Locale.ROOT)) {
-            "hi" -> Locale.Builder().setLanguage("hi").setRegion("IN").build()
-            "gu" -> Locale.Builder().setLanguage("gu").setRegion("IN").build()
-            "mr" -> Locale.Builder().setLanguage("mr").setRegion("IN").build()
-            "bn" -> Locale.Builder().setLanguage("bn").setRegion("IN").build()
-            "ta" -> Locale.Builder().setLanguage("ta").setRegion("IN").build()
-            "te" -> Locale.Builder().setLanguage("te").setRegion("IN").build()
-            "kn" -> Locale.Builder().setLanguage("kn").setRegion("IN").build()
-            "ml" -> Locale.Builder().setLanguage("ml").setRegion("IN").build()
-            "pa" -> Locale.Builder().setLanguage("pa").setRegion("IN").build()
-            else -> Locale.Builder().setLanguage("en").setRegion("IN").build()
-        }
-
-        try {
-            val result = tts.setLanguage(targetLocale)
-            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                Log.w(TAG, "Language $targetLocale not supported or missing voice data, falling back to English.")
-                tts.setLanguage(Locale.ENGLISH)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error applying TTS language to $targetLocale", e)
-            try {
-                tts.setLanguage(Locale.ENGLISH)
-            } catch (_: Exception) {}
-        }
+        setLanguage(context, lang)
 
         try {
             val rate = AppSettings.getSpeechRate(context)

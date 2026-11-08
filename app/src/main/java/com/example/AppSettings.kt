@@ -594,7 +594,9 @@ object AppSettings {
         }
         applyLocale(cleanCode)
         try {
+            TTSManager.setLanguage(context, cleanCode)
             TTSManager.applySettings(context)
+            TTSManager.speakGreeting(context, cleanCode)
         } catch (e: Exception) {
             Log.w("AppSettings", "Failed to update TTS settings on language change: ${e.message}")
         }

@@ -29,17 +29,23 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import java.util.Locale
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.repository.AppConfig
 import com.example.data.repository.AppConfigRepository
@@ -151,10 +157,32 @@ class MainActivity : ComponentActivity() {
         GitHubUpdateManager.autoCheckForUpdates(this, lifecycleScope)
 
         setContent {
-            CaptainAutoAcceptTheme {
-                val isLanguageSelected by AppSettings.isLanguageSelectedFlow.collectAsState()
-                val isOnboardingCompleted by AppSettings.isOnboardingCompletedFlow.collectAsState()
-                val accessStatus by LicenseManager.accessStatus.collectAsState()
+            val appLanguage by AppSettings.appLanguageFlow.collectAsState()
+            val baseContext = LocalContext.current
+            val localizedContext = remember(appLanguage, baseContext) {
+                val locale = TTSManager.parseLocale(appLanguage)
+                Locale.setDefault(locale)
+                val config = android.content.res.Configuration(baseContext.resources.configuration).apply {
+                    setLocale(locale)
+                    setLayoutDirection(locale)
+                }
+                baseContext.createConfigurationContext(config)
+            }
+
+            LaunchedEffect(appLanguage) {
+                AppSettings.applyLocale(appLanguage)
+            }
+
+            CompositionLocalProvider(
+                LocalContext provides localizedContext,
+                LocalConfiguration provides localizedContext.resources.configuration,
+                LocalLayoutDirection provides LayoutDirection.Ltr
+            ) {
+                key(appLanguage) {
+                    CaptainAutoAcceptTheme {
+                        val isLanguageSelected by AppSettings.isLanguageSelectedFlow.collectAsState()
+                        val isOnboardingCompleted by AppSettings.isOnboardingCompletedFlow.collectAsState()
+                        val accessStatus by LicenseManager.accessStatus.collectAsState()
 
                 // Fail-safe splash timeout: Never hold user on loading screen for more than 2.5 seconds
                 var isSplashTimedOut by remember { mutableStateOf(false) }
@@ -302,12 +330,14 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    com.example.ui.OrderMasterApp()
+                        com.example.ui.OrderMasterApp()
+                    }
                 }
             }
         }
     }
 }
+    }
 
     override fun onResume() {
         super.onResume()

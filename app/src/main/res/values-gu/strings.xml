@@ -1,0 +1,157 @@
+<resources>
+    <string name="app_name">Order Master</string>
+    <string name="default_web_client_id">14592259076-qak6f3tv5feuabvovsvt7s9roj1skgjt.apps.googleusercontent.com</string>
+    <string name="accessibility_service_name">સ્માર્ટ ટેક્સ્ટ સૂચના અને વિશ્લેષણ સેવા</string>
+    <string name="accessibility_service_description">સ્ક્રીન ટેક્સ્ટ અને સૂચનાઓના વિશ્લેષણ માટે શૈક્ષણિક સ્માર્ટ એક્સેસિબિલિટી સેવા.</string>
+
+    <!-- Language Identifiers -->
+    <string name="language_english">અંગ્રેજી (English)</string>
+    <string name="language_hindi">હિન્દી (Hindi)</string>
+    <string name="test_voice_announcement_en">અવાજ પરીક્ષણ (English)</string>
+    <string name="test_voice_announcement_hi">અવાજ પરીક્ષણ સાંભળો (ગુજરાતી)</string>
+
+    <!-- Dashboard Headers and Titles -->
+    <string name="app_header_title">કેપ્ટન ઓટો-સ્વીકૃતિ</string>
+    <string name="app_header_subtitle">રાઇડ વિનંતી ઓટોમેશન</string>
+    <string name="title_filter_settings">નિર્ણય મર્યાદાઓ</string>
+    <string name="title_acceptance_criteria">સ્વીકૃતિ માપદંડ</string>
+    <string name="title_voice_announcer">અવાજ ઉદ્ઘોષક (TTS)</string>
+    <string name="subtitle_voice_announcer">ભાડું, પીકઅપ અંતર અને સ્થિતિ બોલીને જણાવે છે</string>
+    <string name="title_ride_simulator">રાઇડ વિનંતી સેન્ડબોક્સ</string>
+    <string name="subtitle_ride_simulator">વાસ્તવિક રાઇડની રાહ જોયા વિના લાઇવ ટેક્સ્ટ પાર્સિંગનું પરીક્ષણ કરો:</string>
+    <string name="title_activity_logs">લાઇવ પ્રવૃત્તિ અને ક્રિયા ફીડ</string>
+    <string name="no_events_logged">હજી સુધી કોઈ પ્રવૃત્તિ નોંધાયેલી નથી. સ્ક્રીન પ્રવૃત્તિઓ અહીં દેખાશે.</string>
+
+    <!-- Permissions and Readiness -->
+    <string name="status_service_active">● એક્સેસિબિલિટી સેવા સક્રિય છે</string>
+    <string name="status_service_inactive">○ એક્સેસિબિલિટી સેવા બંધ છે (પરવાનગી આપવા નીચે ટેપ કરો)</string>
+    <string name="background_readiness_title">બેકગ્રાઉન્ડ તત્પરતા</string>
+    <string name="badge_ready">તૈયાર</string>
+    <string name="badge_attention">ધ્યાન આપો</string>
+    <string name="perm_accessibility_title">એક્સેસિબિલિટી</string>
+    <string name="perm_overlay_title">ઓવરલે</string>
+    <string name="perm_battery_title">બેટરી સેવર</string>
+    <string name="btn_manage_all_permissions">તમામ પરવાનગીઓ સંચાલિત કરો</string>
+    <string name="btn_enable">ચાલુ કરો</string>
+
+    <!-- Automation Controls -->
+    <string name="label_enable_service_switch">ઓટો-સ્વીકૃતિ ઓટોમેશન</string>
+    <string name="desc_enable_service_switch_on">શરતો પૂર્ણ થવા પર સ્વચાલિત ક્લિક ટ્રિગર થાય છે.</string>
+    <string name="desc_enable_service_switch_off">ઓટોમેશન થોભાવવામાં આવ્યું છે. સ્ક્રીન વિનંતીઓનું ફક્ત મૂલ્યાંકન અને લૉગ થશે.</string>
+    <string name="btn_open_accessibility_settings">એક્સેસિબિલિટી સેટિંગ્સ ખોલો</string>
+
+    <!-- Filter Labels & Hints -->
+    <string name="label_min_value_filter">ન્યૂનતમ ભાડું ફિલ્ટર (₹)</string>
+    <string name="hint_min_value_filter">દા.ત. 150</string>
+    <string name="label_max_distance_filter">મહત્તમ પીકઅપ અંતર ફિલ્ટર (કિમી)</string>
+    <string name="hint_max_distance_filter">દા.ત. 3.0</string>
+    <string name="filter_title">ન્યૂનતમ ભાડું ફિલ્ટર (₹)</string>
+    <string name="filter_desc">₹, Rs. પેટર્ન બહાર કાઢે છે</string>
+    <string name="filter_condition">કુલ રકમ આ મૂલ્યથી વધુ અથવા બરાબર હોવી જોઈએ</string>
+
+    <!-- Educational Live Demo -->
+    <string name="educational_demo_title">લાઇવ સેન્ડબોક્સ પરીક્ષણ</string>
+    <string name="educational_demo_desc">ઓન-સ્ક્રીન પાર્સિંગ અને ઓટો-એક્શનનું પરીક્ષણ કરો:</string>
+    <string name="demo_order_text">નવો ઑફર: ₹180 + ₹40 • અંતર: 4.2 કિમી</string>
+    <string name="demo_accept_button">સ્વીકારો</string>
+    <string name="demo_result_idle">પરીક્ષણ માટે ટેપ કરો</string>
+
+    <!-- AppSettingsScreen Localized Strings -->
+    <string name="settings_title_permissions_setup">પરવાનગીઓ અને સિસ્ટમ સેટઅપ</string>
+    <string name="settings_subtitle_permissions_setup">બેકગ્રાઉન્ડ વિશ્વસનીયતા અને ઓટો-સ્વીકારો</string>
+    <string name="settings_cd_navigate_back">ડેશબોર્ડ પર પાછા જાઓ</string>
+    <string name="settings_cd_refresh_status">સ્થિતિ તાજી કરો</string>
+    <string name="settings_google_account_title">ગૂગલ એકાઉન્ટ</string>
+    <string name="settings_sign_in_google_title">ગૂગલથી સાઇન ઇન કરો</string>
+    <string name="settings_cloud_sync_active">ક્લાઉડ સિંક સક્રિય છે</string>
+    <string name="settings_sync_presets_desc">ફિલ્ટર પ્રીસેટ્સ અને ઓર્ડર ઇતિહાસ સિંક કરો</string>
+    <string name="settings_btn_connect">જોડાઓ</string>
+    <string name="settings_badge_linked">જોડાયેલ</string>
+    <string name="settings_section_critical_permissions">ઓર્ડર સ્વીકૃતિ માટે જરૂરી</string>
+    <string name="settings_section_background_survival">બેકગ્રાઉન્ડ રનિંગ અને સૂચનાઓ</string>
+    <string name="settings_section_in_app_updater">ઇન-એપ અપડેટર અને રીલીઝ</string>
+    <string name="settings_section_hardware_id">કાયમી ડિવાઇસ હાર્ડવેર આઈડી</string>
+    <string name="settings_banner_ready_title">ઓટો-સ્વીકૃતિ માટે તૈયાર</string>
+    <string name="settings_banner_action_required_title">પગલાં જરૂરી છે</string>
+    <string name="settings_banner_ready_desc">તમામ બેકગ્રાઉન્ડ પરવાનગીઓ સક્રિય છે</string>
+    <string name="settings_banner_action_required_desc">ઓટોમેશન માટે કેટલીક મહત્વપૂર્ણ પરવાનગીઓ ખૂટે છે</string>
+    <string name="settings_btn_grant_missing_permissions">પરવાનગીઓ આપો</string>
+    <string name="settings_badge_granted">મંજૂર</string>
+    <string name="settings_badge_manual_check">તપાસો</string>
+    <string name="settings_badge_required">જરૂરી</string>
+    <string name="settings_btn_manage">સંચાલિત કરો</string>
+    <string name="settings_btn_enable">ચાલુ કરો</string>
+    <string name="settings_oem_title">💡 શાઓમી / રિયલમી / ઓપ્પો / વિવો કેપ્ટન</string>
+    <string name="settings_oem_desc">ફોનનું બેટરી સેવર \'કોઈ પ્રતિબંધ નહીં\' પર સેટ કરો અને \'ઓટો-સ્ટાર્ટ\' ચાલુ રાખો જેથી એપ બેકગ્રાઉન્ડમાં બંધ ન થાય.</string>
+    <string name="settings_oem_btn_open">ડિવાઇસ મેનેજર / ઓટો-સ્ટાર્ટ ખોલો</string>
+    <string name="settings_updater_title">અપડેટ તપાસો</string>
+    <string name="settings_updater_version_format">v%1$s (બિલ્ડ %2$d)</string>
+    <string name="settings_updater_checking">તપાસી રહ્યા છીએ...</string>
+    <string name="settings_updater_check_now">હમણાં તપાસો</string>
+    <string name="settings_updater_new_version_format">નવું વર્ઝન %1$s ઉપલબ્ધ છે!</string>
+    <string name="settings_updater_up_to_date_format">✓ ઓર્ડર માસ્ટર અપ ટુ ડેટ છે (%1$s)</string>
+    <string name="settings_updater_error_format">અપડેટ તપાસવામાં અસમર્થ: %1$s</string>
+    <string name="settings_updater_auto_check_title">સ્વચાલિત અપડેટ તપાસ</string>
+    <string name="settings_updater_auto_check_desc">એપ ખુલવા પર આપમેળે નવા વર્ઝનની તપાસ કરો</string>
+    <string name="settings_toast_pass_activated">પાસ સક્રિય થયો!</string>
+    <string name="settings_toast_payment_failed">ચુકવણી નિષ્ફળ / ચકાસાયેલ નથી</string>
+
+    <!-- HardwareIdManager Localized Strings -->
+    <string name="hwid_card_title">ડિવાઇસ હાર્ડવેર આઈડી</string>
+    <string name="hwid_card_subtitle">કાયમી હાર્ડવેર યુયુઆઈડી</string>
+    <string name="hwid_badge_permanent">કાયમી</string>
+    <string name="hwid_source_label">સ્ત્રોત: %1$s</string>
+    <string name="hwid_description">આ ઓળખકર્તા ફેક્ટરી રીસેટ અથવા એપ હટાવ્યા પછી પણ ક્યારેય બદલાતો નથી.</string>
+    <string name="hwid_btn_copy">હાર્ડવેર આઈડી કોપી કરો</string>
+    <string name="hwid_btn_copied">ક્લિપબોર્ડ પર કોપી થયું!</string>
+    <string name="hwid_clipboard_label">ડિવાઇસ હાર્ડવેર આઈડી</string>
+    <string name="hwid_toast_copied">%1$s ક્લિપબોર્ડ પર કોપી થયું!</string>
+
+    <!-- PaymentActivity Localized Strings -->
+    <string name="payment_screen_title">યુપીઆઈ ચુકવણી અને ચકાસણી</string>
+    <string name="payment_cd_back">પાછળ</string>
+    <string name="payment_header_title">સુરક્ષિત સ્વચાલિત ચકાસણી</string>
+    <string name="payment_header_desc">કોઈપણ યુપીઆઈ એપથી ચુકવણી કરો, પછી પાસ અનલૉક કરવા માટે યુટીઆર / રેફરન્સ નંબર દાખલ કરો.</string>
+    <string name="payment_step_1_title">1. પાસ પ્લાન પસંદ કરો</string>
+    <string name="payment_price_format">₹%1$d</string>
+    <string name="payment_duration_single_day">%1$d દિવસ</string>
+    <string name="payment_duration_multi_day">%1$d દિવસ</string>
+    <string name="payment_step_2_title">2. યુપીઆઈથી ₹%1$d ચૂકવો</string>
+    <string name="payment_admin_upi_badge">એડમિન યુપીઆઈ આઈડી</string>
+    <string name="payment_qr_cd_format">યુપીઆઈ દ્વારા ₹%1$d ની ચુકવણી કરવા સ્કેન કરો</string>
+    <string name="payment_qr_fetching">ચુકવણી વિગતો મેળવી રહ્યા છીએ...</string>
+    <string name="payment_system_unavailable">ચુકવણી પ્રણાલી અસ્થાયી રૂપે અનુપલબ્ધ છે. કૃપા કરીને થોડીવાર પછી પ્રયાસ કરો.</string>
+    <string name="payment_qr_scan_caption">કોઈપણ યુપીઆઈ એપ (GPay / PhonePe / Paytm / BHIM) થી સ્કેન કરો</string>
+    <string name="payment_loading_upi_details">યુપીઆઈ વિગતો લોડ થઈ રહી છે...</string>
+    <string name="payment_payee_label">પ્રાપ્તકર્તા: %1$s</string>
+    <string name="payment_btn_copy">કોપી કરો</string>
+    <string name="payment_toast_upi_copied">યુપીઆઈ આઈડી કોપી થઈ: %1$s</string>
+    <string name="payment_btn_checking_upi">યુપીઆઈ સેટિંગ્સ તપાસી રહ્યા છીએ...</string>
+    <string name="payment_btn_unavailable">ચુકવણી અનુપલબ્ધ</string>
+    <string name="payment_btn_open_upi">યુપીઆઈ એપ ખોલો (GPay / PhonePe / Paytm)</string>
+    <string name="payment_upi_hint">• સીધી ચુકવણી કરવા માટે ક્લિક કરો, અથવા યુપીઆઈ આઈડી કોપી કરો.</string>
+    <string name="payment_step_3_title">3. 12-અંકનો UTR / UPI Ref નંબર દાખલ કરો</string>
+    <string name="payment_step_3_desc">ચુકવણી રસીદમાંથી UTR / UPI Ref નંબર કોપી કરીને નીચે દાખલ કરો.</string>
+    <string name="payment_utr_label">UTR / UPI Ref નંબર (9-16 અક્ષર)</string>
+    <string name="payment_utr_placeholder">દા.ત. 426719823451</string>
+    <string name="payment_cd_paste">ક્લિપબોર્ડમાંથી પેસ્ટ કરો</string>
+    <string name="payment_toast_pasted">પેસ્ટ કર્યું: %1$s</string>
+    <string name="payment_toast_no_clip">ક્લિપબોર્ડમાં કોઈ માન્ય સંદર્ભ મળ્યો નથી</string>
+    <string name="payment_utr_need_more">ઓછામાં ઓછા 9 અક્ષરો જરૂરી છે (%1$d વધુ જોઈએ)</string>
+    <string name="payment_utr_hint">GPay/PhonePe રસીદ પર ઉપલબ્ધ છે</string>
+    <string name="payment_char_count_format">%1$d/16</string>
+    <string name="payment_verifying_msg">ચકાસણી થઈ રહી છે... કૃપા કરીને 1-2 મિનિટ રાહ જુઓ.</string>
+    <string name="payment_success_msg">પાસ સક્રિય! %1$d દિવસ માટે માન્ય.</string>
+    <string name="payment_toast_success">✅ પાસ સફળતાપૂર્વક સક્રિય થયો!</string>
+    <string name="payment_btn_verify">ચુકવણી ચકાસો</string>
+    <string name="payment_status_verifying_title">ચકાસણી થઈ રહી છે... કૃપા કરીને રાહ જુઓ</string>
+    <string name="payment_status_success_title">ચકાસણી સફળ</string>
+    <string name="payment_status_pending_title">ચકાસણી બાકી છે</string>
+    <string name="payment_status_claimed_title">પહેલેથી જ ઉપયોગમાં લેવાયેલ છે</string>
+    <string name="payment_status_notice_title">ચકાસણી સૂચના</string>
+    <string name="payment_status_default_title">સ્થિતિ</string>
+    <string name="payment_tip_pending">ટીપ: જો તમે હમણાં જ ચુકવણી કરી હોય, તો કૃપા કરીને 30 થી 60 સેકન્ડ રાહ જુઓ અને ફરીથી ચકાસો.</string>
+    <string name="payment_help_title">12 અંકનો UTR ક્યાં મળશે?</string>
+    <string name="payment_help_desc">• Google Pay: ચુકવણી પર ટેપ કરો &gt; \'UPI transaction ID\' જુઓ\n• PhonePe: ઇતિહાસ &gt; ચુકવણી વિગતો &gt; \'UTR\' જુઓ\n• Paytm: પાસબુક / વ્યવહાર ઇતિહાસ &gt; \'UPI Ref No.\' જુઓ</string>
+    <string name="payment_default_payee_name">ઓર્ડરમાસ્ટર કેપ્ટન સ્ટોર</string>
+</resources>
