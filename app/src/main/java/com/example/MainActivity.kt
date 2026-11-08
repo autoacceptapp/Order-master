@@ -174,7 +174,6 @@ class MainActivity : ComponentActivity() {
             }
 
             CompositionLocalProvider(
-                LocalContext provides localizedContext,
                 LocalConfiguration provides localizedContext.resources.configuration,
                 LocalLayoutDirection provides LayoutDirection.Ltr
             ) {
