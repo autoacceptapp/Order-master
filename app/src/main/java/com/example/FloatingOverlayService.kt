@@ -625,7 +625,13 @@ class FloatingOverlayService : Service() {
 
     private fun performHapticFeedback(strong: Boolean) {
         try {
-            val vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager
+                vm?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 val effect = if (strong) {
                     VibrationEffect.createOneShot(70, VibrationEffect.DEFAULT_AMPLITUDE)

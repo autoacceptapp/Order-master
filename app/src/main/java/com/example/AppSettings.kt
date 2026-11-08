@@ -548,13 +548,13 @@ object AppSettings {
 
     fun isAutoAcceptEnabled(context: Context): Boolean {
         // Zero-Trust Cloud-Only: Never read master automation state from SharedPreferences.
-        // Relies 100% on LicenseManager.isServiceActiveFlow and in-memory intent.
-        return LicenseManager.isServiceActiveFlow.value && autoAcceptEnabled
+        // Relies 100% on LicenseManager.isServiceActiveFlow, anti-ban guard, and in-memory intent.
+        return LicenseManager.isServiceActiveFlow.value && !LicenseManager.isBannedFlow.value && autoAcceptEnabled
     }
 
     fun setAutoAcceptEnabled(context: Context, enabled: Boolean) {
         autoAcceptEnabled = enabled
-        val effectiveEnabled = LicenseManager.isServiceActiveFlow.value && enabled
+        val effectiveEnabled = LicenseManager.isServiceActiveFlow.value && !LicenseManager.isBannedFlow.value && enabled
         _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = effectiveEnabled)
         // Strictly DO NOT persist master enablement toggles to SharedPreferences.
         syncOverlayService(context)

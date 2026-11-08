@@ -509,6 +509,19 @@ open class MyAccessibilityService : AccessibilityService() {
         // Find best matching valid offer for auto-accept
         val matchingOffers = evaluatedOffers.filter { it.second.isAccepted }
         if (matchingOffers.isNotEmpty() && isAutoAccept) {
+            val hasActiveAccess = LicenseManager.isAccessGranted() || isAutoClickSpeedUnlocked
+            if (!hasActiveAccess) {
+                val topOffer = matchingOffers.first().first
+                AppSettings.addLog(
+                    title = "Pass / Trial Expired",
+                    message = "Matching ride detected (₹${topOffer.totalFare?.toInt() ?: 0}), but active subscription pass or trial is required. Automated clicking paused.",
+                    severity = LogSeverity.WARNING,
+                    evaluation = matchingOffers.first().second
+                )
+                broadcastLog("Auto-Accept paused: Subscription pass or trial expired. Tap to renew.")
+                return
+            }
+
             val isAutoClick = AppSettings.isAutoClickEnabled(this)
             if (!isAutoClick) {
                 // Voice-Only Mode (Auto Click Disabled / TTS Voice Announcement Only)

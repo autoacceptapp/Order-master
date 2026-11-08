@@ -74,22 +74,21 @@ object TTSManager {
     fun parseLocale(languageCode: String): Locale {
         val clean = languageCode.trim().lowercase(Locale.ROOT)
         return when (clean) {
-            "hi" -> Locale("hi", "IN")
-            "gu" -> Locale("gu", "IN")
-            "mr" -> Locale("mr", "IN")
-            "bn" -> Locale("bn", "IN")
-            "ta" -> Locale("ta", "IN")
-            "te" -> Locale("te", "IN")
-            "kn" -> Locale("kn", "IN")
-            "ml" -> Locale("ml", "IN")
-            "pa" -> Locale("pa", "IN")
-            "en" -> Locale("en", "IN")
+            "hi" -> Locale.Builder().setLanguage("hi").setRegion("IN").build()
+            "gu" -> Locale.Builder().setLanguage("gu").setRegion("IN").build()
+            "mr" -> Locale.Builder().setLanguage("mr").setRegion("IN").build()
+            "bn" -> Locale.Builder().setLanguage("bn").setRegion("IN").build()
+            "ta" -> Locale.Builder().setLanguage("ta").setRegion("IN").build()
+            "te" -> Locale.Builder().setLanguage("te").setRegion("IN").build()
+            "kn" -> Locale.Builder().setLanguage("kn").setRegion("IN").build()
+            "ml" -> Locale.Builder().setLanguage("ml").setRegion("IN").build()
+            "pa" -> Locale.Builder().setLanguage("pa").setRegion("IN").build()
+            "en" -> Locale.Builder().setLanguage("en").setRegion("IN").build()
             else -> {
                 if (clean.contains("-")) {
-                    val parts = clean.split("-")
-                    Locale(parts[0], parts.getOrElse(1) { "IN" })
+                    Locale.forLanguageTag(clean)
                 } else {
-                    Locale(clean, "IN")
+                    Locale.Builder().setLanguage(clean).setRegion("IN").build()
                 }
             }
         }
@@ -113,7 +112,7 @@ object TTSManager {
             var result = tts.setLanguage(targetLocale)
             if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                 // Try language-only without region code
-                val langOnly = Locale(targetLocale.language)
+                val langOnly = Locale.Builder().setLanguage(targetLocale.language).build()
                 result = tts.setLanguage(langOnly)
                 if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                     Log.w(TAG, "Voice data for $targetLocale is missing or not supported on this device. Gracefully falling back to English.")
