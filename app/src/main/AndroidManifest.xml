@@ -37,6 +37,11 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
+    <!-- 11. AdServices / Privacy Sandbox permissions for Google Mobile Ads SDK (API 33+) -->
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_TOPICS" />
+
 
 
     <!-- Package visibility queries for UPI payment apps on Android 11+ (API 30+) -->
@@ -110,10 +115,11 @@
             android:name="com.google.android.gms.ads.DELAY_APP_MEASUREMENT_INIT"
             android:value="true" />
 
-        <!-- Configure AdServices to opt-out of Privacy Sandbox measurement on emulator/devices without AdServices -->
+        <!-- Configure AdServices for Google Mobile Ads SDK (AdMob) with tools:replace -->
         <property
             android:name="android.adservices.AD_SERVICES_CONFIG"
-            android:resource="@xml/gma_ad_services_config" />
+            android:resource="@xml/gma_ad_services_config"
+            tools:replace="android:resource" />
 
 
         <activity

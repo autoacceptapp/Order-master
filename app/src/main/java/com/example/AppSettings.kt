@@ -19,8 +19,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import androidx.appcompat.app.AppCompatDelegate
-import androidx.core.os.LocaleListCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -305,9 +303,6 @@ object AppSettings {
 
         _isLanguageSelectedFlow.value = hasSelectedLang
         _appLanguageFlow.value = appLang
-        if (hasSelectedLang) {
-            applyLocale(appLang)
-        }
 
         val onboardingCompleted = prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
         _isOnboardingCompletedFlow.value = onboardingCompleted
@@ -592,22 +587,12 @@ object AppSettings {
             putString(KEY_APP_LANGUAGE, cleanCode)
             putString(KEY_VOICE_LANGUAGE, cleanCode)
         }
-        applyLocale(cleanCode)
         try {
             TTSManager.setLanguage(context, cleanCode)
             TTSManager.applySettings(context)
             TTSManager.speakGreeting(context, cleanCode)
         } catch (e: Exception) {
             Log.w("AppSettings", "Failed to update TTS settings on language change: ${e.message}")
-        }
-    }
-
-    fun applyLocale(languageCode: String) {
-        try {
-            val appLocale = LocaleListCompat.forLanguageTags(languageCode)
-            AppCompatDelegate.setApplicationLocales(appLocale)
-        } catch (e: Exception) {
-            Log.w("AppSettings", "Failed to apply application locales: ${e.message}")
         }
     }
 

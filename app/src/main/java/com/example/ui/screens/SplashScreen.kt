@@ -138,7 +138,7 @@ private fun LanguageSelectionView(
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = "Select Language / भाषा चुनें",
+                text = "Select Voice Language / आवाज़ भाषा चुनें",
                 style = MaterialTheme.typography.titleLarge.copy(
                     fontWeight = FontWeight.Bold
                 ),
@@ -149,7 +149,7 @@ private fun LanguageSelectionView(
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = "For App Display & Voice Announcements (TTS)",
+                text = "Select Voice Announcement Language for ride readouts (TTS)",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
