@@ -88,10 +88,18 @@ object GitHubUpdateManager {
         scope: CoroutineScope = CoroutineScope(Dispatchers.IO),
         force: Boolean = false
     ) {
+        if (!GlobalAdminManager.isInAppUpdateActive.value) {
+            Log.i(TAG, "In-App Updates disabled globally by Admin (isInAppUpdateActive=false); aborting update check.")
+            return
+        }
         if (!force && !isAutoUpdateEnabled(context)) {
             return
         }
         scope.launch {
+            if (!GlobalAdminManager.isInAppUpdateActive.value) {
+                Log.i(TAG, "In-App Updates disabled globally by Admin; aborting coroutine update check.")
+                return@launch
+            }
             val lastCheck = getLastCheckTime(context)
             val now = System.currentTimeMillis()
             val timeSinceLastCheck = now - lastCheck
@@ -147,6 +155,11 @@ object GitHubUpdateManager {
         ignoreSkipped: Boolean = false,
         notifySystem: Boolean = true
     ): UpdateResult = withContext(Dispatchers.IO) {
+        if (!GlobalAdminManager.isInAppUpdateActive.value) {
+            Log.i(TAG, "In-App Updates disabled globally by Admin (isInAppUpdateActive=false); aborting checkForUpdates.")
+            _updateState.value = UpdateResult.Idle
+            return@withContext UpdateResult.Idle
+        }
         _updateState.value = UpdateResult.Checking
 
         var connection: HttpURLConnection? = null

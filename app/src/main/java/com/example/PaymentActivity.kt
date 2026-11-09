@@ -61,6 +61,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -84,6 +85,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.GlobalAdminManager
 import com.example.ui.theme.CaptainAutoAcceptTheme
 import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FirebaseFirestore
@@ -243,6 +245,7 @@ private fun PaymentVerificationScreenContent(
     var adminUpiId by remember { mutableStateOf("") }
     var adminPayeeName by remember { mutableStateOf("") }
     var isLoadingConfig by remember { mutableStateOf(true) }
+    val isPaymentSystemActive by GlobalAdminManager.isPaymentSystemActive.collectAsState()
 
     LaunchedEffect(Unit) {
         val (fetchedUpi, fetchedName) = PaymentActivity.fetchPaymentConfig(context)
@@ -291,89 +294,93 @@ private fun PaymentVerificationScreenContent(
             // Header Banner
             PaymentHeaderBanner()
 
-            // Step 1: Plan Selection Section
-            PlanSelectionSection(
-                selectedTier = selectedTier,
-                onSelectTier = { tier ->
-                    selectedTier = tier
-                    onTierChanged(tier)
-                    uiState = VerificationUiState.IDLE
-                    statusMessage = ""
-                }
-            )
-
-            // Step 2: Pay via UPI Section
-            UpiPaymentSection(
-                selectedTier = selectedTier,
-                adminUpiId = adminUpiId,
-                adminPayeeName = adminPayeeName,
-                isLoadingConfig = isLoadingConfig,
-                isPaymentConfigAvailable = isPaymentConfigAvailable,
-                clipboardManager = clipboardManager
-            )
-
-            // Step 3: Enter 12-Digit UTR Verification Section
-            val verifyingMessage = stringResource(R.string.payment_verifying_msg)
-            val successToastText = stringResource(R.string.payment_toast_success)
-            UtrVerificationSection(
-                utrInput = utrInput,
-                onUtrChange = { clean ->
-                    utrInput = clean
-                    if (uiState != VerificationUiState.IDLE) {
+            if (!isPaymentSystemActive) {
+                com.example.ui.screens.PaymentSystemOfflineNoticeCard()
+            } else {
+                // Step 1: Plan Selection Section
+                PlanSelectionSection(
+                    selectedTier = selectedTier,
+                    onSelectTier = { tier ->
+                        selectedTier = tier
+                        onTierChanged(tier)
                         uiState = VerificationUiState.IDLE
                         statusMessage = ""
                     }
-                },
-                uiState = uiState,
-                clipboardManager = clipboardManager,
-                focusManager = focusManager,
-                onVerifyClick = {
-                    focusManager.clearFocus()
-                    uiState = VerificationUiState.VERIFYING
-                    statusMessage = verifyingMessage
+                )
 
-                    coroutineScope.launch {
-                        val result = PassManager.verifyPaymentWithBackendDetailed(
-                            context = context,
-                            utr = utrInput,
-                            preferredTier = selectedTier
-                        )
+                // Step 2: Pay via UPI Section
+                UpiPaymentSection(
+                    selectedTier = selectedTier,
+                    adminUpiId = adminUpiId,
+                    adminPayeeName = adminPayeeName,
+                    isLoadingConfig = isLoadingConfig,
+                    isPaymentConfigAvailable = isPaymentConfigAvailable,
+                    clipboardManager = clipboardManager
+                )
 
-                        when (result) {
-                            is PassManager.VerificationResult.Success -> {
-                                uiState = VerificationUiState.SUCCESS
-                                statusMessage = context.getString(R.string.payment_success_msg, result.passTier.durationDays)
-                                Toast.makeText(context, successToastText, Toast.LENGTH_SHORT).show()
-                                delay(1500)
-                                onSuccessDone()
-                            }
-                            is PassManager.VerificationResult.NotFound -> {
-                                uiState = VerificationUiState.NOT_FOUND
-                                statusMessage = result.message
-                            }
-                            is PassManager.VerificationResult.AlreadyUsed -> {
-                                uiState = VerificationUiState.ALREADY_USED
-                                statusMessage = result.message
-                            }
-                            is PassManager.VerificationResult.Invalid -> {
-                                uiState = VerificationUiState.ERROR
-                                statusMessage = result.message
-                            }
-                            is PassManager.VerificationResult.Error -> {
-                                uiState = VerificationUiState.ERROR
-                                statusMessage = result.message
+                // Step 3: Enter 12-Digit UTR Verification Section
+                val verifyingMessage = stringResource(R.string.payment_verifying_msg)
+                val successToastText = stringResource(R.string.payment_toast_success)
+                UtrVerificationSection(
+                    utrInput = utrInput,
+                    onUtrChange = { clean ->
+                        utrInput = clean
+                        if (uiState != VerificationUiState.IDLE) {
+                            uiState = VerificationUiState.IDLE
+                            statusMessage = ""
+                        }
+                    },
+                    uiState = uiState,
+                    clipboardManager = clipboardManager,
+                    focusManager = focusManager,
+                    onVerifyClick = {
+                        focusManager.clearFocus()
+                        uiState = VerificationUiState.VERIFYING
+                        statusMessage = verifyingMessage
+
+                        coroutineScope.launch {
+                            val result = PassManager.verifyPaymentWithBackendDetailed(
+                                context = context,
+                                utr = utrInput,
+                                preferredTier = selectedTier
+                            )
+
+                            when (result) {
+                                is PassManager.VerificationResult.Success -> {
+                                    uiState = VerificationUiState.SUCCESS
+                                    statusMessage = context.getString(R.string.payment_success_msg, result.passTier.durationDays)
+                                    Toast.makeText(context, successToastText, Toast.LENGTH_SHORT).show()
+                                    delay(1500)
+                                    onSuccessDone()
+                                }
+                                is PassManager.VerificationResult.NotFound -> {
+                                    uiState = VerificationUiState.NOT_FOUND
+                                    statusMessage = result.message
+                                }
+                                is PassManager.VerificationResult.AlreadyUsed -> {
+                                    uiState = VerificationUiState.ALREADY_USED
+                                    statusMessage = result.message
+                                }
+                                is PassManager.VerificationResult.Invalid -> {
+                                    uiState = VerificationUiState.ERROR
+                                    statusMessage = result.message
+                                }
+                                is PassManager.VerificationResult.Error -> {
+                                    uiState = VerificationUiState.ERROR
+                                    statusMessage = result.message
+                                }
                             }
                         }
                     }
-                }
-            )
-
-            // Status & Feedback Card
-            if (statusMessage.isNotEmpty() || uiState == VerificationUiState.VERIFYING) {
-                StatusFeedbackCard(
-                    uiState = uiState,
-                    statusMessage = statusMessage
                 )
+
+                // Status & Feedback Card
+                if (statusMessage.isNotEmpty() || uiState == VerificationUiState.VERIFYING) {
+                    StatusFeedbackCard(
+                        uiState = uiState,
+                        statusMessage = statusMessage
+                    )
+                }
             }
 
             // Reference Help Card

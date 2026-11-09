@@ -89,6 +89,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import com.example.AccessStatus
 import com.example.DeviceUtils
+import com.example.GlobalAdminManager
 import com.example.LicenseManager
 import com.example.PassManager
 import com.example.PassTier
@@ -129,6 +130,7 @@ fun SubscriptionScreen(
     val accessStatus by LicenseManager.accessStatus.collectAsState()
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
+    val isPaymentSystemActive by GlobalAdminManager.isPaymentSystemActive.collectAsState()
 
     var selectedPassForPointsPurchase by remember { mutableStateOf<PassTier?>(null) }
     var selectedPassForUpiPayment by remember { mutableStateOf<PassTier?>(null) }
@@ -263,6 +265,13 @@ fun SubscriptionScreen(
                 )
             }
 
+            // 3.5 Prominent Payment System Offline Maintenance Notice Card
+            if (!isPaymentSystemActive) {
+                item {
+                    PaymentSystemOfflineNoticeCard()
+                }
+            }
+
             // 4. Section Title: Choose a Pass
             item {
                 Row(
@@ -280,7 +289,7 @@ fun SubscriptionScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "Smart Conversion: Pay with Points or direct UPI",
+                            text = if (isPaymentSystemActive) "Smart Conversion: Pay with Points or direct UPI" else "Purchases temporarily offline for maintenance",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -295,29 +304,33 @@ fun SubscriptionScreen(
                         passTier = tier,
                         pointsBalance = pointsBalance,
                         isProcessing = isProcessing,
+                        isPaymentSystemActive = isPaymentSystemActive,
                         onBuyWithPoints = {
-                            if (pointsBalance >= tier.pointsCost) {
+                            if (isPaymentSystemActive && pointsBalance >= tier.pointsCost) {
                                 selectedPassForPointsPurchase = tier
                             }
                         },
                         onPayViaUpi = {
-                            selectedPassForUpiPayment = tier
+                            if (isPaymentSystemActive) {
+                                selectedPassForUpiPayment = tier
+                            }
                         }
                     )
                 }
             }
 
-            // 5. Automated 12-Digit UTR Verification Card
-            item {
-                ElevatedCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onNavigateToPaymentVerification() }
-                        .testTag("verify_utr_entry_card"),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.elevatedCardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
+            // 5. Automated 12-Digit UTR Verification Card (Hidden when payment system is offline)
+            if (isPaymentSystemActive) {
+                item {
+                    ElevatedCard(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onNavigateToPaymentVerification() }
+                            .testTag("verify_utr_entry_card"),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.elevatedCardColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ),
                     elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                 ) {
                     Row(
@@ -365,6 +378,7 @@ fun SubscriptionScreen(
                     }
                 }
             }
+        }
         }
     }
 
@@ -945,6 +959,7 @@ private fun PassCard(
     passTier: PassTier,
     pointsBalance: Int,
     isProcessing: Boolean,
+    isPaymentSystemActive: Boolean = true,
     onBuyWithPoints: () -> Unit,
     onPayViaUpi: () -> Unit
 ) {
@@ -1056,7 +1071,38 @@ private fun PassCard(
             Spacer(modifier = Modifier.height(4.dp))
 
             // SMART DYNAMIC BUTTONS UI
-            if (hasEnoughPoints) {
+            if (!isPaymentSystemActive) {
+                // Payment system is offline for scheduled maintenance: hide purchase buttons
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("payment_offline_badge_${passTier.id}"),
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Purchases Offline for Maintenance",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        )
+                    }
+                }
+            } else if (hasEnoughPoints) {
                 // CASE 1: User has sufficient Points balance
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     // Primary Action: Buy with Points
@@ -1451,5 +1497,62 @@ fun EarnFreePointsCard(
         }
     }
 }
+
+/**
+ * Prominent Notice Card displayed when the payment & licensing system is offline for maintenance.
+ */
+@Composable
+fun PaymentSystemOfflineNoticeCard(
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("payment_system_offline_notice"),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f)
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.error.copy(alpha = 0.15f),
+                modifier = Modifier.size(46.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = "Maintenance Warning",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Payment System Offline",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "The payment system is currently offline for scheduled maintenance. Please check back later.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.9f)
+                )
+            }
+        }
+    }
+}
+
 
 

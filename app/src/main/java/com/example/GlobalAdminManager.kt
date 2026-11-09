@@ -70,6 +70,14 @@ object GlobalAdminManager {
     private val _offlineMessage = MutableStateFlow("Service is currently offline for scheduled maintenance. Please check back later.")
     val offlineMessage: StateFlow<String> = _offlineMessage.asStateFlow()
 
+    // State: Payment System Kill Switch
+    private val _isPaymentSystemActive = MutableStateFlow(true)
+    val isPaymentSystemActive: StateFlow<Boolean> = _isPaymentSystemActive.asStateFlow()
+
+    // State: In-App GitHub Update Kill Switch
+    private val _isInAppUpdateActive = MutableStateFlow(true)
+    val isInAppUpdateActive: StateFlow<Boolean> = _isInAppUpdateActive.asStateFlow()
+
     // State: User Ban
     private val _banState = MutableStateFlow<UserBanState>(UserBanState.NotBanned)
     val banState: StateFlow<UserBanState> = _banState.asStateFlow()
@@ -136,13 +144,22 @@ object GlobalAdminManager {
                     val message = snapshot.getString("offlineMessage")
                         ?: snapshot.getString("message")
                         ?: "Service is currently offline for scheduled maintenance. Please check back later."
+                    val paymentActive = snapshot.getBoolean("isPaymentSystemActive") ?: true
+                    val updateActive = snapshot.getBoolean("isInAppUpdateActive") ?: true
 
                     _isServiceActive.value = active
                     _offlineMessage.value = message
-                    Log.i(TAG, "Real-time global service update: isServiceActive=$active, message=$message")
+                    _isPaymentSystemActive.value = paymentActive
+                    _isInAppUpdateActive.value = updateActive
+                    Log.i(
+                        TAG,
+                        "Real-time global service update: isServiceActive=$active, isPaymentSystemActive=$paymentActive, isInAppUpdateActive=$updateActive, message=$message"
+                    )
                 } else {
                     // Default to active if doc does not exist
                     _isServiceActive.value = true
+                    _isPaymentSystemActive.value = true
+                    _isInAppUpdateActive.value = true
                 }
                 updateBlockedState()
             }

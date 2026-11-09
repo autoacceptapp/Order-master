@@ -114,6 +114,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.GlobalAdminManager
 import com.example.LicenseManager
 import com.example.PassManager
 import com.example.PassTier
@@ -149,6 +150,7 @@ fun PaymentVerificationScreen(
     val utrInput by viewModel.utrInput.collectAsState()
     val selectedTier by viewModel.selectedTier.collectAsState()
     val isUtrValid by viewModel.isUtrValid.collectAsState()
+    val isPaymentSystemActive by GlobalAdminManager.isPaymentSystemActive.collectAsState()
 
     var merchantVpa by remember { mutableStateOf("") }
     var merchantName by remember { mutableStateOf("OrderMaster Captain Store") }
@@ -289,8 +291,15 @@ fun PaymentVerificationScreen(
                 }
             }
 
-            // 4. Pass Tier Selector Chip Row
-            if (uiState !is PaymentVerificationState.Success) {
+            // Prominent Payment System Offline Maintenance Notice Card
+            if (!isPaymentSystemActive) {
+                item {
+                    PaymentSystemOfflineNoticeCard()
+                }
+            }
+
+            // 4. Pass Tier Selector Chip Row (Visible only when payment system is active)
+            if (isPaymentSystemActive && uiState !is PaymentVerificationState.Success) {
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
