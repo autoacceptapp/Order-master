@@ -10,6 +10,7 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -41,6 +42,9 @@ open class MyAccessibilityService : AccessibilityService() {
         const val TARGET_PACKAGE = "com.rapido.rider"
         const val DEBOUNCE_WINDOW_MS = 100L // 100ms debounce to balance ultra-fast response with frame rate stability
         const val COOLDOWN_MS = 2000L // 2 seconds delay between order acceptance
+        const val MAX_TRAVERSAL_TIMEOUT_MS = 45L // Strictly under 50ms traversal timeout to eliminate ANRs
+        const val MAX_TRAVERSAL_DEPTH = 12       // Strictly limit recursion depth to prevent ANRs on nested layouts
+        const val MIN_COORDINATE_TAP_INTERVAL_MS = 2000L // Strict rate-limiter: min 2000ms delay between coordinate taps
 
         @Volatile
         var isServiceRunning: Boolean = false
@@ -50,10 +54,10 @@ open class MyAccessibilityService : AccessibilityService() {
         var instance: MyAccessibilityService? = null
             protected set
 
-        // Compiled regular expressions for resilient multi-language offer action detection
+        // Compiled regular expressions for resilient multi-language offer action detection.
+        // Specifically tailored to match button actions without matching conversational sentences or chat messages.
         val ACCEPT_REGEX = Regex(
-            pattern = """\b(?:accept|auto[\s_-]*accept|confirm|select|take\s*(?:the\s*)?(?:ride|order)|swipe\s*to\s*accept)\b|^go$|स्वीकार|स्वीकारें|कन्फर्म|चुनें|चुने|राइड\s*लें|ऑर्डर\s*लें|sweekar|sweekarein|swikar|swikarein|accept\s*karein|confirm\s*karein""",
-            options = setOf(RegexOption.IGNORE_CASE)
+            pattern = """(?i)(?:^\s*(?:accept(?:\s+(?:order|ride|request))?|auto[\s_-]*accept|confirm(?:\s+(?:order|ride))?|select|take\s*(?:the\s*)?(?:ride|order)|swipe\s*to\s*(?:accept|confirm)|go|(?:(?:राइड|ऑर्डर)\s*)?स्वीकार(?:\s*करें|ें)?|कन्फर्म(?:\s*करें)?|चुनें|चुने|राइड\s*लें|ऑर्डर\s*लें|sweekar(?:ein)?|swikar(?:ein)?|accept\s*karein|confirm\s*karein)(?:\s*[\(\[]?\d+s?[\)\]]?)?\s*$|\b(?:swipe\s*to\s*accept|auto[\s_-]*accept|accept\s*(?:order|ride|request)|take\s*ride|confirm\s*(?:order|ride)|accept\s*karein|confirm\s*karein)\b|(?:(?:राइड|ऑर्डर)\s*)?स्वीकार(?:\s*करें)?|कन्फर्म(?:\s*करें)?)"""
         )
 
         val REJECT_REGEX = Regex(
@@ -70,10 +74,15 @@ open class MyAccessibilityService : AccessibilityService() {
         )
 
         // Low-cost signal detection regex for fast event pre-filtering.
-        // Tolerant to Indian Rupee symbol variants ('₹', '\u20B9', '\u20A8'), currency abbreviations ('rs', 'inr'),
-        // currency digits patterns (₹50, 50₹, Rs. 50), distances, and ride-offer keywords.
+        // Strictly handles Indian Rupee symbol variants ('₹', '\u20B9', '\u20A8', 'Rs', 'INR') amidst mixed Hinglish text
+        // without triggering on standard system notifications, status updates, or chat messages.
         private val OFFER_SIGNAL_REGEX = Regex(
-            pattern = """(?i)(?:[\u20B9\u20A8₹]|inr|rs\.?|fare|ride|trip|order|request|pickup|drop|cash|online|pay|paid|payment|\bkm\b|\bmin\b|\bmins\b|accept|confirm|reject|skip|pass|decline|captain|स्वीकार|अस्वीकार|छोड़ें|छोड़े|रद्द|sweekar|asweekar|chhodein|[\u20B9\u20A8₹]\s*\d+|\d+\s*[\u20B9\u20A8₹]|\b\d+(?:\.\d+)?\s*(?:km|inr|rs|min)\b)"""
+            pattern = """(?i)(?:(?:[₹\u20B9\u20A8]|(?:\b(?:Rs\.?|INR)\b))\s*\d{2,4}(?:\.\d{1,2})?|\b\d{2,4}(?:\.\d{1,2})?\s*(?:[₹\u20B9\u20A8]|(?:\b(?:Rs\.?|INR)\b))|\b\d+(?:\.\d+)?\s*(?:km|kms|kilometers?)\b|\b(?:ride\s*request|order\s*request|incoming\s*order|new\s*order|new\s*ride|incoming\s*ride|pickup\s*distance|drop\s*distance|swipe\s*to\s*accept|auto[\s_-]*accept|accept\s*(?:order|ride|request)|take\s*ride|rider\s*fare|trip\s*fare|total\s*fare|pickup\s*location|drop\s*location)\b|\b(?:राइड\s*(?:रिक्वेस्ट|ऑर्डर|स्वीकार)|ऑर्डर\s*स्वीकार|स्वीकार\s*करें|कन्फर्म\s*करें|sweekar\s*karein|accept\s*karein)\b)"""
+        )
+
+        // Conversational chat and standard notification noise patterns to reject false-positives
+        val CHAT_OR_NOTIFICATION_REGEX = Regex(
+            pattern = """(?i)\b(?:type\s*(?:a\s*)?message|new\s*message|chat|reply|whatsapp|notification|can\s*you|please|karo|kardo|karoge|mat\s*karo|nahi|bhaiya|bhai|sir|customer|rated|rating|completed|delivered|cancelled|history|battery|signal)\b|[?!]"""
         )
 
         // Class names that indicate high-frequency telemetry / map rendering events that should be dropped immediately
@@ -90,6 +99,9 @@ open class MyAccessibilityService : AccessibilityService() {
 
     @Volatile
     private var lastProcessTime: Long = 0L
+
+    @Volatile
+    private var lastCoordinateTapTime: Long = 0L
 
     // Cache of recently processed offer hashes to prevent re-evaluating the same order repeatedly
     private val processedOfferIds = LinkedHashSet<String>()
@@ -319,6 +331,9 @@ open class MyAccessibilityService : AccessibilityService() {
         }
 
         if (eventContent.isNotEmpty()) {
+            if (CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(eventContent)) {
+                return false
+            }
             if (OFFER_SIGNAL_REGEX.containsMatchIn(eventContent) ||
                 isAcceptAction(eventContent) ||
                 isRejectAction(eventContent)
@@ -709,24 +724,24 @@ open class MyAccessibilityService : AccessibilityService() {
 
     /**
      * Finds an actionable reject node strictly located inside the provided screen bounding box.
+     * Enforces depth-limiting (<= 12) and strict timeout (< 50ms) to prevent ANRs on heavily nested layouts.
      */
     fun findRejectNodeInBounds(root: AccessibilityNodeInfo, bounds: Rect): AccessibilityNodeInfo? {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
         @Suppress("DEPRECATION")
-        queue.add(AccessibilityNodeInfo.obtain(root))
+        queue.add(Pair(AccessibilityNodeInfo.obtain(root), 0))
 
         val startTime = System.currentTimeMillis()
-        val timeoutMs = 150L
 
         while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > timeoutMs) {
+            if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
                 while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
+                    recycleNode(queue.removeFirst().first)
                 }
                 break
             }
 
-            val node = queue.removeFirst()
+            val (node, depth) = queue.removeFirst()
 
             val text = node.text?.toString() ?: ""
             val desc = node.contentDescription?.toString() ?: ""
@@ -742,16 +757,21 @@ open class MyAccessibilityService : AccessibilityService() {
 
                 if (isInBounds && isActionableNodeOrChild(node)) {
                     while (queue.isNotEmpty()) {
-                        recycleNode(queue.removeFirst())
+                        recycleNode(queue.removeFirst().first)
                     }
                     return node
                 }
             }
 
-            val childCount = node.childCount
-            for (i in 0 until childCount) {
-                val child = node.getChild(i) ?: continue
-                queue.add(child)
+            if (depth < MAX_TRAVERSAL_DEPTH) {
+                val childCount = node.childCount
+                for (i in 0 until childCount) {
+                    if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                        break
+                    }
+                    val child = node.getChild(i) ?: continue
+                    queue.add(Pair(child, depth + 1))
+                }
             }
             recycleNode(node)
         }
@@ -868,24 +888,24 @@ open class MyAccessibilityService : AccessibilityService() {
 
     /**
      * Finds an actionable accept node strictly located inside the provided screen bounding box.
+     * Enforces depth-limiting (<= 12) and strict timeout (< 50ms) to prevent ANRs on heavily nested layouts.
      */
     fun findAcceptNodeInBounds(root: AccessibilityNodeInfo, bounds: Rect): AccessibilityNodeInfo? {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
         @Suppress("DEPRECATION")
-        queue.add(AccessibilityNodeInfo.obtain(root))
+        queue.add(Pair(AccessibilityNodeInfo.obtain(root), 0))
 
         val startTime = System.currentTimeMillis()
-        val timeoutMs = 150L
 
         while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > timeoutMs) {
+            if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
                 while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
+                    recycleNode(queue.removeFirst().first)
                 }
                 break
             }
 
-            val node = queue.removeFirst()
+            val (node, depth) = queue.removeFirst()
 
             val text = node.text?.toString() ?: ""
             val desc = node.contentDescription?.toString() ?: ""
@@ -901,16 +921,21 @@ open class MyAccessibilityService : AccessibilityService() {
 
                 if (isInBounds && isActionableNodeOrChild(node)) {
                     while (queue.isNotEmpty()) {
-                        recycleNode(queue.removeFirst())
+                        recycleNode(queue.removeFirst().first)
                     }
                     return node
                 }
             }
 
-            val childCount = node.childCount
-            for (i in 0 until childCount) {
-                val child = node.getChild(i) ?: continue
-                queue.add(child)
+            if (depth < MAX_TRAVERSAL_DEPTH) {
+                val childCount = node.childCount
+                for (i in 0 until childCount) {
+                    if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                        break
+                    }
+                    val child = node.getChild(i) ?: continue
+                    queue.add(Pair(child, depth + 1))
+                }
             }
             recycleNode(node)
         }
@@ -1093,22 +1118,21 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     fun findTargetActionNode(root: AccessibilityNodeInfo, targetLabels: List<String>): AccessibilityNodeInfo? {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
         @Suppress("DEPRECATION")
-        queue.add(AccessibilityNodeInfo.obtain(root))
+        queue.add(Pair(AccessibilityNodeInfo.obtain(root), 0))
 
         val startTime = System.currentTimeMillis()
-        val timeoutMs = 150L
 
         while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > timeoutMs) {
+            if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
                 while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
+                    recycleNode(queue.removeFirst().first)
                 }
                 break
             }
 
-            val node = queue.removeFirst()
+            val (node, depth) = queue.removeFirst()
 
             val text = node.text?.toString() ?: ""
             val desc = node.contentDescription?.toString() ?: ""
@@ -1122,16 +1146,21 @@ open class MyAccessibilityService : AccessibilityService() {
 
             if (matchesLabel && isActionableNodeOrChild(node)) {
                 while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
+                    recycleNode(queue.removeFirst().first)
                 }
                 return node
             }
 
-            val childCount = node.childCount
-            for (i in 0 until childCount) {
-                val child = node.getChild(i)
-                if (child != null) {
-                    queue.add(child)
+            if (depth < MAX_TRAVERSAL_DEPTH) {
+                val childCount = node.childCount
+                for (i in 0 until childCount) {
+                    if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                        break
+                    }
+                    val child = node.getChild(i)
+                    if (child != null) {
+                        queue.add(Pair(child, depth + 1))
+                    }
                 }
             }
             recycleNode(node)
@@ -1162,6 +1191,16 @@ open class MyAccessibilityService : AccessibilityService() {
             Log.w(TAG, "dispatchTapAtCoordinates blocked: Service offline or user is banned.")
             return false
         }
+
+        // Strict rate-limiter (minimum 2000ms delay) on fallback coordinate taps to prevent rapid screen-tapping spam
+        val now = SystemClock.uptimeMillis()
+        val elapsed = now - lastCoordinateTapTime
+        if (elapsed < MIN_COORDINATE_TAP_INTERVAL_MS) {
+            Log.w(TAG, "dispatchTapAtCoordinates rate-limited: only ${elapsed}ms elapsed since last tap (min: ${MIN_COORDINATE_TAP_INTERVAL_MS}ms). Screen-tapping spam prevented.")
+            return false
+        }
+        lastCoordinateTapTime = now
+
         return suspendCancellableCoroutine { continuation ->
             try {
                 val clickPath = Path().apply {
@@ -1266,22 +1305,21 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     fun findAcceptNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
         @Suppress("DEPRECATION")
-        queue.add(AccessibilityNodeInfo.obtain(root))
+        queue.add(Pair(AccessibilityNodeInfo.obtain(root), 0))
 
         val startTime = System.currentTimeMillis()
-        val timeoutMs = 150L
 
         while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > timeoutMs) {
+            if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
                 while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
+                    recycleNode(queue.removeFirst().first)
                 }
                 break
             }
 
-            val node = queue.removeFirst()
+            val (node, depth) = queue.removeFirst()
 
             val text = node.text?.toString() ?: ""
             val desc = node.contentDescription?.toString() ?: ""
@@ -1290,17 +1328,22 @@ open class MyAccessibilityService : AccessibilityService() {
             if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
                 if (isActionableNodeOrChild(node)) {
                     while (queue.isNotEmpty()) {
-                        recycleNode(queue.removeFirst())
+                        recycleNode(queue.removeFirst().first)
                     }
                     return node
                 }
             }
 
-            val childCount = node.childCount
-            for (i in 0 until childCount) {
-                val child = node.getChild(i)
-                if (child != null) {
-                    queue.add(child)
+            if (depth < MAX_TRAVERSAL_DEPTH) {
+                val childCount = node.childCount
+                for (i in 0 until childCount) {
+                    if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                        break
+                    }
+                    val child = node.getChild(i)
+                    if (child != null) {
+                        queue.add(Pair(child, depth + 1))
+                    }
                 }
             }
             recycleNode(node)
@@ -1310,7 +1353,8 @@ open class MyAccessibilityService : AccessibilityService() {
 
     fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
-        if (trimmed.isEmpty()) return false
+        if (trimmed.isEmpty() || trimmed.length > 50) return false
+        if (CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(trimmed)) return false
         return ACCEPT_REGEX.containsMatchIn(trimmed)
     }
 
@@ -1331,22 +1375,21 @@ open class MyAccessibilityService : AccessibilityService() {
     }
 
     fun findRejectNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
         @Suppress("DEPRECATION")
-        queue.add(AccessibilityNodeInfo.obtain(root))
+        queue.add(Pair(AccessibilityNodeInfo.obtain(root), 0))
 
         val startTime = System.currentTimeMillis()
-        val timeoutMs = 120L
 
         while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > timeoutMs) {
+            if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
                 while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
+                    recycleNode(queue.removeFirst().first)
                 }
                 break
             }
 
-            val node = queue.removeFirst()
+            val (node, depth) = queue.removeFirst()
 
             val text = node.text?.toString() ?: ""
             val desc = node.contentDescription?.toString() ?: ""
@@ -1355,17 +1398,22 @@ open class MyAccessibilityService : AccessibilityService() {
             if (isRejectAction(text) || isRejectAction(desc) || isRapidoRejectId(viewId)) {
                 if (isActionableNodeOrChild(node)) {
                     while (queue.isNotEmpty()) {
-                        recycleNode(queue.removeFirst())
+                        recycleNode(queue.removeFirst().first)
                     }
                     return node
                 }
             }
 
-            val childCount = node.childCount
-            for (i in 0 until childCount) {
-                val child = node.getChild(i)
-                if (child != null) {
-                    queue.add(child)
+            if (depth < MAX_TRAVERSAL_DEPTH) {
+                val childCount = node.childCount
+                for (i in 0 until childCount) {
+                    if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                        break
+                    }
+                    val child = node.getChild(i)
+                    if (child != null) {
+                        queue.add(Pair(child, depth + 1))
+                    }
                 }
             }
             recycleNode(node)

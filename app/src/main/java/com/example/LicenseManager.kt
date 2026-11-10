@@ -251,6 +251,14 @@ object LicenseManager {
     const val KEY_CACHED_TRIAL_EXPIRY = "cachedTrialExpiry"
     const val KEY_CACHED_TRIAL_USED = "cachedTrialUsed"
     const val KEY_LAST_SERVER_SYNC_TIME = "cachedLastServerSyncTime"
+    const val KEY_LAST_SERVER_SYNC_ELAPSED = "cachedLastServerSyncElapsed"
+    const val KEY_LAST_SERVER_TIMESTAMP = "cachedLastServerTimestamp"
+
+    // Maximum allowed discrepancy between wall clock and monotonic elapsedRealtime (5 minutes)
+    const val MAX_ALLOWED_CLOCK_DRIFT_MS = 5L * 60L * 1000L
+
+    // Server-side timestamp cross-check interval: 30 Minutes
+    const val PERIODIC_INTEGRITY_CHECK_INTERVAL_MS = 30L * 60L * 1000L
 
     data class CachedLicensingData(
         val passTier: PassTier?,
@@ -307,8 +315,42 @@ object LicenseManager {
     val unlockedFeatures: StateFlow<Map<String, Long>> = _unlockedFeatures.asStateFlow()
 
     // Global Service Switch & User Ban StateFlows
+    private const val SERVICE_ACTIVE_MASK_TRUE = 0x3F9A6C1EL
+    private const val SERVICE_ACTIVE_MASK_FALSE = 0x7E2B5D80L
+
+    private fun safeElapsedRealtime(): Long = try {
+        SystemClock.elapsedRealtime()
+    } catch (_: Throwable) {
+        System.currentTimeMillis()
+    }
+
+    @Volatile
+    private var serviceActiveClockSalt: Long = safeElapsedRealtime()
+    @Volatile
+    private var encodedServiceActiveToken: Long = SERVICE_ACTIVE_MASK_TRUE xor serviceActiveClockSalt
+
     private val _isServiceActiveFlow = MutableStateFlow(true)
     val isServiceActiveFlow: StateFlow<Boolean> = _isServiceActiveFlow.asStateFlow()
+
+    fun setServiceActiveState(isActive: Boolean) {
+        val salt = safeElapsedRealtime()
+        serviceActiveClockSalt = salt
+        encodedServiceActiveToken = (if (isActive) SERVICE_ACTIVE_MASK_TRUE else SERVICE_ACTIVE_MASK_FALSE) xor salt
+        _isServiceActiveFlow.value = isActive
+    }
+
+    /**
+     * Anti-Hack Memory Shield: Validates service active status against dynamic XOR clock salt
+     * and mathematical clock tampering checks. Prevents memory modification of boolean flags.
+     */
+    fun isServiceActive(context: Context? = null): Boolean {
+        if (isClockTamperingDetected(context)) {
+            Log.w(TAG, "isServiceActive: Clock tampering detected! Returning false.")
+            return false
+        }
+        val decoded = encodedServiceActiveToken xor serviceActiveClockSalt
+        return (decoded == SERVICE_ACTIVE_MASK_TRUE) && _isServiceActiveFlow.value
+    }
 
     private val _isBannedFlow = MutableStateFlow(false)
     val isBannedFlow: StateFlow<Boolean> = _isBannedFlow.asStateFlow()
@@ -390,7 +432,7 @@ object LicenseManager {
                         return@addSnapshotListener
                     }
                     val isActive = snapshot?.getBoolean("isServiceActive") ?: true
-                    _isServiceActiveFlow.value = isActive
+                    setServiceActiveState(isActive)
                     Log.d(TAG, "LicenseManager: isServiceActive updated to $isActive")
                 }
         } catch (e: Exception) {
@@ -404,6 +446,7 @@ object LicenseManager {
     fun recordServerTimeSync(serverMs: Long) {
         if (serverMs > 0L) {
             val nowElapsed = SystemClock.elapsedRealtime()
+            val nowWall = System.currentTimeMillis()
             serverTimeBaselineMs = serverMs
             serverTimeBaselineElapsedMs = nowElapsed
             lastSuccessfulServerSyncElapsedMs = nowElapsed
@@ -411,7 +454,9 @@ object LicenseManager {
                 try {
                     ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
                         .edit()
-                        .putLong(KEY_LAST_SERVER_SYNC_TIME, System.currentTimeMillis())
+                        .putLong(KEY_LAST_SERVER_SYNC_TIME, nowWall)
+                        .putLong(KEY_LAST_SERVER_SYNC_ELAPSED, nowElapsed)
+                        .putLong(KEY_LAST_SERVER_TIMESTAMP, serverMs)
                         .apply()
                 } catch (_: Exception) {}
             }
@@ -435,15 +480,98 @@ object LicenseManager {
     }
 
     /**
-     * Checks if the maximum allowed offline grace period (2 hours) has expired.
+     * Mathematically evaluates whether local wall-clock time and monotonic elapsedRealtime
+     * have diverged beyond acceptable physical limits (elapsed time hooking / clock rollback).
+     *
+     * Legitimate offline operation:
+     * SystemClock.elapsedRealtime() advances at the exact same rate as wall-clock time
+     * (including during deep sleep / Doze). A divergence > 5 minutes indicates clock tampering.
+     */
+    fun isClockTamperingDetected(context: Context? = null): Boolean {
+        val ctx = context ?: appContext ?: return false
+        val prefs = try {
+            ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+        } catch (_: Exception) { return false }
+
+        val syncWall = prefs.getLong(KEY_LAST_SERVER_SYNC_TIME, 0L)
+        val syncElapsed = prefs.getLong(KEY_LAST_SERVER_SYNC_ELAPSED, 0L)
+
+        // If no server sync has been established yet, cannot prove tampering mathematically
+        if (syncWall <= 0L || syncElapsed <= 0L) return false
+
+        val currentWall = System.currentTimeMillis()
+        val currentElapsed = SystemClock.elapsedRealtime()
+
+        val deltaWall = currentWall - syncWall
+        val deltaElapsed = currentElapsed - syncElapsed
+
+        // 1. Clock turned backwards into the past (rollback exploit)
+        if (deltaWall < -60_000L) {
+            Log.w(TAG, "Clock tampering detected: Wall clock wound back by ${-deltaWall}ms")
+            return true
+        }
+
+        // 2. Monotonic clock moved backwards (impossible without kernel/hooking tampering)
+        if (deltaElapsed < -5_000L) {
+            Log.w(TAG, "Clock tampering detected: Monotonic elapsedRealtime moved backwards (${deltaElapsed}ms)")
+            return true
+        }
+
+        // 3. Mathematical discrepancy between elapsed realtime and wall-clock time
+        val drift = kotlin.math.abs(deltaWall - deltaElapsed)
+        if (drift > MAX_ALLOWED_CLOCK_DRIFT_MS) {
+            Log.w(TAG, "Clock tampering mathematically detected: deltaWall=$deltaWall, deltaElapsed=$deltaElapsed, drift=$drift > max=$MAX_ALLOWED_CLOCK_DRIFT_MS")
+            return true
+        }
+
+        return false
+    }
+
+    /**
+     * Enforces immediate invalidation of local license cache and triggers cloud re-sync
+     * when clock tampering or expired grace period is detected.
+     */
+    fun invalidateAndForceCloudResync(context: Context, reason: String) {
+        Log.w(TAG, "INVALIDATING LICENSE CACHE: $reason. Triggering mandatory cloud re-sync.")
+        clearLicensingCache(context)
+        serverPassTier = null
+        serverPassExpiry = 0L
+        serverTrialClaimed = 0L
+        serverTrialExpiry = 0L
+        serverTrialUsed = true // Block free trial exploitation on tampered environments
+
+        _accessStatus.value = AccessStatus.Expired(
+            isTrialUsed = true,
+            hasHadPreviousPass = true,
+            message = "Security verification required. Please connect to internet to verify your subscription."
+        )
+
+        scope.launch {
+            try {
+                syncHardwareTrialAndLicensing()
+            } catch (e: Exception) {
+                Log.w(TAG, "Mandatory cloud re-sync attempt failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Checks if the maximum allowed offline grace period (2 hours) has expired or if clock tampering was detected.
      */
     fun isOfflineGracePeriodExpired(context: Context? = null): Boolean {
+        val ctx = context ?: appContext
+
+        // 1. If tampering is mathematically detected, offline grace is voided immediately
+        if (isClockTamperingDetected(ctx)) {
+            Log.w(TAG, "isOfflineGracePeriodExpired: Clock tampering mathematically detected. Voiding offline grace.")
+            return true
+        }
+
         val lastSync = lastSuccessfulServerSyncElapsedMs
         if (lastSync > 0L) {
             val offlineDuration = SystemClock.elapsedRealtime() - lastSync
             if (offlineDuration > OFFLINE_GRACE_PERIOD_MS) return true
         }
-        val ctx = context ?: appContext
         if (ctx != null) {
             try {
                 val prefs = ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
@@ -461,6 +589,56 @@ object LicenseManager {
     }
 
     /**
+     * Performs timestamp cross-check every 30 minutes.
+     * Evaluates clock tampering and forces mandatory cloud re-sync if delta deviates drastically,
+     * while preserving legitimate offline users within the 2-hour grace period.
+     */
+    fun performTimestampIntegrityCrossCheck(context: Context) {
+        Log.d(TAG, "Executing periodic 30-minute timestamp integrity cross-check...")
+
+        // 1. Mathematical tampering check:
+        if (isClockTamperingDetected(context)) {
+            invalidateAndForceCloudResync(
+                context,
+                "Periodic cross-check: Mathematical clock tampering / elapsed time hooking detected"
+            )
+            return
+        }
+
+        // 2. Check offline grace period expiration (> 2 hours without server sync):
+        if (isOfflineGracePeriodExpired(context)) {
+            Log.w(TAG, "Periodic cross-check: Offline grace period (2 hours) expired.")
+            invalidateAndForceCloudResync(
+                context,
+                "Offline grace period (2 hours) expired without server confirmation"
+            )
+            return
+        }
+
+        // 3. If online, perform normal cloud re-sync:
+        val authState = GoogleAuthManager.userAuthState.value
+        if (authState.isLoggedIn) {
+            scope.launch {
+                try {
+                    syncHardwareTrialAndLicensing()
+                } catch (e: Exception) {
+                    Log.d(TAG, "Periodic cloud re-sync skipped (offline/network error): ${e.message}")
+                }
+            }
+        }
+    }
+
+    private val periodicTimestampCrossCheckRunnable = object : Runnable {
+        override fun run() {
+            val ctx = appContext
+            if (ctx != null) {
+                performTimestampIntegrityCrossCheck(ctx)
+            }
+            mainHandler.postDelayed(this, PERIODIC_INTEGRITY_CHECK_INTERVAL_MS)
+        }
+    }
+
+    /**
      * Saves authoritative licensing and trial data to SharedPreferences local UI cache.
      * Prevents time-reset and loading flicker during app startup.
      */
@@ -473,7 +651,9 @@ object LicenseManager {
         trialUsed: Boolean
     ) {
         try {
-            lastSuccessfulServerSyncElapsedMs = SystemClock.elapsedRealtime()
+            val nowElapsed = SystemClock.elapsedRealtime()
+            val nowWall = System.currentTimeMillis()
+            lastSuccessfulServerSyncElapsedMs = nowElapsed
             val prefs = context.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
             prefs.edit()
                 .putString(KEY_CACHED_PASS_TIER, passTier?.id ?: "")
@@ -481,7 +661,8 @@ object LicenseManager {
                 .putLong(KEY_CACHED_TRIAL_CLAIMED, trialClaimed)
                 .putLong(KEY_CACHED_TRIAL_EXPIRY, trialExpiry)
                 .putBoolean(KEY_CACHED_TRIAL_USED, trialUsed)
-                .putLong(KEY_LAST_SERVER_SYNC_TIME, System.currentTimeMillis())
+                .putLong(KEY_LAST_SERVER_SYNC_TIME, nowWall)
+                .putLong(KEY_LAST_SERVER_SYNC_ELAPSED, nowElapsed)
                 .commit()
             Log.d(TAG, "Saved authoritative licensing cache: passTier=${passTier?.id}, passExpiry=$passExpiry, trialClaimed=$trialClaimed, trialExpiry=$trialExpiry, trialUsed=$trialUsed")
         } catch (e: Exception) {
@@ -581,15 +762,16 @@ object LicenseManager {
     }
 
     /**
-     * Ensures an active 4-second safety timeout is running whenever status is Loading.
+     * Ensures an active 3-second safety timeout is running on the Main Thread whenever status is Loading.
+     * Guarantees that dropped-network or cold-start race conditions never leave the user permanently frozen on splash.
      */
     fun ensureLoadingTimeout() {
         if (_accessStatus.value !is AccessStatus.Loading) return
-        if (loadingTimeoutJob?.isActive == true) return
-        loadingTimeoutJob = scope.launch {
-            kotlinx.coroutines.delay(4000L)
+        loadingTimeoutJob?.cancel()
+        loadingTimeoutJob = scope.launch(Dispatchers.Main) {
+            kotlinx.coroutines.delay(3000L)
             if (_accessStatus.value is AccessStatus.Loading) {
-                Log.w(TAG, "Cloud sync resolution timed out after 4s; releasing loading lock.")
+                Log.w(TAG, "Cloud sync resolution timed out after 3s; releasing loading lock.")
                 forceReleaseLoadingState()
             }
         }
@@ -617,13 +799,9 @@ object LicenseManager {
         // 2. Start recurring countdown ticker
         startStatusTicker()
 
-        // 2.5 Start real-time global service settings listener
-        startGlobalSettingsListener()
-
-        // 2.7 Immediately start user document real-time listener for current profile key
-        val customKey = resolveUserKey(ctx)
-        currentUserKey = customKey
-        syncUserLicensingDocument(customKey, null)
+        // 2.2 Schedule periodic 30-minute server-side timestamp cross-check
+        mainHandler.removeCallbacks(periodicTimestampCrossCheckRunnable)
+        mainHandler.postDelayed(periodicTimestampCrossCheckRunnable, PERIODIC_INTEGRITY_CHECK_INTERVAL_MS)
 
         // 3. Register network callback to automatically sync with Firestore upon reconnect
         registerNetworkCallback(ctx)
@@ -638,8 +816,13 @@ object LicenseManager {
             }
         }
 
-        // 5. Initiate authoritative Firestore cloud sync
-        scope.launch {
+        // 5. Asynchronously initialize background listeners and cloud sync off the Main Thread
+        scope.launch(Dispatchers.IO) {
+            performTimestampIntegrityCrossCheck(ctx)
+            startGlobalSettingsListener()
+            val customKey = resolveUserKey(ctx)
+            currentUserKey = customKey
+            syncUserLicensingDocument(customKey, null)
             syncHardwareTrialAndLicensing()
         }
 
@@ -679,6 +862,9 @@ object LicenseManager {
             userDocListener = null
             globalSettingsListener?.remove()
             globalSettingsListener = null
+            try {
+                mainHandler.removeCallbacks(periodicTimestampCrossCheckRunnable)
+            } catch (_: Exception) {}
         }
     }
 
@@ -755,72 +941,83 @@ object LicenseManager {
             return@withContext Result.failure(e)
         }
 
-        val outcome = withTimeoutOrNull(ACTION_TIMEOUT_MS) {
-            suspendCancellableCoroutine<Result<DocumentSnapshot>> { continuation ->
-                var listenerRegistration: ListenerRegistration? = null
-                val isResumed = AtomicBoolean(false)
+        var listenerRegistration: ListenerRegistration? = null
+        val isResumed = AtomicBoolean(false)
 
-                listenerRegistration = docRef.addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        Log.w(TAG, "Action $actionType snapshot listener error: ${error.message}")
-                        if (isResumed.compareAndSet(false, true)) {
-                            listenerRegistration?.remove()
-                            continuation.resume(Result.failure(error))
-                        }
-                        return@addSnapshotListener
-                    }
-
-                    if (snapshot != null && snapshot.exists()) {
-                        val status = snapshot.getString("status") ?: "PENDING"
-                        if (status.equals("COMPLETED", ignoreCase = true)) {
-                            Log.i(TAG, "Action $actionType (doc ${docRef.id}) marked COMPLETED by Admin server.")
+        val outcome = try {
+            withTimeoutOrNull(ACTION_TIMEOUT_MS) {
+                suspendCancellableCoroutine<Result<DocumentSnapshot>> { continuation ->
+                    listenerRegistration = docRef.addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            Log.w(TAG, "Action $actionType snapshot listener error: ${error.message}")
                             if (isResumed.compareAndSet(false, true)) {
                                 listenerRegistration?.remove()
-                                continuation.resume(Result.success(snapshot))
+                                continuation.resume(Result.failure(error))
+                            }
+                            return@addSnapshotListener
+                        }
 
-                                // Delayed 30-second database cleanup of processed action document
-                                scope.launch(Dispatchers.IO) {
-                                    try {
-                                        kotlinx.coroutines.delay(30_000L)
-                                        docRef.delete().await()
-                                        Log.d(TAG, "Delayed cleanup: Deleted completed action document ${docRef.id} after 30s")
-                                    } catch (cleanupEx: Exception) {
-                                        Log.w(TAG, "Notice: pending_actions cleanup suppressed for ${docRef.id}: ${cleanupEx.message}")
+                        if (snapshot != null && snapshot.exists()) {
+                            val status = snapshot.getString("status") ?: "PENDING"
+                            if (status.equals("COMPLETED", ignoreCase = true)) {
+                                Log.i(TAG, "Action $actionType (doc ${docRef.id}) marked COMPLETED by Admin server.")
+                                if (isResumed.compareAndSet(false, true)) {
+                                    listenerRegistration?.remove()
+                                    continuation.resume(Result.success(snapshot))
+
+                                    // Delayed 30-second database cleanup of processed action document
+                                    scope.launch(Dispatchers.IO) {
+                                        try {
+                                            kotlinx.coroutines.delay(30_000L)
+                                            docRef.delete().await()
+                                            Log.d(TAG, "Delayed cleanup: Deleted completed action document ${docRef.id} after 30s")
+                                        } catch (cleanupEx: Exception) {
+                                            Log.w(TAG, "Notice: pending_actions cleanup suppressed for ${docRef.id}: ${cleanupEx.message}")
+                                        }
+                                    }
+                                }
+                            } else if (status.equals("FAILED", ignoreCase = true)) {
+                                val errorMsg = snapshot.getString("errorMessage")
+                                    ?: snapshot.getString("error")
+                                    ?: "Action $actionType failed on server."
+                                Log.w(TAG, "Action $actionType (doc ${docRef.id}) marked FAILED: $errorMsg")
+                                if (isResumed.compareAndSet(false, true)) {
+                                    listenerRegistration?.remove()
+                                    continuation.resume(Result.failure(Exception(errorMsg)))
+
+                                    // Delayed 30-second database cleanup of processed action document
+                                    scope.launch(Dispatchers.IO) {
+                                        try {
+                                            kotlinx.coroutines.delay(30_000L)
+                                            docRef.delete().await()
+                                            Log.d(TAG, "Delayed cleanup: Deleted failed action document ${docRef.id} after 30s")
+                                        } catch (cleanupEx: Exception) {
+                                            Log.w(TAG, "Notice: pending_actions cleanup suppressed for ${docRef.id}: ${cleanupEx.message}")
+                                        }
                                     }
                                 }
                             }
-                        } else if (status.equals("FAILED", ignoreCase = true)) {
-                            val errorMsg = snapshot.getString("errorMessage")
-                                ?: snapshot.getString("error")
-                                ?: "Action $actionType failed on server."
-                            Log.w(TAG, "Action $actionType (doc ${docRef.id}) marked FAILED: $errorMsg")
-                            if (isResumed.compareAndSet(false, true)) {
-                                listenerRegistration?.remove()
-                                continuation.resume(Result.failure(Exception(errorMsg)))
-
-                                // Delayed 30-second database cleanup of processed action document
-                                scope.launch(Dispatchers.IO) {
-                                    try {
-                                        kotlinx.coroutines.delay(30_000L)
-                                        docRef.delete().await()
-                                        Log.d(TAG, "Delayed cleanup: Deleted failed action document ${docRef.id} after 30s")
-                                    } catch (cleanupEx: Exception) {
-                                        Log.w(TAG, "Notice: pending_actions cleanup suppressed for ${docRef.id}: ${cleanupEx.message}")
-                                    }
-                                }
-                            }
                         }
                     }
-                }
 
-                continuation.invokeOnCancellation {
-                    Log.d(TAG, "Detaching snapshot listener for action $actionType (doc ${docRef.id}) due to cancellation/timeout")
-                    listenerRegistration?.remove()
+                    continuation.invokeOnCancellation {
+                        Log.d(TAG, "Detaching snapshot listener for action $actionType (doc ${docRef.id}) due to cancellation/timeout")
+                        listenerRegistration?.remove()
+                    }
                 }
             }
+        } finally {
+            listenerRegistration?.remove()
         }
 
-        outcome ?: Result.failure(TimeoutException("Request timed out. Admin server might be offline."))
+        if (outcome == null) {
+            Log.w(TAG, "Action $actionType (doc ${docRef.id}) timed out after ${ACTION_TIMEOUT_MS}ms. Explicitly marking request result as FAILED_TIMEOUT.")
+            isResumed.set(true)
+            listenerRegistration?.remove()
+            return@withContext Result.failure(TimeoutException("FAILED_TIMEOUT"))
+        }
+
+        outcome
     }
 
     /**
@@ -1395,11 +1592,19 @@ object LicenseManager {
                                     _referralCode.value = newReferral
                                     _pointsBalance.value = newPoints
                                     val now = System.currentTimeMillis()
-                                    val trialExpiry = now + (48L * 3600L * 1000L)
-                                    serverTrialClaimed = now
-                                    serverTrialExpiry = trialExpiry
-                                    serverTrialUsed = true
-                                    _currentFolder.value = "trials"
+                                    if (DeviceUtils.isFreeTrialAllowed(context)) {
+                                        val trialExpiry = now + (48L * 3600L * 1000L)
+                                        serverTrialClaimed = now
+                                        serverTrialExpiry = trialExpiry
+                                        serverTrialUsed = true
+                                        _currentFolder.value = "trials"
+                                    } else {
+                                        Log.w(TAG, "Device compromised (rooted/spoofed): Free trial blocked during INIT_PROFILE")
+                                        serverTrialClaimed = 0L
+                                        serverTrialExpiry = 0L
+                                        serverTrialUsed = true
+                                        _currentFolder.value = "free_mod"
+                                    }
                                     hasLoadedLicensing = true
                                     refreshAccessStatus()
                                     Log.i(TAG, "INIT_PROFILE successfully completed via Action Queue for $customUserId")
@@ -1496,25 +1701,29 @@ object LicenseManager {
 
                 // 2. Check cached 2-Day Free Trial
                 if (cached.trialClaimed > 0L && cached.trialExpiry > now) {
-                    val timeLeft = cached.trialExpiry - now
-                    val formatted = formatRemainingTime(timeLeft)
-                    _currentFolder.value = "trials"
-                    _trialInfo.value = TrialInfo(
-                        firstClaimedTimestamp = cached.trialClaimed,
-                        trialExpiryTimestamp = cached.trialExpiry,
-                        isUsed = cached.trialUsed,
-                        isExpired = false,
-                        remainingMs = timeLeft
-                    )
-                    _accessStatus.value = AccessStatus.TrialActive(
-                        remainingTimeMs = timeLeft,
-                        expiryTimestamp = cached.trialExpiry,
-                        formattedRemaining = formatted
-                    )
-                    hasLoadedLicensing = true
-                    hasLoadedTrial = true
-                    Log.d(TAG, "Fast UI Boot: Populated TrialActive from local UI cache while Firestore syncs.")
-                    return
+                    if (DeviceUtils.isFreeTrialAllowed(ctx)) {
+                        val timeLeft = cached.trialExpiry - now
+                        val formatted = formatRemainingTime(timeLeft)
+                        _currentFolder.value = "trials"
+                        _trialInfo.value = TrialInfo(
+                            firstClaimedTimestamp = cached.trialClaimed,
+                            trialExpiryTimestamp = cached.trialExpiry,
+                            isUsed = cached.trialUsed,
+                            isExpired = false,
+                            remainingMs = timeLeft
+                        )
+                        _accessStatus.value = AccessStatus.TrialActive(
+                            remainingTimeMs = timeLeft,
+                            expiryTimestamp = cached.trialExpiry,
+                            formattedRemaining = formatted
+                        )
+                        hasLoadedLicensing = true
+                        hasLoadedTrial = true
+                        Log.d(TAG, "Fast UI Boot: Populated TrialActive from local UI cache while Firestore syncs.")
+                        return
+                    } else {
+                        Log.w(TAG, "Fast UI Boot: Free trial blocked due to device rooting or hardware spoofing.")
+                    }
                 }
             }
 
@@ -1562,14 +1771,25 @@ object LicenseManager {
         _trialInfo.value = trialInfoObj
 
         if (trialClaimed > 0L && trialExpiry > now) {
-            val timeLeft = trialExpiry - now
-            val formatted = formatRemainingTime(timeLeft)
-            _accessStatus.value = AccessStatus.TrialActive(
-                remainingTimeMs = timeLeft,
-                expiryTimestamp = trialExpiry,
-                formattedRemaining = formatted
-            )
-            return
+            if (ctx == null || DeviceUtils.isFreeTrialAllowed(ctx)) {
+                val timeLeft = trialExpiry - now
+                val formatted = formatRemainingTime(timeLeft)
+                _accessStatus.value = AccessStatus.TrialActive(
+                    remainingTimeMs = timeLeft,
+                    expiryTimestamp = trialExpiry,
+                    formattedRemaining = formatted
+                )
+                return
+            } else {
+                Log.w(TAG, "Free trial blocked: Rooted or hardware-spoofed device detected.")
+                val hasHadPreviousPass = tier != null || passExpiry > 0L
+                _accessStatus.value = AccessStatus.Expired(
+                    isTrialUsed = true,
+                    hasHadPreviousPass = hasHadPreviousPass,
+                    message = "Free trial is unavailable on rooted, emulated, or modified devices. Please purchase a Pass to continue."
+                )
+                return
+            }
         }
 
         // 3. Both Pass & Trial Expired or Not Active

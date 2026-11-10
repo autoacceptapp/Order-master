@@ -147,9 +147,9 @@ object TextAnalysisEngine {
         return amount in MIN_RAPIDO_FARE..MAX_RAPIDO_FARE
     }
 
-    // Target regex: Extracts currency numbers starting with ₹, Rs., or INR (2 to 4 digits, ₹20 to ₹2000)
+    // Target regex: Extracts currency numbers with ₹, \u20B9, \u20A8, Rs., or INR in prefix or suffix format (2 to 4 digits, ₹20 to ₹2000)
     val fareRegex = Regex(
-        """(?:[₹]|INR|Rs\.?)\s*(\d{2,4}(?:\.\d{1,2})?)(?!\d)""",
+        """(?:(?:[₹\u20B9\u20A8]|INR|Rs\.?)\s*(\d{2,4}(?:\.\d{1,2})?)|(\d{2,4}(?:\.\d{1,2})?)\s*(?:[₹\u20B9\u20A8]|INR|Rs\.?|/-))(?!\d)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -162,15 +162,15 @@ object TextAnalysisEngine {
     // Location split regex: Splits text by hyphen, dash, or newline to isolate only the bold primary landmark name
     val locationSplitRegex = Regex("""[\n\r\-–—|]""")
 
-    // Regex for currency: matches ₹, Rs., Rs, $, €, £, INR followed by numeric values (2 to 4 digits)
+    // Regex for currency: matches ₹, \u20B9, \u20A8, Rs., Rs, $, €, £, INR in prefix or suffix notation followed by numeric values (2 to 4 digits)
     private val currencyRegex = Regex(
-        """(?:[₹\$€£]|Rs\.?|INR)\s*(\d{2,4}(?:\.\d{1,2})?)(?!\d)""",
+        """(?:(?:[₹\u20B9\u20A8\$€£]|Rs\.?|INR)\s*(\d{2,4}(?:\.\d{1,2})?)|(\d{2,4}(?:\.\d{1,2})?)\s*(?:[₹\u20B9\u20A8\$€£]|Rs\.?|INR|/-))(?!\d)""",
         RegexOption.IGNORE_CASE
     )
 
     // Regex for plus component numbers (e.g. "+ ₹15" or "+ 20" following a fare)
     private val plusBonusRegex = Regex(
-        """\+\s*(?:[₹\$€£]|Rs\.?|INR)?\s*(\d{1,3}(?:\.\d{1,2})?)(?!\d)""",
+        """\+\s*(?:(?:[₹\u20B9\u20A8\$€£]|Rs\.?|INR)?\s*(\d{1,3}(?:\.\d{1,2})?)|(\d{1,3}(?:\.\d{1,2})?)\s*(?:[₹\u20B9\u20A8\$€£]|Rs\.?|INR)?)(?!\d)""",
         RegexOption.IGNORE_CASE
     )
 
@@ -628,7 +628,7 @@ object TextAnalysisEngine {
             }
             val matches = fareRegex.findAll(node)
             for (match in matches) {
-                val candidate = match.groups[1]?.value?.toDoubleOrNull() ?: 0.0
+                val candidate = (match.groups[1]?.value ?: match.groups[2]?.value)?.toDoubleOrNull() ?: 0.0
                 if (isValidRapidoFare(candidate)) {
                     baseFare = candidate
                     break
@@ -723,7 +723,7 @@ object TextAnalysisEngine {
         // 1. Base Price Amount: first currency match starting with ₹ or INR within valid Rapido range (₹20 to ₹2000)
         val cleanText = text.replace(Regex("""\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?\b""", RegexOption.IGNORE_CASE), " ")
         val fareMatches = fareRegex.findAll(cleanText).toList()
-        val baseFare = fareMatches.mapNotNull { it.groups[1]?.value?.toDoubleOrNull() }
+        val baseFare = fareMatches.mapNotNull { (it.groups[1]?.value ?: it.groups[2]?.value)?.toDoubleOrNull() }
             .firstOrNull { isValidRapidoFare(it) } ?: 0.0
 
         // 2. Distances (First match = Pickup distance, Second match = Drop distance)
@@ -780,7 +780,7 @@ object TextAnalysisEngine {
         // 1. Direct currency matches (enforce ₹20 to ₹2000 range)
         val directMatches = currencyRegex.findAll(cleanText).toList()
         for (match in directMatches) {
-            val amount = match.groups[1]?.value?.toDoubleOrNull()
+            val amount = (match.groups[1]?.value ?: match.groups[2]?.value)?.toDoubleOrNull()
             if (amount != null && isValidRapidoFare(amount)) {
                 breakdown.add(amount)
             }
@@ -790,7 +790,7 @@ object TextAnalysisEngine {
         if (breakdown.isNotEmpty()) {
             val plusMatches = plusBonusRegex.findAll(cleanText).toList()
             for (pm in plusMatches) {
-                val bonusVal = pm.groups[1]?.value?.toDoubleOrNull()
+                val bonusVal = (pm.groups[1]?.value ?: pm.groups[2]?.value)?.toDoubleOrNull()
                 if (bonusVal != null && bonusVal in 5.0..500.0 && !breakdown.contains(bonusVal)) {
                     val potentialTotal = breakdown.sum() + bonusVal
                     if (isValidRapidoFare(potentialTotal)) {

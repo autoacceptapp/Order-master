@@ -29,14 +29,17 @@ object RideOfferParser {
 
     private const val TAG = "RideOfferParser"
 
-    // Currency pattern to identify pure fare nodes
+    // Currency pattern to identify pure fare nodes with Indian Rupee variants ('₹', '\u20B9', '\u20A8', 'Rs', 'INR')
     private val FARE_NODE_PATTERN = Pattern.compile(
-        """(?:₹|Rs\.?|INR|\$)\s*(\d+(?:[.,]\d+)?)|(?:^|\s)(\d+(?:[.,]\d+)?)\s*(?:₹|Rs\.?|INR)""",
+        """(?:[₹\u20B9\u20A8]|Rs\.?|INR|\$)\s*(\d+(?:[.,]\d+)?)|(?:^|\s)(\d+(?:[.,]\d+)?)\s*(?:[₹\u20B9\u20A8]|Rs\.?|INR)""",
         Pattern.CASE_INSENSITIVE
     )
 
-    // Standalone currency indicator
-    private val CURRENCY_SYMBOL_PATTERN = Pattern.compile("""[₹$]|(?:\b(?:Rs\.?|INR)\b)""", Pattern.CASE_INSENSITIVE)
+    // Standalone currency indicator covering all Rupee symbol variants
+    private val CURRENCY_SYMBOL_PATTERN = Pattern.compile(
+        """[₹\u20B9\u20A8$]|(?:\b(?:Rs\.?|INR)\b)""",
+        Pattern.CASE_INSENSITIVE
+    )
 
     // Distance pattern for isolated distance nodes (e.g., "1.2 km", "800 m", "2.8 km away")
     private val DISTANCE_PATTERN = Pattern.compile(
@@ -80,18 +83,13 @@ object RideOfferParser {
     fun findCardContainers(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
         val containers = mutableListOf<AccessibilityNodeInfo>()
         val queue = ArrayDeque<AccessibilityNodeInfo>()
-
-        @Suppress("DEPRECATION")
-        queue.add(AccessibilityNodeInfo.obtain(root))
+        queue.add(root)
 
         val startTime = System.currentTimeMillis()
         val timeoutMs = 200L
 
         while (queue.isNotEmpty()) {
             if (System.currentTimeMillis() - startTime > timeoutMs) {
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
-                }
                 break
             }
 
@@ -99,11 +97,9 @@ object RideOfferParser {
 
             // Check if current node is an isolated order card container
             if (isOrderCardContainer(current)) {
-                @Suppress("DEPRECATION")
-                containers.add(AccessibilityNodeInfo.obtain(current))
+                containers.add(current)
                 // CRITICAL LAYOUT ISOLATION: Do not descend into children of this container
                 // to prevent sub-layouts from being falsely treated as separate cards.
-                recycleNode(current)
                 continue
             }
 
@@ -115,20 +111,17 @@ object RideOfferParser {
                     queue.add(child)
                 }
             }
-            recycleNode(current)
         }
 
-        // Fallback: If no explicit card container tags were found, but the root itself contains
-        // an active Accept button and a Fare node, the root window itself is the single card container!
+        // Fallback: If no explicit card container tags were found, verify root only has exactly one accept action
         if (containers.isEmpty()) {
-            val acceptNode = findAcceptNodeInSubtree(root)
-            val hasFare = containsFareInSubtree(root)
-            if (acceptNode != null && hasFare) {
-                @Suppress("DEPRECATION")
-                containers.add(AccessibilityNodeInfo.obtain(root))
-            }
-            if (acceptNode != null) {
-                recycleNode(acceptNode)
+            val acceptCount = countAcceptNodesInSubtree(root, maxCount = 2)
+            if (acceptCount == 1) {
+                val acceptNode = findAcceptNodeInSubtree(root)
+                val hasFare = containsFareInSubtree(root)
+                if (acceptNode != null && hasFare) {
+                    containers.add(root)
+                }
             }
         }
 
@@ -136,11 +129,91 @@ object RideOfferParser {
     }
 
     /**
+     * Counts the number of accept buttons in a subtree up to maxCount.
+     */
+    fun countAcceptNodesInSubtree(root: AccessibilityNodeInfo, maxCount: Int = 2): Int {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+
+        var count = 0
+        val startTime = System.currentTimeMillis()
+        val timeoutMs = 45L
+
+        while (queue.isNotEmpty()) {
+            if (System.currentTimeMillis() - startTime > timeoutMs) {
+                break
+            }
+            val node = queue.removeFirst()
+            val text = node.text?.toString() ?: ""
+            val desc = node.contentDescription?.toString() ?: ""
+            val viewId = node.viewIdResourceName ?: ""
+
+            if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
+                count++
+                if (count >= maxCount) {
+                    return count
+                }
+            }
+
+            val childCount = node.childCount
+            for (i in 0 until childCount) {
+                val child = node.getChild(i)
+                if (child != null) {
+                    queue.add(child)
+                }
+            }
+        }
+        return count
+    }
+
+    /**
+     * Checks if this node directly contains child card view elements.
+     */
+    private fun hasChildCardViews(node: AccessibilityNodeInfo): Boolean {
+        val childCount = node.childCount
+        for (i in 0 until childCount) {
+            val child = node.getChild(i) ?: continue
+            val cClass = (child.className?.toString() ?: "").lowercase(Locale.ROOT)
+            val cId = (child.viewIdResourceName ?: "").lowercase(Locale.ROOT)
+            val isCard = cClass.contains("cardview") ||
+                    cId.contains("order_card") ||
+                    cId.contains("ride_card") ||
+                    cId.contains("offer_item") ||
+                    cId.contains("item_ride_offer")
+            recycleNode(child)
+            if (isCard) return true
+        }
+        return false
+    }
+
+    /**
      * Checks if a node qualifies as an individual order card container.
+     * Enforces strict layout boundary isolation so containers of multiple cards are never merged.
      */
     fun isOrderCardContainer(node: AccessibilityNodeInfo): Boolean {
         val viewId = (node.viewIdResourceName ?: "").lowercase(Locale.ROOT)
         val className = (node.className?.toString() ?: "").lowercase(Locale.ROOT)
+
+        // Exclude aggregate collection / scroll containers
+        if (className.contains("recyclerview") ||
+            className.contains("listview") ||
+            className.contains("gridview") ||
+            className.contains("viewpager") ||
+            className.contains("scrollview")
+        ) {
+            return false
+        }
+
+        // An aggregate layout holding multiple Accept buttons must NEVER be treated as a single card container
+        val acceptCount = countAcceptNodesInSubtree(node, maxCount = 2)
+        if (acceptCount > 1) {
+            return false
+        }
+
+        // An outer container holding child card views must NEVER be treated as a single card container
+        if (hasChildCardViews(node)) {
+            return false
+        }
 
         // 1. Explicit Rapido Order Card Container view IDs
         val cardIdKeywords = listOf(
@@ -173,18 +246,13 @@ object RideOfferParser {
             }
         }
 
-        // 3. Any ViewGroup that directly bounds an Accept button and contains a Fare symbol
-        if (node.childCount >= 2) {
+        // 3. Isolated ViewGroup that directly bounds exactly one Accept button and contains a Fare symbol
+        if (node.childCount >= 2 && acceptCount == 1) {
             val bounds = Rect()
             node.getBoundsInScreen(bounds)
             if (bounds.width() > 250 && bounds.height() in 100..1800) {
-                val accept = findAcceptNodeInSubtree(node)
-                if (accept != null) {
-                    val hasFare = containsFareInSubtree(node)
-                    recycleNode(accept)
-                    if (hasFare) {
-                        return true
-                    }
+                if (containsFareInSubtree(node)) {
+                    return true
                 }
             }
         }
@@ -209,8 +277,7 @@ object RideOfferParser {
 
         // Collect all distinct text nodes strictly inside this card container
         val queue = ArrayDeque<AccessibilityNodeInfo>()
-        @Suppress("DEPRECATION")
-        queue.add(AccessibilityNodeInfo.obtain(container))
+        queue.add(container)
 
         val candidateDistanceTexts = mutableListOf<String>()
         val allNodeTexts = mutableListOf<String>()
@@ -220,13 +287,15 @@ object RideOfferParser {
 
         while (queue.isNotEmpty()) {
             if (System.currentTimeMillis() - startTime > timeoutMs) {
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
-                }
                 break
             }
 
             val node = queue.removeFirst()
+
+            // Strict layout boundary isolation: Never traverse into another distinct child card container
+            if (node !== container && isOrderCardContainer(node)) {
+                continue
+            }
 
             val text = (node.text?.toString() ?: "").trim()
             val desc = (node.contentDescription?.toString() ?: "").trim()
@@ -256,9 +325,12 @@ object RideOfferParser {
             }
 
             // 2. Extract Fare Node (Currency symbol or fare pattern)
-            if (fareText.isEmpty() || !CURRENCY_SYMBOL_PATTERN.matcher(fareText).find()) {
-                if (isFareNode(effectiveText, viewId)) {
+            if (isFareNode(effectiveText, viewId)) {
+                if (fareText.isEmpty() || !CURRENCY_SYMBOL_PATTERN.matcher(fareText).find()) {
                     fareText = effectiveText
+                } else if (effectiveText.startsWith("+") && !fareText.contains(effectiveText)) {
+                    // Complementary bonus/tip within the same card boundary (e.g., "₹56 + ₹13")
+                    fareText = "$fareText $effectiveText"
                 }
             }
 
@@ -534,10 +606,8 @@ object RideOfferParser {
         return null
     }
 
-    private fun recycleNode(node: AccessibilityNodeInfo) {
-        try {
-            @Suppress("DEPRECATION")
-            node.recycle()
-        } catch (_: Exception) {}
+    private fun recycleNode(node: AccessibilityNodeInfo?) {
+        // No-op: AccessibilityNodeInfo.recycle() is deprecated since API 30 and destroys
+        // node trees and shadows in Robolectric tests and active UI traversals.
     }
 }

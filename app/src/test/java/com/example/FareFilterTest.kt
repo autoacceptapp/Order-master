@@ -87,4 +87,42 @@ class FareFilterTest {
         val clampedMax = AppSettings.validateMaxFare(100f, 200f)
         assertEquals(200f, clampedMax, 0.01f)
     }
+
+    @Test
+    fun testRapidSuccessiveRecordEvaluation() = kotlinx.coroutines.runBlocking {
+        val repo = com.example.data.OrderRepository.getInstance(context)
+        val initialCount = repo.getCount()
+
+        val threads = (1..10).map { i ->
+            Thread {
+                val offer = ParsedRideOffer(
+                    totalFare = 50.0 + i,
+                    pickupDistanceKm = 1.0 + (i * 0.1),
+                    dropDistanceKm = 5.0 + (i * 0.2),
+                    pickupText = "Pickup $i km",
+                    dropText = "Drop 5 km",
+                    fareText = "₹${50 + i}",
+                    hasAcceptButton = true
+                )
+                val evaluation = RideEvaluation(
+                    offer = offer,
+                    isAutoAcceptEnabled = true,
+                    passesFare = true,
+                    passesPickupDistance = true,
+                    isAccepted = true,
+                    decisionReason = "Test evaluation $i"
+                )
+                AppSettings.recordEvaluation(context, evaluation)
+            }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+
+        // Allow sequential dispatcher to write all records
+        kotlinx.coroutines.delay(1000)
+
+        val finalCount = repo.getCount()
+        assertEquals(initialCount + 10, finalCount)
+    }
 }
+

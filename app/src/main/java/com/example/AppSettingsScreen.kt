@@ -247,6 +247,17 @@ fun AppSettingsScreen(
                 }
             }
 
+            // Forcefully display OEM Guidance Card for Xiaomi, Vivo, Oppo, OnePlus, Realme regardless of Android version
+            if (PermissionUtils.isAggressiveOemDevice()) {
+                item {
+                    OemGuidanceCard(
+                        onOpenOemSettings = {
+                            PermissionUtils.openOemAutoStartSettings(context)
+                        }
+                    )
+                }
+            }
+
             // Google Account & Cloud Sync Tile
             item {
                 val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
@@ -858,44 +869,168 @@ fun PermissionItemCard(
 fun OemGuidanceCard(
     onOpenOemSettings: () -> Unit
 ) {
-    Card(
+    val context = LocalContext.current
+    val brandName = remember { PermissionUtils.getDeviceBrandName() }
+
+    ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("oem_guidance_card"),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp)
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Header: Warning badge + OEM Brand
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.errorContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Column {
+                    Text(
+                        text = "⚡ Important for $brandName Captains",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Prevent background service killing during shifts",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
             Text(
-                text = stringResource(R.string.settings_oem_title),
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = stringResource(R.string.settings_oem_desc),
+                text = "$brandName aggressively kills background and Accessibility services when the screen turns off. Complete these 2 essential steps to prevent service crashes:",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                lineHeight = 16.sp
+                lineHeight = 18.sp
             )
-            Spacer(modifier = Modifier.height(10.dp))
-            Button(
-                onClick = onOpenOemSettings,
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("open_oem_autostart_button"),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary
-                )
+
+            // Step 1: Lock in Recent Apps
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Text(
-                    text = stringResource(R.string.settings_oem_btn_open),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Lock,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .padding(top = 2.dp)
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Step 1: Lock App in Recent Apps",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Open Recent Apps (Overview), swipe down or long-press on Order Master, and tap the 🔒 Lock icon. This stops system RAM cleaning from closing the app.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+            }
+
+            // Step 2: AutoStart & Battery Optimization
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PowerSettingsNew,
+                        contentDescription = null,
+                        tint = PrimaryEmerald,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .padding(top = 2.dp)
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(
+                            text = "Step 2: Enable Auto-Start & No Restrictions",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Turn ON Auto-Start / Background Launch, and set Battery Saver to 'No Restrictions' so the Accessibility service can react instantly to orders.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+            }
+
+            // Action Buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onOpenOemSettings,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("open_oem_autostart_button"),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Text(
+                        text = "Open Auto-Start",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = { PermissionUtils.openBatteryOptimizationSettings(context) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("open_oem_battery_button"),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(
+                        text = "Battery Settings",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
             }
         }
     }

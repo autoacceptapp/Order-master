@@ -93,8 +93,10 @@ class FloatingOverlayService : Service() {
                 } else {
                     context.startService(intent)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start FloatingOverlayService", e)
+            } catch (e: Throwable) {
+                // Catches ForegroundServiceStartNotAllowedException on Android 12+ (API 31+) / Android 14+
+                // as well as SecurityException or IllegalStateException when app is in background
+                Log.w(TAG, "Cannot start FloatingOverlayService from current state: ${e.message}")
             }
         }
 
@@ -176,7 +178,10 @@ class FloatingOverlayService : Service() {
         super.onConfigurationChanged(newConfig)
         val params = windowLayoutParams ?: return
         val root = overlayRoot ?: return
-        if (!isViewAttached) return
+        if (!isViewAttached || !root.isAttachedToWindow) {
+            Log.d(TAG, "onConfigurationChanged: view is detached, skipping layout update")
+            return
+        }
 
         val displayMetrics = resources.displayMetrics
         val sizePx = dpToPx(70f)
@@ -186,11 +191,7 @@ class FloatingOverlayService : Service() {
         params.x = params.x.coerceIn(0, maxX)
         params.y = params.y.coerceIn(0, maxY)
 
-        try {
-            windowManager?.updateViewLayout(root, params)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to update overlay layout on configuration changed: ${e.message}")
-        }
+        safeUpdateViewLayout(root, params)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -390,11 +391,7 @@ class FloatingOverlayService : Service() {
                         if (params.x != newX || params.y != newY) {
                             params.x = newX
                             params.y = newY
-                            try {
-                                windowManager?.updateViewLayout(overlayRoot, params)
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Failed to update view layout on drag", e)
-                            }
+                            safeUpdateViewLayout(overlayRoot, params)
                         }
                     }
                     true
@@ -580,16 +577,53 @@ class FloatingOverlayService : Service() {
     }
 
     /**
+     * Safely updates WindowManager layout parameters, strictly verifying attachment state
+     * to eliminate BadTokenException and IllegalArgumentException crashes during rotations or teardown.
+     */
+    private fun safeUpdateViewLayout(view: View?, params: WindowManager.LayoutParams?) {
+        if (view == null || params == null) return
+        if (!isViewAttached || !view.isAttachedToWindow || view.windowToken == null) {
+            Log.d(TAG, "safeUpdateViewLayout: view not attached or windowToken is null (isViewAttached=$isViewAttached, isAttachedToWindow=${view.isAttachedToWindow}, windowToken=${view.windowToken}). Skipping update.")
+            return
+        }
+        try {
+            windowManager?.updateViewLayout(view, params)
+        } catch (e: WindowManager.BadTokenException) {
+            Log.w(TAG, "BadTokenException in updateViewLayout: ${e.message}")
+            isViewAttached = false
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "IllegalArgumentException in updateViewLayout (view detached): ${e.message}")
+            isViewAttached = false
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "IllegalStateException in updateViewLayout: ${e.message}")
+            isViewAttached = false
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update overlay view layout: ${e.message}")
+        }
+    }
+
+    /**
      * Attaches the overlay to WindowManager if not already attached.
      */
     private fun ensureOverlayAttached() {
-        if (!isViewAttached && overlayRoot != null && windowLayoutParams != null && windowManager != null) {
+        val root = overlayRoot ?: return
+        val params = windowLayoutParams ?: return
+        val wm = windowManager ?: return
+
+        if (!isViewAttached && !root.isAttachedToWindow) {
             try {
-                windowManager?.addView(overlayRoot, windowLayoutParams)
+                wm.addView(root, params)
                 isViewAttached = true
                 Log.d(TAG, "Floating overlay view successfully added to WindowManager.")
+            } catch (e: WindowManager.BadTokenException) {
+                Log.w(TAG, "BadTokenException attaching overlay window to WindowManager: ${e.message}")
+                isViewAttached = false
+            } catch (e: IllegalStateException) {
+                Log.w(TAG, "IllegalStateException attaching overlay window: ${e.message}")
+                isViewAttached = root.isAttachedToWindow
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to attach overlay window to WindowManager", e)
+                isViewAttached = false
             }
         }
     }
@@ -598,15 +632,29 @@ class FloatingOverlayService : Service() {
      * Removes the overlay view safely.
      */
     private fun removeOverlayView() {
-        if (isViewAttached && overlayRoot != null) {
-            try {
-                windowManager?.removeView(overlayRoot)
-                Log.d(TAG, "Floating overlay view removed from WindowManager.")
-            } catch (e: Exception) {
-                Log.w(TAG, "Error removing overlay view", e)
-            } finally {
-                isViewAttached = false
+        val root = overlayRoot
+        try {
+            if (root != null && root.isAttachedToWindow && root.windowToken != null) {
+                try {
+                    windowManager?.removeView(root)
+                    Log.d(TAG, "Floating overlay view removed from WindowManager.")
+                } catch (e: IllegalArgumentException) {
+                    Log.w(TAG, "IllegalArgumentException removing overlay view (already detached): ${e.message}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error removing overlay view: ${e.message}")
+                }
+            } else if (root != null) {
+                try {
+                    windowManager?.removeViewImmediate(root)
+                    Log.d(TAG, "Floating overlay view removed immediately from WindowManager.")
+                } catch (e: IllegalArgumentException) {
+                    Log.w(TAG, "IllegalArgumentException in removeViewImmediate (already detached): ${e.message}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error in removeViewImmediate: ${e.message}")
+                }
             }
+        } finally {
+            isViewAttached = false
         }
     }
 
@@ -698,7 +746,7 @@ class FloatingOverlayService : Service() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 try {
-                    // Strictly use ONLY ONE valid and declared ForegroundServiceType matching manifest
+                    // Attempt with ONLY FOREGROUND_SERVICE_TYPE_SPECIAL_USE as primary type
                     startForeground(
                         NOTIFICATION_ID,
                         notification,
@@ -706,14 +754,12 @@ class FloatingOverlayService : Service() {
                     )
                     Log.d(TAG, "Foreground service started with FOREGROUND_SERVICE_TYPE_SPECIAL_USE")
                 } catch (e: SecurityException) {
-                    Log.e(TAG, "SecurityException starting foreground service with SPECIAL_USE: ${e.message}", e)
-                    fallbackStartForeground(notification)
-                } catch (e: android.app.InvalidForegroundServiceTypeException) {
-                    Log.e(TAG, "InvalidForegroundServiceTypeException starting foreground service with SPECIAL_USE: ${e.message}", e)
-                    fallbackStartForeground(notification)
-                } catch (e: IllegalArgumentException) {
-                    Log.e(TAG, "IllegalArgumentException starting foreground service with SPECIAL_USE: ${e.message}", e)
-                    fallbackStartForeground(notification)
+                    Log.w(TAG, "SecurityException starting with SPECIAL_USE: ${e.message}. Falling back to DATA_SYNC...")
+                    attemptDataSyncFallback(notification)
+                } catch (e: IllegalStateException) {
+                    // Catches ForegroundServiceStartNotAllowedException explicitly
+                    Log.w(TAG, "ForegroundServiceStartNotAllowedException/IllegalStateException with SPECIAL_USE: ${e.message}. Falling back to DATA_SYNC...")
+                    attemptDataSyncFallback(notification)
                 }
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 try {
@@ -723,49 +769,74 @@ class FloatingOverlayService : Service() {
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                     )
                     Log.d(TAG, "Foreground service started with FOREGROUND_SERVICE_TYPE_DATA_SYNC")
-                } catch (e: SecurityException) {
-                    Log.e(TAG, "SecurityException starting foreground service with DATA_SYNC: ${e.message}", e)
-                    fallbackStartForeground(notification)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error starting foreground service with DATA_SYNC: ${e.message}", e)
-                    fallbackStartForeground(notification)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Error starting foreground service with DATA_SYNC: ${t.message}")
+                    handleForegroundStartFailure()
                 }
             } else {
-                fallbackStartForeground(notification)
+                @Suppress("DEPRECATION")
+                startForeground(NOTIFICATION_ID, notification)
             }
-        } catch (e: SecurityException) {
-            Log.e(TAG, "SecurityException in startAsForeground: ${e.message}", e)
-            fallbackStartForeground(notification)
-        } catch (e: IllegalArgumentException) {
-            Log.e(TAG, "IllegalArgumentException / InvalidForegroundServiceTypeException in startAsForeground: ${e.message}", e)
-            fallbackStartForeground(notification)
         } catch (t: Throwable) {
             Log.e(TAG, "Unexpected error in startAsForeground: ${t.message}", t)
-            fallbackStartForeground(notification)
+            handleForegroundStartFailure()
         }
     }
 
-    private fun fallbackStartForeground(notification: Notification) {
+    private fun attemptDataSyncFallback(notification: Notification) {
         try {
-            Log.w(TAG, "Attempting fallback startForeground without type parameter...")
-            @Suppress("DEPRECATION")
-            startForeground(NOTIFICATION_ID, notification)
-            Log.i(TAG, "Fallback startForeground succeeded.")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+                Log.d(TAG, "Fallback to FOREGROUND_SERVICE_TYPE_DATA_SYNC succeeded.")
+            } else {
+                @Suppress("DEPRECATION")
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException in DATA_SYNC fallback: ${e.message}")
+            handleForegroundStartFailure()
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "ForegroundServiceStartNotAllowedException/IllegalStateException in DATA_SYNC fallback: ${e.message}")
+            handleForegroundStartFailure()
         } catch (t: Throwable) {
-            Log.e(TAG, "Fallback startForeground without type parameter failed: ${t.message}", t)
+            Log.e(TAG, "All foreground service start attempts failed: ${t.message}", t)
+            handleForegroundStartFailure()
         }
+    }
+
+    private fun handleForegroundStartFailure() {
+        try {
+            removeOverlayView()
+        } catch (_: Throwable) {}
+        try {
+            stopSelf()
+        } catch (_: Throwable) {}
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        serviceScope.cancel()
-        mainHandler.removeCallbacksAndMessages(null)
-        removeOverlayView()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
+        try {
+            serviceScope.cancel()
+        } catch (_: Throwable) {}
+        try {
+            mainHandler.removeCallbacksAndMessages(null)
+        } catch (_: Throwable) {}
+        try {
+            removeOverlayView()
+        } catch (_: Throwable) {}
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "Notice stopping foreground in onDestroy: ${t.message}")
         }
         Log.d(TAG, "FloatingOverlayService destroyed.")
     }

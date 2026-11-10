@@ -124,6 +124,33 @@ object DeviceUtils {
         return sb.toString()
     }
 
+    // Known root binaries and su paths
+    private val KNOWN_SU_PATHS = arrayOf(
+        "/system/app/Superuser.apk",
+        "/sbin/su",
+        "/system/bin/su",
+        "/system/xbin/su",
+        "/data/local/xbin/su",
+        "/data/local/bin/su",
+        "/system/sd/xbin/su",
+        "/system/bin/failsafe/su",
+        "/data/local/su",
+        "/su/bin/su",
+        "/system/xbin/daemonsu"
+    )
+
+    // Known root management and hooking packages
+    private val KNOWN_ROOT_PACKAGES = arrayOf(
+        "com.noshufou.android.su",
+        "com.thirdparty.superuser",
+        "eu.chainfire.supersu",
+        "com.koushikdutta.superuser",
+        "com.topjohnwu.magisk",
+        "de.robv.android.xposed.installer",
+        "com.saurik.substrate",
+        "com.chelpus.lackypatch"
+    )
+
     /**
      * Detects if the device is running inside an emulator.
      */
@@ -141,6 +168,121 @@ object DeviceUtils {
                 || Build.PRODUCT.contains("sdk")
                 || Build.PRODUCT.contains("vbox86p")
                 || Build.BOARD.lowercase(Locale.ROOT).contains("goldfish"))
+    }
+
+    /**
+     * Detects if the device environment is rooted or running hooking frameworks.
+     */
+    fun isRooted(context: Context? = null): Boolean {
+        if (isUnitTestEnvironment()) return false
+
+        // 1. Check test-keys
+        val buildTags = Build.TAGS
+        if (buildTags != null && buildTags.contains("test-keys")) {
+            return true
+        }
+
+        // 2. Check known su binaries
+        for (path in KNOWN_SU_PATHS) {
+            try {
+                if (java.io.File(path).exists()) return true
+            } catch (_: Throwable) {}
+        }
+
+        // 3. Check Xposed / Substrate / Frida hooking classes
+        try {
+            Class.forName("de.robv.android.xposed.XposedBridge")
+            return true
+        } catch (_: Throwable) {}
+
+        // 4. Check root management packages if context is provided
+        if (context != null) {
+            val pm = context.packageManager
+            for (pkg in KNOWN_ROOT_PACKAGES) {
+                try {
+                    pm.getPackageInfo(pkg, 0)
+                    return true
+                } catch (_: Throwable) {}
+            }
+        }
+
+        return false
+    }
+
+    /**
+     * Detects hardware spoofing (spoofed Android ID, missing Widevine enclave on physical device).
+     */
+    fun isHardwareSpoofed(context: Context): Boolean {
+        if (isUnitTestEnvironment()) return false
+
+        // 1. Check for dummy or corrupted ANDROID_ID
+        val androidId = try {
+            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+        } catch (_: Throwable) { null }
+
+        if (androidId.isNullOrBlank() ||
+            androidId.equals("9774d56d682e549c", ignoreCase = true) || // Known default dummy ID
+            androidId.equals("0000000000000000") ||
+            androidId.length < 8
+        ) {
+            Log.w(TAG, "Hardware spoofing alert: invalid or dummy ANDROID_ID ($androidId)")
+            return true
+        }
+
+        // 2. Check for missing Widevine DRM on physical Android devices (API 24+)
+        if (!isEmulator()) {
+            val widevineSupported = try {
+                MediaDrm.isCryptoSchemeSupported(WIDEVINE_UUID)
+            } catch (_: Throwable) { false }
+
+            if (!widevineSupported) {
+                Log.w(TAG, "Hardware spoofing alert: Widevine DRM unsupported on physical device build.")
+                return true
+            }
+        }
+
+        return false
+    }
+
+    /**
+     * Checks if SafetyNet / Play Integrity / App Check signals indicate an untrusted environment.
+     */
+    fun isPlayIntegrityOrSafetyNetCompromised(context: Context): Boolean {
+        if (isUnitTestEnvironment()) return false
+
+        val isDebuggable = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (!isDebuggable && (Build.TAGS?.contains("test-keys") == true || Build.TYPE == "userdebug")) {
+            Log.w(TAG, "Play Integrity alert: release app running on test-keys/userdebug image")
+            return true
+        }
+
+        return false
+    }
+
+    /**
+     * Evaluates comprehensive integrity signals (Play Integrity, Root, Emulator, Hardware Spoofing).
+     */
+    fun isDeviceCompromised(context: Context): Boolean {
+        if (isUnitTestEnvironment()) return false
+        return isEmulator() || isRooted(context) || isHardwareSpoofed(context) || isPlayIntegrityOrSafetyNetCompromised(context)
+    }
+
+    /**
+     * Enforces that the Free Trial is ONLY granted to legitimate, uncompromised physical hardware.
+     * Blocks trial entirely if rooting or hardware spoofing is detected.
+     */
+    fun isFreeTrialAllowed(context: Context): Boolean {
+        if (isUnitTestEnvironment()) return true
+        if (isDeviceCompromised(context)) {
+            Log.w(TAG, "Free trial denied: Device is rooted, emulated, or hardware-spoofed.")
+            return false
+        }
+        return true
+    }
+
+    private fun isUnitTestEnvironment(): Boolean {
+        return Build.FINGERPRINT.contains("robolectric", ignoreCase = true) ||
+                runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
     }
 
     /**

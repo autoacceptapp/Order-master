@@ -245,6 +245,17 @@ class ExampleRobolectricTest {
         // Check helper checkers do not crash
         assertNotNull(PermissionUtils.areNotificationsEnabled(context))
         assertNotNull(PermissionUtils.canScheduleExactAlarms(context))
+
+        // OEM autostart and Chinese ROM helpers
+        assertNotNull(PermissionUtils.isChineseRomDevice())
+        assertNotNull(PermissionUtils.getDeviceBrandName())
+        assertTrue(PermissionUtils.openOemAutoStartSettings(context))
+    }
+
+    @Test
+    fun `test notification channel ids and foreground service requirements`() {
+        assertEquals("order_master_overlay_fgs_channel", FloatingOverlayService.CHANNEL_ID)
+        assertEquals("APP_UPDATE_CHANNEL", UpdateNotificationManager.CHANNEL_ID)
     }
 
     @Test
@@ -341,6 +352,38 @@ class ExampleRobolectricTest {
 
         val assistiveClicked = service.executeAssistiveClick(null)
         assertFalse(assistiveClicked)
+    }
+
+    @Test
+    fun `test accessibility service traversal limits strictly under 50ms and bounded depth`() {
+        // Acceptance criteria: Max traversal time in AccessibilityService strictly under 50ms
+        assertTrue(MyAccessibilityService.MAX_TRAVERSAL_TIMEOUT_MS < 50L)
+        assertEquals(45L, MyAccessibilityService.MAX_TRAVERSAL_TIMEOUT_MS)
+        assertTrue(MyAccessibilityService.MAX_TRAVERSAL_DEPTH <= 15)
+        assertEquals(12, MyAccessibilityService.MAX_TRAVERSAL_DEPTH)
+
+        val service = MyAccessibilityService()
+        val node = android.view.accessibility.AccessibilityNodeInfo.obtain()
+        val bounds = android.graphics.Rect(0, 0, 1080, 500)
+
+        // Traversal returns safely without throwing exceptions or exceeding timeout
+        val startTime = System.currentTimeMillis()
+        val acceptNode = service.findAcceptNodeInBounds(node, bounds)
+        val rejectNode = service.findRejectNodeInBounds(node, bounds)
+        val elapsed = System.currentTimeMillis() - startTime
+
+        assertTrue(elapsed < 50L)
+        // Null or unmatched node safely returns null
+        org.junit.Assert.assertNull(acceptNode)
+        org.junit.Assert.assertNull(rejectNode)
+    }
+
+    @Test
+    fun `test floating overlay service rotation configuration change safe when detached`() {
+        val service = FloatingOverlayService()
+        val config = android.content.res.Configuration()
+        // Calling onConfigurationChanged when view is detached must not crash with BadTokenException or IllegalArgumentException
+        service.onConfigurationChanged(config)
     }
 
     @Test

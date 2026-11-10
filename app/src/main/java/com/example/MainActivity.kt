@@ -1,5 +1,6 @@
 package com.example
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -11,6 +12,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -28,6 +31,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -67,6 +71,21 @@ class MainActivity : ComponentActivity() {
     // Reactive state flow to reflect accessibility service state dynamically
     private val isServiceActiveFlow = MutableStateFlow(false)
 
+    // Reactive state flow to reflect notification permission state
+    private val isNotificationPermissionGranted = MutableStateFlow(true)
+
+    // Android 13+ (API 33+) Runtime POST_NOTIFICATIONS launcher
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        isNotificationPermissionGranted.value = isGranted
+        if (isGranted) {
+            Log.i(TAG, "POST_NOTIFICATIONS runtime permission granted by user")
+        } else {
+            Log.w(TAG, "POST_NOTIFICATIONS runtime permission denied by user")
+        }
+    }
+
     private val logReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val msg = intent?.getStringExtra(AppSettings.EXTRA_LOG_MESSAGE)
@@ -88,20 +107,22 @@ class MainActivity : ComponentActivity() {
         GlobalAdminManager.init(this)
         InAppMessageManager.init(this)
         AppConfigRepository.init(this)
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                com.google.android.gms.ads.MobileAds.initialize(applicationContext) { status ->
-                    android.util.Log.i("MainActivity", "AdMob SDK Initialized: $status")
-                    try {
-                        RewardedAdManager.loadAd(applicationContext)
-                    } catch (e: Throwable) {
-                        Log.w(TAG, "Notice pre-caching RewardedAd after init: ${e.message}")
-                    }
+
+        // Safe AdMob SDK Initialization on the Main Thread
+        try {
+            com.google.android.gms.ads.MobileAds.initialize(this) { status ->
+                Log.i(TAG, "AdMob SDK Initialized on Main Thread: $status")
+                try {
+                    RewardedAdManager.loadAd(applicationContext)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Notice pre-caching RewardedAd after init: ${e.message}")
                 }
-            } catch (e: Throwable) {
-                Log.w(TAG, "Notice initializing AdMob SDK: ${e.message}")
             }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Notice initializing AdMob SDK on Main Thread: ${e.message}")
         }
+
+        isNotificationPermissionGranted.value = PermissionUtils.areNotificationsEnabled(this)
         refreshServiceStatus()
 
         // Strict Real-Time Firebase Session Check on app launch
@@ -150,6 +171,7 @@ class MainActivity : ComponentActivity() {
 
         // Ensure update notification channel is registered
         UpdateNotificationManager.createNotificationChannel(this)
+        requestNotificationPermissionIfNeeded()
         handleUpdateIntent(intent)
         handleDeepLinkIntent(intent)
 
@@ -263,6 +285,11 @@ class MainActivity : ComponentActivity() {
                             onDismissRequest = {
                                 InAppMessageManager.dismissMessage(message.id)
                             },
+                            properties = DialogProperties(
+                                dismissOnBackPress = true,
+                                dismissOnClickOutside = true,
+                                usePlatformDefaultWidth = false
+                            ),
                             icon = {
                                 Icon(
                                     imageVector = Icons.Default.Campaign,
@@ -308,6 +335,65 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
+                    // System Notification Warning Dialog (Android 13+)
+                    val areNotificationsEnabled by isNotificationPermissionGranted.collectAsState()
+                    var isNotificationWarningDismissed by remember { mutableStateOf(false) }
+                    if (!areNotificationsEnabled && !isNotificationWarningDismissed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        AlertDialog(
+                            onDismissRequest = { isNotificationWarningDismissed = true },
+                            icon = {
+                                Icon(
+                                    imageVector = Icons.Default.NotificationsActive,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            },
+                            title = {
+                                Text(
+                                    text = "Notifications Disabled",
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontWeight = FontWeight.Bold
+                                    ),
+                                    modifier = Modifier.testTag("notification_warning_title")
+                                )
+                            },
+                            text = {
+                                Text(
+                                    text = "Foreground service alerts, ride acceptance banners, and critical update alerts cannot run reliably in the background without notification permissions on Android 13+. Please enable notification access in App Settings.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("notification_warning_body")
+                                )
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        PermissionUtils.openNotificationSettings(this@MainActivity)
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    modifier = Modifier.testTag("notification_warning_enable_btn")
+                                ) {
+                                    Text("Enable in Settings", fontWeight = FontWeight.Bold)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(
+                                    onClick = { isNotificationWarningDismissed = true },
+                                    modifier = Modifier.testTag("notification_warning_dismiss_btn")
+                                ) {
+                                    Text("Dismiss")
+                                }
+                            },
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier.testTag("notification_warning_dialog")
+                        )
+                    }
+
                     com.example.ui.OrderMasterApp()
                 }
             }
@@ -319,6 +405,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         // Automatically refreshes the accessibility service status and syncs overlay
         refreshServiceStatus()
+        isNotificationPermissionGranted.value = PermissionUtils.areNotificationsEnabled(this)
         LicenseManager.refreshAccessStatus()
         AppSettings.syncOverlayService(this)
 
@@ -354,6 +441,35 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshServiceStatus() {
         isServiceActiveFlow.value = AppSettings.isAccessibilityServiceEnabled(this)
+    }
+
+    /**
+     * Runtime request for POST_NOTIFICATIONS on Android 13+ (API 33+)
+     * to ensure foreground service alerts, ride confirmations, and update alerts are delivered.
+     * Prevents aggressive looping or freezing on cold starts if previously denied.
+     */
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val isGranted = PermissionUtils.areNotificationsEnabled(this)
+            isNotificationPermissionGranted.value = isGranted
+            if (isGranted) return
+
+            val prefs = getSharedPreferences("app_permission_prefs", Context.MODE_PRIVATE)
+            val hasRequestedBefore = prefs.getBoolean("has_requested_notification_permission", false)
+            val shouldShowRationale = shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)
+
+            if (hasRequestedBefore && !shouldShowRationale) {
+                // Permanently denied ("Don't ask again") - do not launch permission request automatically on cold boot
+                Log.d(TAG, "POST_NOTIFICATIONS permanently denied; silently updating state without prompt loop.")
+                isNotificationPermissionGranted.value = false
+                return
+            }
+
+            // Only launch the request if it's the first time or if the rationale should be shown
+            prefs.edit().putBoolean("has_requested_notification_permission", true).apply()
+            Log.d(TAG, "Requesting POST_NOTIFICATIONS runtime permission on Android 13+...")
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     override fun onStart() {

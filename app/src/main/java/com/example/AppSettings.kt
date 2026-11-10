@@ -3,6 +3,7 @@ package com.example
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.os.SystemClock
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.Log
@@ -18,6 +19,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -104,6 +107,7 @@ data class UserAuthState(
 )
 
 object AppSettings {
+    private const val TAG = "AppSettings"
     const val PREFS_NAME = "captain_auto_accept_prefs"
 
     val SUPPORTED_LANGUAGES get() = com.example.SUPPORTED_LANGUAGES
@@ -197,7 +201,33 @@ object AppSettings {
     // In-memory properties for legacy access
     var minCurrencyThreshold: Double = DEFAULT_MIN_FARE.toDouble()
     var maxCurrencyThreshold: Double = DEFAULT_MAX_FARE.toDouble()
-    var autoAcceptEnabled: Boolean = true
+
+    // Anti-Hack Memory Shield: XOR token masking with dynamic SystemClock.elapsedRealtime() clock salt
+    private const val AUTO_ACCEPT_TOKEN_ENABLED = 0x4A7B2C91L
+    private const val AUTO_ACCEPT_TOKEN_DISABLED = 0x1E5D8F33L
+
+    private fun safeElapsedRealtime(): Long = try {
+        SystemClock.elapsedRealtime()
+    } catch (_: Throwable) {
+        System.currentTimeMillis()
+    }
+
+    @Volatile
+    private var autoAcceptClockSalt: Long = safeElapsedRealtime()
+    @Volatile
+    private var encodedAutoAcceptToken: Long = AUTO_ACCEPT_TOKEN_ENABLED xor autoAcceptClockSalt
+
+    var autoAcceptEnabled: Boolean
+        get() {
+            if (LicenseManager.isClockTamperingDetected()) return false
+            val decoded = encodedAutoAcceptToken xor autoAcceptClockSalt
+            return decoded == AUTO_ACCEPT_TOKEN_ENABLED
+        }
+        set(value) {
+            val salt = safeElapsedRealtime()
+            autoAcceptClockSalt = salt
+            encodedAutoAcceptToken = (if (value) AUTO_ACCEPT_TOKEN_ENABLED else AUTO_ACCEPT_TOKEN_DISABLED) xor salt
+        }
     val minPrice: Double get() = minCurrencyThreshold
     val maxPrice: Double get() = maxCurrencyThreshold
     val maxDistance: Double get() = _settingsState.value.maxPickupDistance.toDouble()
@@ -265,6 +295,8 @@ object AppSettings {
     val isOnboardingCompletedFlow: StateFlow<Boolean> = _isOnboardingCompletedFlow.asStateFlow()
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val roomDbWriteDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private val roomDbWriteMutex = Mutex()
     @Volatile
     private var isAuthListenerRegistered = false
     private var authStateListener: FirebaseAuth.AuthStateListener? = null
@@ -279,8 +311,8 @@ object AppSettings {
     fun init(context: Context) {
         val prefs = getPrefs(context)
         // Zero-Trust Cloud-Only: Do not consult local SharedPreferences for master automation toggles.
-        // Gated strictly by LicenseManager.isServiceActiveFlow and in-memory intent.
-        val enabled = LicenseManager.isServiceActiveFlow.value && autoAcceptEnabled
+        // Gated strictly by LicenseManager.isServiceActive and in-memory intent.
+        val enabled = LicenseManager.isServiceActive(context) && autoAcceptEnabled
         val minFareEnabled = prefs.getBoolean(KEY_MIN_FARE_ENABLED, DEFAULT_MIN_FARE_ENABLED)
         val minFare = prefs.getFloat(KEY_MIN_FARE, prefs.getFloat(KEY_MIN_VALUE, DEFAULT_MIN_FARE))
         val maxFareEnabled = prefs.getBoolean(KEY_MAX_FARE_ENABLED, DEFAULT_MAX_FARE_ENABLED)
@@ -411,7 +443,7 @@ object AppSettings {
                         _isPassActiveFlow.value = false
                     }
                 }
-                val effectiveEnabled = isServiceActive && autoAcceptEnabled
+                val effectiveEnabled = isServiceActive && LicenseManager.isServiceActive(context) && autoAcceptEnabled
                 if (_settingsState.value.isAutoAcceptEnabled != effectiveEnabled) {
                     _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = effectiveEnabled)
                 }
@@ -542,14 +574,19 @@ object AppSettings {
     }
 
     fun isAutoAcceptEnabled(context: Context): Boolean {
-        // Zero-Trust Cloud-Only: Never read master automation state from SharedPreferences.
-        // Relies 100% on LicenseManager.isServiceActiveFlow, anti-ban guard, and in-memory intent.
-        return LicenseManager.isServiceActiveFlow.value && !LicenseManager.isBannedFlow.value && autoAcceptEnabled
+        // Zero-Trust & Anti-Hack Shield:
+        // 1. Mathematically check clock tampering / elapsedRealtime hooking
+        if (LicenseManager.isClockTamperingDetected(context)) {
+            Log.w(TAG, "isAutoAcceptEnabled: Clock tampering detected! Auto-accept disabled.")
+            return false
+        }
+        // 2. Validate decoded XOR token & LicenseManager active status
+        return LicenseManager.isServiceActive(context) && !LicenseManager.isBannedFlow.value && autoAcceptEnabled
     }
 
     fun setAutoAcceptEnabled(context: Context, enabled: Boolean) {
         autoAcceptEnabled = enabled
-        val effectiveEnabled = LicenseManager.isServiceActiveFlow.value && !LicenseManager.isBannedFlow.value && enabled
+        val effectiveEnabled = LicenseManager.isServiceActive(context) && !LicenseManager.isBannedFlow.value && enabled
         _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = effectiveEnabled)
         // Strictly DO NOT persist master enablement toggles to SharedPreferences.
         syncOverlayService(context)
@@ -1032,6 +1069,8 @@ object AppSettings {
 
     /**
      * Persists an evaluated order into the Room database for historical review.
+     * Guaranteed sequential execution via a single-threaded dispatcher (limitedParallelism(1))
+     * and a Mutex, preventing SQLiteDatabaseLockedException during rapid successive order evaluations.
      */
     fun recordEvaluation(context: Context, evaluation: RideEvaluation) {
         try {
@@ -1042,20 +1081,25 @@ object AppSettings {
             val dropDist = offer.dropDistanceKm ?: offer.targetOffer?.dropDistance
             val pickupLoc = offer.pickupLocation
             val dropLoc = offer.dropLocation
-            CoroutineScope(Dispatchers.IO).launch {
-                repo.insertOrder(
-                    com.example.data.OrderEntity(
-                        timestamp = evaluation.timestamp,
-                        fare = totalFare,
-                        pickupDistanceKm = pickupDist,
-                        dropDistanceKm = dropDist,
-                        pickupLocation = pickupLoc,
-                        dropLocation = dropLoc,
-                        isAccepted = evaluation.isAccepted,
-                        decisionReason = evaluation.decisionReason,
-                        rawText = offer.rawText
-                    )
-                )
+            val entity = com.example.data.OrderEntity(
+                timestamp = evaluation.timestamp,
+                fare = totalFare,
+                pickupDistanceKm = pickupDist,
+                dropDistanceKm = dropDist,
+                pickupLocation = pickupLoc,
+                dropLocation = dropLoc,
+                isAccepted = evaluation.isAccepted,
+                decisionReason = evaluation.decisionReason,
+                rawText = offer.rawText
+            )
+            appScope.launch(roomDbWriteDispatcher) {
+                roomDbWriteMutex.withLock {
+                    try {
+                        repo.insertOrder(entity)
+                    } catch (e: Exception) {
+                        Log.w("AppSettings", "Failed to insert evaluated order into Room DB: ${e.message}")
+                    }
+                }
             }
         } catch (_: Exception) {
             // Fail gracefully if DB is initializing

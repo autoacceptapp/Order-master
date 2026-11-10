@@ -73,6 +73,46 @@ class OrderMasterApplication : Application() {
 
         // 5. Initialize core managers at Application level for background services
         initCoreEngines()
+
+        // 6. Pre-register all notification channels for Android 8.0+ / Android 13+
+        initNotificationChannels()
+    }
+
+    /**
+     * Pre-registers all notification channels at application startup for Android 8.0+ (API 26+)
+     * to prevent BadNotificationException and ensure foreground services & system alerts function smoothly.
+     */
+    private fun initNotificationChannels() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            try {
+                val nm = getSystemService(android.app.NotificationManager::class.java) ?: return
+
+                val overlayChannel = android.app.NotificationChannel(
+                    FloatingOverlayService.CHANNEL_ID,
+                    "Order Master Overlay",
+                    android.app.NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description = "Keeps the Order Master floating overlay button active over driver apps"
+                    setShowBadge(false)
+                }
+
+                val updateChannel = android.app.NotificationChannel(
+                    UpdateNotificationManager.CHANNEL_ID,
+                    "App Updates",
+                    android.app.NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Notifications for new Order Master app versions and downloads"
+                    enableLights(true)
+                    enableVibration(true)
+                }
+
+                nm.createNotificationChannel(overlayChannel)
+                nm.createNotificationChannel(updateChannel)
+                Log.d(TAG, "Notification channels pre-registered successfully.")
+            } catch (e: Exception) {
+                Log.w(TAG, "Notification channel pre-registration notice: ${e.message}")
+            }
+        }
     }
 
     /**

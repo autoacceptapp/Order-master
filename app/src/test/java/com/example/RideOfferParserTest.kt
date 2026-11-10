@@ -183,4 +183,135 @@ class RideOfferParserTest {
         assertFalse(offerB.fareText.contains("120"))
         assertFalse(offerB.pickupText.contains("1.5"))
     }
+
+    @Test
+    fun `test Indian Rupee variants and prefix suffix extraction`() {
+        val testCases = listOf(
+            "₹95" to 95.0,
+            "\u20B9120" to 120.0,
+            "\u20A880" to 80.0,
+            "Rs. 150" to 150.0,
+            "Rs 200" to 200.0,
+            "INR 350" to 350.0,
+            "75 ₹" to 75.0,
+            "110 Rs" to 110.0,
+            "140 INR" to 140.0
+        )
+
+        for ((text, expected) in testCases) {
+            assertTrue("Expected isFareNode to be true for '$text'", RideOfferParser.isFareNode(text, ""))
+            val (fareVal, _) = RideOfferParser.extractFareValue(text)
+            assertEquals("Expected fare value $expected for '$text'", expected, fareVal ?: 0.0, 0.01)
+
+            val (engineFare, _) = TextAnalysisEngine.extractCurrencies(text)
+            assertEquals("Expected TextAnalysisEngine fare $expected for '$text'", expected, engineFare ?: 0.0, 0.01)
+        }
+    }
+
+    @Test
+    fun `test RecyclerView container holding multiple distinct cards does not merge`() {
+        @Suppress("DEPRECATION")
+        val recyclerView = AccessibilityNodeInfo.obtain()
+        recyclerView.className = "androidx.recyclerview.widget.RecyclerView"
+        recyclerView.viewIdResourceName = "com.rapido.rider:id/orders_recycler_view"
+        recyclerView.setBoundsInScreen(Rect(0, 0, 1080, 1920))
+
+        // Card 1
+        @Suppress("DEPRECATION")
+        val card1 = AccessibilityNodeInfo.obtain()
+        card1.className = "androidx.cardview.widget.CardView"
+        card1.viewIdResourceName = "com.rapido.rider:id/order_card_1"
+        card1.setBoundsInScreen(Rect(50, 100, 1030, 500))
+
+        @Suppress("DEPRECATION")
+        val fare1 = AccessibilityNodeInfo.obtain()
+        fare1.text = "₹50"
+        @Suppress("DEPRECATION")
+        val pickup1 = AccessibilityNodeInfo.obtain()
+        pickup1.text = "Pickup 1.0 km"
+        @Suppress("DEPRECATION")
+        val accept1 = AccessibilityNodeInfo.obtain()
+        accept1.text = "Accept"
+        accept1.isClickable = true
+        accept1.isEnabled = true
+
+        org.robolectric.Shadows.shadowOf(card1).addChild(fare1)
+        org.robolectric.Shadows.shadowOf(card1).addChild(pickup1)
+        org.robolectric.Shadows.shadowOf(card1).addChild(accept1)
+
+        // Card 2
+        @Suppress("DEPRECATION")
+        val card2 = AccessibilityNodeInfo.obtain()
+        card2.className = "androidx.cardview.widget.CardView"
+        card2.viewIdResourceName = "com.rapido.rider:id/order_card_2"
+        card2.setBoundsInScreen(Rect(50, 550, 1030, 950))
+
+        @Suppress("DEPRECATION")
+        val fare2 = AccessibilityNodeInfo.obtain()
+        fare2.text = "₹120"
+        @Suppress("DEPRECATION")
+        val pickup2 = AccessibilityNodeInfo.obtain()
+        pickup2.text = "Pickup 3.5 km"
+        @Suppress("DEPRECATION")
+        val accept2 = AccessibilityNodeInfo.obtain()
+        accept2.text = "Accept"
+        accept2.isClickable = true
+        accept2.isEnabled = true
+
+        org.robolectric.Shadows.shadowOf(card2).addChild(fare2)
+        org.robolectric.Shadows.shadowOf(card2).addChild(pickup2)
+        org.robolectric.Shadows.shadowOf(card2).addChild(accept2)
+
+        org.robolectric.Shadows.shadowOf(recyclerView).addChild(card1)
+        org.robolectric.Shadows.shadowOf(recyclerView).addChild(card2)
+
+        // findCardContainers must find the 2 child cards, NOT treat the RecyclerView as a single card!
+        val containers = RideOfferParser.findCardContainers(recyclerView)
+        assertEquals(2, containers.size)
+
+        val parsedCards = RideOfferParser.parseCards(listOf(recyclerView))
+        assertEquals(2, parsedCards.size)
+
+        assertEquals("₹50", parsedCards[0].fareText)
+        assertEquals("Pickup 1.0 km", parsedCards[0].pickupText)
+        assertEquals(50.0, parsedCards[0].totalFare ?: 0.0, 0.01)
+        assertEquals(1.0, parsedCards[0].pickupDistanceKm ?: 0.0, 0.01)
+
+        assertEquals("₹120", parsedCards[1].fareText)
+        assertEquals("Pickup 3.5 km", parsedCards[1].pickupText)
+        assertEquals(120.0, parsedCards[1].totalFare ?: 0.0, 0.01)
+        assertEquals(3.5, parsedCards[1].pickupDistanceKm ?: 0.0, 0.01)
+    }
+
+    @Test
+    fun `test accept regex and chat notification filter`() {
+        val validAcceptActions = listOf(
+            "Accept",
+            "ACCEPT",
+            "Accept Order",
+            "Accept Ride",
+            "Swipe to accept",
+            "Take Ride",
+            "Go",
+            "स्वीकार करें",
+            "Auto-Accept"
+        )
+        for (action in validAcceptActions) {
+            assertTrue("Expected ACCEPT_REGEX match for '$action'", MyAccessibilityService.ACCEPT_REGEX.containsMatchIn(action))
+            assertFalse("Expected CHAT_OR_NOTIFICATION_REGEX not to match '$action'", MyAccessibilityService.CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(action))
+        }
+
+        val chatAndNoiseMessages = listOf(
+            "can you please accept bhaiya",
+            "bhaiya ride jaldi karo please",
+            "type a message",
+            "new message from customer",
+            "please hurry up sir",
+            "order delivered successfully"
+        )
+        for (msg in chatAndNoiseMessages) {
+            assertTrue("Expected CHAT_OR_NOTIFICATION_REGEX to match '$msg'", MyAccessibilityService.CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(msg))
+        }
+    }
 }
+
