@@ -15,8 +15,8 @@ object AdConfig {
     // Replace these placeholder strings with your approved AdMob Production
     // Ad Unit IDs before compiling your release APK:
     // =========================================================================
-    private const val PROD_BANNER_AD_UNIT_ID = "YOUR_PROD_BANNER_ID"
-    private const val PROD_REWARDED_AD_UNIT_ID = "YOUR_PROD_REWARDED_ID"
+    private const val PROD_BANNER_AD_UNIT_ID = "ca-app-pub-5657835600587543/1828106387"
+    private const val PROD_REWARDED_AD_UNIT_ID = "ca-app-pub-5657835600587543/3152796343"
 
     /**
      * Active Banner Ad Unit ID based on the current build variant.
