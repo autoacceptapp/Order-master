@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import android.content.Context
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -26,14 +28,22 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CurrencyRupee
 import androidx.compose.material.icons.filled.ElectricBolt
 import androidx.compose.material.icons.filled.Layers
-import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.filled.NearMe
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
@@ -43,6 +53,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,8 +61,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,7 +78,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.AppSettings
+import com.example.PermissionUtils
 import com.example.TTSManager
+import com.example.ui.components.applyRecommendedSettings
 import com.example.ui.theme.DarkBackground
 import com.example.ui.theme.DarkSurface
 import com.example.ui.theme.DarkSurfaceVariant
@@ -79,14 +94,26 @@ import com.example.ui.theme.TextSecondary
 import kotlinx.coroutines.launch
 import java.util.Locale
 
+enum class OnboardingStepType {
+    OVERVIEW,
+    ACCESSIBILITY,
+    MIN_FARE,
+    RATE_PER_KM,
+    DISTANCE_LIMITS,
+    PRESET_READY
+}
+
 data class OnboardingSlide(
     val id: Int,
+    val stepType: OnboardingStepType = OnboardingStepType.OVERVIEW,
     val icon: ImageVector,
     val badge: String,
     val title: String,
     val description: String,
     val speechText: String,
-    val accentColor: Color
+    val accentColor: Color,
+    val tipText: String = "",
+    val formulaOrExample: String = ""
 )
 
 @Composable
@@ -141,10 +168,10 @@ fun OnboardingScreen(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 16.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // Top Bar: Slide Index, Speaker Replay Button, and Skip Button
+            // Top Bar: Step Index Chip, Speaker Replay Button, and Skip Button
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -152,15 +179,15 @@ fun OnboardingScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Page indicator chip (e.g., "1 / 4")
+                // Page indicator chip (e.g., "Step 1 of 6")
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = DarkSurfaceVariant,
                     border = BorderStroke(1.dp, SurfaceStroke)
                 ) {
                     Text(
-                        text = "${pagerState.currentPage + 1} / ${slides.size}",
-                        color = TextSecondary,
+                        text = "Step ${pagerState.currentPage + 1} / ${slides.size}",
+                        color = PrimaryEmerald,
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                     )
@@ -177,7 +204,7 @@ fun OnboardingScreen(
                             TTSManager.speak(context, activeSlide.speechText, flush = true)
                         },
                         modifier = Modifier
-                            .size(42.dp)
+                            .size(38.dp)
                             .clip(CircleShape)
                             .background(DarkSurfaceVariant)
                             .border(1.dp, SurfaceStroke, CircleShape)
@@ -187,7 +214,7 @@ fun OnboardingScreen(
                             imageVector = Icons.Default.VolumeUp,
                             contentDescription = "Replay voice announcement",
                             tint = PrimaryEmerald,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
 
@@ -203,7 +230,7 @@ fun OnboardingScreen(
                         Text(
                             text = getSkipLabel(userLang),
                             color = TextSecondary,
-                            style = MaterialTheme.typography.labelLarge.copy(
+                            style = MaterialTheme.typography.labelMedium.copy(
                                 fontWeight = FontWeight.SemiBold
                             )
                         )
@@ -211,7 +238,7 @@ fun OnboardingScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
             // Swipeable Slides Content
             HorizontalPager(
@@ -224,27 +251,28 @@ fun OnboardingScreen(
                 val slide = slides[page]
                 OnboardingSlideView(
                     slide = slide,
+                    isHindi = userLang == "hi",
                     modifier = Modifier.fillMaxSize()
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Bottom Section: Dots Indicator + Next / Get Started Button
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(20.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 // Animated Pager Dots
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     repeat(slides.size) { index ->
                         val isSelected = pagerState.currentPage == index
                         val width by animateDpAsState(
-                            targetValue = if (isSelected) 28.dp else 8.dp,
+                            targetValue = if (isSelected) 24.dp else 6.dp,
                             animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
                             label = "dot_width"
                         )
@@ -255,20 +283,26 @@ fun OnboardingScreen(
 
                         Box(
                             modifier = Modifier
-                                .height(8.dp)
+                                .height(6.dp)
                                 .width(width)
-                                .clip(RoundedCornerShape(4.dp))
+                                .clip(RoundedCornerShape(3.dp))
                                 .background(color)
                         )
                     }
                 }
 
-                // Primary Action Button (Next or Get Started)
+                // Primary Action Button (Next or Apply Presets & Get Started)
                 val isLastPage = pagerState.currentPage == slides.size - 1
 
                 Button(
                     onClick = {
                         if (isLastPage) {
+                            applyRecommendedSettings(context)
+                            Toast.makeText(
+                                context,
+                                if (userLang == "hi") "बेस्ट सेटिंग्स लागू हो गईं! अब ऑटो-एक्सेप्ट तैयार है।" else "Recommended settings applied! Order Master is ready.",
+                                Toast.LENGTH_LONG
+                            ).show()
                             TTSManager.stop()
                             AppSettings.setOnboardingCompleted(context, true)
                             onFinish()
@@ -280,14 +314,14 @@ fun OnboardingScreen(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(56.dp)
+                        .height(52.dp)
                         .testTag(if (isLastPage) "onboarding_get_started_button" else "onboarding_next_button"),
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = PrimaryEmerald,
                         contentColor = Color.Black
                     ),
-                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
+                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -297,14 +331,14 @@ fun OnboardingScreen(
                             text = if (isLastPage) getStartLabel(userLang) else getNextLabel(userLang),
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.5.sp
+                                letterSpacing = 0.3.sp
                             )
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Icon(
                             imageVector = if (isLastPage) Icons.Default.Check else Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = null,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }
@@ -316,23 +350,28 @@ fun OnboardingScreen(
 @Composable
 private fun OnboardingSlideView(
     slide: OnboardingSlide,
+    isHindi: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val scrollState = rememberScrollState()
+
     Column(
         modifier = modifier
-            .padding(horizontal = 8.dp),
+            .verticalScroll(scrollState)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         // High-contrast icon card with glow effect
         Card(
             modifier = Modifier
-                .size(140.dp)
-                .padding(4.dp),
-            shape = RoundedCornerShape(32.dp),
+                .size(72.dp)
+                .padding(2.dp),
+            shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = DarkSurface),
-            border = BorderStroke(1.5.dp, slide.accentColor.copy(alpha = 0.5f)),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            border = BorderStroke(1.5.dp, slide.accentColor.copy(alpha = 0.6f)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
             Box(
                 modifier = Modifier
@@ -351,37 +390,33 @@ private fun OnboardingSlideView(
                     imageVector = slide.icon,
                     contentDescription = slide.title,
                     tint = slide.accentColor,
-                    modifier = Modifier.size(64.dp)
+                    modifier = Modifier.size(36.dp)
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(28.dp))
-
         // Slide Badge
         Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = EmeraldContainer,
-            border = BorderStroke(1.dp, PrimaryEmerald.copy(alpha = 0.3f))
+            shape = RoundedCornerShape(12.dp),
+            color = slide.accentColor.copy(alpha = 0.15f),
+            border = BorderStroke(1.dp, slide.accentColor.copy(alpha = 0.4f))
         ) {
             Text(
                 text = slide.badge,
-                color = OnEmeraldContainer,
+                color = slide.accentColor,
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 1.sp
+                    letterSpacing = 0.5.sp
                 ),
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
             )
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
 
         // Title
         Text(
             text = slide.title,
-            style = MaterialTheme.typography.headlineMedium.copy(
-                fontWeight = FontWeight.ExtraBold
+            style = MaterialTheme.typography.titleLarge.copy(
+                fontWeight = FontWeight.Bold
             ),
             color = TextPrimary,
             textAlign = TextAlign.Center,
@@ -390,407 +425,652 @@ private fun OnboardingSlideView(
                 .testTag("onboarding_slide_title")
         )
 
-        Spacer(modifier = Modifier.height(14.dp))
-
         // Subtitle / Description
         Text(
             text = slide.description,
-            style = MaterialTheme.typography.bodyLarge.copy(
-                lineHeight = 24.sp
+            style = MaterialTheme.typography.bodyMedium.copy(
+                lineHeight = 20.sp
             ),
             color = TextSecondary,
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp)
+                .padding(horizontal = 8.dp)
                 .testTag("onboarding_slide_desc")
         )
+
+        // Visual Custom Demo Card based on Step Type
+        when (slide.stepType) {
+            OnboardingStepType.OVERVIEW -> {
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                    border = BorderStroke(1.dp, PrimaryEmerald.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Rapido Captain Ride Request",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                color = TextSecondary
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = EmeraldContainer
+                            ) {
+                                Text(
+                                    text = "⭐ 4.9 Rating",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = OnEmeraldContainer,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "₹95.00",
+                                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black),
+                                    color = PrimaryEmerald
+                                )
+                                Text(
+                                    text = "5.4 KM • Pickup: 0.8 KM",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextPrimary
+                                )
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = PrimaryEmerald
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = Color.Black,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = if (isHindi) "300ms ऑटो-एक्सेप्ट" else "300ms Accepted",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.Black,
+                                            color = Color.Black
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            OnboardingStepType.ACCESSIBILITY -> {
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                    border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = if (isHindi) "3 आसान कदम (Easy Steps):" else "3 Easy Steps:",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color(0xFFF59E0B)
+                        )
+                        Text(
+                            text = if (isHindi) "1. Settings ➡️ Accessibility (पहुंच योग्यता)" else "1. Settings ➡️ Accessibility",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = if (isHindi) "2. Downloaded Apps ➡️ Order Master चुनें" else "2. Downloaded Apps ➡️ Order Master",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = if (isHindi) "3. 'Use Order Master' को ON करें" else "3. Toggle switch ON & Allow",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextPrimary
+                        )
+
+                        Spacer(modifier = Modifier.height(2.dp))
+
+                        Button(
+                            onClick = { PermissionUtils.invokeRapidoAccessibilityService(context) },
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFF59E0B),
+                                contentColor = Color.Black
+                            ),
+                            modifier = Modifier.fillMaxWidth().height(40.dp)
+                        ) {
+                            Text(
+                                text = if (isHindi) "Accessibility सेटिंग्स खोलें" else "Open Accessibility Settings",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            OnboardingStepType.MIN_FARE -> {
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                    border = BorderStroke(1.dp, SurfaceStroke),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        // Bad Order
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFEF4444).copy(alpha = 0.12f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("₹35 (3.0 KM) - " + if (isHindi) "कम किराया" else "Low Fare", fontSize = 12.sp, color = TextPrimary)
+                                Text("❌ " + if (isHindi) "छोड़ दिया" else "Skipped", fontSize = 11.sp, color = Color(0xFFEF4444), fontWeight = FontWeight.Bold)
+                            }
+                        }
+
+                        // Good Order
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = PrimaryEmerald.copy(alpha = 0.15f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("₹85 (4.8 KM) - " + if (isHindi) "भरपूर कमाई" else "Profitable", fontSize = 12.sp, color = TextPrimary)
+                                Text("✅ " + if (isHindi) "एक्सेप्ट किया" else "Accepted", fontSize = 11.sp, color = PrimaryEmerald, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
+            OnboardingStepType.RATE_PER_KM -> {
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                    border = BorderStroke(1.dp, Color(0xFF38BDF8).copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = if (isHindi) "फॉर्मूला: किराया ÷ दूरी = ₹/KM रेट" else "Formula: Total Fare ÷ Distance = Rate/KM",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color(0xFF38BDF8)
+                        )
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = DarkSurfaceVariant,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Column(modifier = Modifier.padding(6.dp)) {
+                                    Text("₹60 / 10 KM", fontSize = 11.sp, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                    Text("= ₹6/KM (घाटा ⚠️)", fontSize = 11.sp, color = Color(0xFFEF4444))
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = PrimaryEmerald.copy(alpha = 0.15f),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Column(modifier = Modifier.padding(6.dp)) {
+                                    Text("₹120 / 8 KM", fontSize = 11.sp, color = TextPrimary, fontWeight = FontWeight.Bold)
+                                    Text("= ₹15/KM (मुनाफा 🚀)", fontSize = 11.sp, color = PrimaryEmerald, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            OnboardingStepType.DISTANCE_LIMITS -> {
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                    border = BorderStroke(1.dp, Color(0xFFA855F7).copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.NearMe, contentDescription = null, tint = Color(0xFFA855F7), modifier = Modifier.size(16.dp))
+                            Text(
+                                text = if (isHindi) "पिकअप दूरी: मैक्स 2.5 KM (खाली चलने से बचें)" else "Max Pickup: 2.5 KM (Save empty running)",
+                                fontSize = 12.sp,
+                                color = TextPrimary
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.Speed, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(16.dp))
+                            Text(
+                                text = if (isHindi) "कुल दूरी: मैक्स 15 KM (शहर के अंदर रहें)" else "Max Distance: 15 KM (Stay in city)",
+                                fontSize = 12.sp,
+                                color = TextPrimary
+                            )
+                        }
+                    }
+                }
+            }
+
+            OnboardingStepType.PRESET_READY -> {
+                var isPresetApplied by remember { mutableStateOf(false) }
+
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                    border = BorderStroke(1.dp, PrimaryEmerald.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = if (isHindi) "🎯 1-टैप में बेस्ट सेटिंग्स लागू करें" else "🎯 1-Tap Apply Best Settings",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = PrimaryEmerald
+                        )
+
+                        Text(
+                            text = if (isHindi)
+                                "न्यूनतम किराया: ₹50 | रेट: ₹13/KM | पिकअप: 2.5 KM | फ्लोटिंग बटन: ON"
+                            else
+                                "Min Fare: ₹50 | Rate: ₹13/KM | Pickup: 2.5 KM | Overlay: ON",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            textAlign = TextAlign.Center
+                        )
+
+                        Button(
+                            onClick = {
+                                applyRecommendedSettings(context)
+                                isPresetApplied = true
+                                Toast.makeText(
+                                    context,
+                                    if (isHindi) "बेस्ट सेटिंग्स लागू हो गईं!" else "Best settings applied!",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isPresetApplied) Color(0xFF22C55E) else PrimaryEmerald,
+                                contentColor = Color.Black
+                            ),
+                            modifier = Modifier.fillMaxWidth().height(42.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isPresetApplied) Icons.Default.CheckCircle else Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = if (isPresetApplied)
+                                        (if (isHindi) "सेटिंग्स लागू हो गईं ✅" else "Settings Applied ✅")
+                                    else
+                                        (if (isHindi) "बेस्ट सेटिंग्स सेट करें" else "Apply Best Settings"),
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pro Tip Card
+        if (slide.tipText.isNotBlank()) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = DarkSurfaceVariant,
+                border = BorderStroke(1.dp, SurfaceStroke),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = PrimaryEmerald,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = slide.tipText,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp
+                        )
+                    )
+                }
+            }
+        }
     }
 }
 
 /**
- * Returns localized tutorial slides tailored to Indian delivery captains and auto drivers.
+ * Returns 6 localized, detailed tutorial slides tailored to Indian delivery captains and auto drivers.
  */
 private fun getOnboardingSlides(lang: String): List<OnboardingSlide> {
     return when (lang) {
         "hi" -> listOf(
             OnboardingSlide(
                 id = 1,
+                stepType = OnboardingStepType.OVERVIEW,
                 icon = Icons.Default.ElectricBolt,
-                badge = "300MS अल्ट्रा-फास्ट",
-                title = "अल्ट्रा-फास्ट ऑटो एक्सेप्ट",
-                description = "कोई भी ज्यादा कमाई वाली राइड न छूटने दें। ऑर्डर मास्टर केवल 300 मिलीसेकंड में राइड स्वीकार करता है।",
-                speechText = "अल्ट्रा-फास्ट ऑटो एक्सेप्ट। कोई भी ज्यादा कमाई वाली राइड न छूटने दें। ऑर्डर मास्टर केवल 300 मिलीसेकंड में राइड स्वीकार करता है।",
-                accentColor = PrimaryEmerald
+                badge = "⚡ 300MS अल्ट्रा-फास्ट",
+                title = "ऑर्डर मास्टर कैसे काम करता है?",
+                description = "Rapido Captain बैकग्राउंड में चालू रखें। स्क्रीन पर नया ऑर्डर आते ही ऐप 300ms में आपके नियमों के हिसाब से खुद एक्सेप्ट कर लेगा। फोन छूने की जरूरत नहीं!",
+                speechText = "ऑर्डर मास्टर कैसे काम करता है? जब आप रैपिडो ऐप चला रहे होते हैं, तो नया ऑर्डर आते ही ऐप तीन सौ मिलीसेकंड में खुद एक्सेप्ट कर लेता है।",
+                accentColor = PrimaryEmerald,
+                tipText = "टिप: पीक आवर्स में तेज ऑर्डर्स पकड़ने के लिए यह सबसे बेहतरीन टूल है।"
             ),
             OnboardingSlide(
                 id = 2,
-                icon = Icons.Default.Tune,
-                badge = "स्मार्ट फिल्टर्स",
-                title = "स्मार्ट फिल्टर्स",
-                description = "अपना न्यूनतम किराया और अधिकतम दूरी सेट करें। ऐप सिर्फ वही राइड लेगा जो आप चाहते हैं।",
-                speechText = "स्मार्ट फिल्टर्स। अपना न्यूनतम किराया और अधिकतम दूरी सेट करें। हम सिर्फ वही स्वीकार करते हैं जो आप चाहते हैं।",
-                accentColor = Color(0xFF38BDF8)
+                stepType = OnboardingStepType.ACCESSIBILITY,
+                icon = Icons.Default.Security,
+                badge = "🔑 जरूरी परमिशन",
+                title = "Accessibility सर्विस चालू करें",
+                description = "ऐप को स्क्रीन पर राइड ऑफर पढ़ने के लिए Accessibility परमिशन की जरूरत होती है। फोन सेटिंग्स ➡️ Accessibility ➡️ Downloaded Apps में जाकर Order Master को ON करें।",
+                speechText = "एक्सेसिबिलिटी सर्विस चालू करें। फोन सेटिंग्स में जाकर डाउनलोड किए गए ऐप्स में ऑर्डर मास्टर को ऑन करें।",
+                accentColor = Color(0xFFF59E0B),
+                tipText = "MIUI, Vivo, Oppo यूज़र्स: ऐप को हालिया ऐप्स (Recents) में लॉक करें और AutoStart ऑन रखें।"
             ),
             OnboardingSlide(
                 id = 3,
-                icon = Icons.Default.Layers,
-                badge = "फ्लोटिंग विजेट",
-                title = "फ्लोटिंग ओवरले",
-                description = "ड्राइवर ऐप चालू रखते हुए सीधे अपनी स्क्रीन से ऑर्डर मास्टर को नियंत्रित करें।",
-                speechText = "फ्लोटिंग ओवरले। अपनी ड्राइवर ऐप खुली रखते हुए सीधे अपनी स्क्रीन से ऐप को नियंत्रित करें।",
-                accentColor = Color(0xFFF59E0B)
+                stepType = OnboardingStepType.MIN_FARE,
+                icon = Icons.Default.CurrencyRupee,
+                badge = "💰 न्यूनतम किराया (MIN FARE)",
+                title = "सस्ते ऑर्डर्स रिजेक्ट करें",
+                description = "₹30-₹40 के छोटे ऑर्डर्स में पेट्रोल और समय बर्बाद होता है। जब आप Minimum Fare ₹50 या ₹60 सेट करेंगे, तो ऐप सिर्फ अच्छी कमाई वाले बड़े ऑर्डर्स ही लेगा।",
+                speechText = "न्यूनतम किराया फिल्टर। अगर आप पचास रुपये सेट करेंगे, तो कम पैसे वाले छोटे ऑर्डर अपने आप छूट जाएंगे और सिर्फ अच्छी कमाई वाले ऑर्डर आएंगे।",
+                accentColor = Color(0xFF10B981),
+                tipText = "💡 बेस्ट सेटिंग: ₹50 से ₹70 के बीच रखें ताकि छोटे ऑर्डर्स खुद छूट जाएं।"
             ),
             OnboardingSlide(
                 id = 4,
-                icon = Icons.Default.Storefront,
-                badge = "कैप्टन रिवॉर्ड्स",
-                title = "कैप्टन स्टोर",
-                description = "वॉलेट पॉइंट्स या सब्सक्रिप्शन पास के साथ प्रीमियम फीचर्स अनलॉक करें।",
-                speechText = "कैप्टन स्टोर। वॉलेट पॉइंट्स या सब्सक्रिप्शन पास के साथ प्रीमियम फीचर्स अनलॉक करें।",
-                accentColor = Color(0xFFA855F7)
+                stepType = OnboardingStepType.RATE_PER_KM,
+                icon = Icons.Default.TrendingUp,
+                badge = "📈 रेट प्रति किमी (₹/KM)",
+                title = "हर किलोमीटर पर फिक्स मुनाफा",
+                description = "सिर्फ कुल किराया मत देखिए! अगर राइड 10 किमी की हो और किराया सिर्फ ₹60 मिले, तो ₹6/किमी पर पेट्रोल का घाटा होगा। ₹/KM फिल्टर से हर किलोमीटर पर मुनाफा तय करें।",
+                speechText = "रेट प्रति किलोमीटर फिल्टर। सिर्फ कुल किराया मत देखिए। यह फिल्टर सुनिश्चित करता है कि हर किलोमीटर पर आपको बारह से पंद्रह रुपये की कमाई हो।",
+                accentColor = Color(0xFF38BDF8),
+                tipText = "💡 बेस्ट सेटिंग: बाइक के लिए ₹12-₹14/KM और ऑटो के लिए ₹15-₹18/KM रखें।"
+            ),
+            OnboardingSlide(
+                id = 5,
+                stepType = OnboardingStepType.DISTANCE_LIMITS,
+                icon = Icons.Default.NearMe,
+                badge = "📍 पिकअप और दूरी फिल्टर्स",
+                title = "दूर का पिकअप और लंबा रूट रोकें",
+                description = "पैसेंजर अगर 4-5 किमी दूर है तो वहां तक खाली जाने में नुकसान होता है। Max Pickup Distance को 2.0-2.5 किमी रखें ताकि सिर्फ पास के राइडर्स मिलें, और शहर के अंदर रहें।",
+                speechText = "पिकअप और दूरी फिल्टर्स। पैसेंजर अगर बहुत दूर है तो नुकसान होता है। पिकअप दूरी को दो या ढाई किलोमीटर पर रखें।",
+                accentColor = Color(0xFFA855F7),
+                tipText = "💡 बेस्ट सेटिंग: पिकअप 2.0 - 2.5 KM, कुल दूरी 12 - 15 KM रखें।"
+            ),
+            OnboardingSlide(
+                id = 6,
+                stepType = OnboardingStepType.PRESET_READY,
+                icon = Icons.Default.Layers,
+                badge = "🚀 फ्लोटिंग विजेट & शुरुआत",
+                title = "फ्लोटिंग बटन और बेस्ट सेटिंग्स",
+                description = "फ्लोटिंग बटन आपकी स्क्रीन पर तैरता रहेगा, जिससे आप Rapido में रहते हुए भी एक टैप में ऑटो-एक्सेप्ट चालू या बंद कर सकते हैं। नीचे बेस्ट सेटिंग्स तुरंत लागू करें!",
+                speechText = "सब तैयार है। फ्लोटिंग बटन से आप कभी भी ऑटो एक्सेप्ट को रोक या शुरू कर सकते हैं। नीचे दिए गए बटन पर टैप करके बेस्ट सेटिंग्स लागू करें।",
+                accentColor = PrimaryEmerald,
+                tipText = "सब तैयार है! नीचे क्लिक करके बेस्ट सेटिंग्स लागू करें और कमाई शुरू करें।"
             )
         )
         "gu" -> listOf(
             OnboardingSlide(
                 id = 1,
+                stepType = OnboardingStepType.OVERVIEW,
                 icon = Icons.Default.ElectricBolt,
-                badge = "300MS અલ્ટ્રા-ફાસ્ટ",
-                title = "અલ્ટ્રા-ફાસ્ટ ઓટો એક્સેપ્ટ",
-                description = "કોઈ પણ વધુ કમાણી વાળી રાઇડ ચૂકશો નહીં. ઓર્ડર માસ્ટર 300 મિલિસેકન્ડમાં રાઇડ સ્વીકારે છે.",
-                speechText = "અલ્ટ્રા-ફાસ્ટ ઓટો એક્સેપ્ટ. કોઈ પણ વધુ કમાણી વાળી રાઇડ ચૂકશો નહીં. ઓર્ડર માસ્ટર 300 મિલિસેકન્ડમાં રાઇડ સ્વીકારે છે.",
-                accentColor = PrimaryEmerald
+                badge = "⚡ 300MS અલ્ટ્રા-ફાસ્ટ",
+                title = "ઓર્ડર માસ્ટર કેવી રીતે કામ કરે છે?",
+                description = "રેપિડો કેપ્ટન એપ બેકગ્રાઉન્ડમાં ચાલુ રાખો. સ્ક્રીન પર નવો ઓર્ડર આવતા જ એપ 300ms માં સ્વીકારી લેશે. ફોનને અડવાની પણ જરૂર નથી!",
+                speechText = "ઓર્ડર માસ્ટર કેવી રીતે કામ કરે છે? રેપિડોમાં નવો ઓર્ડર આવતા જ 300 મિલિસેકન્ડમાં સ્વીકારી લેશે.",
+                accentColor = PrimaryEmerald,
+                tipText = "પીક અવર્સમાં ઝડપી ઓર્ડર પકડવા માટે બેસ્ટ ટૂલ છે."
             ),
             OnboardingSlide(
                 id = 2,
-                icon = Icons.Default.Tune,
-                badge = "સ્માર્ટ ફિલ્ટર્સ",
-                title = "સ્માર્ટ ફિલ્ટર્સ",
-                description = "તમારું ન્યૂનતમ ભાડું અને મહત્તમ અંતર સેટ કરો. અમે ફક્ત તમને જોઈતી રાઇડ જ સ્વીકારીશું.",
-                speechText = "સ્માર્ટ ફિલ્ટર્સ. તમારું ન્યૂનતમ ભાડું અને મહત્તમ અંતર સેટ કરો.",
-                accentColor = Color(0xFF38BDF8)
+                stepType = OnboardingStepType.ACCESSIBILITY,
+                icon = Icons.Default.Security,
+                badge = "🔑 જરૂરી પરમિશન",
+                title = "Accessibility સર્વિસ ચાલુ કરો",
+                description = "એપને સ્ક્રીન પર રાઇડ ઓફર વાંચવા માટે Accessibility પરમિશન જોઈએ. સેટિંગ્સ ➡️ Accessibility ➡️ Downloaded Apps માં ઓર્ડર માસ્ટર ON કરો.",
+                speechText = "Accessibility સર્વિસ ચાલુ કરો. સેટિંગ્સમાં ઓર્ડર માસ્ટર ON કરો.",
+                accentColor = Color(0xFFF59E0B),
+                tipText = "Vivo/Oppo/Xiaomi: એપને Recents માં લોક કરો અને AutoStart ચાલુ રાખો."
             ),
             OnboardingSlide(
                 id = 3,
-                icon = Icons.Default.Layers,
-                badge = "ફ્લોટિંગ વિજેટ",
-                title = "ફ્લોટિંગ ઓવરલે",
-                description = "તમારી ડ્રાઇવર એપ ખુલ્લી રાખીને સીધા તમારી સ્ક્રીન પરથી એપને નિયંત્રિત કરો.",
-                speechText = "ફ્લોટિંગ ઓવરલે. તમારી ડ્રાઇવર એપ ખુલ્લી રાખીને સ્ક્રીન પરથી નિયંત્રણ કરો.",
-                accentColor = Color(0xFFF59E0B)
+                stepType = OnboardingStepType.MIN_FARE,
+                icon = Icons.Default.CurrencyRupee,
+                badge = "💰 ન્યૂનતમ ભાડું (MIN FARE)",
+                title = "સસ્તા ઓર્ડર્સ નકારી કાઢો",
+                description = "₹30-₹40 ની નાની રાઇડમાં પેટ્રોલ અને સમય બગડે છે. ન્યૂનતમ ભાડું ₹50 અથવા ₹60 સેટ કરો જેથી માત્ર નફાકારક રાઇડ્સ જ મળે.",
+                speechText = "ન્યૂનતમ ભાડું ફિલ્ટર. ₹50 કે તેથી વધુ સેટ કરો જેથી ખોટ વાળા ઓર્ડર ન આવે.",
+                accentColor = Color(0xFF10B981),
+                tipText = "બેસ્ટ સેટિંગ: ₹50 થી ₹70 વચ્ચે રાખો."
             ),
             OnboardingSlide(
                 id = 4,
-                icon = Icons.Default.Storefront,
-                badge = "પ્રીમિયમ રિવોર્ડ્સ",
-                title = "કેપ્ટન સ્ટોર",
-                description = "વોલેટ પોઇન્ટ્સ અથવા સબ્સ્ક્રિપ્શન પાસ સાથે પ્રીમિયમ સુવિધાઓ અનલૉક કરો.",
-                speechText = "કેપ્ટન સ્ટોર. વોલેટ પોઇન્ટ્સ અથવા સબ્સ્ક્રિપ્શન પાસ સાથે પ્રીમિયમ સુવિધાઓ અનલૉક કરો.",
-                accentColor = Color(0xFFA855F7)
+                stepType = OnboardingStepType.RATE_PER_KM,
+                icon = Icons.Default.TrendingUp,
+                badge = "📈 દર પ્રતિ કિમી (₹/KM)",
+                title = "પ્રતિ કિલોમીટર નફો નક્કી કરો",
+                description = "માત્ર કુલ ભાડું ન જુઓ! 10 કિમી માટે ફક્ત ₹60 મળે તો પેટ્રોલમાં ખોટ જાય. ₹12 થી ₹15/KM સેટ કરો જેથી દરેક કિમી પર ચોખ્ખો નફો થાય.",
+                speechText = "દર પ્રતિ કિલોમીટર ફિલ્ટર. દરેક કિલોમીટર પર નફો સુનિશ્ચિત કરો.",
+                accentColor = Color(0xFF38BDF8),
+                tipText = "બેસ્ટ સેટિંગ: ₹12 થી ₹15/KM રાખો."
+            ),
+            OnboardingSlide(
+                id = 5,
+                stepType = OnboardingStepType.DISTANCE_LIMITS,
+                icon = Icons.Default.NearMe,
+                badge = "📍 પિકઅપ અને અંતર ફિલ્ટર્સ",
+                title = "દૂરનું પિકઅપ અટકાવો",
+                description = "જો પેસેન્જર 4-5 કિમી દૂર હોય તો ત્યાં સુધી ખાલી જવામાં ખોટ જાય છે. મહત્તમ પિકઅપ 2.5 કિમી રાખો અને શહેરમાં જ રહો.",
+                speechText = "પિકઅપ ફિલ્ટર. પિકઅપ અંતર 2.5 કિમી પર રાખો.",
+                accentColor = Color(0xFFA855F7),
+                tipText = "બેસ્ટ સેટિંગ: પિકઅપ 2.0 - 2.5 KM, અંતર 15 KM."
+            ),
+            OnboardingSlide(
+                id = 6,
+                stepType = OnboardingStepType.PRESET_READY,
+                icon = Icons.Default.Layers,
+                badge = "🚀 ફ્લોટિંગ વિજેટ & શરૂ કરો",
+                title = "ફ્લોટિંગ બટન અને શ્રેષ્ઠ સેટિંગ્સ",
+                description = "સ્ક્રીન પર ફ્લોટિંગ બટન રહેશે જેથી રેપિડો ચાલુ રાખીને પણ ઓટો-એક્સેપ્ટ બંધ/ચાલુ કરી શકો. નીચે ક્લિક કરીને સેટિંગ્સ લાગુ કરો!",
+                speechText = "બધું તૈયાર છે. નીચે બટન દબાવીને બેસ્ટ સેટિંગ્સ સેટ કરો.",
+                accentColor = PrimaryEmerald,
+                tipText = "તૈયાર છો! નીચે ક્લિક કરીને શરૂ કરો."
             )
         )
         "mr" -> listOf(
             OnboardingSlide(
                 id = 1,
+                stepType = OnboardingStepType.OVERVIEW,
                 icon = Icons.Default.ElectricBolt,
-                badge = "300MS अल्ट्रा-फास्ट",
-                title = "अल्ट्रा-फास्ट ऑटो एक्सेप्ट",
-                description = "जास्त कमाईची राइड कधीही चुकवू नका. ऑर्डर मास्टर 300 मिलीसेकंदात राइड स्वीकारतो.",
-                speechText = "अल्ट्रा-फास्ट ऑटो एक्सेप्ट. जास्त कमाईची राइड कधीही चुकवू नका. ऑर्डर मास्टर 300 मिलीसेकंदात राइड स्वीकारतो.",
-                accentColor = PrimaryEmerald
+                badge = "⚡ 300MS अल्ट्रा-फास्ट",
+                title = "ऑर्डर मास्टर कसे काम करतो?",
+                description = "Rapido Captain ॲप बॅकग्राउंडमध्ये चालू ठेवा. स्क्रीनवर नवीन ऑर्डर येताच ॲप 300ms मध्ये ऑटो-एक्सेप्ट करेल. फोनला हात लावण्याची गरज नाही!",
+                speechText = "ऑर्डर मास्टर कसा काम करतो? स्क्रीनवर नवीन ऑर्डर येताच 300 मिलीसेकंदात स्वतः एक्सेप्ट करेल.",
+                accentColor = PrimaryEmerald,
+                tipText = "पीक आवर्समध्ये फायद्याच्या राइड्स पकडण्यासाठी हे सर्वोत्तम टूल आहे."
             ),
             OnboardingSlide(
                 id = 2,
-                icon = Icons.Default.Tune,
-                badge = "स्मार्ट फिल्टर्स",
-                title = "स्मार्ट फिल्टर्स",
-                description = "तुमचे किमान भाडे आणि कमाल अंतर सेट करा. आम्ही फक्त तुम्हाला हवी असलेली राइड स्वीकारतो.",
-                speechText = "स्मार्ट फिल्टर्स. तुमचे किमान भाडे आणि कमाल अंतर सेट करा.",
-                accentColor = Color(0xFF38BDF8)
+                stepType = OnboardingStepType.ACCESSIBILITY,
+                icon = Icons.Default.Security,
+                badge = "🔑 आवश्यक परवानगी",
+                title = "Accessibility सर्व्हिस चालू करा",
+                description = "ॲपला स्क्रीनवरील राइड वाचण्यासाठी Accessibility परवानगी हवी. फोन सेटिंग्ज ➡️ Accessibility ➡️ Downloaded Apps मध्ये Order Master ON करा.",
+                speechText = "Accessibility सर्व्हिस चालू करा. सेटिंग्जमध्ये जाऊन Order Master ऑन करा.",
+                accentColor = Color(0xFFF59E0B),
+                tipText = "Vivo/Oppo/Xiaomi: ॲपला Recents मध्ये लॉक करा आणि AutoStart ऑन ठेवा."
             ),
             OnboardingSlide(
                 id = 3,
-                icon = Icons.Default.Layers,
-                badge = "फ्लोटिंग विजेट",
-                title = "फ्लोटिंग ओव्हरले",
-                description = "तुमचे ड्रायव्हर ॲप उघडे ठेवून थेट तुमच्या स्क्रीनवरून ॲप नियंत्रित करा.",
-                speechText = "फ्लोटिंग ओव्हरले. ड्रायव्हर ॲप उघडे ठेवून थेट स्क्रीनवरून ॲप नियंत्रित करा.",
-                accentColor = Color(0xFFF59E0B)
+                stepType = OnboardingStepType.MIN_FARE,
+                icon = Icons.Default.CurrencyRupee,
+                badge = "💰 किमान भाडे (MIN FARE)",
+                title = "कमी भाड्याच्या राइड्स टाळा",
+                description = "₹30-₹40 च्या लहान राइड्सवर पेट्रोल आणि वेळ वाया जातो. किमान भाडे ₹50 किंवा ₹60 सेट करा जेणेकरून चांगल्या कमाईच्याच राइड्स येतील.",
+                speechText = "किमान भाडे फिल्टर. पन्नास रुपये किंवा अधिक सेट करा.",
+                accentColor = Color(0xFF10B981),
+                tipText = "बेस्ट सेटिंग: ₹50 ते ₹70 दरम्यान ठेवा."
             ),
             OnboardingSlide(
                 id = 4,
-                icon = Icons.Default.Storefront,
-                badge = "कॅप्टन रिवॉर्ड्स",
-                title = "कॅप्टन स्टोअर",
-                description = "वॉलेट पॉइंट्स किंवा सबस्क्रिप्शन पाससह प्रीमियम वैशिष्ट्ये अनलॉक करा.",
-                speechText = "कॅप्टन स्टोअर. वॉलेट पॉइंट्स किंवा सबस्क्रिप्शन पाससह प्रीमियम वैशिष्ट्ये अनलॉक करा.",
-                accentColor = Color(0xFFA855F7)
-            )
-        )
-        "bn" -> listOf(
-            OnboardingSlide(
-                id = 1,
-                icon = Icons.Default.ElectricBolt,
-                badge = "300MS আল্ট্রা-ফাস্ট",
-                title = "আল্ট্রা-ফাস্ট অটো অ্যাকসেপ্ট",
-                description = "বেশি ভাড়ার কোনো রাইড মিস করবেন না। অর্ডার মাস্টার মাত্র 300 মিলিসেকেন্ডে রাইড গ্রহণ করে।",
-                speechText = "আল্ট্রা-ফাস্ট অটো অ্যাকসেপ্ট। বেশি ভাড়ার কোনো রাইড মিস করবেন না।",
-                accentColor = PrimaryEmerald
+                stepType = OnboardingStepType.RATE_PER_KM,
+                icon = Icons.Default.TrendingUp,
+                badge = "📈 दर प्रति किमी (₹/KM)",
+                title = "प्रत्येक किलोमीटरवर नफा मिळवा",
+                description = "फक्त एकूण भाडे पाहू नका! 10 किमीसाठी फक्त ₹60 मिळाले तर पेट्रोलमध्ये नुकसान होईल. दर प्रति किमी ₹12 ते ₹15 ठेवा.",
+                speechText = "दर प्रति किलोमीटर फिल्टर. प्रत्येक किलोमीटरवर योग्य कमाई मिळवा.",
+                accentColor = Color(0xFF38BDF8),
+                tipText = "बेस्ट सेटिंग: ₹12 ते ₹15/KM ठेवा."
             ),
             OnboardingSlide(
-                id = 2,
-                icon = Icons.Default.Tune,
-                badge = "স্মার্ট ফিল্টার",
-                title = "স্মার্ট ফিল্টার",
-                description = "আপনার সর্বনিম্ন ভাড়া এবং সর্বাধিক দূরত্ব নির্ধারণ করুন। আপনি যা চান আমরা কেবল সেটাই গ্রহণ করি।",
-                speechText = "স্মার্ট ফিল্টার। আপনার সর্বনিম্ন ভাড়া এবং সর্বাধিক দূরত্ব নির্ধারণ করুন।",
-                accentColor = Color(0xFF38BDF8)
+                id = 5,
+                stepType = OnboardingStepType.DISTANCE_LIMITS,
+                icon = Icons.Default.NearMe,
+                badge = "📍 पिकअप आणि अंतर फिल्टर्स",
+                title = "लांबचे पिकअप टाळा",
+                description = "प्रवासी 4-5 किमी लांब असेल तर रिकामे जाण्यात नुकसान होते. पिकअप अंतर 2.5 किमी ठेवा आणि शहरातच राहा.",
+                speechText = "पिकअप अंतर फिल्टर. पिकअप अंतर दोन ते अडीच किमी ठेवा.",
+                accentColor = Color(0xFFA855F7),
+                tipText = "बेस्ट सेटिंग: पिकअप 2.5 KM, कमाल अंतर 15 KM."
             ),
             OnboardingSlide(
-                id = 3,
+                id = 6,
+                stepType = OnboardingStepType.PRESET_READY,
                 icon = Icons.Default.Layers,
-                badge = "ভাসমান ওভারলে",
-                title = "ভাসমান ওভারলে",
-                description = "ড্রাইভার অ্যাপ চালু রেখেই সরাসরি আপনার স্ক্রিন থেকে অর্ডার মাস্টার নিয়ন্ত্রণ করুন।",
-                speechText = "ভাসমান ওভারলে। সরাসরি আপনার স্ক্রিন থেকে অ্যাপ নিয়ন্ত্রণ করুন।",
-                accentColor = Color(0xFFF59E0B)
-            ),
-            OnboardingSlide(
-                id = 4,
-                icon = Icons.Default.Storefront,
-                badge = "ক্যাপ্টেন স্টোর",
-                title = "ক্যাপ্টেন স্টোর",
-                description = "ওয়ালেট পয়েন্ট বা সাবস্ক্রিপশন পাস দিয়ে প্রিমিয়াম সুবিধা আনলক করুন।",
-                speechText = "ক্যাপ্টেন স্টোর। ওয়ালেট পয়েন্ট দিয়ে প্রিমিয়াম সুবিধা আনলক করুন।",
-                accentColor = Color(0xFFA855F7)
-            )
-        )
-        "ta" -> listOf(
-            OnboardingSlide(
-                id = 1,
-                icon = Icons.Default.ElectricBolt,
-                badge = "300MS அதிவேகம்",
-                title = "அதிவேக தானியங்கி ஏற்பு",
-                description = "அதிக கட்டண சவாரியை தவறவிடாதீர்கள். ஆர்டர் மாஸ்டர் 300 மில்லி விநாடிகளில் சவாரிகளை ஏற்கிறது.",
-                speechText = "அதிவேக தானியங்கி ஏற்பு. அதிக கட்டண சவாரியை தவறவிடாதீர்கள்.",
-                accentColor = PrimaryEmerald
-            ),
-            OnboardingSlide(
-                id = 2,
-                icon = Icons.Default.Tune,
-                badge = "ஸ்மார்ட் வடிப்பான்கள்",
-                title = "ஸ்மார்ட் வடிப்பான்கள்",
-                description = "குறைந்தபட்ச கட்டணம் மற்றும் அதிகபட்ச தூரத்தை அமைக்கவும். நீங்கள் விரும்புவதை மட்டுமே நாங்கள் ஏற்கிறோம்.",
-                speechText = "ஸ்மார்ட் வடிப்பான்கள். குறைந்தபட்ச கட்டணம் மற்றும் அதிகபட்ச தூரத்தை அமைக்கவும்.",
-                accentColor = Color(0xFF38BDF8)
-            ),
-            OnboardingSlide(
-                id = 3,
-                icon = Icons.Default.Layers,
-                badge = "மிதக்கும் திரை",
-                title = "மிதக்கும் மேலடுக்கு",
-                description = "டிரைவர் பயன்பாட்டை இயக்கும்போதே உங்கள் திரையிலிருந்தே பயன்பாட்டைக் கட்டுப்படுத்தவும்.",
-                speechText = "மிதக்கும் மேலடுக்கு. உங்கள் திரையிலிருந்தே பயன்பாட்டைக் கட்டுப்படுத்தவும்.",
-                accentColor = Color(0xFFF59E0B)
-            ),
-            OnboardingSlide(
-                id = 4,
-                icon = Icons.Default.Storefront,
-                badge = "கேப்டன் ஸ்டோர்",
-                title = "கேப்டன் ஸ்டோர்",
-                description = "வாலட் புள்ளிகள் அல்லது சந்தா பாஸ் மூலம் பிரீமியம் அம்சங்களை அன்லாக் செய்யவும்.",
-                speechText = "கேப்டன் ஸ்டோர். பிரீமியம் அம்சங்களை அன்லாக் செய்யவும்.",
-                accentColor = Color(0xFFA855F7)
-            )
-        )
-        "te" -> listOf(
-            OnboardingSlide(
-                id = 1,
-                icon = Icons.Default.ElectricBolt,
-                badge = "300MS అల్ట్రా-ఫాస్ట్",
-                title = "అల్ట్రా-ఫాస్ట్ ఆటో యాక్సెప్ట్",
-                description = "ఎక్కువ ఆదాయం ఇచ్చే రైడ్‌ను ఎప్పటికీ మిస్ అవ్వద్దు. ఆర్డర్ మాస్టర్ 300 మిల్లీసెకన్లలో రైడ్‌లను ఆమోదిస్తుంది.",
-                speechText = "అల్ట్రా-ఫాస్ట్ ఆటో యాక్సెప్ట్. ఎక్కువ ఆదాయం ఇచ్చే రైడ్‌ను మిస్ అవ్వద్దు.",
-                accentColor = PrimaryEmerald
-            ),
-            OnboardingSlide(
-                id = 2,
-                icon = Icons.Default.Tune,
-                badge = "స్మార్ట్ ఫిల్టర్లు",
-                title = "స్మార్ట్ ఫిల్టర్లు",
-                description = "మీ కనీస ఛార్జీ మరియు గరిష్ట దూరాన్ని సెట్ చేయండి. మీకు కావలసినదాన్ని మాత్రమే మేము అంగీకరిస్తాము.",
-                speechText = "స్మార్ట్ ఫిల్టర్లు. మీ కనీస ఛార్జీ మరియు గరిష్ట దూరాన్ని సెట్ చేయండి.",
-                accentColor = Color(0xFF38BDF8)
-            ),
-            OnboardingSlide(
-                id = 3,
-                icon = Icons.Default.Layers,
-                badge = "ఫ్లోటింగ్ ఓవర్‌లే",
-                title = "ఫ్లోటింగ్ ఓవర్‌లే",
-                description = "డ్రైవర్ యాప్ తెరిచి ఉంచి స్క్రీన్ నుండే యాప్‌ని నియంత్రించండి.",
-                speechText = "ఫ్లోటింగ్ ఓవర్‌లే. స్క్రీన్ నుండే నేరుగా యాప్‌ని నియంత్రించండి.",
-                accentColor = Color(0xFFF59E0B)
-            ),
-            OnboardingSlide(
-                id = 4,
-                icon = Icons.Default.Storefront,
-                badge = "కెప్టెన్ స్టోర్",
-                title = "కెప్టెన్ స్టోర్",
-                description = "వాలెట్ పాయింట్లు లేదా సబ్‌స్క్రిప్షన్ పాస్‌తో ప్రీమియం ఫీచర్లను అన్‌లాక్ చేయండి.",
-                speechText = "కెప్టెన్ స్టోర్. ప్రీమియం ఫీచర్లను అన్‌లాక్ చేయండి.",
-                accentColor = Color(0xFFA855F7)
-            )
-        )
-        "kn" -> listOf(
-            OnboardingSlide(
-                id = 1,
-                icon = Icons.Default.ElectricBolt,
-                badge = "300MS ಅಲ್ಟ್ರಾ-ಫಾಸ್ಟ್",
-                title = "ಅಲ್ಟ್ರಾ-ಫಾಸ್ಟ್ ಆಟೋ ಸ್ವೀಕಾರ",
-                description = "ಹೆಚ್ಚು ಗಳಿಕೆಯ ರೈಡ್ ಅನ್ನು ಎಂದಿಗೂ ಕಳೆದುಕೊಳ್ಳಬೇಡಿ. ಆರ್ಡರ್ ಮಾಸ್ಟರ್ 300 ಮಿಲಿಸೆಕೆಂಡುಗಳಲ್ಲಿ ರೈಡ್ ಸ್ವೀಕರಿಸುತ್ತದೆ.",
-                speechText = "ಅಲ್ಟ್ರಾ-ಫಾಸ್ಟ್ ಆಟೋ ಸ್ವೀಕಾರ. ಹೆಚ್ಚು ಗಳಿಕೆಯ ರೈಡ್ ಅನ್ನು ಎಂದಿಗೂ ಕಳೆದುಕೊಳ್ಳಬೇಡಿ.",
-                accentColor = PrimaryEmerald
-            ),
-            OnboardingSlide(
-                id = 2,
-                icon = Icons.Default.Tune,
-                badge = "ಸ್ಮಾರ್ಟ್ ಫಿಲ್ಟರ್‌ಗಳು",
-                title = "ಸ್ಮಾರ್ಟ್ ಫಿಲ್ಟರ್‌ಗಳು",
-                description = "ನಿಮ್ಮ ಕನಿಷ್ಠ ದರ ಮತ್ತು ಗರಿಷ್ಠ ದೂರವನ್ನು ಹೊಂದಿಸಿ. ನೀವು ಬಯಸುವ ರೈಡ್ ಅನ್ನು ಮಾತ್ರ ನಾವು ಸ್ವೀಕರಿಸುತ್ತೇವೆ.",
-                speechText = "ಸ್ಮಾರ್ಟ್ ಫಿಲ್ಟರ್‌ಗಳು. ನಿಮ್ಮ ಕನಿಷ್ಠ ದರ ಮತ್ತು ಗರಿಷ್ಠ ದೂರವನ್ನು ಹೊಂದಿಸಿ.",
-                accentColor = Color(0xFF38BDF8)
-            ),
-            OnboardingSlide(
-                id = 3,
-                icon = Icons.Default.Layers,
-                badge = "ಫ್ಲೋಟಿಂಗ್ ಓವರ್‌ಲೇ",
-                title = "ಫ್ಲೋಟಿಂಗ್ ಓವರ್‌ಲೇ",
-                description = "ಚಾಲಕ ಅಪ್ಲಿಕೇಶನ್ ತೆರೆದಿಟ್ಟುಕೊಂಡು ನೇರವಾಗಿ ನಿಮ್ಮ ಪರದೆಯಿಂದ ನಿಯಂತ್ರಿಸಿ.",
-                speechText = "ಫ್ಲೋಟಿಂಗ್ ಓವರ್‌ಲೇ. ನೇರವಾಗಿ ನಿಮ್ಮ ಪರದೆಯಿಂದ ನಿಯಂತ್ರಿಸಿ.",
-                accentColor = Color(0xFFF59E0B)
-            ),
-            OnboardingSlide(
-                id = 4,
-                icon = Icons.Default.Storefront,
-                badge = "ಕ್ಯಾಪ್ಟನ್ ಸ್ಟೋರ್",
-                title = "ಕ್ಯಾಪ್ಟನ್ ಸ್ಟೋರ್",
-                description = "ವ್ಯಾಲೆಟ್ ಪಾಯಿಂಟ್‌ಗಳೊಂದಿಗೆ ಪ್ರೀಮಿಯಂ ವೈಶಿಷ್ಟ್ಯಗಳನ್ನು ಅನ್‌ಲಾಕ್ ಮಾಡಿ.",
-                speechText = "ಕ್ಯಾಪ್ಟನ್ ಸ್ಟೋರ್. ಪ್ರೀಮಿಯಂ ವೈಶಿಷ್ಟ್ಯಗಳನ್ನು ಅನ್‌ಲಾಕ್ ಮಾಡಿ.",
-                accentColor = Color(0xFFA855F7)
-            )
-        )
-        "ml" -> listOf(
-            OnboardingSlide(
-                id = 1,
-                icon = Icons.Default.ElectricBolt,
-                badge = "300MS അൾട്രാ-ഫാസ്റ്റ്",
-                title = "അൾട്രാ-ഫാസ്റ്റ് ഓട്ടോ സ്വീകരിക്കൽ",
-                description = "കൂടുതൽ വരുമാനമുള്ള റൈഡുകൾ ഒരിക്കലും നഷ്‌ടപ്പെടുത്തരുത്. ഓർഡർ മാസ്റ്റർ 300 മില്ലിസെക്കൻഡിൽ റൈഡ് സ്വീകരിക്കുന്നു.",
-                speechText = "അൾട്രാ-ഫാസ്റ്റ് ഓട്ടോ സ്വീകരിക്കൽ. കൂടുതൽ വരുമാനമുള്ള റൈഡുകൾ ഒരിക്കലും നഷ്‌ടപ്പെടുത്തരുത്.",
-                accentColor = PrimaryEmerald
-            ),
-            OnboardingSlide(
-                id = 2,
-                icon = Icons.Default.Tune,
-                badge = "സ്മാർട്ട് ഫിൽട്ടറുകൾ",
-                title = "സ്മാർട്ട് ഫിൽട്ടറുകൾ",
-                description = "നിങ്ങളുടെ ഏറ്റവും കുറഞ്ഞ കൂലിയും പരമാവധി ദൂരവും നിശ്ചയിക്കുക. നിങ്ങൾക്ക് ആവശ്യമുള്ളത് മാത്രം ഞങ്ങൾ സ്വീകരിക്കുന്നു.",
-                speechText = "സ്മാർട്ട് ഫിൽട്ടറുകൾ. നിങ്ങളുടെ ഏറ്റവും കുറഞ്ഞ കൂലിയും പരമാവധി ദൂരവും നിശ്ചയിക്കുക.",
-                accentColor = Color(0xFF38BDF8)
-            ),
-            OnboardingSlide(
-                id = 3,
-                icon = Icons.Default.Layers,
-                badge = "ഫ്ലോട്ടിംഗ് ഓവർലേ",
-                title = "ഫ്ലോട്ടിംഗ് ഓവർലേ",
-                description = "ഡ്രൈവർ ആപ്പ് തുറന്നുവെച്ച് നേരിട്ട് നിങ്ങളുടെ സ്ക്രീനിൽ നിന്ന് ആപ്പ് നിയന്ത്രിക്കുക.",
-                speechText = "ഫ്ലോട്ടിംഗ് ഓവർലേ. നേരിട്ട് സ്ക്രീനിൽ നിന്ന് ആപ്പ് നിയന്ത്രിക്കുക.",
-                accentColor = Color(0xFFF59E0B)
-            ),
-            OnboardingSlide(
-                id = 4,
-                icon = Icons.Default.Storefront,
-                badge = "ക്യാപ്റ്റൻ സ്റ്റോർ",
-                title = "ക്യാപ്റ്റൻ സ്റ്റോർ",
-                description = "വാലറ്റ് പോയിന്റുകൾ ഉപയോഗിച്ച് പ്രീമിയം ഫീച്ചറുകൾ അൺലോക്ക് ചെയ്യുക.",
-                speechText = "ക്യാപ്റ്റൻ സ്റ്റോർ. പ്രീമിയം ഫീച്ചറുകൾ അൺലോക്ക് ചെയ്യുക.",
-                accentColor = Color(0xFFA855F7)
-            )
-        )
-        "pa" -> listOf(
-            OnboardingSlide(
-                id = 1,
-                icon = Icons.Default.ElectricBolt,
-                badge = "300MS ਅਲਟ੍ਰਾ-ਫਾਸਟ",
-                title = "ਅਲਟ੍ਰਾ-ਫਾਸਟ ਆਟੋ ਐਕਸੈਪਟ",
-                description = "ਵੱਧ ਕਮਾਈ ਵਾਲੀ ਰਾਈਡ ਕਦੇ ਨਾ ਛੱਡੋ। ਆਰਡਰ ਮਾਸਟਰ ਸਿਰਫ਼ 300 ਮਿਲੀਸਕਿੰਟ ਵਿੱਚ ਰਾਈਡ ਸਵੀਕਾਰ ਕਰਦਾ ਹੈ।",
-                speechText = "ਅਲਟ੍ਰਾ-ਫਾਸਟ ਆਟੋ ਐਕਸੈਪਟ। ਵੱਧ ਕਮਾਈ ਵਾਲੀ ਰਾਈਡ ਕਦੇ ਨਾ ਛੱਡੋ।",
-                accentColor = PrimaryEmerald
-            ),
-            OnboardingSlide(
-                id = 2,
-                icon = Icons.Default.Tune,
-                badge = "ਸਮਾਰਟ ਫਿਲਟਰ",
-                title = "ਸਮਾਰਟ ਫਿਲਟਰ",
-                description = "ਆਪਣਾ ਘੱਟੋ-ਘੱਟ ਕਿਰਾਇਆ ਅਤੇ ਵੱਧ ਤੋਂ ਵੱਧ ਦੂਰੀ ਸੈੱਟ ਕਰੋ। ਅਸੀਂ ਸਿਰਫ਼ ਉਹੀ ਰਾਈਡ ਲਵਾਂਗੇ ਜੋ ਤੁਸੀਂ ਚਾਹੁੰਦੇ ਹੋ।",
-                speechText = "ਸਮਾਰਟ ਫਿਲਟਰ। ਆਪਣਾ ਘੱਟੋ-ਘੱਟ ਕਿਰਾਇਆ ਅਤੇ ਵੱਧ ਤੋਂ ਵੱਧ ਦੂਰੀ ਸੈੱਟ ਕਰੋ।",
-                accentColor = Color(0xFF38BDF8)
-            ),
-            OnboardingSlide(
-                id = 3,
-                icon = Icons.Default.Layers,
-                badge = "ਫਲੋਟਿੰਗ ਓਵਰਲੇ",
-                title = "ਫਲੋਟਿੰਗ ਓਵਰਲੇ",
-                description = "ਡਰਾਈਵਰ ਐਪ ਖੁੱਲ੍ਹੀ ਰੱਖਦੇ ਹੋਏ ਸਿੱਧੇ ਆਪਣੀ ਸਕ੍ਰੀਨ ਤੋਂ ਆਰਡਰ ਮਾਸਟਰ ਨੂੰ ਕੰਟਰੋਲ ਕਰੋ।",
-                speechText = "ਫਲੋਟਿੰਗ ਓਵਰਲੇ। ਸਿੱਧੇ ਆਪਣੀ ਸਕ੍ਰੀਨ ਤੋਂ ਆਰਡਰ ਮਾਸਟਰ ਨੂੰ ਕੰਟਰੋਲ ਕਰੋ।",
-                accentColor = Color(0xFFF59E0B)
-            ),
-            OnboardingSlide(
-                id = 4,
-                icon = Icons.Default.Storefront,
-                badge = "ਕੈਪਟਨ ਸਟੋਰ",
-                title = "ਕੈਪਟਨ ਸਟੋਰ",
-                description = "ਵਾਲਿਟ ਪੁਆਇੰਟਸ ਜਾਂ ਸਬਸਕ੍ਰਿਪਸ਼ਨ ਪਾਸ ਨਾਲ ਪ੍ਰੀਮੀਅਮ ਫੀਚਰ ਅਨਲੌਕ ਕਰੋ।",
-                speechText = "ਕੈਪਟਨ ਸਟੋਰ। ਵਾਲਿਟ ਪੁਆਇੰਟਸ ਨਾਲ ਪ੍ਰੀਮੀਅਮ ਫੀਚਰ ਅਨਲੌਕ ਕਰੋ।",
-                accentColor = Color(0xFFA855F7)
+                badge = "🚀 फ्लोटिंग विजेट & तयार",
+                title = "फ्लोटिंग बटण आणि सर्वोत्तम सेटिंग्ज",
+                description = "स्क्रीनवर फ्लोटिंग बटण राहील ज्यामुळे Rapido मध्ये असतानाही ऑटो-एक्सेप्ट नियंत्रित करता येईल. खालील बटणावर टॅप करून सेटिंग्ज लागू करा!",
+                speechText = "सर्व तयार आहे. खालील बटणावर क्लिक करून सर्वोत्तम सेटिंग्ज सेट करा.",
+                accentColor = PrimaryEmerald,
+                tipText = "तयार आहात! खाली क्लिक करून सुरुवात करा."
             )
         )
         else -> listOf(
             OnboardingSlide(
                 id = 1,
+                stepType = OnboardingStepType.OVERVIEW,
                 icon = Icons.Default.ElectricBolt,
-                badge = "300MS ULTRA-FAST",
-                title = "Ultra-Fast Auto Accept",
-                description = "Never miss a high-paying ride. Order Master accepts rides in 300ms.",
-                speechText = "Ultra-Fast Auto Accept. Never miss a high-paying ride. Order Master accepts rides in 300 milliseconds.",
-                accentColor = PrimaryEmerald
+                badge = "⚡ 300MS ULTRA-FAST",
+                title = "How Order Master Works",
+                description = "Keep your Rapido Captain app open. When a new ride offer appears, Order Master evaluates it and accepts in 300ms without you touching the phone!",
+                speechText = "How Order Master works. As soon as a ride appears, Order Master checks your filters and accepts it in 300 milliseconds automatically.",
+                accentColor = PrimaryEmerald,
+                tipText = "Tip: Never miss high-earning peak hour orders again."
             ),
             OnboardingSlide(
                 id = 2,
-                icon = Icons.Default.Tune,
-                badge = "SMART FILTERS",
-                title = "Smart Filters",
-                description = "Set your minimum fare and maximum distance. We only accept what you want.",
-                speechText = "Smart Filters. Set your minimum fare and maximum distance. We only accept what you want.",
-                accentColor = Color(0xFF38BDF8)
+                stepType = OnboardingStepType.ACCESSIBILITY,
+                icon = Icons.Default.Security,
+                badge = "🔑 REQUIRED PERMISSION",
+                title = "Enable Accessibility Service",
+                description = "Order Master needs Accessibility permission to detect ride offers on screen. Go to Phone Settings ➡️ Accessibility ➡️ Downloaded Apps and turn ON Order Master.",
+                speechText = "Enable Accessibility Service in phone settings to allow Order Master to read ride popups.",
+                accentColor = Color(0xFFF59E0B),
+                tipText = "MIUI, Vivo, Oppo users: Lock Order Master in Recents and enable AutoStart."
             ),
             OnboardingSlide(
                 id = 3,
-                icon = Icons.Default.Layers,
-                badge = "FLOATING OVERLAY",
-                title = "Floating Overlay",
-                description = "Control the app directly from your screen while keeping your driver app open.",
-                speechText = "Floating Overlay. Control the app directly from your screen while keeping your driver app open.",
-                accentColor = Color(0xFFF59E0B)
+                stepType = OnboardingStepType.MIN_FARE,
+                icon = Icons.Default.CurrencyRupee,
+                badge = "💰 MINIMUM FARE FILTER",
+                title = "Filter Low-Paying Rides",
+                description = "Short ₹30-₹40 rides waste time and fuel. Set Minimum Fare to ₹50 or ₹60 so the app automatically ignores small orders and only accepts high-earning rides.",
+                speechText = "Minimum fare filter. Set minimum fare to fifty rupees or more to avoid low paying rides.",
+                accentColor = Color(0xFF10B981),
+                tipText = "💡 Best Setting: Set between ₹50 and ₹70 to avoid unprofitable rides."
             ),
             OnboardingSlide(
                 id = 4,
-                icon = Icons.Default.Storefront,
-                badge = "CAPTAIN STORE",
-                title = "Captain Store",
-                description = "Unlock premium features with wallet points or subscription passes.",
-                speechText = "Captain Store. Unlock premium features with wallet points or subscription passes.",
-                accentColor = Color(0xFFA855F7)
+                stepType = OnboardingStepType.RATE_PER_KM,
+                icon = Icons.Default.TrendingUp,
+                badge = "📈 RATE PER KM (₹/KM)",
+                title = "Guaranteed Profit per Kilometer",
+                description = "Never drive long routes for cheap! A ₹60 fare for 10 KM is only ₹6/KM (fuel loss). Set ₹/KM to ₹13-₹15 to ensure high profit on every kilometer driven.",
+                speechText = "Rate per kilometer filter ensures every kilometer driven generates solid profit after fuel costs.",
+                accentColor = Color(0xFF38BDF8),
+                tipText = "💡 Best Setting: ₹12-₹14/KM for Bikes, ₹15-₹18/KM for Autos."
+            ),
+            OnboardingSlide(
+                id = 5,
+                stepType = OnboardingStepType.DISTANCE_LIMITS,
+                icon = Icons.Default.NearMe,
+                badge = "📍 PICKUP & DISTANCE LIMITS",
+                title = "Avoid Long Pickups & Outer Trips",
+                description = "Driving 4-5 KM empty for passenger pickup wastes fuel and time. Keep Max Pickup at 2.0-2.5 KM and Max Distance at 15 KM to stay within the city.",
+                speechText = "Pickup distance filter prevents long empty runs. Set pickup distance to 2.5 KM max.",
+                accentColor = Color(0xFFA855F7),
+                tipText = "💡 Best Setting: Pickup 2.0 - 2.5 KM, Max Distance 12 - 15 KM."
+            ),
+            OnboardingSlide(
+                id = 6,
+                stepType = OnboardingStepType.PRESET_READY,
+                icon = Icons.Default.Layers,
+                badge = "🚀 FLOATING WIDGET & READY",
+                title = "Floating Widget & Fast Setup",
+                description = "The floating bubble hovers above Rapido, allowing you to pause or resume auto-accept in 1-tap. Tap below to apply ideal recommended settings right now!",
+                speechText = "You are ready. Use the floating overlay to control auto accept on the go. Tap below to apply recommended settings.",
+                accentColor = PrimaryEmerald,
+                tipText = "All ready! Tap below to apply recommended settings and start earning."
             )
         )
     }
@@ -813,30 +1093,30 @@ private fun getSkipLabel(lang: String): String {
 
 private fun getNextLabel(lang: String): String {
     return when (lang) {
-        "hi" -> "आगे बढ़ें"
-        "gu" -> "આગળ વધો"
-        "mr" -> "पुढे जा"
-        "bn" -> "পরবর্তী"
-        "ta" -> "அடுத்து"
+        "hi" -> "अगला स्टेप (Next)"
+        "gu" -> "આગળ વધો (Next)"
+        "mr" -> "पुढील स्टेप (Next)"
+        "bn" -> "পরবর্তী ধাপ"
+        "ta" -> "அடுத்த படி"
         "te" -> "తరువాత"
         "kn" -> "ಮುಂದೆ"
         "ml" -> "അടുത്തത്"
         "pa" -> "ਅੱਗੇ"
-        else -> "Next"
+        else -> "Next Step"
     }
 }
 
 private fun getStartLabel(lang: String): String {
     return when (lang) {
-        "hi" -> "शुरू करें (Get Started)"
-        "gu" -> "શરૂ કરો (Get Started)"
-        "mr" -> "सुरू करा (Get Started)"
-        "bn" -> "শুরু করুন"
-        "ta" -> "தொடங்குங்கள்"
-        "te" -> "ప్రారంభించండి"
-        "kn" -> "ಪ್ರಾರಂಭಿಸಿ"
-        "ml" -> "ആരംഭിക്കുക"
-        "pa" -> "ਸ਼ੁਰੂ ਕਰੋ"
-        else -> "Get Started"
+        "hi" -> "बेस्ट सेटिंग्स लागू करें & शुरू करें 🚀"
+        "gu" -> "સેટિંગ્સ લાગુ કરો & શરૂ કરો 🚀"
+        "mr" -> "सेटिंग्ज लागू करा & सुरू करा 🚀"
+        "bn" -> "সেটিংস প্রয়োগ করুন এবং শুরু করুন 🚀"
+        "ta" -> "அமைப்புகளைப் பயன்படுத்துங்கள் & தொடங்குங்கள் 🚀"
+        "te" -> "ప్రారంభించండి 🚀"
+        "kn" -> "ಪ್ರಾರಂಭಿಸಿ 🚀"
+        "ml" -> "ആരംഭിക്കുക 🚀"
+        "pa" -> "ਸ਼ੁਰੂ ਕਰੋ 🚀"
+        else -> "Apply Settings & Get Started 🚀"
     }
 }

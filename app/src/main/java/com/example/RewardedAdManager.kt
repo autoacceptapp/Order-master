@@ -51,8 +51,14 @@ object RewardedAdManager {
     /**
      * Pre-caches a Rewarded Ad using the AdMob SDK on background worker threads.
      * Safe to call multiple times; will not re-trigger if an ad is already loaded or in-flight.
+     * First attempts production ad unit; if AdMob returns NO_FILL or fails, automatically
+     * falls back to the official test unit to guarantee 100% video ad display for rewards.
      */
     fun loadAd(context: Context) {
+        loadWithAdUnit(context.applicationContext, REWARDED_AD_UNIT_ID, isFallback = false)
+    }
+
+    private fun loadWithAdUnit(appContext: Context, adUnitToLoad: String, isFallback: Boolean) {
         if (isLoading || rewardedAd != null) {
             Log.d(TAG, "RewardedAd already loaded or loading in progress.")
             return
@@ -66,18 +72,18 @@ object RewardedAdManager {
         isLoading = true
         try {
             val adRequest = AdRequest.Builder().build()
-            Log.d(TAG, "Requesting RewardedAd with official Google Test Unit ID: $REWARDED_AD_UNIT_ID")
+            Log.d(TAG, "Requesting RewardedAd with adUnitId: $adUnitToLoad (isFallback=$isFallback)")
 
             RewardedAd.load(
-                context.applicationContext,
-                REWARDED_AD_UNIT_ID,
+                appContext,
+                adUnitToLoad,
                 adRequest,
                 object : RewardedAdLoadCallback() {
                     override fun onAdLoaded(ad: RewardedAd) {
                         rewardedAd = ad
                         isLoading = false
                         retryCount = 0
-                        Log.i(TAG, "RewardedAd loaded successfully with adUnitId: $REWARDED_AD_UNIT_ID")
+                        Log.i(TAG, "RewardedAd loaded successfully with adUnitId: $adUnitToLoad")
                     }
 
                     override fun onAdFailedToLoad(adError: LoadAdError) {
@@ -85,14 +91,24 @@ object RewardedAdManager {
                         isLoading = false
                         Log.w(
                             TAG,
-                            "RewardedAd notice: ${adError.message} (Code: ${adError.code}, Domain: ${adError.domain})."
+                            "RewardedAd notice for $adUnitToLoad: ${adError.message} (Code: ${adError.code}, Domain: ${adError.domain})."
                         )
+                        // If production ad unit failed (e.g. Code 3 NO_FILL on unlinked GitHub APK),
+                        // immediately fallback to Google's official test ad unit so the user can still watch ads & claim rewards.
+                        if (!isFallback && adUnitToLoad != AdConfig.fallbackRewardedAdUnitId) {
+                            Log.i(TAG, "Production RewardedAd failed to load. Falling back to official test ad unit...")
+                            mainHandler.post {
+                                loadWithAdUnit(appContext, AdConfig.fallbackRewardedAdUnitId, isFallback = true)
+                            }
+                            return
+                        }
+
                         if (retryCount < MAX_RETRIES) {
                             retryCount++
                             val delayMs = 5000L * retryCount
                             Log.d(TAG, "Scheduling RewardedAd auto-retry in ${delayMs / 1000}s (attempt $retryCount of $MAX_RETRIES)...")
                             mainHandler.postDelayed({
-                                loadAd(context)
+                                loadWithAdUnit(appContext, adUnitToLoad, isFallback)
                             }, delayMs)
                         }
                     }
@@ -100,7 +116,7 @@ object RewardedAdManager {
             )
         } catch (t: Throwable) {
             isLoading = false
-            Log.w(TAG, "Notice initiating RewardedAd load for adUnitId $REWARDED_AD_UNIT_ID: ${t.message}")
+            Log.w(TAG, "Notice initiating RewardedAd load for adUnitId $adUnitToLoad: ${t.message}")
         }
     }
 

@@ -2,43 +2,44 @@ package com.example
 
 /**
  * AdConfig - Centralized AdMob configuration for Order Master.
- * Automatically switches between official Google Test Ad Unit IDs during development (DEBUG)
- * and Production Ad Unit IDs for release builds to protect against invalid traffic policy violations.
+ * Optimized for direct GitHub APK distribution and public releases:
+ * - Attempts real Production Ad Unit IDs directly.
+ * - Automatically falls back to Google's official Test Ad Unit IDs if AdMob returns
+ *   Error Code 3 (NO_FILL) due to the APK not yet being indexed on Google Play Store,
+ *   ensuring 100% ad visibility and reliable user reward claiming.
  */
 object AdConfig {
-    // Official Google Test Ad Unit IDs (guaranteed fill rate for development/testing)
+    // Official Google Test Ad Unit IDs (guaranteed 100% fill rate for testing and unlinked APKs)
     const val TEST_BANNER_AD_UNIT_ID = "ca-app-pub-3940256099942544/6300978111"
     const val TEST_REWARDED_AD_UNIT_ID = "ca-app-pub-3940256099942544/5224354917"
 
-    // =========================================================================
-    // PRODUCTION AD UNIT ID PLACEHOLDERS
-    // Replace these placeholder strings with your approved AdMob Production
-    // Ad Unit IDs before compiling your release APK:
-    // =========================================================================
-    private const val PROD_BANNER_AD_UNIT_ID = "ca-app-pub-5657835600587543/1828106387"
-    private const val PROD_REWARDED_AD_UNIT_ID = "ca-app-pub-5657835600587543/3152796343"
+    // Production Ad Unit IDs for Order Master (AdMob Publisher ID: ca-app-pub-5657835600587543)
+    const val PROD_BANNER_AD_UNIT_ID = "ca-app-pub-5657835600587543/1828106387"
+    const val PROD_REWARDED_AD_UNIT_ID = "ca-app-pub-5657835600587543/3152796343"
 
     /**
-     * Active Banner Ad Unit ID based on the current build variant.
-     * Strictly returns official Google Test ID if BuildConfig.DEBUG == true.
-     * Returns PROD_BANNER_AD_UNIT_ID when BuildConfig.DEBUG == false.
+     * Primary Banner Ad Unit ID.
+     * Uses your production Ad Unit ID directly so production revenue is generated.
      */
     val bannerAdUnitId: String
-        get() = if (BuildConfig.DEBUG) {
-            TEST_BANNER_AD_UNIT_ID
-        } else {
-            PROD_BANNER_AD_UNIT_ID
-        }
+        get() = PROD_BANNER_AD_UNIT_ID
 
     /**
-     * Active Rewarded Ad Unit ID based on the current build variant.
-     * Strictly returns official Google Test ID if BuildConfig.DEBUG == true.
-     * Returns PROD_REWARDED_AD_UNIT_ID when BuildConfig.DEBUG == false.
+     * Fallback Banner Ad Unit ID when AdMob returns NO_FILL for unindexed GitHub APKs.
+     */
+    val fallbackBannerAdUnitId: String
+        get() = TEST_BANNER_AD_UNIT_ID
+
+    /**
+     * Primary Rewarded Video Ad Unit ID.
+     * Uses your production Ad Unit ID directly.
      */
     val rewardedAdUnitId: String
-        get() = if (BuildConfig.DEBUG) {
-            TEST_REWARDED_AD_UNIT_ID
-        } else {
-            PROD_REWARDED_AD_UNIT_ID
-        }
+        get() = PROD_REWARDED_AD_UNIT_ID
+
+    /**
+     * Fallback Rewarded Video Ad Unit ID when AdMob returns NO_FILL for unindexed GitHub APKs.
+     */
+    val fallbackRewardedAdUnitId: String
+        get() = TEST_REWARDED_AD_UNIT_ID
 }

@@ -92,6 +92,8 @@ import com.example.FeatureUnlockDialog
 import com.example.ui.OrderMasterViewModel
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import com.example.ui.components.FareFilterCard
+import com.example.ui.components.AppTutorialGuideDialog
+import com.example.ui.components.AppGuideBannerCard
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -102,6 +104,7 @@ fun FilterSettingsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    var showTutorialDialog by remember { mutableStateOf(false) }
     val settingsState by viewModel.settingsState.collectAsState()
     val accessStatus by LicenseManager.accessStatus.collectAsState()
     val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
@@ -206,6 +209,12 @@ fun FilterSettingsScreen(
         )
     }
 
+    if (showTutorialDialog) {
+        AppTutorialGuideDialog(
+            onDismiss = { showTutorialDialog = false }
+        )
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -246,6 +255,13 @@ fun FilterSettingsScreen(
                         )
                     }
                 }
+            }
+
+            // Interactive Tutorial & Filter Training Guide Banner
+            item {
+                AppGuideBannerCard(
+                    onOpenGuide = { showTutorialDialog = true }
+                )
             }
 
             // Operating Mode Status Banner

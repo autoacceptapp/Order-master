@@ -92,6 +92,8 @@ import androidx.compose.material.icons.filled.Lock
 import com.example.ui.OrderMasterViewModel
 import com.example.ui.theme.AmberAccent
 import com.example.ui.theme.PrimaryEmerald
+import com.example.ui.components.AppTutorialGuideDialog
+import com.example.ui.components.AppGuideBannerCard
 import java.util.Locale
 
 @Composable
@@ -105,6 +107,7 @@ fun HomeScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    var showTutorialDialog by remember { mutableStateOf(false) }
     val settingsState by viewModel.settingsState.collectAsState()
     val logs by viewModel.liveLogs.collectAsState()
     val ttsStatus by viewModel.ttsStatus.collectAsState()
@@ -167,6 +170,19 @@ fun HomeScreen(
                 }
             }
         )
+
+        // =========================================================================================
+        // COMPONENT 1.2: INTERACTIVE APP & FILTER SETUP GUIDE BANNER
+        // =========================================================================================
+        AppGuideBannerCard(
+            onOpenGuide = { showTutorialDialog = true }
+        )
+
+        if (showTutorialDialog) {
+            AppTutorialGuideDialog(
+                onDismiss = { showTutorialDialog = false }
+            )
+        }
 
         // =========================================================================================
         // COMPONENT 1.5: GOOGLE ACCOUNT & CLOUD SYNC CARD

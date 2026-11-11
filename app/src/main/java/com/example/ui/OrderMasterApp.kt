@@ -36,6 +36,7 @@ import androidx.compose.material.icons.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.WorkspacePremium
+import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -80,6 +81,7 @@ import com.example.AppSettingsScreen
 import com.example.LicenseManager
 import com.example.PassTier
 import com.example.ui.components.BannerAdView
+import com.example.ui.components.AppTutorialGuideDialog
 import com.example.RestrictedSettingsGuideDialog
 import com.example.auth.GoogleAuthManager
 import com.example.ui.components.GlobalBlockingOverlay
@@ -204,6 +206,7 @@ fun OrderMasterApp(
 
     var showRestrictedSettingsGuide by remember { mutableStateOf(false) }
     var showGoogleSignInSheet by remember { mutableStateOf(false) }
+    var showTutorialGuide by remember { mutableStateOf(false) }
 
     // Mandatory Authentication: sheet is strictly forced whenever user is not logged in
     val shouldShowAuthSheet = !userAuthState.isLoggedIn || showGoogleSignInSheet
@@ -349,6 +352,18 @@ fun OrderMasterApp(
                                     MaterialTheme.colorScheme.primary
                                 else
                                     MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        // App Guide & Filter Tutorial Help Button
+                        IconButton(
+                            onClick = { showTutorialGuide = true },
+                            modifier = Modifier.testTag("top_bar_guide_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.HelpOutline,
+                                contentDescription = "App Guide & Filter Tutorial",
+                                tint = MaterialTheme.colorScheme.primary
                             )
                         }
 
@@ -569,6 +584,13 @@ fun OrderMasterApp(
                 showRestrictedSettingsGuide = false
                 navController.navigate(Screen.PaymentVerification.route)
             }
+        )
+    }
+
+    // App & Filter Training Guide Dialog
+    if (showTutorialGuide) {
+        AppTutorialGuideDialog(
+            onDismiss = { showTutorialGuide = false }
         )
     }
 

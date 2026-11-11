@@ -68,9 +68,11 @@ fun BannerAdView(
         return
     }
 
+    var currentAdUnitId by remember(adUnitId) { mutableStateOf(adUnitId) }
+    var isFallbackAttempted by remember(adUnitId) { mutableStateOf(false) }
     var adViewRef by remember { mutableStateOf<AdView?>(null) }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(currentAdUnitId) {
         onDispose {
             try {
                 adViewRef?.destroy()
@@ -87,43 +89,52 @@ fun BannerAdView(
             .testTag("banner_ad_container"),
         contentAlignment = Alignment.Center
     ) {
-        AndroidView(
-            modifier = Modifier
-                .wrapContentSize()
-                .testTag("banner_ad_view"),
-            factory = { context ->
-                AdView(context).apply {
-                    setAdSize(AdSize.BANNER)
-                    this.adUnitId = adUnitId
-                    adListener = object : AdListener() {
-                        override fun onAdLoaded() {
-                            Log.d("BannerAdView", "AdMob Banner Ad loaded successfully.")
-                        }
+        androidx.compose.runtime.key(currentAdUnitId) {
+            AndroidView(
+                modifier = Modifier
+                    .wrapContentSize()
+                    .testTag("banner_ad_view"),
+                factory = { context ->
+                    AdView(context).apply {
+                        setAdSize(AdSize.BANNER)
+                        this.adUnitId = currentAdUnitId
+                        adListener = object : AdListener() {
+                            override fun onAdLoaded() {
+                                Log.d("BannerAdView", "AdMob Banner Ad loaded successfully with unit: $currentAdUnitId")
+                            }
 
-                        override fun onAdFailedToLoad(error: LoadAdError) {
-                            Log.w(
-                                "BannerAdView",
-                                "Banner ad notice: code=${error.code}, message='${error.message}', domain='${error.domain}'"
-                            )
-                        }
+                            override fun onAdFailedToLoad(error: LoadAdError) {
+                                Log.w(
+                                    "BannerAdView",
+                                    "Banner ad notice (unit: $currentAdUnitId): code=${error.code}, message='${error.message}', domain='${error.domain}'"
+                                )
+                                // If production ad fails (e.g. error code 3 NO_FILL on sideloaded/GitHub APK),
+                                // immediately fallback to official Google test unit so banner never remains blank.
+                                if (!isFallbackAttempted && currentAdUnitId != AdConfig.fallbackBannerAdUnitId) {
+                                    Log.i("BannerAdView", "Attempting fallback to test banner ad unit for guaranteed display.")
+                                    isFallbackAttempted = true
+                                    currentAdUnitId = AdConfig.fallbackBannerAdUnitId
+                                }
+                            }
 
-                        override fun onAdOpened() {
-                            Log.d("BannerAdView", "AdMob Banner Ad opened.")
-                        }
+                            override fun onAdOpened() {
+                                Log.d("BannerAdView", "AdMob Banner Ad opened.")
+                            }
 
-                        override fun onAdClosed() {
-                            Log.d("BannerAdView", "AdMob Banner Ad closed.")
+                            override fun onAdClosed() {
+                                Log.d("BannerAdView", "AdMob Banner Ad closed.")
+                            }
                         }
+                        try {
+                            val adRequest = AdRequest.Builder().build()
+                            loadAd(adRequest)
+                        } catch (e: Exception) {
+                            Log.e("BannerAdView", "Error requesting AdMob Banner: ${e.message}", e)
+                        }
+                        adViewRef = this
                     }
-                    try {
-                        val adRequest = AdRequest.Builder().build()
-                        loadAd(adRequest)
-                    } catch (e: Exception) {
-                        Log.e("BannerAdView", "Error requesting AdMob Banner: ${e.message}", e)
-                    }
-                    adViewRef = this
                 }
-            }
-        )
+            )
+        }
     }
 }

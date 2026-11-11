@@ -413,6 +413,15 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             PassManager.verifyServerPassStatus(applicationContext)
         }
+
+        // Proactive Rewarded Ad Pre-Caching on resume
+        try {
+            if (!RewardedAdManager.isAdLoaded() && !RewardedAdManager.isLoading()) {
+                RewardedAdManager.loadAd(applicationContext)
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Notice pre-caching RewardedAd in onResume: ${e.message}")
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
