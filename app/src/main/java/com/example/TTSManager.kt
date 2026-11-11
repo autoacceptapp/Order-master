@@ -259,17 +259,14 @@ object TTSManager {
 
         val target = offer.targetOffer ?: TextAnalysisEngine.parseTargetOffer(offer.rawText)
         val lang = AppSettings.getVoiceLanguage(context)
-        val message = if (target != null && target.fare > 0.0) {
-            formatCleanVoiceAnnouncement(target, lang)
-        } else {
-            val fare = offer.totalFare?.let { if (it % 1.0 == 0.0) it.toInt().toString() else String.format(Locale.US, "%.1f", it) } ?: "0"
-            val dist = (offer.pickupDistanceKm ?: offer.dropDistanceKm)?.let { if (it % 1.0 == 0.0) it.toInt().toString() else String.format(Locale.US, "%.1f", it) } ?: "0"
-            if (lang.equals("hi", ignoreCase = true)) {
-                "किराया $fare रुपये। पिकअप $dist किलोमीटर।"
-            } else {
-                "Fare $fare rupees. Pickup $dist km."
-            }
-        }
+        val resolvedTarget = target ?: TargetRideOffer(
+            fare = offer.totalFare ?: offer.baseFare ?: 0.0,
+            pickupDistance = offer.pickupDistanceKm ?: 0.0,
+            pickupLocation = offer.pickupLocation,
+            dropDistance = offer.dropDistanceKm ?: 0.0,
+            dropLocation = offer.dropLocation
+        )
+        val message = formatCleanVoiceAnnouncement(resolvedTarget, lang)
 
         speak(context, message, queueMode)
         return true
@@ -333,8 +330,16 @@ object TTSManager {
         val pickupDistStr = if (target.pickupDistance % 1.0 == 0.0) target.pickupDistance.toInt().toString() else String.format(Locale.US, "%.1f", target.pickupDistance)
         val dropDistStr = if (target.dropDistance % 1.0 == 0.0) target.dropDistance.toInt().toString() else String.format(Locale.US, "%.1f", target.dropDistance)
 
-        val pickupLoc = target.pickupLocation.trim()
-        val dropLoc = target.dropLocation.trim()
+        val pickupLoc = if (target.pickupLocation.contains(" • ")) {
+            target.pickupLocation.substringBefore(" • ").trim()
+        } else {
+            target.pickupLocation.trim()
+        }
+        val dropLoc = if (target.dropLocation.contains(" • ")) {
+            target.dropLocation.substringBefore(" • ").trim()
+        } else {
+            target.dropLocation.trim()
+        }
 
         return when (lang.lowercase(Locale.ROOT)) {
             "en" -> {

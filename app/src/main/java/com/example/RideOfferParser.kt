@@ -401,6 +401,28 @@ object RideOfferParser {
             return null
         }
 
+        // Structured location extraction fallback from node tree order (e.g. Rapido cards without explicit viewId)
+        if (pickupLocationText.isEmpty() || dropLocationText.isEmpty()) {
+            val (structPickup, structDrop) = extractStructuredLocations(allNodeTexts)
+            if (pickupLocationText.isEmpty() && structPickup.isNotEmpty()) {
+                pickupLocationText = structPickup
+            }
+            if (dropLocationText.isEmpty() && structDrop.isNotEmpty()) {
+                dropLocationText = structDrop
+            }
+        }
+        if (pickupLocationText.isEmpty() || dropLocationText.isEmpty()) {
+            val fromNodes = TextAnalysisEngine.parseTargetOfferFromNodes(allNodeTexts)
+            if (fromNodes != null) {
+                if (pickupLocationText.isEmpty() && fromNodes.pickupLocation.isNotEmpty()) {
+                    pickupLocationText = fromNodes.pickupLocation
+                }
+                if (dropLocationText.isEmpty() && fromNodes.dropLocation.isNotEmpty()) {
+                    dropLocationText = fromNodes.dropLocation
+                }
+            }
+        }
+
         val targetOffer = TargetRideOffer(
             fare = totalFare,
             pickupDistance = pickupDistance ?: 0.0,
@@ -604,6 +626,73 @@ object RideOfferParser {
         }
         current?.let { recycleNode(it) }
         return null
+    }
+
+    /**
+     * Extracts structured pickup and drop locations from node texts based on relative positions
+     * to the detected distance nodes, perfectly handling Rapido card structures like:
+     * ["Auto Boost", "₹45", "₹ 57 AUTO", "0.6 km", "City Centre", "Premji's Park...", "2.4 km", "Rajkot railway station", "Rajkot Junction...", "Accept"]
+     */
+    fun extractStructuredLocations(nodeTexts: List<String>): Pair<String, String> {
+        var pickupLoc = ""
+        var dropLoc = ""
+
+        val distIndices = mutableListOf<Int>()
+        for (i in nodeTexts.indices) {
+            val text = nodeTexts[i].trim()
+            if (DISTANCE_PATTERN.matcher(text).find() && !isFareNode(text, "")) {
+                distIndices.add(i)
+            }
+        }
+
+        if (distIndices.isNotEmpty()) {
+            val pickupDistIdx = distIndices[0]
+            val pickupParts = mutableListOf<String>()
+            var i = pickupDistIdx + 1
+            while (i < nodeTexts.size && (distIndices.size < 2 || i < distIndices[1])) {
+                val t = nodeTexts[i].trim()
+                if (isValidLocationText(t)) {
+                    pickupParts.add(t)
+                }
+                i++
+            }
+            if (pickupParts.isNotEmpty()) {
+                pickupLoc = pickupParts.joinToString(" • ")
+            }
+        }
+
+        if (distIndices.size >= 2) {
+            val dropDistIdx = distIndices[1]
+            val dropParts = mutableListOf<String>()
+            var i = dropDistIdx + 1
+            while (i < nodeTexts.size) {
+                val t = nodeTexts[i].trim()
+                if (isAcceptAction(t) || isFareNode(t, "") || DISTANCE_PATTERN.matcher(t).find()) {
+                    break
+                }
+                if (isValidLocationText(t)) {
+                    dropParts.add(t)
+                }
+                i++
+            }
+            if (dropParts.isNotEmpty()) {
+                dropLoc = dropParts.joinToString(" • ")
+            }
+        }
+
+        return pickupLoc to dropLoc
+    }
+
+    private fun isValidLocationText(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.length < 2) return false
+        if (isAcceptAction(trimmed)) return false
+        if (CURRENCY_SYMBOL_PATTERN.matcher(trimmed).find()) return false
+        if (DISTANCE_PATTERN.matcher(trimmed).find()) return false
+        val lower = trimmed.lowercase(Locale.ROOT)
+        val noiseWords = setOf("accept", "decline", "reject", "order", "1 order", "go to", "auto boost", "auto", "bike", "orders")
+        if (lower in noiseWords) return false
+        return true
     }
 
     private fun recycleNode(node: AccessibilityNodeInfo?) {

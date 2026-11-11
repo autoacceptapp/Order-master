@@ -251,16 +251,16 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
 
     // --- Sandbox Simulation for Quick Testing ---
     fun simulateRideOffer(
-        fare: Double = 95.0,
-        pickupDist: Double = 1.8,
-        dropDist: Double = 6.4,
-        pickupLoc: String = "Lalpari River",
-        dropLoc: String = "Race Course"
+        fare: Double = 45.0,
+        pickupDist: Double = 0.6,
+        dropDist: Double = 2.4,
+        pickupLoc: String = "City Centre • Premji's Park, 9, Subhash Road, opp. Aalap-A, Limda Chowk, Panchnath Plot, Sadar, 360001",
+        dropLoc: String = "Rajkot railway station • Rajkot Junction, Railway Station Road, Junction Plot, Rajkot, Gujarat, India"
     ) {
         val app = getApplication<Application>()
         val state = settingsState.value
         val parsedOffer = ParsedRideOffer(
-            rawText = "₹${fare.toInt()} • ${pickupDist}km away • $pickupLoc to $dropLoc",
+            rawText = "Auto Boost\n₹${fare.toInt()} 1\n₹57 AUTO\n${pickupDist} km 2\n$pickupLoc 3\n${dropDist} km 4\n$dropLoc 5\nAccept",
             totalFare = fare,
             fareBreakdown = listOf(fare),
             pickupDistanceKm = pickupDist,
@@ -296,7 +296,7 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
             evaluation = evaluation
         )
 
-        // Persist to Room Database
+        // Persist to Room Database via AppSettings
         AppSettings.recordEvaluation(app, evaluation)
 
         // Update session last accepted fare for floating overlay badge
@@ -304,14 +304,14 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
             AppSettings.updateLastAcceptedFare(app, fare)
         }
 
-        // Optional speech announcement
+        // Voice announcement for all 5 fields
         if (state.isVoiceAnnouncerEnabled) {
             val announcement = if (evaluation.isAccepted) {
-                "Ride Accepted: Fare ${fare.toInt()} rupees, pickup ${pickupDist} kilometers"
+                TTSManager.formatCleanVoiceAnnouncement(parsedOffer.targetOffer!!, state.voiceLanguage)
             } else {
                 "Ride Ignored: ${evaluation.decisionReason}"
             }
-            tts?.speak(announcement, TextToSpeech.QUEUE_ADD, null, "SIM_TTS")
+            TTSManager.speak(app, announcement, flush = true)
         }
     }
 

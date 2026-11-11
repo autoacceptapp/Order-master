@@ -107,7 +107,16 @@ fun HomeScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val isHomeTutorialCompleted by AppSettings.isHomeTutorialCompletedFlow.collectAsState()
     var showTutorialDialog by remember { mutableStateOf(false) }
+
+    // Auto-launch In-App Tutorial on first visit to Home screen
+    LaunchedEffect(isHomeTutorialCompleted) {
+        if (!isHomeTutorialCompleted) {
+            kotlinx.coroutines.delay(500L)
+            showTutorialDialog = true
+        }
+    }
     val settingsState by viewModel.settingsState.collectAsState()
     val logs by viewModel.liveLogs.collectAsState()
     val ttsStatus by viewModel.ttsStatus.collectAsState()
@@ -180,7 +189,10 @@ fun HomeScreen(
 
         if (showTutorialDialog) {
             AppTutorialGuideDialog(
-                onDismiss = { showTutorialDialog = false }
+                onDismiss = {
+                    showTutorialDialog = false
+                    AppSettings.setHomeTutorialCompleted(context, true)
+                }
             )
         }
 

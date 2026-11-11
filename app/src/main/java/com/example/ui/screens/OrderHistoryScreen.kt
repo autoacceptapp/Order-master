@@ -35,9 +35,16 @@ import kotlinx.coroutines.launch
 import com.example.RewardedAdManager
 import com.example.LicenseManager
 import com.example.ui.theme.AmberAccent
+import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VolumeUp
+import com.example.AppSettings
+import com.example.TTSManager
+import com.example.TargetRideOffer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -347,7 +354,13 @@ fun OrderHistoryScreen(
 }
 
 /**
- * Individual historical order evaluation card showing fare, distances, locations, and decision badge.
+ * Individual historical order evaluation card showing full complete details:
+ * 1. Fare Amount (₹)
+ * 2. Pickup Distance (km)
+ * 3. Pickup Landmark & Full Address
+ * 4. Drop Distance (km)
+ * 5. Drop Landmark & Full Address
+ * Plus calculated Rate/KM, order type tag, voice re-announcer, and raw text modal.
  */
 @Composable
 private fun OrderHistoryCard(
@@ -355,18 +368,68 @@ private fun OrderHistoryCard(
     formattedDate: String,
     onDelete: () -> Unit
 ) {
+    val context = LocalContext.current
     val isAccepted = order.isAccepted
     val badgeBg = if (isAccepted) Color(0xFF10B981) else Color(0xFFEF4444)
+    var showDetailsDialog by remember { mutableStateOf(false) }
+
+    // Parse landmark and full address components
+    val (pickupLandmark, pickupAddress) = remember(order.pickupLocation) {
+        if (order.pickupLocation.contains(" • ")) {
+            order.pickupLocation.substringBefore(" • ").trim() to order.pickupLocation.substringAfter(" • ").trim()
+        } else {
+            order.pickupLocation.trim().ifBlank { "Pickup Point" } to ""
+        }
+    }
+
+    val (dropLandmark, dropAddress) = remember(order.dropLocation) {
+        if (order.dropLocation.contains(" • ")) {
+            order.dropLocation.substringBefore(" • ").trim() to order.dropLocation.substringAfter(" • ").trim()
+        } else {
+            order.dropLocation.trim().ifBlank { "Drop Destination" } to ""
+        }
+    }
+
+    val orderType = remember(order.rawText) {
+        when {
+            order.rawText.contains("Auto Boost", ignoreCase = true) -> "Auto Boost"
+            order.rawText.contains("Auto", ignoreCase = true) -> "Auto"
+            order.rawText.contains("Bike", ignoreCase = true) -> "Bike"
+            else -> "Rapido Ride"
+        }
+    }
+
+    val ratePerKm = remember(order.fare, order.dropDistanceKm) {
+        val drop = order.dropDistanceKm
+        if (drop != null && drop > 0.0) {
+            String.format(Locale.US, "₹%.1f / KM", order.fare / drop)
+        } else null
+    }
+
+    val handleAnnounce = {
+        val target = TargetRideOffer(
+            fare = order.fare,
+            pickupDistance = order.pickupDistanceKm ?: 0.0,
+            pickupLocation = order.pickupLocation,
+            dropDistance = order.dropDistanceKm ?: 0.0,
+            dropLocation = order.dropLocation
+        )
+        val lang = AppSettings.getVoiceLanguage(context)
+        val speech = TTSManager.formatCleanVoiceAnnouncement(target, lang)
+        TTSManager.speak(context, speech, flush = true)
+        Toast.makeText(context, "🔊 $speech", Toast.LENGTH_SHORT).show()
+    }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("order_card_${order.id}"),
-        shape = RoundedCornerShape(18.dp),
+            .testTag("order_card_${order.id}")
+            .clickable { showDetailsDialog = true },
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = CardDefaults.outlinedCardBorder().copy(
             brush = androidx.compose.ui.graphics.SolidColor(
-                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
             )
         )
     ) {
@@ -374,22 +437,42 @@ private fun OrderHistoryCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Row 1: Timestamp + Status Badge
+            // Row 1: Timestamp + Order Type Tag + Status Badge
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = formattedDate,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = formattedDate,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium
+                        )
                     )
-                )
+                    // Order Type Pill (e.g. Auto Boost)
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = AmberAccent.copy(alpha = 0.18f)
+                    ) {
+                        Text(
+                            text = orderType,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 10.sp
+                            ),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
 
                 // Decision Status Badge
                 Surface(
@@ -419,113 +502,429 @@ private fun OrderHistoryCard(
                 }
             }
 
-            // Row 2: Fare & Distances
+            // Row 2: Fare, Rate per KM, Distance Badges & Voice Replay
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "₹${order.fare.toInt()}",
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            fontWeight = FontWeight.Black,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                    ratePerKm?.let { rate ->
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                        ) {
+                            Text(
+                                text = rate,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    fontSize = 11.sp
+                                ),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // Quick Voice Re-announcer button
+                    IconButton(
+                        onClick = handleAnnounce,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant,
+                                CircleShape
+                            )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.VolumeUp,
+                            contentDescription = "Hear announcement",
+                            tint = AmberAccent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    // Delete button
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Delete record",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+
+            // Row 3: Structured Route (Pickup & Drop complete details)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                        RoundedCornerShape(12.dp)
+                    )
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Pickup Section
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .padding(top = 2.dp)
+                            .size(18.dp)
+                            .background(Color(0xFF10B981).copy(alpha = 0.2f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.NearMe,
+                            contentDescription = "Pickup Location",
+                            tint = Color(0xFF10B981),
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = pickupLandmark,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            )
+                            order.pickupDistanceKm?.let { dist ->
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = Color(0xFF10B981).copy(alpha = 0.15f)
+                                ) {
+                                    Text(
+                                        text = "${String.format(Locale.US, "%.1f", dist)} km",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = Color(0xFF047857),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 10.sp
+                                        ),
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (pickupAddress.isNotBlank()) {
+                            Text(
+                                text = pickupAddress,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                ),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                // Dotted connector line
+                Row(modifier = Modifier.padding(start = 8.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .width(2.dp)
+                            .height(14.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant)
+                    )
+                }
+
+                // Drop Section
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .padding(top = 2.dp)
+                            .size(18.dp)
+                            .background(Color(0xFFEF4444).copy(alpha = 0.2f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PinDrop,
+                            contentDescription = "Drop Location",
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = dropLandmark,
+                                style = MaterialTheme.typography.bodyMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            )
+                            order.dropDistanceKm?.let { dist ->
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = Color(0xFFEF4444).copy(alpha = 0.15f)
+                                ) {
+                                    Text(
+                                        text = "${String.format(Locale.US, "%.1f", dist)} km",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = Color(0xFFB91C1C),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 10.sp
+                                        ),
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        if (dropAddress.isNotBlank()) {
+                            Text(
+                                text = dropAddress,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                ),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Row 4: Exact Decision Reason & Details Button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "₹${order.fare.toInt()}",
-                    style = MaterialTheme.typography.headlineSmall.copy(
-                        fontWeight = FontWeight.Black,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    text = order.decisionReason,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        color = if (isAccepted) Color(0xFF047857) else Color(0xFFB91C1C),
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp
+                    ),
+                    modifier = Modifier.weight(1f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    order.pickupDistanceKm?.let { pickup ->
-                        DistanceChip(label = "Pickup", distanceKm = pickup)
-                    }
-                    order.dropDistanceKm?.let { drop ->
-                        DistanceChip(label = "Drop", distanceKm = drop)
-                    }
-                }
-            }
-
-            // Row 3: Pickup and Drop Locations
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-                        RoundedCornerShape(10.dp)
-                    )
-                    .padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                TextButton(
+                    onClick = { showDetailsDialog = true },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.NearMe,
-                        contentDescription = "Pickup Location",
-                        tint = Color(0xFF10B981),
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
                         modifier = Modifier.size(14.dp)
                     )
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = order.pickupLocation.ifBlank { "Pickup Point" },
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PinDrop,
-                        contentDescription = "Drop Location",
-                        tint = Color(0xFFEF4444),
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Text(
-                        text = order.dropLocation.ifBlank { "Drop Destination" },
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontWeight = FontWeight.Normal,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        text = "Full Details",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
                     )
                 }
             }
-
-            // Row 4: Exact Decision Reason
-            Text(
-                text = order.decisionReason,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    color = if (isAccepted) Color(0xFF047857) else Color(0xFFB91C1C),
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 11.sp
-                ),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
         }
     }
-}
 
-@Composable
-private fun DistanceChip(label: String, distanceKm: Double) {
-    Surface(
-        shape = RoundedCornerShape(6.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant
-    ) {
-        Text(
-            text = "$label: ${String.format(Locale.US, "%.1f", distanceKm)}km",
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            ),
-            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+    // Comprehensive Order Detail Dialog
+    if (showDetailsDialog) {
+        AlertDialog(
+            onDismissRequest = { showDetailsDialog = false },
+            title = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Order Details • ₹${order.fare.toInt()}",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black)
+                    )
+                }
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    // Summary row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "Status:", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            text = if (isAccepted) "ACCEPTED" else "IGNORED",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = badgeBg
+                            )
+                        )
+                    }
+
+                    ratePerKm?.let { rate ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(text = "Rate:", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                text = rate,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
+                    }
+
+                    // Detailed Pickup
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "🟢 Pickup: ${order.pickupDistanceKm ?: 0.0} km",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF047857)
+                            )
+                        )
+                        Text(
+                            text = pickupLandmark,
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                        if (pickupAddress.isNotBlank()) {
+                            Text(
+                                text = pickupAddress,
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)
+                            )
+                        }
+                    }
+
+                    // Detailed Drop
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "🔴 Drop: ${order.dropDistanceKm ?: 0.0} km",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFB91C1C)
+                            )
+                        )
+                        Text(
+                            text = dropLandmark,
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                        if (dropAddress.isNotBlank()) {
+                            Text(
+                                text = dropAddress,
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)
+                            )
+                        }
+                    }
+
+                    // Decision Reason
+                    Text(
+                        text = "Decision: ${order.decisionReason}",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontWeight = FontWeight.Medium,
+                            color = if (isAccepted) Color(0xFF047857) else Color(0xFFB91C1C)
+                        )
+                    )
+
+                    // Raw screen text if present
+                    if (order.rawText.isNotBlank()) {
+                        Text(
+                            text = "Raw Screen Text:",
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = order.rawText,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontSize = 10.sp,
+                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                ),
+                                modifier = Modifier.padding(6.dp)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showDetailsDialog = false }) {
+                    Text("Close")
+                }
+            },
+            dismissButton = {
+                FilledTonalButton(onClick = handleAnnounce) {
+                    Icon(
+                        imageVector = Icons.Default.VolumeUp,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Announce Aloud")
+                }
+            }
         )
     }
 }

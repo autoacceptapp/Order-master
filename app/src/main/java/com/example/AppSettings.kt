@@ -22,6 +22,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import com.example.data.OrderEntity
+import com.example.data.OrderRepository
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -132,6 +134,7 @@ object AppSettings {
     const val KEY_APP_LANGUAGE = "key_app_language"
     const val KEY_LANGUAGE_SELECTED = "key_language_selected"
     const val KEY_ONBOARDING_COMPLETED = "key_onboarding_completed"
+    const val KEY_HOME_TUTORIAL_COMPLETED = "key_home_tutorial_completed"
     const val KEY_SPEECH_RATE = "key_speech_rate"
     const val KEY_SPEECH_PITCH = "key_speech_pitch"
     const val KEY_FLOATING_OVERLAY_ENABLED = "key_floating_overlay_enabled"
@@ -294,6 +297,10 @@ object AppSettings {
     private val _isOnboardingCompletedFlow = MutableStateFlow(false)
     val isOnboardingCompletedFlow: StateFlow<Boolean> = _isOnboardingCompletedFlow.asStateFlow()
 
+    // Reactive StateFlow for First-Time In-App Home Tutorial
+    private val _isHomeTutorialCompletedFlow = MutableStateFlow(false)
+    val isHomeTutorialCompletedFlow: StateFlow<Boolean> = _isHomeTutorialCompletedFlow.asStateFlow()
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val evaluationMutex = Mutex()
     private val _recentEvaluationsFlow = MutableStateFlow<List<RideEvaluation>>(emptyList())
@@ -339,6 +346,8 @@ object AppSettings {
 
         val onboardingCompleted = prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
         _isOnboardingCompletedFlow.value = onboardingCompleted
+        val homeTutorialCompleted = prefs.getBoolean(KEY_HOME_TUTORIAL_COMPLETED, false)
+        _isHomeTutorialCompletedFlow.value = homeTutorialCompleted
         val speechRate = prefs.getFloat(KEY_SPEECH_RATE, DEFAULT_SPEECH_RATE)
         val speechPitch = prefs.getFloat(KEY_SPEECH_PITCH, DEFAULT_SPEECH_PITCH)
         val overlayEnabled = prefs.getBoolean(KEY_FLOATING_OVERLAY_ENABLED, DEFAULT_FLOATING_OVERLAY_ENABLED)
@@ -651,6 +660,18 @@ object AppSettings {
         _isOnboardingCompletedFlow.value = completed
         persistAsync(context) {
             putBoolean(KEY_ONBOARDING_COMPLETED, completed)
+        }
+    }
+
+    fun isHomeTutorialCompleted(context: Context): Boolean {
+        val prefs = getPrefs(context)
+        return prefs.getBoolean(KEY_HOME_TUTORIAL_COMPLETED, false)
+    }
+
+    fun setHomeTutorialCompleted(context: Context, completed: Boolean) {
+        _isHomeTutorialCompletedFlow.value = completed
+        persistAsync(context) {
+            putBoolean(KEY_HOME_TUTORIAL_COMPLETED, completed)
         }
     }
 
@@ -1083,6 +1104,29 @@ object AppSettings {
                     current.removeAt(current.lastIndex)
                 }
                 _recentEvaluationsFlow.value = current
+
+                // Persist full order details to local Room OrderRepository for Order History screen
+                try {
+                    val offer = evaluation.offer
+                    val target = offer.targetOffer
+                    val pickupLoc = target?.pickupLocation?.ifBlank { offer.pickupLocation } ?: offer.pickupLocation
+                    val dropLoc = target?.dropLocation?.ifBlank { offer.dropLocation } ?: offer.dropLocation
+
+                    val orderEntity = OrderEntity(
+                        timestamp = System.currentTimeMillis(),
+                        fare = target?.fare ?: offer.totalFare ?: offer.baseFare ?: 0.0,
+                        pickupDistanceKm = target?.pickupDistance?.takeIf { it > 0.0 } ?: offer.pickupDistanceKm,
+                        dropDistanceKm = target?.dropDistance?.takeIf { it > 0.0 } ?: offer.dropDistanceKm,
+                        pickupLocation = pickupLoc,
+                        dropLocation = dropLoc,
+                        isAccepted = evaluation.isAccepted,
+                        decisionReason = evaluation.decisionReason,
+                        rawText = offer.rawText
+                    )
+                    OrderRepository.getInstance(context).insertOrder(orderEntity)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Order persistence to Room skipped: ${e.message}")
+                }
             }
         }
     }

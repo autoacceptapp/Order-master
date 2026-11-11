@@ -59,15 +59,28 @@ class OrderRepository(context: Context) {
                     val now = System.currentTimeMillis()
                     repo.insertOrder(
                         OrderEntity(
-                            timestamp = now - 120_000,
+                            timestamp = now - 60_000,
+                            fare = 45.0,
+                            pickupDistanceKm = 0.6,
+                            dropDistanceKm = 2.4,
+                            pickupLocation = "City Centre • Premji's Park, 9, Subhash Road, opp. Aalap-A, Limda Chowk, Panchnath Plot, Sadar, 360001",
+                            dropLocation = "Rajkot railway station • Rajkot Junction, Railway Station Road, Junction Plot, Rajkot, Gujarat, India",
+                            isAccepted = true,
+                            decisionReason = "Auto Boost: Fare ₹45 within limits and Pickup 0.6km <= 3.0km (Rate ₹18.8/km)",
+                            rawText = "Auto Boost\n₹45 1\n₹57 AUTO\n0.6 km 2\nCity Centre 3\nPremji's Park, 9, Subhash Road, opp. Aalap-A, Limda Chowk, Panchnath Plot, Sadar, 360001\n2.4 km 4\nRajkot railway station 5\nRajkot Junction, Railway Station Road, Junction Plot, Rajkot, Gujarat, India\nAccept"
+                        )
+                    )
+                    repo.insertOrder(
+                        OrderEntity(
+                            timestamp = now - 180_000,
                             fare = 125.0,
                             pickupDistanceKm = 1.2,
                             dropDistanceKm = 5.8,
-                            pickupLocation = "Lalpari River Crossing",
-                            dropLocation = "City Center Mall",
+                            pickupLocation = "Lalpari River Crossing • Near Water Works, Bhavnagar Road",
+                            dropLocation = "City Center Mall • MG Road Junction, Rajkot",
                             isAccepted = true,
-                            decisionReason = "Fare ₹125.0 within limits and Pickup 1.2km <= 3.0km",
-                            rawText = "₹125 • 1.2 km away • Lalpari River • 5.8 km drop"
+                            decisionReason = "Fare ₹125.0 within limits and Pickup 1.2km <= 3.0km (Rate ₹21.5/km)",
+                            rawText = "₹125 • 1.2 km away • Lalpari River Crossing • 5.8 km drop • City Center Mall"
                         )
                     )
                     repo.insertOrder(
