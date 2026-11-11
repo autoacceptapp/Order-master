@@ -12,6 +12,7 @@ import com.google.firebase.firestore.Query
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -146,15 +147,29 @@ object InAppMessageManager {
     /**
      * Called when the user clicks "Dismiss" on the popup.
      * Records the message ID locally so it is never shown again,
-     * and displays the next message in the queue if available.
+     * immediately dismisses the active dialog in Compose, and debounces
+     * popping the next queued message to prevent AlertDialog state flicker or freeze.
      */
     fun dismissMessage(messageId: String) {
         markMessageDismissedLocally(messageId)
 
         synchronized(queueLock) {
             pendingQueue.removeAll { it.id == messageId }
-            val next = pendingQueue.firstOrNull { !isMessageDismissed(it.id) }
-            _activeMessage.value = next
+        }
+
+        // Step 1: Immediately clear active message so Compose cleans up the exiting dialog
+        _activeMessage.value = null
+
+        // Step 2: Debounce popping the next queued message by 300ms to allow Compose dialog exit transition to finish cleanly
+        scope.launch(Dispatchers.Main) {
+            delay(300L)
+            synchronized(queueLock) {
+                val next = pendingQueue.firstOrNull { !isMessageDismissed(it.id) }
+                if (next != null) {
+                    _activeMessage.value = next
+                    Log.d(TAG, "Popped next in-app message after debounce: ${next.id} - ${next.title}")
+                }
+            }
         }
     }
 
@@ -168,8 +183,16 @@ object InAppMessageManager {
             if (pendingQueue.none { it.id == message.id }) {
                 pendingQueue.add(message)
             }
-            if (_activeMessage.value == null) {
-                _activeMessage.value = pendingQueue.firstOrNull { !isMessageDismissed(it.id) }
+        }
+
+        if (_activeMessage.value == null) {
+            scope.launch(Dispatchers.Main) {
+                delay(150L)
+                synchronized(queueLock) {
+                    if (_activeMessage.value == null) {
+                        _activeMessage.value = pendingQueue.firstOrNull { !isMessageDismissed(it.id) }
+                    }
+                }
             }
         }
     }

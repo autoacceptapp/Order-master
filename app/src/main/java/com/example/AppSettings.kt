@@ -295,8 +295,9 @@ object AppSettings {
     val isOnboardingCompletedFlow: StateFlow<Boolean> = _isOnboardingCompletedFlow.asStateFlow()
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val roomDbWriteDispatcher = Dispatchers.IO.limitedParallelism(1)
-    private val roomDbWriteMutex = Mutex()
+    private val evaluationMutex = Mutex()
+    private val _recentEvaluationsFlow = MutableStateFlow<List<RideEvaluation>>(emptyList())
+    val recentEvaluationsFlow: StateFlow<List<RideEvaluation>> = _recentEvaluationsFlow.asStateFlow()
     @Volatile
     private var isAuthListenerRegistered = false
     private var authStateListener: FirebaseAuth.AuthStateListener? = null
@@ -1068,42 +1069,28 @@ object AppSettings {
     }
 
     /**
-     * Persists an evaluated order into the Room database for historical review.
-     * Guaranteed sequential execution via a single-threaded dispatcher (limitedParallelism(1))
-     * and a Mutex, preventing SQLiteDatabaseLockedException during rapid successive order evaluations.
+     * Records an evaluated order into volatile in-memory session data.
+     * Enforces the Zero-Trust, 100% Zero Local Storage architecture:
+     * Completely eliminates local Room SQLite disk storage for ride logs;
+     * evaluations are maintained strictly as volatile in-memory session data during the shift.
      */
     fun recordEvaluation(context: Context, evaluation: RideEvaluation) {
-        try {
-            val repo = com.example.data.OrderRepository.getInstance(context)
-            val offer = evaluation.offer
-            val totalFare = offer.totalFare ?: offer.targetOffer?.fare ?: 0.0
-            val pickupDist = offer.pickupDistanceKm ?: offer.targetOffer?.pickupDistance
-            val dropDist = offer.dropDistanceKm ?: offer.targetOffer?.dropDistance
-            val pickupLoc = offer.pickupLocation
-            val dropLoc = offer.dropLocation
-            val entity = com.example.data.OrderEntity(
-                timestamp = evaluation.timestamp,
-                fare = totalFare,
-                pickupDistanceKm = pickupDist,
-                dropDistanceKm = dropDist,
-                pickupLocation = pickupLoc,
-                dropLocation = dropLoc,
-                isAccepted = evaluation.isAccepted,
-                decisionReason = evaluation.decisionReason,
-                rawText = offer.rawText
-            )
-            appScope.launch(roomDbWriteDispatcher) {
-                roomDbWriteMutex.withLock {
-                    try {
-                        repo.insertOrder(entity)
-                    } catch (e: Exception) {
-                        Log.w("AppSettings", "Failed to insert evaluated order into Room DB: ${e.message}")
-                    }
+        appScope.launch {
+            evaluationMutex.withLock {
+                val current = _recentEvaluationsFlow.value.toMutableList()
+                current.add(0, evaluation)
+                if (current.size > 100) {
+                    current.removeAt(current.lastIndex)
                 }
+                _recentEvaluationsFlow.value = current
             }
-        } catch (_: Exception) {
-            // Fail gracefully if DB is initializing
         }
+    }
+
+    fun getRecentEvaluations(): List<RideEvaluation> = _recentEvaluationsFlow.value
+
+    fun clearEvaluations() {
+        _recentEvaluationsFlow.value = emptyList()
     }
 
     /**

@@ -1410,7 +1410,7 @@ object LicenseManager {
             return
         }
 
-        val customUserId = if (userKey.isNotBlank()) userKey else (ctx?.let { resolveUserKey(it) } ?: "OM-USER-DEFAULT")
+        val customUserId = if (userKey.isNotBlank()) userKey else resolveUserKey(ctx)
         val currentUser = try {
             FirebaseAuth.getInstance().currentUser
         } catch (_: Exception) {
@@ -1644,7 +1644,8 @@ object LicenseManager {
         return if (targetContext != null) {
             DeviceUtils.getCustomUserId(targetContext)
         } else {
-            "OM-USER-DEFAULT"
+            // Strictly return a securely generated ephemeral UUID to prevent profile hijacking when context is missing
+            "OM-USER-TEMP-${java.util.UUID.randomUUID().toString().replace("-", "").take(8).uppercase(Locale.ROOT)}"
         }
     }
 

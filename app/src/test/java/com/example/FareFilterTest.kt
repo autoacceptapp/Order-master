@@ -90,8 +90,8 @@ class FareFilterTest {
 
     @Test
     fun testRapidSuccessiveRecordEvaluation() = kotlinx.coroutines.runBlocking {
-        val repo = com.example.data.OrderRepository.getInstance(context)
-        val initialCount = repo.getCount()
+        AppSettings.clearEvaluations()
+        val initialCount = AppSettings.getRecentEvaluations().size
 
         val threads = (1..10).map { i ->
             Thread {
@@ -118,10 +118,10 @@ class FareFilterTest {
         threads.forEach { it.start() }
         threads.forEach { it.join() }
 
-        // Allow sequential dispatcher to write all records
+        // Allow async mutex worker to record all evaluations
         kotlinx.coroutines.delay(1000)
 
-        val finalCount = repo.getCount()
+        val finalCount = AppSettings.getRecentEvaluations().size
         assertEquals(initialCount + 10, finalCount)
     }
 }

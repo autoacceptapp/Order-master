@@ -757,8 +757,12 @@ class FloatingOverlayService : Service() {
                     Log.w(TAG, "SecurityException starting with SPECIAL_USE: ${e.message}. Falling back to DATA_SYNC...")
                     attemptDataSyncFallback(notification)
                 } catch (e: IllegalStateException) {
-                    // Catches ForegroundServiceStartNotAllowedException explicitly
-                    Log.w(TAG, "ForegroundServiceStartNotAllowedException/IllegalStateException with SPECIAL_USE: ${e.message}. Falling back to DATA_SYNC...")
+                    // Specifically handles ForegroundServiceStartNotAllowedException on Android 12+ / 14+ (API 31+)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is android.app.ForegroundServiceStartNotAllowedException) {
+                        Log.w(TAG, "ForegroundServiceStartNotAllowedException on Android 14+ / OEM device: ${e.message}. Attempting graceful DATA_SYNC fallback...")
+                    } else {
+                        Log.w(TAG, "IllegalStateException with SPECIAL_USE: ${e.message}. Falling back to DATA_SYNC...")
+                    }
                     attemptDataSyncFallback(notification)
                 }
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -800,7 +804,11 @@ class FloatingOverlayService : Service() {
             Log.w(TAG, "SecurityException in DATA_SYNC fallback: ${e.message}")
             handleForegroundStartFailure()
         } catch (e: IllegalStateException) {
-            Log.w(TAG, "ForegroundServiceStartNotAllowedException/IllegalStateException in DATA_SYNC fallback: ${e.message}")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is android.app.ForegroundServiceStartNotAllowedException) {
+                Log.w(TAG, "ForegroundServiceStartNotAllowedException caught on OEM background launch restriction (Xiaomi/Vivo/Oppo): ${e.message}")
+            } else {
+                Log.w(TAG, "IllegalStateException in DATA_SYNC fallback: ${e.message}")
+            }
             handleForegroundStartFailure()
         } catch (t: Throwable) {
             Log.e(TAG, "All foreground service start attempts failed: ${t.message}", t)
@@ -809,6 +817,7 @@ class FloatingOverlayService : Service() {
     }
 
     private fun handleForegroundStartFailure() {
+        Log.w(TAG, "OEM background execution limits / ForegroundServiceStartNotAllowedException prevented foreground start. Performing graceful fallback teardown without app crash.")
         try {
             removeOverlayView()
         } catch (_: Throwable) {}
