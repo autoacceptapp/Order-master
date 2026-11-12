@@ -3,6 +3,7 @@ package com.example
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
+import android.content.Context
 import android.content.Intent
 import android.content.res.Resources
 import android.graphics.Path
@@ -10,6 +11,7 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.util.Log
@@ -24,6 +26,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 /**
@@ -89,6 +92,22 @@ open class MyAccessibilityService : AccessibilityService() {
         private val IGNORED_EVENT_CLASS_REGEX = Regex(
             pattern = """(?i)(?:map|surfaceview|textureview|glsurface|chronometer|progressbar|compass|sensor)"""
         )
+
+        // Indicators on screen that offer was missed, expired, or already taken by another captain
+        val REJECTION_INDICATORS_REGEX = Regex(
+            pattern = """(?i)(?:another\s+captain|already\s+booked|expired|missed|ride\s+taken|taken\s+by|too\s+late|could\s+not\s+be\s+assigned|assigned\s+to\s+another|ride\s+cancelled|booking\s+failed|offer\s+expired)"""
+        )
+
+        // Indicators on screen that ride acceptance succeeded and active trip/navigation has started
+        val ACTIVE_TRIP_INDICATORS_REGEX = Regex(
+            pattern = """(?i)(?:navigate|drop[- ]?off|arrive[d]?|start\s+(?:ride|trip)|pick[- ]?up|enter\s+otp|\botp\b|call\s+(?:customer|rider)|chat\s+with|emergency|contact\s+rider)"""
+        )
+    }
+
+    enum class AcceptanceState {
+        CONFIRMED_ACCEPTED,
+        REJECTED_OR_TAKEN,
+        STALLED_OR_TIMED_OUT
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -98,10 +117,50 @@ open class MyAccessibilityService : AccessibilityService() {
     private var isPendingExecution: Boolean = false
 
     @Volatile
+    private var isPollingRetryActive: Boolean = false
+
+    @Volatile
     private var lastProcessTime: Long = 0L
 
     @Volatile
     private var lastCoordinateTapTime: Long = 0L
+
+    private var evalWakeLock: PowerManager.WakeLock? = null
+
+    private fun acquireBriefWakeLock(timeoutMs: Long = 4000L) {
+        try {
+            if (evalWakeLock == null) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                evalWakeLock = powerManager?.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "OrderMaster:AccessibilityEvalWakeLock"
+                )?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            evalWakeLock?.let { wl ->
+                if (!wl.isHeld) {
+                    wl.acquire(timeoutMs)
+                    Log.d(TAG, "Acquired partial WakeLock for ${timeoutMs}ms")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire WakeLock: ${e.message}")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            evalWakeLock?.let { wl ->
+                if (wl.isHeld) {
+                    wl.release()
+                    Log.d(TAG, "Released partial WakeLock")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing WakeLock: ${e.message}")
+        }
+    }
 
     // Cache of recently processed offer hashes to prevent re-evaluating the same order repeatedly
     private val processedOfferIds = LinkedHashSet<String>()
@@ -171,6 +230,7 @@ open class MyAccessibilityService : AccessibilityService() {
         serviceScope.cancel()
         mainHandler.removeCallbacksAndMessages(null)
         TTSManager.shutdown()
+        releaseWakeLock()
         Log.d(TAG, "Accessibility Service stopped.")
         AppSettings.addLog(
             title = "Service Stopped",
@@ -249,11 +309,12 @@ open class MyAccessibilityService : AccessibilityService() {
         }
 
         // STRICT REQUIREMENT: If no valid "Accept", "Reject", or "Order Offer" view ID/text node is found on screen,
-        // immediately exit node evaluation.
+        // trigger a lightweight retry loop in case the offer card layout is still rendering asynchronously.
         if (!hasActiveRideOfferOnScreen(candidateWindows)) {
             for (root in rawRootWindows) {
                 recycleNode(root)
             }
+            scheduleNodeRenderRetry()
             return
         }
 
@@ -266,6 +327,7 @@ open class MyAccessibilityService : AccessibilityService() {
             parsedOffers = offers
 
             if (offers.isEmpty()) {
+                scheduleNodeRenderRetry()
                 return
             }
 
@@ -284,6 +346,65 @@ open class MyAccessibilityService : AccessibilityService() {
             }
             for (root in rawRootWindows) {
                 recycleNode(root)
+            }
+        }
+    }
+
+    /**
+     * Schedules a lightweight retry polling loop (every 100ms for up to 1000ms)
+     * when a potential offer event arrives before the Rapido card UI has fully rendered.
+     * Prevents missed order clicks due to asynchronous UI transitions.
+     */
+    private fun scheduleNodeRenderRetry() {
+        if (isPollingRetryActive || isPendingExecution) return
+        isPollingRetryActive = true
+        acquireBriefWakeLock(3500L)
+
+        serviceScope.launch(Dispatchers.Default) {
+            try {
+                var attempts = 0
+                val maxAttempts = 10 // 10 x 100ms = 1000ms max
+                while (attempts < maxAttempts && !isPendingExecution && isServiceRunning) {
+                    delay(100L)
+                    attempts++
+
+                    if (!AppSettings.isAutoAcceptEnabled(this@MyAccessibilityService) ||
+                        !GlobalAdminManager.canExecuteActions(this@MyAccessibilityService)
+                    ) {
+                        break
+                    }
+
+                    val rawWindows = getAllRootWindows()
+                    if (rawWindows.isEmpty()) continue
+
+                    val candidate = rawWindows.filter { !isFloatingWidgetOrBubble(it) }
+                    if (candidate.isEmpty() || !hasActiveRideOfferOnScreen(candidate)) {
+                        for (w in rawWindows) recycleNode(w)
+                        continue
+                    }
+
+                    val isPro = PassManager.isAccessGranted(this@MyAccessibilityService)
+                    var offers: List<ParsedRideOffer>? = null
+                    try {
+                        offers = RideOfferParser.parseCards(candidate)
+                        if (offers.isNotEmpty()) {
+                            val newOffers = offers.filter { !processedOfferIds.contains(it.id) }
+                            if (newOffers.isNotEmpty()) {
+                                Log.i(TAG, "Retry loop successfully detected ${offers.size} offer card(s) at attempt #$attempts")
+                                processOrderQueue(offers, candidate, isPro)
+                                break
+                            }
+                        }
+                    } finally {
+                        offers?.forEach { it.acceptButton?.let { b -> recycleNode(b) } }
+                        for (w in rawWindows) recycleNode(w)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Node render retry loop failed", e)
+            } finally {
+                isPollingRetryActive = false
+                releaseWakeLock()
             }
         }
     }
@@ -782,8 +903,15 @@ open class MyAccessibilityService : AccessibilityService() {
      * Executes the ACTION_CLICK strictly targeting the Accept button node
      * located inside the spatial bounds of the selected best matching order card.
      */
+    /**
+     * Executes the ACTION_CLICK strictly targeting the Accept button node
+     * located inside the spatial bounds of the selected best matching order card.
+     * Implements a robust "Wait-for-Success" state machine that verifies UI transition
+     * to eliminate false-positive acceptance logs and announcements.
+     */
     private suspend fun executeCardAcceptClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
-        isPendingExecution = false
+        acquireBriefWakeLock(5000L)
+        isPendingExecution = true
         lastProcessTime = System.currentTimeMillis()
 
         var clicked = false
@@ -857,33 +985,194 @@ open class MyAccessibilityService : AccessibilityService() {
                 Log.i(TAG, "executeCardAcceptClick: coordinate fallback tap at ($tapX, $tapY) success=$clicked")
             }
 
-            // Click Cooldown: 2000ms cooldown upon success to ignore lingering UI elements; standard debounce on failure
-            lastProcessTime = if (clicked) {
-                System.currentTimeMillis() + COOLDOWN_MS
-            } else {
-                System.currentTimeMillis()
-            }
-
-            AppSettings.addLog(
-                title = if (clicked) "Order Accepted!" else "Click Attempted",
-                message = if (clicked) "ACTION_CLICK delivered strictly to Accept button for ₹${offer.totalFare?.toInt()} order. Cooldown active (2000ms)."
-                else "Accept button could not be clicked within card boundaries.",
-                severity = if (clicked) LogSeverity.CLICK_EXECUTED else LogSeverity.WARNING,
-                evaluation = evaluation
-            )
-            broadcastLog("Order Accepted! Click executed: $clicked")
-
             if (clicked) {
-                val fare = offer.totalFare ?: evaluation.totalCurrency ?: 0.0
-                if (fare > 0) {
-                    AppSettings.updateLastAcceptedFare(this, fare)
+                // Wait-for-Success State Machine: Verify screen transition before marking order as accepted
+                broadcastLog("Accept clicked. Verifying order confirmation with Rapido...")
+                val result = verifyAcceptanceTransition(offer, evaluation, cardBounds)
+
+                when (result) {
+                    AcceptanceState.CONFIRMED_ACCEPTED -> {
+                        lastProcessTime = System.currentTimeMillis() + COOLDOWN_MS
+                        val fare = offer.totalFare ?: evaluation.totalCurrency ?: 0.0
+                        if (fare > 0) {
+                            AppSettings.updateLastAcceptedFare(this, fare)
+                        }
+                        AppSettings.addLog(
+                            title = "Order Confirmed Accepted!",
+                            message = "Order #₹${fare.toInt()} verified and confirmed accepted! Trip active. Cooldown active (2000ms).",
+                            severity = LogSeverity.CLICK_EXECUTED,
+                            evaluation = evaluation
+                        )
+                        broadcastLog("Order Confirmed Accepted! Fare ₹${fare.toInt()}")
+                        announceRideAccepted(evaluation.totalCurrency, evaluation.distanceKm)
+                    }
+                    AcceptanceState.REJECTED_OR_TAKEN -> {
+                        lastProcessTime = System.currentTimeMillis()
+                        AppSettings.addLog(
+                            title = "Order Missed / Already Taken",
+                            message = "Accept click was dispatched for ₹${offer.totalFare?.toInt()}, but order was taken by another captain or expired.",
+                            severity = LogSeverity.WARNING,
+                            evaluation = evaluation
+                        )
+                        broadcastLog("Order missed: Taken by another captain or expired.")
+                    }
+                    AcceptanceState.STALLED_OR_TIMED_OUT -> {
+                        lastProcessTime = System.currentTimeMillis()
+                        AppSettings.addLog(
+                            title = "Order Acceptance Stalled",
+                            message = "Accept button was clicked, but order screen did not transition within 3.5s.",
+                            severity = LogSeverity.WARNING,
+                            evaluation = evaluation
+                        )
+                        broadcastLog("Order acceptance stalled / not responded.")
+                    }
                 }
-                announceRideAccepted(evaluation.totalCurrency, evaluation.distanceKm)
+            } else {
+                lastProcessTime = System.currentTimeMillis()
+                AppSettings.addLog(
+                    title = "Click Attempt Failed",
+                    message = "Accept button could not be clicked within card boundaries.",
+                    severity = LogSeverity.WARNING,
+                    evaluation = evaluation
+                )
+                broadcastLog("Accept button could not be clicked.")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error executing card accept click", e)
             lastProcessTime = System.currentTimeMillis()
+        } finally {
+            isPendingExecution = false
+            releaseWakeLock()
         }
+    }
+
+    /**
+     * Polls the active screen state for up to 3.5 seconds after an accept click has been dispatched
+     * to eliminate false-positives.
+     * Verifies that the order was actually won (active navigation/trip UI appears or offer card
+     * cleanly disappears without error toasts).
+     */
+    private suspend fun verifyAcceptanceTransition(
+        offer: ParsedRideOffer,
+        evaluation: RideEvaluation,
+        cardBounds: Rect
+    ): AcceptanceState = withContext(Dispatchers.Default) {
+        acquireBriefWakeLock(4000L)
+        val startTime = SystemClock.elapsedRealtime()
+        val timeoutMs = 3500L
+        val pollIntervalMs = 250L
+
+        // Wait initial 250ms for Rapido network request and UI response dispatch
+        delay(pollIntervalMs)
+
+        var cardDisappearedAt: Long? = null
+
+        while (SystemClock.elapsedRealtime() - startTime < timeoutMs && isServiceRunning) {
+            val rootWindows = getAllRootWindows()
+            try {
+                // 1. Check for Rejection / Missed / Error indicators
+                if (hasRejectionOrMissedIndicators(rootWindows)) {
+                    Log.w(TAG, "verifyAcceptanceTransition: detected rejection/expired toast on screen.")
+                    return@withContext AcceptanceState.REJECTED_OR_TAKEN
+                }
+
+                // 2. Check for Active Trip / Navigation nodes
+                if (hasActiveTripIndicators(rootWindows)) {
+                    Log.i(TAG, "verifyAcceptanceTransition: active trip transition confirmed (Navigate/Arrive detected).")
+                    return@withContext AcceptanceState.CONFIRMED_ACCEPTED
+                }
+
+                // 3. Check if offer card is still present
+                val stillHasOffer = hasActiveRideOfferOnScreen(rootWindows)
+                if (!stillHasOffer) {
+                    if (cardDisappearedAt == null) {
+                        cardDisappearedAt = SystemClock.elapsedRealtime()
+                    } else if (SystemClock.elapsedRealtime() - cardDisappearedAt >= 400L) {
+                        // Card has been gone for >= 400ms with no error indicators -> Order accepted!
+                        Log.i(TAG, "verifyAcceptanceTransition: offer card vanished cleanly without errors.")
+                        return@withContext AcceptanceState.CONFIRMED_ACCEPTED
+                    }
+                } else {
+                    cardDisappearedAt = null
+                }
+            } finally {
+                for (root in rootWindows) {
+                    recycleNode(root)
+                }
+            }
+
+            delay(pollIntervalMs)
+        }
+
+        // Final inspection after timeout
+        val finalWindows = getAllRootWindows()
+        try {
+            if (hasRejectionOrMissedIndicators(finalWindows)) {
+                return@withContext AcceptanceState.REJECTED_OR_TAKEN
+            }
+            if (hasActiveTripIndicators(finalWindows) || !hasActiveRideOfferOnScreen(finalWindows)) {
+                return@withContext AcceptanceState.CONFIRMED_ACCEPTED
+            }
+        } finally {
+            for (root in finalWindows) {
+                recycleNode(root)
+            }
+        }
+
+        Log.w(TAG, "verifyAcceptanceTransition: offer card still present on screen after timeout. Accept failed.")
+        return@withContext AcceptanceState.STALLED_OR_TIMED_OUT
+    }
+
+    private fun hasRejectionOrMissedIndicators(rootWindows: List<AccessibilityNodeInfo>): Boolean {
+        for (root in rootWindows) {
+            if (scanTreeForTextPatterns(root, REJECTION_INDICATORS_REGEX)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun hasActiveTripIndicators(rootWindows: List<AccessibilityNodeInfo>): Boolean {
+        for (root in rootWindows) {
+            if (scanTreeForTextPatterns(root, ACTIVE_TRIP_INDICATORS_REGEX)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun scanTreeForTextPatterns(node: AccessibilityNodeInfo, regex: Regex): Boolean {
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+        @Suppress("DEPRECATION")
+        queue.add(Pair(AccessibilityNodeInfo.obtain(node), 0))
+        val startTime = System.currentTimeMillis()
+
+        while (queue.isNotEmpty()) {
+            if (System.currentTimeMillis() - startTime > 40L) {
+                while (queue.isNotEmpty()) recycleNode(queue.removeFirst().first)
+                break
+            }
+            val (curr, depth) = queue.removeFirst()
+            val text = curr.text?.toString() ?: ""
+            val desc = curr.contentDescription?.toString() ?: ""
+            val viewId = curr.viewIdResourceName ?: ""
+
+            if (regex.containsMatchIn(text) || regex.containsMatchIn(desc) || regex.containsMatchIn(viewId)) {
+                recycleNode(curr)
+                while (queue.isNotEmpty()) recycleNode(queue.removeFirst().first)
+                return true
+            }
+
+            if (depth < 8) {
+                val count = curr.childCount
+                for (i in 0 until count) {
+                    val child = curr.getChild(i) ?: continue
+                    queue.add(Pair(child, depth + 1))
+                }
+            }
+            recycleNode(curr)
+        }
+        return false
     }
 
     /**

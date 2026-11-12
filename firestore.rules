@@ -19,9 +19,17 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // Pending UTR Verifications
+    // Pending UTR Verifications: creator can create and view their own UTR submission
     match /pending_verifications/{utr} {
-      allow read, write: if isAuthenticated();
+      allow create: if isAuthenticated() && (
+        request.resource.data.userId == request.auth.uid ||
+        request.resource.data.firebaseUid == request.auth.uid
+      );
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.firebaseUid == request.auth.uid
+      );
+      allow update, delete: if false; // Only cloud backend/admin can verify or delete
     }
 
     // Global Announcements & In-App Popups for all users
@@ -37,12 +45,29 @@ service cloud.firestore {
       // Listing or querying collection requires authentication
       allow list: if isAuthenticated();
       
-      // User can only write to their own profile (matching auth.uid or firebaseUid)
-      allow write: if isAuthenticated() && (
+      // User can create their initial profile without setting restricted fields
+      allow create: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        request.resource.data.firebaseUid == request.auth.uid
+      ) && (
+        !('isBanned' in request.resource.data) || request.resource.data.isBanned == false
+      ) && (
+        !('pointsBalance' in request.resource.data) || request.resource.data.pointsBalance == 0
+      );
+
+      // User can update their profile, but server-controlled fields are strictly immutable from client
+      allow update: if isAuthenticated() && (
         request.auth.uid == userId ||
         request.resource.data.firebaseUid == request.auth.uid ||
         (resource != null && resource.data.firebaseUid == request.auth.uid)
+      ) && (
+        (!('pointsBalance' in request.resource.data) || request.resource.data.pointsBalance == resource.data.pointsBalance) &&
+        (!('passExpiresAt' in request.resource.data) || request.resource.data.passExpiresAt == resource.data.passExpiresAt) &&
+        (!('isBanned' in request.resource.data) || request.resource.data.isBanned == resource.data.isBanned) &&
+        (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)
       );
+
+      allow delete: if false;
 
       // Targeted In-App Messages for specific user
       match /messages/{messageId} {

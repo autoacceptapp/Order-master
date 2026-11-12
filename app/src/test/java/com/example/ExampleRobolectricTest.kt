@@ -970,6 +970,47 @@ class ExampleRobolectricTest {
         assertTrue(dLoc.contains("Rajkot railway station"))
         assertTrue(dLoc.contains("Rajkot Junction"))
     }
+
+    @Test
+    fun `test wait-for-success state machine regexes and states`() {
+        // AcceptanceState enum presence
+        assertEquals(3, MyAccessibilityService.AcceptanceState.values().size)
+        assertNotNull(MyAccessibilityService.AcceptanceState.valueOf("CONFIRMED_ACCEPTED"))
+        assertNotNull(MyAccessibilityService.AcceptanceState.valueOf("REJECTED_OR_TAKEN"))
+        assertNotNull(MyAccessibilityService.AcceptanceState.valueOf("STALLED_OR_TIMED_OUT"))
+
+        // Rejection indicators regex
+        val rejectionPhrases = listOf(
+            "Ride taken by another captain",
+            "This offer was already booked",
+            "Offer has expired",
+            "Ride missed",
+            "Ride cancelled by user",
+            "Booking failed, please try again"
+        )
+        for (phrase in rejectionPhrases) {
+            assertTrue("Expected rejection match for: $phrase", MyAccessibilityService.REJECTION_INDICATORS_REGEX.containsMatchIn(phrase))
+        }
+
+        // Active trip transition regex
+        val activeTripPhrases = listOf(
+            "Navigate to pickup point",
+            "Drop-off at Rajkot Station",
+            "Arrived at passenger location",
+            "Start ride after boarding",
+            "Pick up customer",
+            "Ask customer to enter OTP 4821",
+            "Call customer directly"
+        )
+        for (phrase in activeTripPhrases) {
+            assertTrue("Expected active trip match for: $phrase", MyAccessibilityService.ACTIVE_TRIP_INDICATORS_REGEX.containsMatchIn(phrase))
+        }
+
+        // Negative check: standard offer text should NOT match rejection or active trip indicators
+        val standardOffer = "₹45 0.6 km City Centre Premji Park 2.4 km Rajkot railway station Accept"
+        assertFalse(MyAccessibilityService.REJECTION_INDICATORS_REGEX.containsMatchIn(standardOffer))
+        assertFalse(MyAccessibilityService.ACTIVE_TRIP_INDICATORS_REGEX.containsMatchIn(standardOffer))
+    }
 }
 
 
