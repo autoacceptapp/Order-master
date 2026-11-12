@@ -38,11 +38,13 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VolumeMute
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -51,6 +53,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -112,6 +115,7 @@ fun AppTutorialGuideDialog(
 ) {
     val context = LocalContext.current
     var selectedTab by remember { mutableIntStateOf(0) }
+    var isNarrationMuted by remember { mutableStateOf(false) }
     val userLang = remember { AppSettings.getVoiceLanguage(context).lowercase(Locale.ROOT) }
     val isHindi = userLang == "hi"
 
@@ -122,6 +126,14 @@ fun AppTutorialGuideDialog(
     }
 
     val steps = remember(userLang) { getTutorialSteps(context, isHindi) }
+
+    // Auto-narrate each step as the user navigates or when dialog opens
+    LaunchedEffect(selectedTab, isNarrationMuted) {
+        if (!isNarrationMuted && steps.isNotEmpty() && selectedTab in steps.indices) {
+            kotlinx.coroutines.delay(350L)
+            TTSManager.speak(context, steps[selectedTab].speechText, flush = true)
+        }
+    }
 
     Dialog(
         onDismissRequest = {
@@ -180,30 +192,60 @@ fun AppTutorialGuideDialog(
                                 color = TextPrimary
                             )
                             Text(
-                                text = if (isHindi) "स्टेप बाय स्टेप सीखें (Complete Training)" else "Learn in 6 easy steps",
+                                text = if (isHindi) "7 आसान स्टेप्स में पूरा सेटअप सीखें" else "Learn full setup in 7 easy steps",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary
                             )
                         }
                     }
 
-                    IconButton(
-                        onClick = {
-                            TTSManager.stop()
-                            onDismiss()
-                        },
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(DarkSurfaceVariant)
-                            .testTag("tutorial_close_button")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close Guide",
-                            tint = TextSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        // Narration Audio Mute / Unmute Toggle
+                        IconButton(
+                            onClick = {
+                                isNarrationMuted = !isNarrationMuted
+                                if (isNarrationMuted) {
+                                    TTSManager.stop()
+                                } else if (selectedTab in steps.indices) {
+                                    TTSManager.speak(context, steps[selectedTab].speechText, flush = true)
+                                }
+                            },
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(DarkSurfaceVariant)
+                                .testTag("tutorial_mute_btn")
+                        ) {
+                            Icon(
+                                imageVector = if (isNarrationMuted) Icons.Default.VolumeMute else Icons.Default.VolumeUp,
+                                contentDescription = if (isNarrationMuted) "Unmute Narration" else "Mute Narration",
+                                tint = if (isNarrationMuted) TextMuted else PrimaryEmerald,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        // Close button
+                        IconButton(
+                            onClick = {
+                                TTSManager.stop()
+                                onDismiss()
+                            },
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(DarkSurfaceVariant)
+                                .testTag("tutorial_close_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close Guide",
+                                tint = TextSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                 }
 
@@ -495,6 +537,7 @@ fun AppTutorialGuideDialog(
  * Applies ideal recommended baseline settings for Rapido captains.
  */
 fun applyRecommendedSettings(context: Context) {
+    AppSettings.setAutoAcceptEnabled(context, true)
     AppSettings.setMinFareEnabled(context, true)
     AppSettings.setMinFare(context, 50.0f)
 
@@ -507,7 +550,9 @@ fun applyRecommendedSettings(context: Context) {
     AppSettings.setMaxDropDistanceEnabled(context, true)
     AppSettings.setMaxDropDistance(context, 15.0f)
 
+    AppSettings.setVoiceAnnouncerEnabled(context, true)
     AppSettings.setFloatingOverlayEnabled(context, true)
+    AppSettings.setHomeTutorialCompleted(context, true)
     AppSettings.syncOverlayService(context)
 }
 
@@ -791,32 +836,70 @@ private fun getTutorialSteps(context: Context, isHindi: Boolean): List<TutorialG
             }
         ),
 
-        // STEP 6: Floating Widget & Quick Preset
+        // STEP 6: Voice Announcer (Eyes-Free Driving)
         TutorialGuideStep(
             stepNumber = 6,
-            icon = Icons.Default.Layers,
-            badge = if (isHindi) "🚀 फ्लोटिंग बटन & रेडी" else "🚀 FLOATING WIDGET & READY",
-            title = if (isHindi) "फ्लोटिंग बटन और बेस्ट सेटिंग्स" else "Floating Widget & Fast Presets",
+            icon = Icons.Default.VolumeUp,
+            badge = if (isHindi) "🔊 आवाज़ उद्घोषक (VOICE ANNOUNCER)" else "🔊 VOICE ANNOUNCER",
+            title = if (isHindi) "बिना स्क्रीन देखे ऑर्डर की पूरी डिटेल सुनें" else "Eyes-Free Voice Announcements",
             shortDesc = if (isHindi)
-                "Rapido चलाते हुए स्क्रीन से सीधा ऑटो-एक्सेप्ट चालू या बंद करें।"
+                "किराया, पिकअप दूरी व स्थान, और ड्रॉप दूरी व स्थान साफ बोलकर बताता है।"
             else
-                "Control Order Master on top of your driver app with the floating bubble.",
+                "Automatically speaks Fare, Pickup distance/location, and Drop distance/location.",
             detailExplainer = if (isHindi)
-                "1. फ्लोटिंग बटन आपकी स्क्रीन पर एक छोटे गोल आइकन की तरह तैरता रहेगा।\n" +
-                        "2. आप रैपिडो में रहते हुए भी एक टैप से ऑटो-एक्सेप्ट को रोक (Pause) या शुरू (Play) कर सकते हैं।\n" +
-                        "3. नीचे 'बेस्ट सेटिंग्स लागू करें' बटन पर क्लिक करके आप तुरंत सबसे बेहतरीन सेटिंग्स सेट कर सकते हैं!"
+                "1. गाड़ी चलाते समय बार-बार मोबाइल स्क्रीन देखना खतरनाक होता है।\n" +
+                        "2. नया ऑर्डर आते ही ऐप आपकी चुनी हुई भाषा (हिन्दी, ગુજરાતી, English) में साफ आवाज़ में बोलता है:\n" +
+                        "  • किराया: ₹45\n" +
+                        "  • पिकअप दूरी: 0.6 km City Centre\n" +
+                        "  • ड्रॉप दूरी: 2.4 km Rajkot railway station\n" +
+                        "3. इससे आप बिना स्क्रीन देखे तुरंत समझ सकते हैं कि ऑर्डर कितना फायदेमंद है।"
             else
-                "1. The floating bubble hovers above your driver application.\n" +
-                        "2. Tap it anytime to pause or resume auto-accept without switching apps.\n" +
-                        "3. Tap 'Apply Best Settings' to automatically configure ideal filters in 1-tap!",
+                "1. Looking at your phone while driving is dangerous.\n" +
+                        "2. Order Master clearly announces all 5 vital details:\n" +
+                        "  • Fare: ₹45\n" +
+                        "  • Pickup: 0.6 km City Centre\n" +
+                        "  • Drop: 2.4 km Rajkot railway station\n" +
+                        "3. Supports Hindi, Gujarati, English and regional Indian languages.",
             recommendedSetting = if (isHindi)
-                "सब तैयार है! नीचे क्लिक करके बेस्ट सेटिंग्स सेट करें और राइड्स लेना शुरू करें।"
+                "टिप: सेटिंग्स में अपनी पसंदीदा भाषा (हिन्दी/गुजराती/English) चुनें और वॉयस उद्घोषक ऑन रखें।"
             else
-                "All ready! Tap below to apply ideal settings and start driving.",
+                "Tip: Keep Voice Announcer enabled with your preferred regional language.",
             speechText = if (isHindi)
-                "सब तैयार है। फ्लोटिंग बटन से आप कभी भी ऑटो एक्सेप्ट को रोक या शुरू कर सकते हैं। नीचे दिए गए बटन पर टैप करके बेस्ट सेटिंग्स लागू करें।"
+                "आवाज़ उद्घोषक फीचर। स्क्रीन पर नया ऑर्डर आते ही ऐप किराया, पिकअप दूरी और ड्रॉप लोकेशन बोलकर सुनाता है, ताकि गाड़ी चलाते समय आपको फोन की स्क्रीन न देखनी पड़े।"
             else
-                "You are ready. Use the floating overlay to control auto accept on the go. Tap below to apply recommended settings.",
+                "Voice announcer feature. Whenever a ride appears, Order Master speaks the fare, pickup distance, and drop destination aloud so you don't need to look at your phone.",
+            accentColor = Color(0xFFF59E0B),
+            mockExample = {
+                MockVoiceAnnouncementDemoCard(isHindi)
+            }
+        ),
+
+        // STEP 7: Floating Widget, OEM Lock & 1-Tap Ready Setup
+        TutorialGuideStep(
+            stepNumber = 7,
+            icon = Icons.Default.Layers,
+            badge = if (isHindi) "🚀 फ्लोटिंग बटन & 1-टैप रेडी" else "🚀 FLOATING WIDGET & READY",
+            title = if (isHindi) "फ्लोटिंग बटन, OEM बैकग्राउंड लॉक & 1-क्लिक बेस्ट सेटिंग्स" else "Floating Widget, OEM Lock & 1-Tap Setup",
+            shortDesc = if (isHindi)
+                "Xiaomi, Vivo, Oppo में ऐप को Recents में लॉक करें और 1-क्लिक बेस्ट सेटिंग्स लागू करें।"
+            else
+                "Lock in Recents, enable AutoStart, and apply best driver settings in 1-tap.",
+            detailExplainer = if (isHindi)
+                "1. फ्लोटिंग बबल: Rapido चलाते समय स्क्रीन पर ऊपर तैरता रहता है। एक टैप से ऑटो-एक्सेप्ट चालू या बंद करें।\n" +
+                        "2. Xiaomi/Vivo/Oppo/Realme सेटिंग्स: ऐप को रीसेंट्स (Recents) में ताला (Lock) लगाएं और AutoStart ऑन करें ताकि बैकग्राउंड में सर्विस बंद न हो।\n" +
+                        "3. 1-क्लिक बेस्ट सेटिंग्स: नीचे दिए गए हरे बटन पर टैप करते ही सबसे अच्छी सेटिंग्स अपने आप लागू हो जाएंगी!"
+            else
+                "1. Floating Bubble: Hovers above your driver app for instant pause/play.\n" +
+                        "2. OEM Battery Setup: Lock Order Master in Recents and enable AutoStart on Xiaomi/Vivo/Oppo.\n" +
+                        "3. 1-Click Best Setup: Tap the green button below to automatically apply ideal filters and start earning!",
+            recommendedSetting = if (isHindi)
+                "सब तैयार है! नीचे 'बेस्ट सेटिंग्स लागू करें' पर टैप करके तुरंत कमाई शुरू करें।"
+            else
+                "All ready! Tap 'Apply Best Settings' below to get started immediately.",
+            speechText = if (isHindi)
+                "सब तैयार है। फ्लोटिंग बटन से ऐप को कंट्रोल करें, और अगर आपका फोन शाओमी, विवो या ओप्पो है तो इसे रीसेंट्स में लॉक रखें। नीचे दिए गए बटन से बेस्ट सेटिंग्स लागू करें और कमाई शुरू करें।"
+            else
+                "You are ready. Use the floating overlay to control auto accept, lock the app in recents, and tap below to apply recommended settings.",
             accentColor = PrimaryEmerald,
             mockExample = {
                 MockFloatingWidgetDemoCard(isHindi)
@@ -1252,6 +1335,203 @@ private fun MockDistanceTipsCard(isHindi: Boolean) {
                         color = TextSecondary
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MockVoiceAnnouncementDemoCard(isHindi: Boolean) {
+    val context = LocalContext.current
+    val sampleAnnouncement = if (isHindi) {
+        "Kiraya 45 rupaye. Pickup 0.6 kilometer City Centre. Drop 2.4 kilometer Rajkot railway station."
+    } else {
+        "Fare 45 rupees. Pickup 0.6 km City Centre. Drop 2.4 km Rajkot railway station."
+    }
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+        border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Header: 5 fields preview
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFFF59E0B))
+                    )
+                    Text(
+                        text = if (isHindi) "5 मुख्य फील्ड्स का वॉइस डेमो" else "5-Field Voice Demo",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = Color(0xFFF59E0B)
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = Color(0xFFF59E0B).copy(alpha = 0.2f)
+                ) {
+                    Text(
+                        text = if (isHindi) "🔊 लाइव टेस्ट" else "🔊 Live Test",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = Color(0xFFF59E0B),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            // Visual breakdown of the 5 fields
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = DarkSurfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "1. किराया (Fare):",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        )
+                        Text(
+                            text = "₹45 (Auto Boost)",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontWeight = FontWeight.Black,
+                                color = PrimaryEmerald
+                            )
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "2. पिकअप दूरी:",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        )
+                        Text(
+                            text = "0.6 km",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "3. पिकअप स्थान:",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        )
+                        Text(
+                            text = "City Centre",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "4. ड्रॉप दूरी:",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        )
+                        Text(
+                            text = "2.4 km",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "5. ड्रॉप स्थान:",
+                            style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
+                        )
+                        Text(
+                            text = "Rajkot railway station",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                }
+            }
+
+            // Audio spoken text box
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = Color(0xFFF59E0B).copy(alpha = 0.1f),
+                border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.3f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.VolumeUp,
+                        contentDescription = null,
+                        tint = Color(0xFFF59E0B),
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "\"$sampleAnnouncement\"",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontWeight = FontWeight.Medium,
+                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                        ),
+                        color = TextPrimary
+                    )
+                }
+            }
+
+            // Listen button
+            FilledTonalButton(
+                onClick = {
+                    TTSManager.speak(context, sampleAnnouncement, flush = true)
+                    Toast.makeText(context, "🔊 $sampleAnnouncement", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.filledTonalButtonColors(
+                    containerColor = Color(0xFFF59E0B),
+                    contentColor = Color.Black
+                ),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (isHindi) "अभी आवाज़ में सुनकर देखें" else "Listen Audio Announcement",
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
