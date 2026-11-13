@@ -1,0 +1,213 @@
+{
+  "entities": {
+    "AdminMarker": {
+      "title": "AdminMarker",
+      "description": "Marker document in admins/{uid} granting administrative privileges.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID of the administrator" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp" }
+      }
+    },
+    "GlobalAppSettings": {
+      "title": "GlobalAppSettings",
+      "description": "Global service kill-switch and maintenance banner controlled by Admin.",
+      "type": "object",
+      "properties": {
+        "isServiceActive": { "type": "boolean" },
+        "offlineMessage": { "type": "string" },
+        "isPaymentSystemActive": { "type": "boolean" },
+        "isInAppUpdateActive": { "type": "boolean" }
+      }
+    },
+    "AdminConfig": {
+      "title": "AdminConfig",
+      "description": "Public read-only payment and app update configuration authored by Admin.",
+      "type": "object",
+      "properties": {
+        "adminUpiId": { "type": "string" },
+        "adminPayeeName": { "type": "string" },
+        "minSupportedVersionCode": { "type": "integer" },
+        "latestVersionCode": { "type": "integer" },
+        "dynamicAppDownloadUrl": { "type": "string" }
+      }
+    },
+    "InAppMessage": {
+      "title": "InAppMessage",
+      "description": "Admin-authored broadcast or targeted popup notification.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "targetUid": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    },
+    "UserDocument": {
+      "title": "UserDocument",
+      "description": "Canonical Zero-Trust user licensing, wallet, and automation rules stored at users/{firebaseUid}. Strictly read-only for clients.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "firebaseUid": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "linkedHardwareId": { "type": "string" },
+        "role": { "type": "string" },
+        "pointsBalance": { "type": "integer" },
+        "points": { "type": "integer" },
+        "referralCode": { "type": "string" },
+        "hasClaimedReferral": { "type": "boolean" },
+        "has_used_referral": { "type": "boolean" },
+        "referredBy": { "type": "string" },
+        "referralCount": { "type": "integer" },
+        "activePassType": { "type": "string" },
+        "passExpiryTimestamp": { "type": "integer" },
+        "pass_expiry_date": { "type": "integer" },
+        "isPaymentVerified": { "type": "boolean" },
+        "payment_status": { "type": "string" },
+        "trialClaimed": { "type": "integer" },
+        "trialExpiry": { "type": "integer" },
+        "trialUsed": { "type": "boolean" },
+        "current_folder": { "type": "string" },
+        "unlocked_features": { "type": "object" },
+        "autoAcceptEnabled": { "type": "boolean" },
+        "isAutoClickEnabled": { "type": "boolean" },
+        "isMinFareEnabled": { "type": "boolean" },
+        "minFare": { "type": "number" },
+        "isMaxFareEnabled": { "type": "boolean" },
+        "maxFare": { "type": "number" },
+        "isMaxPickupDistanceEnabled": { "type": "boolean" },
+        "maxPickupDistance": { "type": "number" },
+        "isMaxDropDistanceEnabled": { "type": "boolean" },
+        "maxDropDistance": { "type": "number" },
+        "isMinPerKmRateEnabled": { "type": "boolean" },
+        "minPerKmRate": { "type": "number" },
+        "isDestinationBlacklistEnabled": { "type": "boolean" },
+        "blockedLocations": { "type": "array" },
+        "clickDelayMs": { "type": "integer" },
+        "isFloatingOverlayEnabled": { "type": "boolean" },
+        "isVoiceAnnouncerEnabled": { "type": "boolean" },
+        "isBanned": { "type": "boolean" },
+        "banUntil": { "type": "string", "format": "date-time" },
+        "banReason": { "type": "string" },
+        "isMigrated": { "type": "boolean" }
+      }
+    },
+    "ReferralAudit": {
+      "title": "ReferralAudit",
+      "description": "Audit log under users/{userId}/referrals/{refereeId}. Written exclusively by Admin/Server.",
+      "type": "object",
+      "properties": {
+        "refereeId": { "type": "string" },
+        "refereeUid": { "type": "string" },
+        "referralCodeUsed": { "type": "string" },
+        "bonusAwarded": { "type": "integer" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      }
+    },
+    "PendingAction": {
+      "title": "PendingAction",
+      "description": "Zero-Trust action queue request submitted by authenticated client, processed by Admin backend.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "firebaseUid": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "linkedHardwareId": { "type": "string" },
+        "legacyCustomUserId": { "type": "string" },
+        "actionType": {
+          "type": "string",
+          "enum": [
+            "INIT_PROFILE",
+            "MIGRATE_PROFILE",
+            "UPDATE_PROFILE",
+            "CLAIM_REFERRAL",
+            "REWARD_AD_WATCHED",
+            "PURCHASE_PASS",
+            "ACTIVATE_PASS_PAYMENT",
+            "UNLOCK_FEATURE"
+          ]
+        },
+        "status": { "type": "string", "enum": ["PENDING", "COMPLETED", "FAILED"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "firebaseUid", "actionType", "status"]
+    },
+    "PendingVerification": {
+      "title": "PendingVerification",
+      "description": "User-submitted 12-digit UTR record awaiting bank SMS confirmation.",
+      "type": "object",
+      "properties": {
+        "utr": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "Verified", "REJECTED", "COMPLETED"] },
+        "isUsed": { "type": "boolean" },
+        "userId": { "type": "string" },
+        "firebaseUid": { "type": "string" },
+        "passName": { "type": "string" },
+        "passTier": { "type": "string" },
+        "amount": { "type": "integer" },
+        "deviceHardwareId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["utr", "status", "isUsed", "userId"]
+    },
+    "ReceivedPayment": {
+      "title": "ReceivedPayment",
+      "description": "Authoritative bank SMS / notification payment verification record managed strictly by Admin/Server.",
+      "type": "object",
+      "properties": {
+        "utr": { "type": "string" },
+        "amount": { "type": "integer" },
+        "status": { "type": "string" },
+        "isUsed": { "type": "boolean" },
+        "claimed": { "type": "boolean" },
+        "claimedByUserId": { "type": "string" },
+        "passTier": { "type": "string" },
+        "claimedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminMarker" },
+      "description": "Admin role allowlist keyed by Firebase Auth UID."
+    },
+    "/app_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/GlobalAppSettings" },
+      "description": "Global application kill-switch & maintenance notice."
+    },
+    "/admin_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/AdminConfig" },
+      "description": "Admin-managed payment UPI and version update settings."
+    },
+    "/global_messages/{messageId}": {
+      "schema": { "$ref": "#/entities/InAppMessage" },
+      "description": "Global announcements displayed to all users."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserDocument" },
+      "description": "User licensing, points, and Zero-Trust business rules keyed by Firebase UID."
+    },
+    "/users/{userId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/InAppMessage" },
+      "description": "Targeted admin messages for a specific user."
+    },
+    "/users/{userId}/referrals/{refereeId}": {
+      "schema": { "$ref": "#/entities/ReferralAudit" },
+      "description": "Audit records of successful referrals credited by server."
+    },
+    "/pending_actions/{docId}": {
+      "schema": { "$ref": "#/entities/PendingAction" },
+      "description": "Zero-Trust action queue created by authenticated users and processed by Admin backend."
+    },
+    "/pending_verifications/{utr}": {
+      "schema": { "$ref": "#/entities/PendingVerification" },
+      "description": "Pending UTR verification entries submitted by authenticated users."
+    },
+    "/received_payments/{utr}": {
+      "schema": { "$ref": "#/entities/ReceivedPayment" },
+      "description": "Authoritative received payment registry written and verified exclusively by Admin/Server."
+    }
+  }
+}

@@ -2,6 +2,7 @@ package com.example
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -10,6 +11,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowToast
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -21,6 +23,12 @@ class FareFilterTest {
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
         AppSettings.init(context)
+        AppSettings.resetBusinessStateForTest(context)
+    }
+
+    @After
+    fun tearDown() {
+        AppSettings.resetBusinessStateForTest(context)
     }
 
     @Test
@@ -36,36 +44,70 @@ class FareFilterTest {
 
     @Test
     fun testReactiveStateFlows() {
+        // Client business setters must be strictly blocked and never mutate RAM StateFlows
         AppSettings.setMinFare(context, 75f)
-        assertEquals(75f, AppSettings.minFare.value, 0.01f)
-        assertEquals(75f, AppSettings.settingsState.value.minFare, 0.01f)
+        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.minFare.value, 0.01f)
+        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.settingsState.value.minFare, 0.01f)
+        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
 
-        AppSettings.setMinFareEnabled(context, false)
+        AppSettings.setMinFareEnabled(context, true)
         assertFalse(AppSettings.isMinFareEnabled.value)
         assertFalse(AppSettings.settingsState.value.isMinFareEnabled)
 
-        AppSettings.setMinFareEnabled(context, true)
-        assertTrue(AppSettings.isMinFareEnabled.value)
-        assertTrue(AppSettings.settingsState.value.isMinFareEnabled)
-
         AppSettings.setMaxFare(context, 800f)
-        assertEquals(800f, AppSettings.maxFare.value, 0.01f)
-        assertEquals(800f, AppSettings.settingsState.value.maxFare, 0.01f)
+        assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.maxFare.value, 0.01f)
+        assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.settingsState.value.maxFare, 0.01f)
 
-        AppSettings.setMaxFareEnabled(context, false)
+        AppSettings.setMaxFareEnabled(context, true)
         assertFalse(AppSettings.isMaxFareEnabled.value)
         assertFalse(AppSettings.settingsState.value.isMaxFareEnabled)
 
-        AppSettings.setMaxFareEnabled(context, true)
+        // Firestore snapshot listener pushes Admin-managed values directly into RAM StateFlows
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "minFare" to 75.0,
+                "isMinFareEnabled" to true,
+                "maxFare" to 800.0,
+                "isMaxFareEnabled" to true
+            )
+        )
+        assertEquals(75f, AppSettings.minFare.value, 0.01f)
+        assertEquals(75f, AppSettings.settingsState.value.minFare, 0.01f)
+        assertTrue(AppSettings.isMinFareEnabled.value)
+        assertTrue(AppSettings.settingsState.value.isMinFareEnabled)
+        assertEquals(800f, AppSettings.maxFare.value, 0.01f)
+        assertEquals(800f, AppSettings.settingsState.value.maxFare, 0.01f)
         assertTrue(AppSettings.isMaxFareEnabled.value)
         assertTrue(AppSettings.settingsState.value.isMaxFareEnabled)
+
+        // Disabling via Firestore snapshot updates RAM flows immediately
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "minFare" to 75.0,
+                "isMinFareEnabled" to false,
+                "maxFare" to 800.0,
+                "isMaxFareEnabled" to false
+            )
+        )
+        assertFalse(AppSettings.isMinFareEnabled.value)
+        assertFalse(AppSettings.settingsState.value.isMinFareEnabled)
+        assertFalse(AppSettings.isMaxFareEnabled.value)
+        assertFalse(AppSettings.settingsState.value.isMaxFareEnabled)
     }
 
     @Test
     fun testValidationFunctions() {
-        AppSettings.setMinFareEnabled(context, true)
-        AppSettings.setMaxFareEnabled(context, true)
-        AppSettings.setMaxFare(context, 400f)
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "isMinFareEnabled" to true,
+                "minFare" to 120.0,
+                "isMaxFareEnabled" to true,
+                "maxFare" to 400.0
+            )
+        )
 
         // Min fare valid within bounds and <= max
         assertTrue(AppSettings.isValidMinFare(100f, 400f))
@@ -74,7 +116,6 @@ class FareFilterTest {
         assertFalse(AppSettings.isValidMinFare(600f, 400f)) // Exceeds baseline max range (500f)
 
         // Max fare valid within bounds and >= min
-        AppSettings.setMinFare(context, 120f)
         assertTrue(AppSettings.isValidMaxFare(300f, 120f))
         assertFalse(AppSettings.isValidMaxFare(80f, 120f))  // Below min fare
         assertFalse(AppSettings.isValidMaxFare(50f, 120f))  // Below baseline range (100f)

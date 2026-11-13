@@ -3,17 +3,27 @@ package com.example
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.Log
+import android.widget.Toast
+import androidx.annotation.VisibleForTesting
 import androidx.compose.runtime.Immutable
-import androidx.compose.runtime.Stable
+import com.example.data.OrderEntity
+import com.example.data.OrderRepository
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asExecutor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,9 +31,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
-import com.example.data.OrderEntity
-import com.example.data.OrderRepository
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -70,27 +77,30 @@ data class ActivityLogEntry(
 
 @Immutable
 data class SettingsState(
-    val isAutoAcceptEnabled: Boolean = true,
-    val isMinFareEnabled: Boolean = true,
-    val minFare: Float = AppSettings.DEFAULT_MIN_FARE,
-    val isMaxFareEnabled: Boolean = true,
+    val isAutoAcceptEnabled: Boolean = false,
+    val isMinFareEnabled: Boolean = false,
+    val minFare: Float = AppSettings.RESTRICTED_MIN_FARE,
+    val isMaxFareEnabled: Boolean = false,
     val maxFare: Float = AppSettings.DEFAULT_MAX_FARE,
-    val isMaxPickupDistanceEnabled: Boolean = true,
-    val maxPickupDistance: Float = 3.0f,
+    val isMaxPickupDistanceEnabled: Boolean = false,
+    val maxPickupDistance: Float = AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE,
     val isMaxDropDistanceEnabled: Boolean = false,
-    val maxDropDistance: Float = 15.0f,
-    val clickDelayMs: Long = 500L,
-    val isMinPerKmRateEnabled: Boolean = true,
+    val maxDropDistance: Float = AppSettings.DEFAULT_MAX_DROP_DISTANCE,
+    val clickDelayMs: Long = AppSettings.DEFAULT_CLICK_DELAY_MS,
+    val isMinPerKmRateEnabled: Boolean = false,
     val minPerKmRate: Float = AppSettings.DEFAULT_MIN_PER_KM_RATE,
-    val isDestinationBlacklistEnabled: Boolean = true,
+    val isDestinationBlacklistEnabled: Boolean = false,
     val blockedLocations: List<String> = emptyList(),
-    val isVoiceAnnouncerEnabled: Boolean = true,
-    val voiceLanguage: String = "en",
-    val speechRate: Float = 1.0f,
-    val speechPitch: Float = 1.0f,
+    val isVoiceAnnouncerEnabled: Boolean = false,
+    val voiceLanguage: String = AppSettings.DEFAULT_VOICE_LANGUAGE,
+    val speechRate: Float = AppSettings.DEFAULT_SPEECH_RATE,
+    val speechPitch: Float = AppSettings.DEFAULT_SPEECH_PITCH,
     val isFloatingOverlayEnabled: Boolean = false,
-    val isAutoClickEnabled: Boolean = true,
-    val lastAcceptedFare: Double? = null
+    val isAutoClickEnabled: Boolean = false,
+    val lastAcceptedFare: Double? = null,
+    val activePassType: String? = null,
+    val passExpiryTimestamp: Long = 0L,
+    val unlockedFeatures: Map<String, Long> = emptyMap()
 ) {
     val autoAcceptEnabled: Boolean get() = isAutoAcceptEnabled
     val minPrice: Float get() = minFare
@@ -108,28 +118,26 @@ data class UserAuthState(
     val uid: String? = null
 )
 
+/**
+ * Zero-Trust Thin-Client Settings Store.
+ *
+ * Security & Persistence Model:
+ * - All business logic filters, thresholds, automation flags, pass metadata, and premium feature
+ *   toggles are read strictly in-memory (RAM StateFlows) from a real-time Firestore snapshot
+ *   listener on `users/{uid}` and are NEVER written to SharedPreferences or written back to Firestore.
+ * - Purely local UI/UX preferences (language selection, onboarding/tutorial completion, TTS pitch/rate,
+ *   login banner dismissal) remain in SharedPreferences.
+ * - Synchronous getters read directly from RAM (`StateFlow.value`) with <1ms overhead so order
+ *   evaluation runs strictly offline/in-RAM well below the <300ms latency budget.
+ */
 object AppSettings {
     private const val TAG = "AppSettings"
+    private const val COLL_USERS = "users"
     const val PREFS_NAME = "captain_auto_accept_prefs"
 
     val SUPPORTED_LANGUAGES get() = com.example.SUPPORTED_LANGUAGES
 
-    // Primary preference keys
-    const val KEY_AUTO_ACCEPT_ENABLED = "key_auto_accept_enabled"
-    const val KEY_MIN_FARE_ENABLED = "key_min_fare_enabled"
-    const val KEY_MIN_FARE = "key_min_fare"
-    const val KEY_MAX_FARE_ENABLED = "key_max_fare_enabled"
-    const val KEY_MAX_FARE = "key_max_fare"
-    const val KEY_MAX_PICKUP_DIST_ENABLED = "key_max_pickup_dist_enabled"
-    const val KEY_MAX_PICKUP_DISTANCE = "key_max_pickup_distance"
-    const val KEY_MAX_DROP_DIST_ENABLED = "key_max_drop_dist_enabled"
-    const val KEY_MAX_DROP_DISTANCE = "key_max_drop_distance"
-    const val KEY_CLICK_DELAY_MS = "key_click_delay_ms"
-    const val KEY_MIN_PER_KM_RATE_ENABLED = "key_min_per_km_rate_enabled"
-    const val KEY_MIN_PER_KM_RATE = "key_min_per_km_rate"
-    const val KEY_DESTINATION_BLACKLIST_ENABLED = "key_destination_blacklist_enabled"
-    const val KEY_BLOCKED_LOCATIONS = "key_blocked_locations"
-    const val KEY_VOICE_ANNOUNCER_ENABLED = "key_voice_announcer_enabled"
+    // Purely Local UI/UX SharedPreferences Keys (NEVER used for business logic or security)
     const val KEY_VOICE_LANGUAGE = "key_voice_language"
     const val KEY_APP_LANGUAGE = "key_app_language"
     const val KEY_LANGUAGE_SELECTED = "key_language_selected"
@@ -137,28 +145,55 @@ object AppSettings {
     const val KEY_HOME_TUTORIAL_COMPLETED = "key_home_tutorial_completed"
     const val KEY_SPEECH_RATE = "key_speech_rate"
     const val KEY_SPEECH_PITCH = "key_speech_pitch"
-    const val KEY_FLOATING_OVERLAY_ENABLED = "key_floating_overlay_enabled"
-    const val KEY_AUTO_CLICK_ENABLED = "key_auto_click_enabled"
-
-    // User Authentication Keys (Authoritative source: FirebaseAuth.currentUser)
-    const val KEY_USER_IS_LOGGED_IN = "key_user_is_logged_in"
-    const val KEY_USER_EMAIL = "key_user_email"
-    const val KEY_USER_NAME = "key_user_name"
-    const val KEY_USER_PHOTO_URL = "key_user_photo_url"
-    const val KEY_USER_UID = "key_user_uid"
     const val KEY_LOGIN_DISMISSED = "key_login_dismissed"
 
-    // Backward-compatibility keys
-    const val KEY_SERVICE_ENABLED = "key_service_enabled"
-    const val KEY_MIN_VALUE = "key_min_value"
-    const val KEY_MAX_VALUE = "key_max_value"
-    const val KEY_MAX_DISTANCE = "key_max_distance"
+    private val ALLOWED_LOCAL_UI_KEYS = setOf(
+        KEY_VOICE_LANGUAGE,
+        KEY_APP_LANGUAGE,
+        KEY_LANGUAGE_SELECTED,
+        KEY_ONBOARDING_COMPLETED,
+        KEY_HOME_TUTORIAL_COMPLETED,
+        KEY_SPEECH_RATE,
+        KEY_SPEECH_PITCH,
+        KEY_LOGIN_DISMISSED
+    )
+
+    // Legacy business/auth keys purged from SharedPreferences on init
+    private val LEGACY_KEYS_TO_PURGE = listOf(
+        "key_auto_accept_enabled",
+        "key_min_fare_enabled",
+        "key_min_fare",
+        "key_max_fare_enabled",
+        "key_max_fare",
+        "key_max_pickup_dist_enabled",
+        "key_max_pickup_distance",
+        "key_max_drop_dist_enabled",
+        "key_max_drop_distance",
+        "key_click_delay_ms",
+        "key_min_per_km_rate_enabled",
+        "key_min_per_km_rate",
+        "key_destination_blacklist_enabled",
+        "key_blocked_locations",
+        "key_voice_announcer_enabled",
+        "key_floating_overlay_enabled",
+        "key_auto_click_enabled",
+        "key_user_is_logged_in",
+        "key_user_email",
+        "key_user_name",
+        "key_user_photo_url",
+        "key_user_uid",
+        "key_user_id_token",
+        "key_service_enabled",
+        "key_min_value",
+        "key_max_value",
+        "key_max_distance"
+    )
 
     // Broadcast actions for service logging
     const val ACTION_ACCESSIBILITY_LOG = "com.example.ACCESSIBILITY_LOG"
     const val EXTRA_LOG_MESSAGE = "extra_log_message"
 
-    // Baseline Fare Range Constants
+    // Baseline Fare Range Constants (UI validation boundaries)
     const val MIN_FARE_RANGE_START = 20.0f
     const val MIN_FARE_RANGE_END = 500.0f
     const val DEFAULT_MIN_FARE = 50.0f
@@ -167,29 +202,34 @@ object AppSettings {
     const val MAX_FARE_RANGE_END = 2000.0f
     const val DEFAULT_MAX_FARE = 500.0f
 
+    // Strict Safe Restricted Defaults (RAM defaults until Firestore provisions user rules)
+    const val RESTRICTED_AUTO_ACCEPT_ENABLED = false
+    const val RESTRICTED_MIN_FARE = 0.0f
+    const val RESTRICTED_MAX_PICKUP_DISTANCE = 0.0f
+
     // Other configuration defaults
     const val DEFAULT_MAX_PICKUP_DISTANCE = 3.0f
     const val DEFAULT_MAX_DROP_DISTANCE = 15.0f
     const val MIN_PICKUP_DISTANCE_KM = 0.0f
     const val MAX_PICKUP_DISTANCE_KM = 3.0f
-    const val DEFAULT_AUTO_ACCEPT_ENABLED = true
-    const val DEFAULT_MIN_FARE_ENABLED = true
-    const val DEFAULT_MAX_FARE_ENABLED = true
-    const val DEFAULT_MAX_PICKUP_DIST_ENABLED = true
+    const val DEFAULT_AUTO_ACCEPT_ENABLED = false
+    const val DEFAULT_MIN_FARE_ENABLED = false
+    const val DEFAULT_MAX_FARE_ENABLED = false
+    const val DEFAULT_MAX_PICKUP_DIST_ENABLED = false
     const val DEFAULT_MAX_DROP_DIST_ENABLED = false
     const val DEFAULT_CLICK_DELAY_MS = 500L
-    const val DEFAULT_MIN_PER_KM_RATE_ENABLED = true
+    const val DEFAULT_MIN_PER_KM_RATE_ENABLED = false
     const val DEFAULT_MIN_PER_KM_RATE = 10.0f
-    const val DEFAULT_DESTINATION_BLACKLIST_ENABLED = true
-    const val DEFAULT_VOICE_ANNOUNCER_ENABLED = true
+    const val DEFAULT_DESTINATION_BLACKLIST_ENABLED = false
+    const val DEFAULT_VOICE_ANNOUNCER_ENABLED = false
     const val DEFAULT_VOICE_LANGUAGE = "en"
     const val DEFAULT_SPEECH_RATE = 1.0f
     const val DEFAULT_SPEECH_PITCH = 1.0f
     const val DEFAULT_FLOATING_OVERLAY_ENABLED = false
-    const val DEFAULT_AUTO_CLICK_ENABLED = true
+    const val DEFAULT_AUTO_CLICK_ENABLED = false
 
-    // Reactive StateFlows for granular Fare observation
-    private val _minFareFlow = MutableStateFlow(DEFAULT_MIN_FARE)
+    // Reactive StateFlows for granular Fare observation (RAM-only)
+    private val _minFareFlow = MutableStateFlow(RESTRICTED_MIN_FARE)
     val minFare: StateFlow<Float> = _minFareFlow.asStateFlow()
 
     private val _isMinFareEnabledFlow = MutableStateFlow(DEFAULT_MIN_FARE_ENABLED)
@@ -201,9 +241,35 @@ object AppSettings {
     private val _isMaxFareEnabledFlow = MutableStateFlow(DEFAULT_MAX_FARE_ENABLED)
     val isMaxFareEnabled: StateFlow<Boolean> = _isMaxFareEnabledFlow.asStateFlow()
 
-    // In-memory properties for legacy access
-    var minCurrencyThreshold: Double = DEFAULT_MIN_FARE.toDouble()
+    // Dedicated RAM StateFlows for Firestore-pushed fields
+    private val _autoAcceptEnabledFlow = MutableStateFlow(RESTRICTED_AUTO_ACCEPT_ENABLED)
+    val autoAcceptEnabledFlow: StateFlow<Boolean> = _autoAcceptEnabledFlow.asStateFlow()
+
+    private val _maxPickupDistanceFlow = MutableStateFlow(RESTRICTED_MAX_PICKUP_DISTANCE)
+    val maxPickupDistanceFlow: StateFlow<Float> = _maxPickupDistanceFlow.asStateFlow()
+
+    private val _isFloatingOverlayEnabledFlow = MutableStateFlow(DEFAULT_FLOATING_OVERLAY_ENABLED)
+    val isFloatingOverlayEnabledFlow: StateFlow<Boolean> = _isFloatingOverlayEnabledFlow.asStateFlow()
+
+    private val _isVoiceAnnouncerEnabledFlow = MutableStateFlow(DEFAULT_VOICE_ANNOUNCER_ENABLED)
+    val isVoiceAnnouncerEnabledFlow: StateFlow<Boolean> = _isVoiceAnnouncerEnabledFlow.asStateFlow()
+
+    private val _activePassTypeFlow = MutableStateFlow<String?>(null)
+    val activePassTypeFlow: StateFlow<String?> = _activePassTypeFlow.asStateFlow()
+
+    private val _unlockedFeaturesFlow = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val unlockedFeaturesFlow: StateFlow<Map<String, Long>> = _unlockedFeaturesFlow.asStateFlow()
+
+    private val _isFirestoreSyncedFlow = MutableStateFlow(false)
+    val isFirestoreSyncedFlow: StateFlow<Boolean> = _isFirestoreSyncedFlow.asStateFlow()
+
+    // In-memory properties for legacy fast-path access (Firestore snapshot controlled only)
+    @Volatile
+    var minCurrencyThreshold: Double = RESTRICTED_MIN_FARE.toDouble()
+        private set
+    @Volatile
     var maxCurrencyThreshold: Double = DEFAULT_MAX_FARE.toDouble()
+        private set
 
     // Anti-Hack Memory Shield: XOR token masking with dynamic SystemClock.elapsedRealtime() clock salt
     private const val AUTO_ACCEPT_TOKEN_ENABLED = 0x4A7B2C91L
@@ -217,8 +283,9 @@ object AppSettings {
 
     @Volatile
     private var autoAcceptClockSalt: Long = safeElapsedRealtime()
+
     @Volatile
-    private var encodedAutoAcceptToken: Long = AUTO_ACCEPT_TOKEN_ENABLED xor autoAcceptClockSalt
+    private var encodedAutoAcceptToken: Long = AUTO_ACCEPT_TOKEN_DISABLED xor autoAcceptClockSalt
 
     var autoAcceptEnabled: Boolean
         get() {
@@ -226,11 +293,13 @@ object AppSettings {
             val decoded = encodedAutoAcceptToken xor autoAcceptClockSalt
             return decoded == AUTO_ACCEPT_TOKEN_ENABLED
         }
-        set(value) {
+        private set(value) {
             val salt = safeElapsedRealtime()
             autoAcceptClockSalt = salt
             encodedAutoAcceptToken = (if (value) AUTO_ACCEPT_TOKEN_ENABLED else AUTO_ACCEPT_TOKEN_DISABLED) xor salt
+            _autoAcceptEnabledFlow.value = value
         }
+
     val minPrice: Double get() = minCurrencyThreshold
     val maxPrice: Double get() = maxCurrencyThreshold
     val maxDistance: Double get() = _settingsState.value.maxPickupDistance.toDouble()
@@ -240,13 +309,18 @@ object AppSettings {
 
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
-    // Reactive StateFlow for UI consumption
+    // Reactive StateFlow for UI & Accessibility Service consumption (RAM-only for business rules)
     private val _settingsState = MutableStateFlow(
         SettingsState(
-            isAutoAcceptEnabled = DEFAULT_AUTO_ACCEPT_ENABLED,
-            minFare = DEFAULT_MIN_FARE,
+            isAutoAcceptEnabled = RESTRICTED_AUTO_ACCEPT_ENABLED,
+            isMinFareEnabled = DEFAULT_MIN_FARE_ENABLED,
+            minFare = RESTRICTED_MIN_FARE,
+            isMaxFareEnabled = DEFAULT_MAX_FARE_ENABLED,
             maxFare = DEFAULT_MAX_FARE,
-            maxPickupDistance = DEFAULT_MAX_PICKUP_DISTANCE,
+            isMaxPickupDistanceEnabled = DEFAULT_MAX_PICKUP_DIST_ENABLED,
+            maxPickupDistance = RESTRICTED_MAX_PICKUP_DISTANCE,
+            isMaxDropDistanceEnabled = DEFAULT_MAX_DROP_DIST_ENABLED,
+            maxDropDistance = DEFAULT_MAX_DROP_DISTANCE,
             clickDelayMs = DEFAULT_CLICK_DELAY_MS,
             isMinPerKmRateEnabled = DEFAULT_MIN_PER_KM_RATE_ENABLED,
             minPerKmRate = DEFAULT_MIN_PER_KM_RATE,
@@ -254,9 +328,14 @@ object AppSettings {
             blockedLocations = emptyList(),
             isVoiceAnnouncerEnabled = DEFAULT_VOICE_ANNOUNCER_ENABLED,
             voiceLanguage = DEFAULT_VOICE_LANGUAGE,
+            speechRate = DEFAULT_SPEECH_RATE,
+            speechPitch = DEFAULT_SPEECH_PITCH,
             isFloatingOverlayEnabled = DEFAULT_FLOATING_OVERLAY_ENABLED,
             isAutoClickEnabled = DEFAULT_AUTO_CLICK_ENABLED,
-            lastAcceptedFare = null
+            lastAcceptedFare = null,
+            activePassType = null,
+            passExpiryTimestamp = 0L,
+            unlockedFeatures = emptyMap()
         )
     )
     val settingsState: StateFlow<SettingsState> = _settingsState.asStateFlow()
@@ -269,7 +348,7 @@ object AppSettings {
             ActivityLogEntry(
                 timeFormatted = timeFormat.format(Date()),
                 title = "Engine Initialized",
-                message = "Monitoring service loaded. Configure thresholds and enable Accessibility.",
+                message = "Zero-Trust RAM configuration active. Awaiting Firebase user rules.",
                 severity = LogSeverity.INFO
             )
         )
@@ -279,223 +358,508 @@ object AppSettings {
     private val _userAuthState = MutableStateFlow(UserAuthState())
     val userAuthState: StateFlow<UserAuthState> = _userAuthState.asStateFlow()
 
-    // Reactive StateFlows for Subscription Pass Expiry
+    // Reactive StateFlows for Subscription Pass Expiry (RAM-only)
     private val _passExpiryTimestampFlow = MutableStateFlow(0L)
     val passExpiryTimestampFlow: StateFlow<Long> = _passExpiryTimestampFlow.asStateFlow()
 
     private val _isPassActiveFlow = MutableStateFlow(false)
     val isPassActiveFlow: StateFlow<Boolean> = _isPassActiveFlow.asStateFlow()
 
-    // Reactive StateFlows for App & Voice Language Selection
+    // Reactive StateFlows for App & Voice Language Selection (Local UI Prefs)
     private val _isLanguageSelectedFlow = MutableStateFlow(false)
     val isLanguageSelectedFlow: StateFlow<Boolean> = _isLanguageSelectedFlow.asStateFlow()
 
     private val _appLanguageFlow = MutableStateFlow(DEFAULT_VOICE_LANGUAGE)
     val appLanguageFlow: StateFlow<String> = _appLanguageFlow.asStateFlow()
 
-    // Reactive StateFlow for First-Time Onboarding Tutorial
+    // Reactive StateFlow for First-Time Onboarding Tutorial (Local UI Prefs)
     private val _isOnboardingCompletedFlow = MutableStateFlow(false)
     val isOnboardingCompletedFlow: StateFlow<Boolean> = _isOnboardingCompletedFlow.asStateFlow()
 
-    // Reactive StateFlow for First-Time In-App Home Tutorial
+    // Reactive StateFlow for First-Time In-App Home Tutorial (Local UI Prefs)
     private val _isHomeTutorialCompletedFlow = MutableStateFlow(false)
     val isHomeTutorialCompletedFlow: StateFlow<Boolean> = _isHomeTutorialCompletedFlow.asStateFlow()
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val firestoreExecutor = Dispatchers.IO.asExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val evaluationMutex = Mutex()
+    private val listenerLock = Any()
+
     private val _recentEvaluationsFlow = MutableStateFlow<List<RideEvaluation>>(emptyList())
     val recentEvaluationsFlow: StateFlow<List<RideEvaluation>> = _recentEvaluationsFlow.asStateFlow()
+
     @Volatile
     private var isAuthListenerRegistered = false
     private var authStateListener: FirebaseAuth.AuthStateListener? = null
+
+    @Volatile
+    private var isLicenseObserverStarted = false
+
+    private var userConfigListener: ListenerRegistration? = null
+    @Volatile
+    private var activeListeningUid: String? = null
+    @Volatile
+    private var appContextRef: Context? = null
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
     /**
-     * Initializes state from SharedPreferences.
+     * Scoped persistence helper restricted strictly to safe local UI/UX preferences.
+     * Any attempt to persist business logic, limits, or premium flags is prevented by design.
+     */
+    private fun persistLocalUiPref(context: Context, key: String, action: SharedPreferences.Editor.() -> Unit) {
+        require(key in ALLOWED_LOCAL_UI_KEYS) {
+            "Zero-Trust violation: SharedPreferences storage is forbidden for '$key'."
+        }
+        val editor = getPrefs(context).edit()
+        action(editor)
+        editor.apply()
+    }
+
+    private fun purgeLegacyBusinessPrefs(prefs: SharedPreferences) {
+        var needsEdit = false
+        for (legacyKey in LEGACY_KEYS_TO_PURGE) {
+            if (prefs.contains(legacyKey)) {
+                needsEdit = true
+                break
+            }
+        }
+        if (needsEdit) {
+            val editor = prefs.edit()
+            for (legacyKey in LEGACY_KEYS_TO_PURGE) {
+                editor.remove(legacyKey)
+            }
+            editor.apply()
+            Log.i(TAG, "Purged legacy business/auth keys from SharedPreferences.")
+        }
+    }
+
+    /**
+     * Initializes local UI preferences from SharedPreferences and attaches the real-time
+     * FirebaseAuth + Firestore `users/{uid}` snapshot listener on Dispatchers.IO.
      */
     fun init(context: Context) {
-        val prefs = getPrefs(context)
-        // Zero-Trust Cloud-Only: Do not consult local SharedPreferences for master automation toggles.
-        // Gated strictly by LicenseManager.isServiceActive and in-memory intent.
-        val enabled = LicenseManager.isServiceActive(context) && autoAcceptEnabled
-        val minFareEnabled = prefs.getBoolean(KEY_MIN_FARE_ENABLED, DEFAULT_MIN_FARE_ENABLED)
-        val minFare = prefs.getFloat(KEY_MIN_FARE, prefs.getFloat(KEY_MIN_VALUE, DEFAULT_MIN_FARE))
-        val maxFareEnabled = prefs.getBoolean(KEY_MAX_FARE_ENABLED, DEFAULT_MAX_FARE_ENABLED)
-        val maxFare = prefs.getFloat(KEY_MAX_FARE, prefs.getFloat(KEY_MAX_VALUE, DEFAULT_MAX_FARE))
-        val pickupDistEnabled = prefs.getBoolean(KEY_MAX_PICKUP_DIST_ENABLED, DEFAULT_MAX_PICKUP_DIST_ENABLED)
-        val rawMaxDist = prefs.getFloat(KEY_MAX_PICKUP_DISTANCE, prefs.getFloat(KEY_MAX_DISTANCE, DEFAULT_MAX_PICKUP_DISTANCE))
-        val maxDist = rawMaxDist.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM)
-        val dropDistEnabled = prefs.getBoolean(KEY_MAX_DROP_DIST_ENABLED, DEFAULT_MAX_DROP_DIST_ENABLED)
-        val dropDist = prefs.getFloat(KEY_MAX_DROP_DISTANCE, DEFAULT_MAX_DROP_DISTANCE)
-        val delay = prefs.getLong(KEY_CLICK_DELAY_MS, DEFAULT_CLICK_DELAY_MS)
-        val minPerKmRateEnabled = prefs.getBoolean(KEY_MIN_PER_KM_RATE_ENABLED, DEFAULT_MIN_PER_KM_RATE_ENABLED)
-        val minPerKmRate = prefs.getFloat(KEY_MIN_PER_KM_RATE, DEFAULT_MIN_PER_KM_RATE)
-        val destBlacklistEnabled = prefs.getBoolean(KEY_DESTINATION_BLACKLIST_ENABLED, DEFAULT_DESTINATION_BLACKLIST_ENABLED)
-        val blockedLocationsSet = prefs.getStringSet(KEY_BLOCKED_LOCATIONS, emptySet()) ?: emptySet()
-        val blockedLocations = blockedLocationsSet.toList().sorted()
-        val voiceEnabled = prefs.getBoolean(KEY_VOICE_ANNOUNCER_ENABLED, DEFAULT_VOICE_ANNOUNCER_ENABLED)
+        val appCtx = context.applicationContext ?: context
+        appContextRef = appCtx
+
+        val prefs = getPrefs(appCtx)
+        purgeLegacyBusinessPrefs(prefs)
+
+        // Load ONLY safe, purely local UI preferences
         val hasSelectedLang = prefs.getBoolean(KEY_LANGUAGE_SELECTED, false) || prefs.contains(KEY_APP_LANGUAGE)
-        val appLang = prefs.getString(KEY_APP_LANGUAGE, prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE)) ?: DEFAULT_VOICE_LANGUAGE
-        val voiceLang = appLang
+        val appLang = prefs.getString(KEY_APP_LANGUAGE, prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE))
+            ?: DEFAULT_VOICE_LANGUAGE
+        val onboardingCompleted = prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
+        val homeTutorialCompleted = prefs.getBoolean(KEY_HOME_TUTORIAL_COMPLETED, false)
+        val speechRate = prefs.getFloat(KEY_SPEECH_RATE, DEFAULT_SPEECH_RATE)
+        val speechPitch = prefs.getFloat(KEY_SPEECH_PITCH, DEFAULT_SPEECH_PITCH)
 
         _isLanguageSelectedFlow.value = hasSelectedLang
         _appLanguageFlow.value = appLang
-
-        val onboardingCompleted = prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
         _isOnboardingCompletedFlow.value = onboardingCompleted
-        val homeTutorialCompleted = prefs.getBoolean(KEY_HOME_TUTORIAL_COMPLETED, false)
         _isHomeTutorialCompletedFlow.value = homeTutorialCompleted
-        val speechRate = prefs.getFloat(KEY_SPEECH_RATE, DEFAULT_SPEECH_RATE)
-        val speechPitch = prefs.getFloat(KEY_SPEECH_PITCH, DEFAULT_SPEECH_PITCH)
-        val overlayEnabled = prefs.getBoolean(KEY_FLOATING_OVERLAY_ENABLED, DEFAULT_FLOATING_OVERLAY_ENABLED)
-        val autoClickEnabled = prefs.getBoolean(KEY_AUTO_CLICK_ENABLED, DEFAULT_AUTO_CLICK_ENABLED)
 
-        // Initialize user authentication directly from authoritative FirebaseAuth instance
+        // Sync local UI fields onto current SettingsState without overwriting Firestore RAM values if already synced
+        _settingsState.value = _settingsState.value.copy(
+            voiceLanguage = appLang,
+            speechRate = speechRate,
+            speechPitch = speechPitch
+        )
+
+        // Check authoritative FirebaseAuth session
         val authUser = try {
-            FirebaseAuth.getInstance().currentUser
+            if (FirebaseApp.getApps(appCtx).isNotEmpty()) {
+                FirebaseAuth.getInstance().currentUser
+            } else {
+                null
+            }
         } catch (_: Exception) {
             null
         }
 
-        if (authUser != null) {
-            val email = authUser.email
-            val name = authUser.displayName
-            val photo = authUser.photoUrl?.toString()
-            val uid = authUser.uid
+        if (authUser != null && authUser.uid.isNotBlank()) {
             _userAuthState.value = UserAuthState(
                 isLoggedIn = true,
-                userEmail = email,
-                userName = name,
-                photoUrl = photo,
-                uid = uid
+                userEmail = authUser.email,
+                userName = authUser.displayName,
+                photoUrl = authUser.photoUrl?.toString(),
+                uid = authUser.uid
             )
+            startUserConfigSnapshotListener(appCtx, authUser.uid)
         } else {
-            // Strictly reset to logged out if Firebase has no authenticated user
-            _userAuthState.value = UserAuthState(
-                isLoggedIn = false,
-                userEmail = null,
-                userName = null,
-                photoUrl = null,
-                uid = null
-            )
+            _userAuthState.value = UserAuthState()
+            stopUserConfigSnapshotListener()
+            resetBusinessStateToRestrictedDefaults(appCtx)
         }
 
-        // Attach auth state listener once so changes in FirebaseAuth propagate to Compose immediately
+        // Register AuthStateListener once so sign-in / sign-out transitions attach/detach listeners automatically
         if (!isAuthListenerRegistered) {
             try {
-                val listener = FirebaseAuth.AuthStateListener { auth ->
-                    updateUserAuthFromFirebase(context.applicationContext, auth.currentUser)
+                if (FirebaseApp.getApps(appCtx).isNotEmpty()) {
+                    val listener = FirebaseAuth.AuthStateListener { auth ->
+                        updateUserAuthFromFirebase(appCtx, auth.currentUser)
+                    }
+                    FirebaseAuth.getInstance().addAuthStateListener(listener)
+                    authStateListener = listener
+                    isAuthListenerRegistered = true
+                    Log.d(TAG, "FirebaseAuth AuthStateListener registered.")
                 }
-                FirebaseAuth.getInstance().addAuthStateListener(listener)
-                authStateListener = listener
-                isAuthListenerRegistered = true
-                Log.d("AppSettings", "FirebaseAuth AuthStateListener registered.")
             } catch (e: Exception) {
-                Log.w("AppSettings", "Failed to register FirebaseAuth state listener: ${e.message}")
+                Log.w(TAG, "Failed to register FirebaseAuth state listener: ${e.message}")
             }
         }
 
-        minCurrencyThreshold = minFare.toDouble()
-        maxCurrencyThreshold = maxFare.toDouble()
-        autoAcceptEnabled = enabled
-
-        _minFareFlow.value = minFare
-        _isMinFareEnabledFlow.value = minFareEnabled
-        _maxFareFlow.value = maxFare
-        _isMaxFareEnabledFlow.value = maxFareEnabled
-
-        _settingsState.value = SettingsState(
-            isAutoAcceptEnabled = enabled,
-            isMinFareEnabled = minFareEnabled,
-            minFare = minFare,
-            isMaxFareEnabled = maxFareEnabled,
-            maxFare = maxFare,
-            isMaxPickupDistanceEnabled = pickupDistEnabled,
-            maxPickupDistance = maxDist,
-            isMaxDropDistanceEnabled = dropDistEnabled,
-            maxDropDistance = dropDist,
-            clickDelayMs = delay,
-            isMinPerKmRateEnabled = minPerKmRateEnabled,
-            minPerKmRate = minPerKmRate,
-            isDestinationBlacklistEnabled = destBlacklistEnabled,
-            blockedLocations = blockedLocations,
-            isVoiceAnnouncerEnabled = voiceEnabled,
-            voiceLanguage = voiceLang,
-            speechRate = speechRate,
-            speechPitch = speechPitch,
-            isFloatingOverlayEnabled = overlayEnabled,
-            isAutoClickEnabled = autoClickEnabled,
-            lastAcceptedFare = _lastAcceptedFareFlow.value
-        )
-
-        // 100% Cloud-Only: Observe LicenseManager's authoritative in-memory server state
-        appScope.launch {
-            combine(
-                LicenseManager.accessStatus,
-                LicenseManager.isServiceActiveFlow
-            ) { status, isServiceActive ->
-                Pair(status, isServiceActive)
-            }.collect { (status, isServiceActive) ->
-                when (status) {
-                    is AccessStatus.PassActive -> {
-                        _passExpiryTimestampFlow.value = status.expiryTimestamp
-                        _isPassActiveFlow.value = status.remainingTimeMs > 0
+        // Observe LicenseManager's authoritative server state in background without touching disk
+        if (!isLicenseObserverStarted) {
+            isLicenseObserverStarted = true
+            appScope.launch {
+                combine(
+                    LicenseManager.accessStatus,
+                    LicenseManager.isServiceActiveFlow
+                ) { status, isServiceActive ->
+                    Pair(status, isServiceActive)
+                }.collect { (status, isServiceActive) ->
+                    when (status) {
+                        is AccessStatus.PassActive -> {
+                            if (status.expiryTimestamp > 0L) {
+                                _passExpiryTimestampFlow.value = status.expiryTimestamp
+                                _isPassActiveFlow.value = status.remainingTimeMs > 0
+                            }
+                        }
+                        is AccessStatus.TrialActive -> {
+                            if (status.expiryTimestamp > 0L) {
+                                _passExpiryTimestampFlow.value = status.expiryTimestamp
+                                _isPassActiveFlow.value = status.remainingTimeMs > 0
+                            }
+                        }
+                        else -> {
+                            // Preserve Firestore snapshot pass values if synced via users/{uid}
+                            if (!_isFirestoreSyncedFlow.value) {
+                                _passExpiryTimestampFlow.value = 0L
+                                _isPassActiveFlow.value = false
+                            }
+                        }
                     }
-                    is AccessStatus.TrialActive -> {
-                        _passExpiryTimestampFlow.value = status.expiryTimestamp
-                        _isPassActiveFlow.value = status.remainingTimeMs > 0
+
+                    val effectiveEnabled = isServiceActive &&
+                        LicenseManager.isServiceActive(appCtx) &&
+                        !LicenseManager.isBannedFlow.value &&
+                        autoAcceptEnabled
+                    if (_settingsState.value.isAutoAcceptEnabled != effectiveEnabled) {
+                        _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = effectiveEnabled)
                     }
-                    else -> {
-                        _passExpiryTimestampFlow.value = 0L
-                        _isPassActiveFlow.value = false
-                    }
-                }
-                val effectiveEnabled = isServiceActive && LicenseManager.isServiceActive(context) && autoAcceptEnabled
-                if (_settingsState.value.isAutoAcceptEnabled != effectiveEnabled) {
-                    _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = effectiveEnabled)
                 }
             }
         }
     }
 
     /**
-     * Synchronizes local UI state and cache with a verified FirebaseUser.
-     * Tokens are NEVER stored or persisted.
+     * Attaches a real-time Firestore `addSnapshotListener` on `users/{uid}` via Dispatchers.IO.
+     * Strictly READ-ONLY: client reads rules from Firestore into RAM StateFlows and never writes back.
+     */
+    private fun startUserConfigSnapshotListener(context: Context, uid: String) {
+        if (uid.isBlank()) {
+            stopUserConfigSnapshotListener()
+            resetBusinessStateToRestrictedDefaults(context)
+            return
+        }
+
+        appScope.launch(Dispatchers.IO) {
+            synchronized(listenerLock) {
+                if (activeListeningUid == uid && userConfigListener != null) {
+                    return@launch
+                }
+                userConfigListener?.remove()
+                userConfigListener = null
+                activeListeningUid = uid
+            }
+
+            try {
+                if (FirebaseApp.getApps(context).isEmpty()) {
+                    Log.w(TAG, "FirebaseApp not initialized; retaining restricted RAM defaults.")
+                    return@launch
+                }
+
+                val db = FirebaseFirestore.getInstance()
+                val docRef = db.collection(COLL_USERS).document(uid)
+
+                val registration = docRef.addSnapshotListener(firestoreExecutor) { snapshot, error ->
+                    if (error != null) {
+                        // Network drop / transient failure: retain last known StateFlow values in RAM
+                        Log.w(
+                            TAG,
+                            "Firestore snapshot error on users/$uid: ${error.message}. Retaining last known RAM values."
+                        )
+                        return@addSnapshotListener
+                    }
+
+                    if (snapshot != null && snapshot.exists()) {
+                        applySnapshotDataToRam(context, snapshot)
+                    } else {
+                        Log.i(
+                            TAG,
+                            "Firestore users/$uid document missing; falling back to strict safe defaults in RAM."
+                        )
+                        _isFirestoreSyncedFlow.value = false
+                        resetBusinessStateToRestrictedDefaults(context)
+                    }
+                }
+
+                synchronized(listenerLock) {
+                    // Guard against race where user signed out while listener setup ran
+                    if (activeListeningUid == uid) {
+                        userConfigListener = registration
+                        Log.i(TAG, "Attached read-only Firestore snapshot listener on users/$uid")
+                    } else {
+                        registration.remove()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to attach Firestore snapshot listener on users/$uid: ${e.message}", e)
+            }
+        }
+    }
+
+    /**
+     * Detaches the active Firestore snapshot listener cleanly.
+     */
+    private fun stopUserConfigSnapshotListener() {
+        synchronized(listenerLock) {
+            activeListeningUid = null
+            try {
+                userConfigListener?.remove()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error removing Firestore config listener: ${e.message}")
+            }
+            userConfigListener = null
+        }
+        _isFirestoreSyncedFlow.value = false
+    }
+
+    /**
+     * Parses fields from the `users/{uid}` Firestore document and pushes them into RAM StateFlows.
+     */
+    private fun applySnapshotDataToRam(context: Context, snapshot: DocumentSnapshot) {
+        val data = snapshot.data
+        applyRawMapToRam(context, data, docExists = true)
+    }
+
+    private fun applyRawMapToRam(context: Context?, data: Map<String, Any?>?, docExists: Boolean) {
+        if (!docExists || data == null) {
+            _isFirestoreSyncedFlow.value = false
+            resetBusinessStateToRestrictedDefaults(context)
+            return
+        }
+
+        val serverAutoAccept = (data["autoAcceptEnabled"] as? Boolean)
+            ?: (data["isAutoAcceptEnabled"] as? Boolean)
+            ?: RESTRICTED_AUTO_ACCEPT_ENABLED
+
+        val rawMinFare = (data["minFare"] as? Number)?.toFloat() ?: RESTRICTED_MIN_FARE
+        val minFareVal = if (rawMinFare > 0f) rawMinFare else RESTRICTED_MIN_FARE
+        val isMinFareEnabledVal = (data["isMinFareEnabled"] as? Boolean) ?: (minFareVal > 0f)
+
+        val rawMaxFare = (data["maxFare"] as? Number)?.toFloat() ?: DEFAULT_MAX_FARE
+        val maxFareVal = if (rawMaxFare > 0f) rawMaxFare else DEFAULT_MAX_FARE
+        val isMaxFareEnabledVal = (data["isMaxFareEnabled"] as? Boolean) ?: false
+
+        val rawMaxPickup = (data["maxPickupDistance"] as? Number)?.toFloat() ?: RESTRICTED_MAX_PICKUP_DISTANCE
+        val maxPickupVal = rawMaxPickup.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM)
+        val isMaxPickupEnabledVal = (data["isMaxPickupDistanceEnabled"] as? Boolean) ?: (maxPickupVal > 0f)
+
+        val rawMaxDrop = (data["maxDropDistance"] as? Number)?.toFloat() ?: DEFAULT_MAX_DROP_DISTANCE
+        val maxDropVal = rawMaxDrop.coerceIn(1.0f, 50.0f)
+        val isMaxDropEnabledVal = (data["isMaxDropDistanceEnabled"] as? Boolean) ?: false
+
+        val rawMinRate = (data["minPerKmRate"] as? Number)?.toFloat() ?: DEFAULT_MIN_PER_KM_RATE
+        val minRateVal = rawMinRate.coerceIn(1.0f, 100.0f)
+        val isMinRateEnabledVal = (data["isMinPerKmRateEnabled"] as? Boolean) ?: false
+
+        val clickDelayVal = (data["clickDelayMs"] as? Number)?.toLong()?.coerceAtLeast(100L) ?: DEFAULT_CLICK_DELAY_MS
+
+        val isBlacklistEnabledVal = (data["isDestinationBlacklistEnabled"] as? Boolean) ?: false
+        val blockedListVal = (data["blockedLocations"] as? List<*>)
+            ?.mapNotNull { it as? String }
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.distinct()
+            ?.sorted()
+            ?: emptyList()
+
+        val overlayEnabledVal = (data["isFloatingOverlayEnabled"] as? Boolean)
+            ?: (data["floatingOverlayEnabled"] as? Boolean)
+            ?: DEFAULT_FLOATING_OVERLAY_ENABLED
+
+        val voiceEnabledVal = (data["isVoiceAnnouncerEnabled"] as? Boolean)
+            ?: (data["voiceAnnouncerEnabled"] as? Boolean)
+            ?: DEFAULT_VOICE_ANNOUNCER_ENABLED
+
+        val autoClickEnabledVal = (data["isAutoClickEnabled"] as? Boolean)
+            ?: (data["autoClickEnabled"] as? Boolean)
+            ?: serverAutoAccept
+
+        val passTypeVal = (data["activePassType"] as? String) ?: (data["passType"] as? String)
+        val passExpiryVal = (data["passExpiryTimestamp"] as? Number)?.toLong()
+            ?: (data["passExpiry"] as? Number)?.toLong()
+            ?: 0L
+
+        val rawFeatures = data["unlocked_features"] as? Map<*, *>
+        val unlockedFeaturesVal = rawFeatures?.mapNotNull { (k, v) ->
+            val featureKey = k as? String ?: return@mapNotNull null
+            val exp = (v as? Number)?.toLong() ?: return@mapNotNull null
+            featureKey to exp
+        }?.toMap() ?: emptyMap()
+
+        // Update all RAM properties & StateFlows atomically
+        autoAcceptEnabled = serverAutoAccept
+        minCurrencyThreshold = minFareVal.toDouble()
+        maxCurrencyThreshold = maxFareVal.toDouble()
+
+        _minFareFlow.value = minFareVal
+        _isMinFareEnabledFlow.value = isMinFareEnabledVal
+        _maxFareFlow.value = maxFareVal
+        _isMaxFareEnabledFlow.value = isMaxFareEnabledVal
+        _maxPickupDistanceFlow.value = maxPickupVal
+        _isFloatingOverlayEnabledFlow.value = overlayEnabledVal
+        _isVoiceAnnouncerEnabledFlow.value = voiceEnabledVal
+        _activePassTypeFlow.value = passTypeVal
+        _passExpiryTimestampFlow.value = passExpiryVal
+        _isPassActiveFlow.value = passExpiryVal > LicenseManager.getCurrentServerTimeMs()
+        _unlockedFeaturesFlow.value = unlockedFeaturesVal
+        _isFirestoreSyncedFlow.value = true
+
+        val effectiveAutoAccept = if (context != null) {
+            !LicenseManager.isClockTamperingDetected(context) &&
+                LicenseManager.isServiceActive(context) &&
+                !LicenseManager.isBannedFlow.value &&
+                serverAutoAccept
+        } else {
+            !LicenseManager.isClockTamperingDetected() &&
+                !LicenseManager.isBannedFlow.value &&
+                serverAutoAccept
+        }
+
+        val current = _settingsState.value
+        _settingsState.value = current.copy(
+            isAutoAcceptEnabled = effectiveAutoAccept,
+            isMinFareEnabled = isMinFareEnabledVal,
+            minFare = minFareVal,
+            isMaxFareEnabled = isMaxFareEnabledVal,
+            maxFare = maxFareVal,
+            isMaxPickupDistanceEnabled = isMaxPickupEnabledVal,
+            maxPickupDistance = maxPickupVal,
+            isMaxDropDistanceEnabled = isMaxDropEnabledVal,
+            maxDropDistance = maxDropVal,
+            clickDelayMs = clickDelayVal,
+            isMinPerKmRateEnabled = isMinRateEnabledVal,
+            minPerKmRate = minRateVal,
+            isDestinationBlacklistEnabled = isBlacklistEnabledVal,
+            blockedLocations = blockedListVal,
+            isVoiceAnnouncerEnabled = voiceEnabledVal,
+            isFloatingOverlayEnabled = overlayEnabledVal,
+            isAutoClickEnabled = autoClickEnabledVal,
+            activePassType = passTypeVal,
+            passExpiryTimestamp = passExpiryVal,
+            unlockedFeatures = unlockedFeaturesVal
+        )
+
+        Log.i(
+            TAG,
+            "Firestore RAM sync: autoAccept=$serverAutoAccept (effective=$effectiveAutoAccept), minFare=$minFareVal, maxPickup=$maxPickupVal, overlay=$overlayEnabledVal, voice=$voiceEnabledVal, pass=$passTypeVal"
+        )
+
+        if (context != null) {
+            mainHandler.post {
+                syncOverlayService(context)
+            }
+        }
+    }
+
+    /**
+     * Resets all business rules, limits, and premium feature StateFlows to strict safe restricted
+     * defaults in RAM (e.g. autoAcceptEnabled=false, minFare=0.0f).
+     */
+    private fun resetBusinessStateToRestrictedDefaults(context: Context?) {
+        autoAcceptEnabled = RESTRICTED_AUTO_ACCEPT_ENABLED
+        minCurrencyThreshold = RESTRICTED_MIN_FARE.toDouble()
+        maxCurrencyThreshold = DEFAULT_MAX_FARE.toDouble()
+
+        _minFareFlow.value = RESTRICTED_MIN_FARE
+        _isMinFareEnabledFlow.value = DEFAULT_MIN_FARE_ENABLED
+        _maxFareFlow.value = DEFAULT_MAX_FARE
+        _isMaxFareEnabledFlow.value = DEFAULT_MAX_FARE_ENABLED
+        _maxPickupDistanceFlow.value = RESTRICTED_MAX_PICKUP_DISTANCE
+        _isFloatingOverlayEnabledFlow.value = DEFAULT_FLOATING_OVERLAY_ENABLED
+        _isVoiceAnnouncerEnabledFlow.value = DEFAULT_VOICE_ANNOUNCER_ENABLED
+        _activePassTypeFlow.value = null
+        _passExpiryTimestampFlow.value = 0L
+        _isPassActiveFlow.value = false
+        _unlockedFeaturesFlow.value = emptyMap()
+
+        val current = _settingsState.value
+        _settingsState.value = current.copy(
+            isAutoAcceptEnabled = RESTRICTED_AUTO_ACCEPT_ENABLED,
+            isMinFareEnabled = DEFAULT_MIN_FARE_ENABLED,
+            minFare = RESTRICTED_MIN_FARE,
+            isMaxFareEnabled = DEFAULT_MAX_FARE_ENABLED,
+            maxFare = DEFAULT_MAX_FARE,
+            isMaxPickupDistanceEnabled = DEFAULT_MAX_PICKUP_DIST_ENABLED,
+            maxPickupDistance = RESTRICTED_MAX_PICKUP_DISTANCE,
+            isMaxDropDistanceEnabled = DEFAULT_MAX_DROP_DIST_ENABLED,
+            maxDropDistance = DEFAULT_MAX_DROP_DISTANCE,
+            clickDelayMs = DEFAULT_CLICK_DELAY_MS,
+            isMinPerKmRateEnabled = DEFAULT_MIN_PER_KM_RATE_ENABLED,
+            minPerKmRate = DEFAULT_MIN_PER_KM_RATE,
+            isDestinationBlacklistEnabled = DEFAULT_DESTINATION_BLACKLIST_ENABLED,
+            blockedLocations = emptyList(),
+            isVoiceAnnouncerEnabled = DEFAULT_VOICE_ANNOUNCER_ENABLED,
+            isFloatingOverlayEnabled = DEFAULT_FLOATING_OVERLAY_ENABLED,
+            isAutoClickEnabled = DEFAULT_AUTO_CLICK_ENABLED,
+            activePassType = null,
+            passExpiryTimestamp = 0L,
+            unlockedFeatures = emptyMap()
+        )
+
+        if (context != null) {
+            mainHandler.post {
+                syncOverlayService(context)
+            }
+        }
+    }
+
+    @VisibleForTesting
+    internal fun applyFirestoreSnapshotForTest(context: Context?, data: Map<String, Any?>?) {
+        applyRawMapToRam(context, data, docExists = data != null)
+    }
+
+    @VisibleForTesting
+    internal fun resetBusinessStateForTest(context: Context? = null) {
+        stopUserConfigSnapshotListener()
+        resetBusinessStateToRestrictedDefaults(context)
+    }
+
+    /**
+     * Synchronizes RAM auth state with FirebaseUser and manages the Firestore snapshot listener.
+     * User details and tokens are NEVER stored in SharedPreferences.
      */
     fun updateUserAuthFromFirebase(context: Context, user: FirebaseUser?) {
-        if (user != null) {
-            val email = user.email
-            val name = user.displayName
-            val photo = user.photoUrl?.toString()
-            val uid = user.uid
+        val appCtx = context.applicationContext ?: context
+        appContextRef = appCtx
 
-            persistAsync(context) {
-                putBoolean(KEY_USER_IS_LOGGED_IN, true)
-                putString(KEY_USER_EMAIL, email)
-                putString(KEY_USER_NAME, name)
-                putString(KEY_USER_PHOTO_URL, photo)
-                putString(KEY_USER_UID, uid)
-                remove("key_user_id_token")
-            }
+        if (user != null && user.uid.isNotBlank()) {
             _userAuthState.value = UserAuthState(
                 isLoggedIn = true,
-                userEmail = email,
-                userName = name,
-                photoUrl = photo,
-                uid = uid
+                userEmail = user.email,
+                userName = user.displayName,
+                photoUrl = user.photoUrl?.toString(),
+                uid = user.uid
             )
+            startUserConfigSnapshotListener(appCtx, user.uid)
         } else {
-            persistAsync(context) {
-                putBoolean(KEY_USER_IS_LOGGED_IN, false)
-                putString(KEY_USER_EMAIL, null)
-                putString(KEY_USER_NAME, null)
-                putString(KEY_USER_PHOTO_URL, null)
-                putString(KEY_USER_UID, null)
-                remove("key_user_id_token")
-            }
+            stopUserConfigSnapshotListener()
             _userAuthState.value = UserAuthState(
                 isLoggedIn = false,
                 userEmail = null,
@@ -503,6 +867,7 @@ object AppSettings {
                 photoUrl = null,
                 uid = null
             )
+            resetBusinessStateToRestrictedDefaults(appCtx)
         }
     }
 
@@ -517,7 +882,11 @@ object AppSettings {
         photoUrl: String?,
         uid: String? = null
     ) {
-        val currentFirebaseUser = try { FirebaseAuth.getInstance().currentUser } catch (_: Exception) { null }
+        val currentFirebaseUser = try {
+            FirebaseAuth.getInstance().currentUser
+        } catch (_: Exception) {
+            null
+        }
         if (!isLoggedIn || currentFirebaseUser == null) {
             updateUserAuthFromFirebase(context, null)
         } else {
@@ -526,92 +895,27 @@ object AppSettings {
     }
 
     fun signOut(context: Context) {
+        stopUserConfigSnapshotListener()
         try {
-            FirebaseAuth.getInstance().signOut()
+            if (FirebaseApp.getApps(context).isNotEmpty()) {
+                FirebaseAuth.getInstance().signOut()
+            }
         } catch (e: Exception) {
-            Log.w("AppSettings", "Firebase sign out error: ${e.message}")
+            Log.w(TAG, "Firebase sign out error: ${e.message}")
         }
         updateUserAuthFromFirebase(context, null)
     }
 
+    // --- Purely Local UI Preferences (Kept in SharedPreferences) ---
+
     fun setLoginDismissed(context: Context, dismissed: Boolean) {
-        persistAsync(context) {
+        persistLocalUiPref(context, KEY_LOGIN_DISMISSED) {
             putBoolean(KEY_LOGIN_DISMISSED, dismissed)
         }
     }
 
     fun isLoginDismissed(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_LOGIN_DISMISSED, false)
-    }
-
-    // --- Subscription & Pass Expiry Management (100% Server Driven - Zero Local Storage) ---
-
-    fun getPassExpiryTimestamp(context: Context? = null): Long {
-        return PassManager.getPassExpiryTimestamp(context)
-    }
-
-    fun setPassExpiryTimestamp(context: Context? = null, expiryTimestamp: Long, tierId: String? = null) {
-        _passExpiryTimestampFlow.value = expiryTimestamp
-        _isPassActiveFlow.value = expiryTimestamp > System.currentTimeMillis()
-        // Zero local storage: strictly updates in-memory flows
-    }
-
-    fun isPassActive(context: Context? = null): Boolean {
-        return PassManager.isPassActive(context)
-    }
-
-    fun extendPass(context: Context? = null, durationMs: Long, tierId: String? = null): Long {
-        val now = System.currentTimeMillis()
-        val currentExpiry = getPassExpiryTimestamp(context)
-        val baseTime = if (currentExpiry > now) currentExpiry else now
-        val newExpiry = baseTime + durationMs
-        setPassExpiryTimestamp(context, newExpiry, tierId)
-        return newExpiry
-    }
-
-    fun getActivePassTierId(context: Context? = null): String? {
-        return LicenseManager.activePassInfo.value?.passTier?.id
-    }
-
-    fun clearPass(context: Context? = null) {
-        setPassExpiryTimestamp(context, 0L, null)
-    }
-
-    private fun persistAsync(context: Context, action: SharedPreferences.Editor.() -> Unit) {
-        val editor = getPrefs(context).edit()
-        action(editor)
-        editor.apply()
-    }
-
-    fun isAutoAcceptEnabled(context: Context): Boolean {
-        // Zero-Trust & Anti-Hack Shield:
-        // 1. Mathematically check clock tampering / elapsedRealtime hooking
-        if (LicenseManager.isClockTamperingDetected(context)) {
-            Log.w(TAG, "isAutoAcceptEnabled: Clock tampering detected! Auto-accept disabled.")
-            return false
-        }
-        // 2. Validate decoded XOR token & LicenseManager active status
-        return LicenseManager.isServiceActive(context) && !LicenseManager.isBannedFlow.value && autoAcceptEnabled
-    }
-
-    fun setAutoAcceptEnabled(context: Context, enabled: Boolean) {
-        autoAcceptEnabled = enabled
-        val effectiveEnabled = LicenseManager.isServiceActive(context) && !LicenseManager.isBannedFlow.value && enabled
-        _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = effectiveEnabled)
-        // Strictly DO NOT persist master enablement toggles to SharedPreferences.
-        syncOverlayService(context)
-    }
-
-    fun isVoiceAnnouncerEnabled(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_VOICE_ANNOUNCER_ENABLED, DEFAULT_VOICE_ANNOUNCER_ENABLED)
-    }
-
-    fun setVoiceAnnouncerEnabled(context: Context, enabled: Boolean) {
-        _settingsState.value = _settingsState.value.copy(isVoiceAnnouncerEnabled = enabled)
-        persistAsync(context) {
-            putBoolean(KEY_VOICE_ANNOUNCER_ENABLED, enabled)
-        }
     }
 
     fun isLanguageSelected(context: Context): Boolean {
@@ -621,7 +925,8 @@ object AppSettings {
 
     fun getAppLanguage(context: Context): String {
         val prefs = getPrefs(context)
-        return prefs.getString(KEY_APP_LANGUAGE, prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE)) ?: DEFAULT_VOICE_LANGUAGE
+        return prefs.getString(KEY_APP_LANGUAGE, prefs.getString(KEY_VOICE_LANGUAGE, DEFAULT_VOICE_LANGUAGE))
+            ?: DEFAULT_VOICE_LANGUAGE
     }
 
     fun setAppLanguage(context: Context, languageCode: String) {
@@ -629,7 +934,7 @@ object AppSettings {
         _isLanguageSelectedFlow.value = true
         _appLanguageFlow.value = cleanCode
         _settingsState.value = _settingsState.value.copy(voiceLanguage = cleanCode)
-        persistAsync(context) {
+        persistLocalUiPref(context, KEY_APP_LANGUAGE) {
             putBoolean(KEY_LANGUAGE_SELECTED, true)
             putString(KEY_APP_LANGUAGE, cleanCode)
             putString(KEY_VOICE_LANGUAGE, cleanCode)
@@ -639,7 +944,7 @@ object AppSettings {
             TTSManager.applySettings(context)
             TTSManager.speakGreeting(context, cleanCode)
         } catch (e: Exception) {
-            Log.w("AppSettings", "Failed to update TTS settings on language change: ${e.message}")
+            Log.w(TAG, "Failed to update TTS settings on language change: ${e.message}")
         }
     }
 
@@ -652,194 +957,208 @@ object AppSettings {
     }
 
     fun isOnboardingCompleted(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_ONBOARDING_COMPLETED, false)
+        return getPrefs(context).getBoolean(KEY_ONBOARDING_COMPLETED, false)
     }
 
     fun setOnboardingCompleted(context: Context, completed: Boolean) {
         _isOnboardingCompletedFlow.value = completed
-        persistAsync(context) {
+        persistLocalUiPref(context, KEY_ONBOARDING_COMPLETED) {
             putBoolean(KEY_ONBOARDING_COMPLETED, completed)
         }
     }
 
     fun isHomeTutorialCompleted(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_HOME_TUTORIAL_COMPLETED, false)
+        return getPrefs(context).getBoolean(KEY_HOME_TUTORIAL_COMPLETED, false)
     }
 
     fun setHomeTutorialCompleted(context: Context, completed: Boolean) {
         _isHomeTutorialCompletedFlow.value = completed
-        persistAsync(context) {
+        persistLocalUiPref(context, KEY_HOME_TUTORIAL_COMPLETED) {
             putBoolean(KEY_HOME_TUTORIAL_COMPLETED, completed)
         }
     }
 
-    fun isMinFareEnabled(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_MIN_FARE_ENABLED, DEFAULT_MIN_FARE_ENABLED)
+    fun getSpeechRate(context: Context): Float {
+        return getPrefs(context).getFloat(KEY_SPEECH_RATE, DEFAULT_SPEECH_RATE)
     }
+
+    fun setSpeechRate(context: Context, rate: Float) {
+        _settingsState.value = _settingsState.value.copy(speechRate = rate)
+        persistLocalUiPref(context, KEY_SPEECH_RATE) {
+            putFloat(KEY_SPEECH_RATE, rate)
+        }
+    }
+
+    fun getSpeechPitch(context: Context): Float {
+        return getPrefs(context).getFloat(KEY_SPEECH_PITCH, DEFAULT_SPEECH_PITCH)
+    }
+
+    fun setSpeechPitch(context: Context, pitch: Float) {
+        _settingsState.value = _settingsState.value.copy(speechPitch = pitch)
+        persistLocalUiPref(context, KEY_SPEECH_PITCH) {
+            putFloat(KEY_SPEECH_PITCH, pitch)
+        }
+    }
+
+    // --- Subscription & Pass Expiry Management (100% RAM-Only, Server-Driven, Read-Only) ---
+
+    private fun showAdminManagedToast(context: Context?) {
+        val ctx = context ?: return
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Toast.makeText(ctx, "Settings are managed by Admin app", Toast.LENGTH_SHORT).show()
+        } else {
+            mainHandler.post {
+                Toast.makeText(ctx, "Settings are managed by Admin app", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun getPassExpiryTimestamp(context: Context? = null): Long {
+        val ramExpiry = _passExpiryTimestampFlow.value
+        return if (ramExpiry > 0L) ramExpiry else PassManager.getPassExpiryTimestamp(context)
+    }
+
+    fun setPassExpiryTimestamp(context: Context? = null, expiryTimestamp: Long, tierId: String? = null) {
+        Log.w(TAG, "setPassExpiryTimestamp blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
+    }
+
+    fun isPassActive(context: Context? = null): Boolean {
+        return _isPassActiveFlow.value || PassManager.isPassActive(context)
+    }
+
+    fun extendPass(context: Context? = null, durationMs: Long, tierId: String? = null): Long {
+        Log.w(TAG, "extendPass blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
+        return getPassExpiryTimestamp(context)
+    }
+
+    fun getActivePassTierId(context: Context? = null): String? {
+        return _activePassTypeFlow.value ?: LicenseManager.activePassInfo.value?.passTier?.id
+    }
+
+    fun clearPass(context: Context? = null) {
+        Log.w(TAG, "clearPass blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
+    }
+
+    // --- Synchronous In-Memory Business Rules Getters (<1ms RAM Lookup, ZERO Network/Disk) ---
+
+    fun isAutoAcceptEnabled(context: Context): Boolean {
+        if (DeviceUtils.isRuntimeHookOrDebuggerDetected(context)) {
+            Log.w(TAG, "isAutoAcceptEnabled: Runtime hooking/debugger detected! Auto-accept disabled.")
+            return false
+        }
+        if (LicenseManager.isClockTamperingDetected(context)) {
+            Log.w(TAG, "isAutoAcceptEnabled: Clock tampering detected! Auto-accept disabled.")
+            return false
+        }
+        return LicenseManager.isServiceActive(context) && !LicenseManager.isBannedFlow.value && autoAcceptEnabled
+    }
+
+    fun setAutoAcceptEnabled(context: Context, enabled: Boolean) {
+        Log.w(TAG, "setAutoAcceptEnabled blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
+    }
+
+    fun isVoiceAnnouncerEnabled(context: Context): Boolean = _settingsState.value.isVoiceAnnouncerEnabled
+
+    fun setVoiceAnnouncerEnabled(context: Context, enabled: Boolean) {
+        Log.w(TAG, "setVoiceAnnouncerEnabled blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
+    }
+
+    fun isMinFareEnabled(context: Context): Boolean = _isMinFareEnabledFlow.value
 
     fun setMinFareEnabled(context: Context, enabled: Boolean) {
-        _isMinFareEnabledFlow.value = enabled
-        _settingsState.value = _settingsState.value.copy(isMinFareEnabled = enabled)
-        persistAsync(context) {
-            putBoolean(KEY_MIN_FARE_ENABLED, enabled)
-        }
+        Log.w(TAG, "setMinFareEnabled blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    fun isMaxFareEnabled(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_MAX_FARE_ENABLED, DEFAULT_MAX_FARE_ENABLED)
-    }
+    fun isMaxFareEnabled(context: Context): Boolean = _isMaxFareEnabledFlow.value
 
     fun setMaxFareEnabled(context: Context, enabled: Boolean) {
-        _isMaxFareEnabledFlow.value = enabled
-        _settingsState.value = _settingsState.value.copy(isMaxFareEnabled = enabled)
-        persistAsync(context) {
-            putBoolean(KEY_MAX_FARE_ENABLED, enabled)
-        }
+        Log.w(TAG, "setMaxFareEnabled blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    fun isMaxPickupDistanceEnabled(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_MAX_PICKUP_DIST_ENABLED, DEFAULT_MAX_PICKUP_DIST_ENABLED)
-    }
+    fun isMaxPickupDistanceEnabled(context: Context): Boolean = _settingsState.value.isMaxPickupDistanceEnabled
 
     fun setMaxPickupDistanceEnabled(context: Context, enabled: Boolean) {
-        _settingsState.value = _settingsState.value.copy(isMaxPickupDistanceEnabled = enabled)
-        persistAsync(context) {
-            putBoolean(KEY_MAX_PICKUP_DIST_ENABLED, enabled)
-        }
+        Log.w(TAG, "setMaxPickupDistanceEnabled blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    fun isMaxDropDistanceEnabled(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_MAX_DROP_DIST_ENABLED, DEFAULT_MAX_DROP_DIST_ENABLED)
-    }
+    fun isMaxDropDistanceEnabled(context: Context): Boolean = _settingsState.value.isMaxDropDistanceEnabled
 
     fun setMaxDropDistanceEnabled(context: Context, enabled: Boolean) {
-        _settingsState.value = _settingsState.value.copy(isMaxDropDistanceEnabled = enabled)
-        persistAsync(context) {
-            putBoolean(KEY_MAX_DROP_DIST_ENABLED, enabled)
-        }
+        Log.w(TAG, "setMaxDropDistanceEnabled blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    fun getMaxDropDistance(context: Context): Float {
-        val prefs = getPrefs(context)
-        return prefs.getFloat(KEY_MAX_DROP_DISTANCE, DEFAULT_MAX_DROP_DISTANCE)
-    }
+    fun getMaxDropDistance(context: Context): Float = _settingsState.value.maxDropDistance
 
     fun setMaxDropDistance(context: Context, value: Float) {
-        val clamped = value.coerceIn(1.0f, 50.0f)
-        _settingsState.value = _settingsState.value.copy(maxDropDistance = clamped)
-        persistAsync(context) {
-            putFloat(KEY_MAX_DROP_DISTANCE, clamped)
-        }
+        Log.w(TAG, "setMaxDropDistance blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    // --- Minimum Per-Km Rate Filter Controls ---
-    fun isMinPerKmRateEnabled(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_MIN_PER_KM_RATE_ENABLED, DEFAULT_MIN_PER_KM_RATE_ENABLED)
-    }
+    fun isMinPerKmRateEnabled(context: Context): Boolean = _settingsState.value.isMinPerKmRateEnabled
 
     fun setMinPerKmRateEnabled(context: Context, enabled: Boolean) {
-        _settingsState.value = _settingsState.value.copy(isMinPerKmRateEnabled = enabled)
-        persistAsync(context) {
-            putBoolean(KEY_MIN_PER_KM_RATE_ENABLED, enabled)
-        }
+        Log.w(TAG, "setMinPerKmRateEnabled blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    fun getMinPerKmRate(context: Context): Float {
-        val prefs = getPrefs(context)
-        return prefs.getFloat(KEY_MIN_PER_KM_RATE, DEFAULT_MIN_PER_KM_RATE)
-    }
+    fun getMinPerKmRate(context: Context): Float = _settingsState.value.minPerKmRate
 
     fun setMinPerKmRate(context: Context, rate: Float) {
-        val clamped = rate.coerceIn(1.0f, 100.0f)
-        _settingsState.value = _settingsState.value.copy(minPerKmRate = clamped)
-        persistAsync(context) {
-            putFloat(KEY_MIN_PER_KM_RATE, clamped)
-        }
+        Log.w(TAG, "setMinPerKmRate blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    // --- Destination Blacklist Filter Controls ---
-    fun isDestinationBlacklistEnabled(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_DESTINATION_BLACKLIST_ENABLED, DEFAULT_DESTINATION_BLACKLIST_ENABLED)
-    }
+    fun isDestinationBlacklistEnabled(context: Context): Boolean = _settingsState.value.isDestinationBlacklistEnabled
 
     fun setDestinationBlacklistEnabled(context: Context, enabled: Boolean) {
-        _settingsState.value = _settingsState.value.copy(isDestinationBlacklistEnabled = enabled)
-        persistAsync(context) {
-            putBoolean(KEY_DESTINATION_BLACKLIST_ENABLED, enabled)
-        }
+        Log.w(TAG, "setDestinationBlacklistEnabled blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    fun getBlockedLocations(context: Context): List<String> {
-        val prefs = getPrefs(context)
-        val set = prefs.getStringSet(KEY_BLOCKED_LOCATIONS, emptySet()) ?: emptySet()
-        return set.toList().sorted()
-    }
+    fun getBlockedLocations(context: Context): List<String> = _settingsState.value.blockedLocations
 
     fun setBlockedLocations(context: Context, locations: List<String>) {
-        val cleanList = locations.map { it.trim() }.filter { it.isNotEmpty() }.distinct().sorted()
-        _settingsState.value = _settingsState.value.copy(blockedLocations = cleanList)
-        persistAsync(context) {
-            putStringSet(KEY_BLOCKED_LOCATIONS, cleanList.toSet())
-        }
+        Log.w(TAG, "setBlockedLocations blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
     fun addBlockedLocation(context: Context, location: String) {
-        val trimmed = location.trim()
-        if (trimmed.isEmpty()) return
-        val current = _settingsState.value.blockedLocations.toMutableList()
-        if (!current.contains(trimmed)) {
-            current.add(trimmed)
-            setBlockedLocations(context, current)
-        }
+        Log.w(TAG, "addBlockedLocation blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
     fun removeBlockedLocation(context: Context, location: String) {
-        val current = _settingsState.value.blockedLocations.toMutableList()
-        if (current.remove(location.trim())) {
-            setBlockedLocations(context, current)
-        }
+        Log.w(TAG, "removeBlockedLocation blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    // --- Floating Overlay Button Controls ---
-    fun isFloatingOverlayEnabled(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_FLOATING_OVERLAY_ENABLED, DEFAULT_FLOATING_OVERLAY_ENABLED)
-    }
+    fun isFloatingOverlayEnabled(context: Context): Boolean = _settingsState.value.isFloatingOverlayEnabled
 
     fun setFloatingOverlayEnabled(context: Context, enabled: Boolean) {
-        _settingsState.value = _settingsState.value.copy(isFloatingOverlayEnabled = enabled)
-        persistAsync(context) {
-            putBoolean(KEY_FLOATING_OVERLAY_ENABLED, enabled)
-        }
-        syncOverlayService(context)
+        Log.w(TAG, "setFloatingOverlayEnabled blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    // --- Auto Click Controls (Full Automation vs Voice-Only) ---
-    fun isAutoClickEnabled(context: Context): Boolean {
-        val prefs = getPrefs(context)
-        return prefs.getBoolean(KEY_AUTO_CLICK_ENABLED, DEFAULT_AUTO_CLICK_ENABLED)
-    }
+    fun isAutoClickEnabled(context: Context): Boolean = _settingsState.value.isAutoClickEnabled
 
     fun setAutoClickEnabled(context: Context, enabled: Boolean) {
-        _settingsState.value = _settingsState.value.copy(isAutoClickEnabled = enabled)
-        persistAsync(context) {
-            putBoolean(KEY_AUTO_CLICK_ENABLED, enabled)
-        }
+        Log.w(TAG, "setAutoClickEnabled blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
     fun toggleAutoClick(context: Context): Boolean {
-        val current = isAutoClickEnabled(context)
-        val next = !current
-        setAutoClickEnabled(context, next)
-        return next
+        Log.w(TAG, "toggleAutoClick blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
+        return isAutoClickEnabled(context)
     }
 
     // --- Last Accepted Fare Communication ---
@@ -857,11 +1176,7 @@ object AppSettings {
     }
 
     /**
-     * Synchronizes FloatingOverlayService lifecycle with user settings & overlay permission.
-     * Starts the overlay if and only if:
-     * 1. Master Automation Toggle is ON
-     * 2. Floating Toggle is enabled
-     * 3. System Overlay Permission is granted
+     * Synchronizes FloatingOverlayService lifecycle with RAM settings & overlay permission.
      */
     fun syncOverlayService(context: Context) {
         val masterOn = isAutoAcceptEnabled(context)
@@ -876,75 +1191,22 @@ object AppSettings {
     }
 
     fun applyPreset(context: Context, presetName: String) {
-        when (presetName.lowercase(Locale.ROOT)) {
-            "peak", "peak hours" -> {
-                setMinFareEnabled(context, true)
-                setMinFare(context, 80.0f)
-                setMaxFareEnabled(context, true)
-                setMaxFare(context, 5000.0f)
-                setMaxPickupDistanceEnabled(context, true)
-                setMaxPickupDistance(context, 2.0f)
-                setMaxDropDistanceEnabled(context, false)
-                setMinPerKmRate(context, 14.0f)
-            }
-            "short", "short trips" -> {
-                setMinFareEnabled(context, true)
-                setMinFare(context, 40.0f)
-                setMaxFareEnabled(context, true)
-                setMaxFare(context, 150.0f)
-                setMaxPickupDistanceEnabled(context, true)
-                setMaxPickupDistance(context, 1.5f)
-                setMaxDropDistanceEnabled(context, true)
-                setMaxDropDistance(context, 5.0f)
-                setMinPerKmRate(context, 12.0f)
-            }
-            "high", "high value" -> {
-                setMinFareEnabled(context, true)
-                setMinFare(context, 150.0f)
-                setMaxFareEnabled(context, true)
-                setMaxFare(context, 10000.0f)
-                setMaxPickupDistanceEnabled(context, true)
-                setMaxPickupDistance(context, 3.0f)
-                setMaxDropDistanceEnabled(context, false)
-                setMinPerKmRate(context, 15.0f)
-            }
-            else -> {
-                // Default / Reset
-                setMinFareEnabled(context, true)
-                setMinFare(context, DEFAULT_MIN_FARE)
-                setMaxFareEnabled(context, true)
-                setMaxFare(context, DEFAULT_MAX_FARE)
-                setMaxPickupDistanceEnabled(context, true)
-                setMaxPickupDistance(context, DEFAULT_MAX_PICKUP_DISTANCE)
-                setMaxDropDistanceEnabled(context, false)
-                setMaxDropDistance(context, DEFAULT_MAX_DROP_DISTANCE)
-                setMinPerKmRate(context, DEFAULT_MIN_PER_KM_RATE)
-            }
-        }
+        Log.w(TAG, "applyPreset blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
     // --- Fare Range Validation Functions ---
 
-    /**
-     * Checks if a min fare value is valid (within baseline range and <= max fare if max fare is enabled).
-     */
     fun isValidMinFare(candidateMin: Float, currentMax: Float = _maxFareFlow.value): Boolean {
         return candidateMin in MIN_FARE_RANGE_START..MIN_FARE_RANGE_END &&
-                (!_isMaxFareEnabledFlow.value || candidateMin <= currentMax)
+            (!_isMaxFareEnabledFlow.value || candidateMin <= currentMax)
     }
 
-    /**
-     * Checks if a max fare value is valid (within baseline range and >= min fare if min fare is enabled).
-     */
     fun isValidMaxFare(candidateMax: Float, currentMin: Float = _minFareFlow.value): Boolean {
         return candidateMax in MAX_FARE_RANGE_START..MAX_FARE_RANGE_END &&
-                (!_isMinFareEnabledFlow.value || candidateMax >= currentMin)
+            (!_isMinFareEnabledFlow.value || candidateMax >= currentMin)
     }
 
-    /**
-     * Clamps and validates minFare so it stays within [MIN_FARE_RANGE_START, MIN_FARE_RANGE_END]
-     * and does not exceed maxFare if maxFare is enabled.
-     */
     fun validateMinFare(value: Float, currentMax: Float = _maxFareFlow.value): Float {
         val clamped = value.coerceIn(MIN_FARE_RANGE_START, MIN_FARE_RANGE_END)
         return if (_isMaxFareEnabledFlow.value && clamped > currentMax) {
@@ -954,10 +1216,6 @@ object AppSettings {
         }
     }
 
-    /**
-     * Clamps and validates maxFare so it stays within [MAX_FARE_RANGE_START, MAX_FARE_RANGE_END]
-     * and is not lower than minFare if minFare is enabled.
-     */
     fun validateMaxFare(value: Float, currentMin: Float = _minFareFlow.value): Float {
         val clamped = value.coerceIn(MAX_FARE_RANGE_START, MAX_FARE_RANGE_END)
         return if (_isMinFareEnabledFlow.value && clamped < currentMin) {
@@ -967,102 +1225,65 @@ object AppSettings {
         }
     }
 
-    fun getMinFare(context: Context): Float {
-        val prefs = getPrefs(context)
-        return prefs.getFloat(KEY_MIN_FARE, prefs.getFloat(KEY_MIN_VALUE, DEFAULT_MIN_FARE))
-    }
+    fun getMinFare(context: Context): Float = _minFareFlow.value
 
     fun setMinFare(context: Context, value: Float) {
-        val validated = validateMinFare(value)
-        minCurrencyThreshold = validated.toDouble()
-        _minFareFlow.value = validated
-        _settingsState.value = _settingsState.value.copy(minFare = validated)
-        persistAsync(context) {
-            putFloat(KEY_MIN_FARE, validated)
-            putFloat(KEY_MIN_VALUE, validated)
-        }
+        Log.w(TAG, "setMinFare blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    fun getMaxFare(context: Context): Float {
-        val prefs = getPrefs(context)
-        return prefs.getFloat(KEY_MAX_FARE, prefs.getFloat(KEY_MAX_VALUE, DEFAULT_MAX_FARE))
-    }
+    fun getMaxFare(context: Context): Float = _maxFareFlow.value
 
     fun setMaxFare(context: Context, value: Float) {
-        val validated = validateMaxFare(value)
-        maxCurrencyThreshold = validated.toDouble()
-        _maxFareFlow.value = validated
-        _settingsState.value = _settingsState.value.copy(maxFare = validated)
-        persistAsync(context) {
-            putFloat(KEY_MAX_FARE, validated)
-            putFloat(KEY_MAX_VALUE, validated)
-        }
+        Log.w(TAG, "setMaxFare blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    fun getMaxPickupDistance(context: Context): Float {
-        val prefs = getPrefs(context)
-        val raw = prefs.getFloat(KEY_MAX_PICKUP_DISTANCE, prefs.getFloat(KEY_MAX_DISTANCE, DEFAULT_MAX_PICKUP_DISTANCE))
-        return raw.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM)
-    }
+    fun getMaxPickupDistance(context: Context): Float = _settingsState.value.maxPickupDistance
 
     fun setMaxPickupDistance(context: Context, value: Float) {
-        val clampedValue = value.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM)
-        _settingsState.value = _settingsState.value.copy(maxPickupDistance = clampedValue)
-        persistAsync(context) {
-            putFloat(KEY_MAX_PICKUP_DISTANCE, clampedValue)
-            putFloat(KEY_MAX_DISTANCE, clampedValue)
-        }
+        Log.w(TAG, "setMaxPickupDistance blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    fun getClickDelayMs(context: Context): Long {
-        return getPrefs(context).getLong(KEY_CLICK_DELAY_MS, DEFAULT_CLICK_DELAY_MS)
-    }
+    fun getClickDelayMs(context: Context): Long = _settingsState.value.clickDelayMs
 
     fun setClickDelayMs(context: Context, delay: Long) {
-        _settingsState.value = _settingsState.value.copy(clickDelayMs = delay)
-        persistAsync(context) {
-            putLong(KEY_CLICK_DELAY_MS, delay)
-        }
+        Log.w(TAG, "setClickDelayMs blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
     }
 
-    fun getSpeechRate(context: Context): Float {
-        return getPrefs(context).getFloat(KEY_SPEECH_RATE, DEFAULT_SPEECH_RATE)
-    }
-
-    fun setSpeechRate(context: Context, rate: Float) {
-        _settingsState.value = _settingsState.value.copy(speechRate = rate)
-        persistAsync(context) {
-            putFloat(KEY_SPEECH_RATE, rate)
-        }
-    }
-
-    fun getSpeechPitch(context: Context): Float {
-        return getPrefs(context).getFloat(KEY_SPEECH_PITCH, DEFAULT_SPEECH_PITCH)
-    }
-
-    fun setSpeechPitch(context: Context, pitch: Float) {
-        _settingsState.value = _settingsState.value.copy(speechPitch = pitch)
-        persistAsync(context) {
-            putFloat(KEY_SPEECH_PITCH, pitch)
-        }
-    }
-
-    // Legacy method aliases
+    // Legacy method aliases (Strictly Read-Only)
     fun isServiceEnabled(context: Context): Boolean = isAutoAcceptEnabled(context)
-    fun setServiceEnabled(context: Context, enabled: Boolean) = setAutoAcceptEnabled(context, enabled)
+    fun setServiceEnabled(context: Context, enabled: Boolean) {
+        Log.w(TAG, "setServiceEnabled blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
+    }
     fun getMinValue(context: Context): Float = getMinFare(context)
-    fun setMinValue(context: Context, value: Float) = setMinFare(context, value)
+    fun setMinValue(context: Context, value: Float) {
+        Log.w(TAG, "setMinValue blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
+    }
     fun getMaxDistance(context: Context): Float = getMaxPickupDistance(context)
-    fun setMaxDistance(context: Context, value: Float) = setMaxPickupDistance(context, value)
+    fun setMaxDistance(context: Context, value: Float) {
+        Log.w(TAG, "setMaxDistance blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
+    }
     fun getMinPrice(context: Context): Float = getMinFare(context)
-    fun setMinPrice(context: Context, value: Float) = setMinFare(context, value)
+    fun setMinPrice(context: Context, value: Float) {
+        Log.w(TAG, "setMinPrice blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
+    }
     fun getMaxPrice(context: Context): Float = getMaxFare(context)
-    fun setMaxPrice(context: Context, value: Float) = setMaxFare(context, value)
+    fun setMaxPrice(context: Context, value: Float) {
+        Log.w(TAG, "setMaxPrice blocked: Settings are managed by Admin app.")
+        showAdminManagedToast(context)
+    }
     fun getSelectedLanguage(context: Context): String = getVoiceLanguage(context)
     fun setSelectedLanguage(context: Context, lang: String) = setVoiceLanguage(context, lang)
 
     /**
-     * Appends an activity log entry to the reactive live feed.
+     * Appends an activity log entry to the reactive live feed (purely volatile in-memory).
      */
     fun addLog(
         title: String,
@@ -1078,7 +1299,7 @@ object AppSettings {
             evaluation = evaluation
         )
         val current = _logsFlow.value.toMutableList()
-        current.add(0, entry) // prepend newest
+        current.add(0, entry)
         if (current.size > 100) {
             current.removeAt(current.lastIndex)
         }
@@ -1090,10 +1311,8 @@ object AppSettings {
     }
 
     /**
-     * Records an evaluated order into volatile in-memory session data.
-     * Enforces the Zero-Trust, 100% Zero Local Storage architecture:
-     * Completely eliminates local Room SQLite disk storage for ride logs;
-     * evaluations are maintained strictly as volatile in-memory session data during the shift.
+     * Records an evaluated order into volatile in-memory session data and persists
+     * structured order history entries for the Order History screen.
      */
     fun recordEvaluation(context: Context, evaluation: RideEvaluation) {
         appScope.launch {
@@ -1105,7 +1324,6 @@ object AppSettings {
                 }
                 _recentEvaluationsFlow.value = current
 
-                // Persist full order details to local Room OrderRepository for Order History screen
                 try {
                     val offer = evaluation.offer
                     val target = offer.targetOffer
@@ -1141,7 +1359,6 @@ object AppSettings {
      * Inspects system settings to check if our Accessibility Service is currently active.
      */
     fun isAccessibilityServiceEnabled(context: Context): Boolean {
-        // Fast-path: Check live in-memory service instance
         if (MyAccessibilityService.isServiceRunning) {
             return true
         }

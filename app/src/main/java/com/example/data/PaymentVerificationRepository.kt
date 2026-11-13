@@ -15,7 +15,6 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
-import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -159,34 +158,29 @@ class PaymentVerificationRepository(
             }
             val doc = firestore.collection(COLL_USERS).document(userId).get().await()
             if (doc.exists()) {
-                val isVerified = doc.getBoolean("isPaymentVerified") ?: false
                 val paymentStatus = doc.getString("payment_status")
                     ?: doc.getString("paymentStatus")
-                    ?: if (isVerified) "SUCCESS" else "FAILED"
+                    ?: if (doc.getBoolean("isPaymentVerified") == true || !doc.getString("activePassType").isNullOrBlank()) "SUCCESS" else "FAILED"
 
-                val passExpiryDate = doc.getLong("pass_expiry_date")
+                val passExpiryDate = doc.getLong("passExpiryTimestamp")
+                    ?: doc.getLong("pass_expiry_date")
                     ?: doc.getLong("passExpiryDate")
+                    ?: doc.getLong("passExpiry")
                     ?: doc.getLong("subscriptionExpiryTimestamp")
                     ?: doc.getDate("subscriptionExpiry")?.time
                     ?: 0L
 
-                val currentTime = System.currentTimeMillis()
-                val isPaymentSuccessful = paymentStatus.equals("SUCCESS", ignoreCase = true) || isVerified
-                val isActive = isPaymentSuccessful && (passExpiryDate == 0L || currentTime < passExpiryDate)
+                val currentTime = LicenseManager.getCurrentServerTimeMs()
+                val isPaymentSuccessful = paymentStatus.equals("SUCCESS", ignoreCase = true) ||
+                    paymentStatus.equals("VERIFIED", ignoreCase = true)
+                val isActive = isPaymentSuccessful && passExpiryDate > currentTime
 
                 PassManager.setPassStatus(context, isActive)
-                if (isActive && passExpiryDate > 0L) {
-                    AppSettings.setPassExpiryTimestamp(context, passExpiryDate)
-                } else if (!isActive) {
-                    AppSettings.setPassExpiryTimestamp(context, 0L)
-                }
-
                 Log.d(TAG, "checkIsPaymentVerified for user $userId: isActive=$isActive (status=$paymentStatus, expiry=$passExpiryDate)")
                 isActive
             } else {
                 Log.d(TAG, "checkIsPaymentVerified for user $userId: user doc does not exist")
                 PassManager.setPassStatus(context, false)
-                AppSettings.setPassExpiryTimestamp(context, 0L)
                 false
             }
         } catch (e: FirebaseFirestoreException) {
@@ -244,8 +238,13 @@ class PaymentVerificationRepository(
         // Cancel any previous real-time listener
         cancelPendingListener()
 
+        val currentUid = try {
+            FirebaseAuth.getInstance().currentUser?.uid
+        } catch (_: Exception) {
+            null
+        }
         val userId = resolveUserId(context)
-        if (userId.isBlank()) {
+        if (currentUid.isNullOrBlank() || userId.isBlank()) {
             _verificationState.value = PaymentVerificationState.Error(
                 message = "Please sign in with Google first before verifying payment.",
                 canRetry = false,
@@ -258,16 +257,30 @@ class PaymentVerificationRepository(
         repoScope.launch {
             try {
                 val paymentDocRef = firestore.collection(COLL_RECEIVED_PAYMENTS).document(utr)
-                val snapshot = paymentDocRef.get().await()
+                val pendingDocRef = firestore.collection(COLL_PENDING_VERIFICATIONS).document(utr)
 
-                if (snapshot.exists()) {
-                    // =========================================================
-                    // SCENARIO A: Server already recorded the payment!
-                    // =========================================================
-                    Log.i(TAG, "Scenario A: Document exists in $COLL_RECEIVED_PAYMENTS for UTR: $utr")
-                    val isUsed = snapshot.getBoolean("isUsed") ?: false
-                    val status = snapshot.getString("status") ?: ""
-                    val amount = snapshot.getLong("amount") ?: (selectedTier?.priceInInr?.toLong() ?: 9L)
+                val snapshot = try {
+                    paymentDocRef.get().await()
+                } catch (e: Exception) {
+                    Log.d(TAG, "Direct get on received_payments suppressed under Zero-Trust rules: ${e.message}")
+                    null
+                }
+                val pendingSnapshot = try {
+                    pendingDocRef.get().await()
+                } catch (_: Exception) {
+                    null
+                }
+
+                val existingSnap = when {
+                    snapshot != null && snapshot.exists() -> snapshot
+                    pendingSnapshot != null && pendingSnapshot.exists() -> pendingSnapshot
+                    else -> null
+                }
+
+                if (existingSnap != null) {
+                    val isUsed = existingSnap.getBoolean("isUsed") ?: (existingSnap.getBoolean("claimed") ?: false)
+                    val status = existingSnap.getString("status") ?: ""
+                    val amount = existingSnap.getLong("amount") ?: (selectedTier?.priceInInr?.toLong() ?: 9L)
 
                     if (isUsed) {
                         _verificationState.value = PaymentVerificationState.Error(
@@ -278,34 +291,21 @@ class PaymentVerificationRepository(
                         return@launch
                     }
 
-                    if (!status.equals("Verified", ignoreCase = true)) {
-                        _verificationState.value = PaymentVerificationState.Error(
-                            message = "Payment record found with status '$status'. Please ensure your UPI payment is marked successful.",
-                            canRetry = true,
-                            utr = utr
+                    if (status.equals("Verified", ignoreCase = true)) {
+                        executeClaimAndUnlock(
+                            context = context,
+                            utr = utr,
+                            amount = amount,
+                            userId = userId,
+                            isImmediate = true,
+                            preferredTier = selectedTier
                         )
                         return@launch
                     }
+                }
 
-                    // Process claim atomically & unlock
-                    executeClaimAndUnlock(
-                        context = context,
-                        utr = utr,
-                        amount = amount,
-                        userId = userId,
-                        isImmediate = true,
-                        preferredTier = selectedTier
-                    )
-
-                } else {
-                    // =========================================================
-                    // SCENARIO B: User entered UTR first!
-                    // Server has not received the bank confirmation yet.
-                    // =========================================================
-                    Log.i(TAG, "Scenario B: Document not found yet. Registering pending verification for UTR: $utr")
-
-                    // 1. Save entry under /pending_verifications/{utr}
-                    val pendingDocRef = firestore.collection(COLL_PENDING_VERIFICATIONS).document(utr)
+                // Register pending verification only if it does not already exist (Zero-Trust create rule)
+                if (pendingSnapshot == null || !pendingSnapshot.exists()) {
                     val tier = selectedTier ?: mapAmountToPassTier(9L)
                     val pendingPayload = hashMapOf<String, Any>(
                         "status" to "PENDING",
@@ -314,30 +314,29 @@ class PaymentVerificationRepository(
                         "isUsed" to false,
                         "utr" to utr,
                         "userId" to userId,
+                        "firebaseUid" to currentUid,
                         "timestamp" to FieldValue.serverTimestamp(),
                         "deviceHardwareId" to com.example.HardwareIdManager.getPermanentHardwareId(context)
                     )
-                    pendingDocRef.set(pendingPayload, SetOptions.merge()).await()
-
-                    // 2. Transition state to Pending
-                    _verificationState.value = PaymentVerificationState.Pending(
-                        utr = utr,
-                        message = "UTR submitted! Waiting for secure server bank confirmation..."
-                    )
-
-                    // 3. Attach real-time snapshot listener on /received_payments/{utr}
-                    attachRealtimePaymentListener(
-                        context = context,
-                        utr = utr,
-                        userId = userId,
-                        preferredTier = selectedTier
-                    )
+                    pendingDocRef.set(pendingPayload).await()
                 }
+
+                _verificationState.value = PaymentVerificationState.Pending(
+                    utr = utr,
+                    message = "UTR submitted! Waiting for secure server bank confirmation..."
+                )
+
+                attachRealtimePaymentListener(
+                    context = context,
+                    utr = utr,
+                    userId = userId,
+                    preferredTier = selectedTier
+                )
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error querying payment registry", e)
                 _verificationState.value = PaymentVerificationState.Error(
-                    message = "Network error verifying UTR: ${e.localizedMessage ?: "Unknown error"}. Please check your connection and retry.",
+                    message = "Error submitting UTR: ${e.localizedMessage ?: "Unknown error"}. Please check your connection and retry.",
                     canRetry = true,
                     utr = utr
                 )
@@ -346,7 +345,7 @@ class PaymentVerificationRepository(
     }
 
     /**
-     * Attaches a real-time snapshot listener for Scenario B.
+     * Attaches a real-time snapshot listener on pending_verifications/{utr} for Scenario B.
      */
     private fun attachRealtimePaymentListener(
         context: Context,
@@ -357,8 +356,8 @@ class PaymentVerificationRepository(
         cancelPendingListener()
         activeListeningUtr = utr
 
-        val paymentDocRef = firestore.collection(COLL_RECEIVED_PAYMENTS).document(utr)
-        realtimeListener = paymentDocRef.addSnapshotListener { snapshot, error ->
+        val pendingDocRef = firestore.collection(COLL_PENDING_VERIFICATIONS).document(utr)
+        realtimeListener = pendingDocRef.addSnapshotListener { snapshot, error ->
             if (error != null) {
                 Log.w(TAG, "Realtime listener error for UTR $utr: ${error.message}")
                 return@addSnapshotListener
@@ -372,7 +371,6 @@ class PaymentVerificationRepository(
                 Log.i(TAG, "Realtime update received for UTR $utr: status=$status, isUsed=$isUsed, amount=$amount")
 
                 if (status.equals("Verified", ignoreCase = true) && !isUsed) {
-                    // Payment confirmed by server! Claim and unlock
                     repoScope.launch {
                         executeClaimAndUnlock(
                             context = context,
@@ -396,11 +394,8 @@ class PaymentVerificationRepository(
     }
 
     /**
-     * Atomically executes the claim across Firestore collections and unlocks the application:
-     * 1. Marks `/received_payments/{utr}` -> isUsed = true
-     * 2. Updates `/users/{userId}` -> isPaymentVerified = true, subscriptionExpiry
-     * 3. Updates `/pending_verifications/{utr}` -> status = "COMPLETED"
-     * 4. Unlocks `AppSettings` and `LicenseManager` immediately.
+     * Enqueues Zero-Trust `ACTIVATE_PASS_PAYMENT` action and awaits server confirmation.
+     * Client NEVER writes directly to `received_payments` or `users`.
      */
     private suspend fun executeClaimAndUnlock(
         context: Context,
@@ -412,57 +407,24 @@ class PaymentVerificationRepository(
     ) {
         try {
             val passTier = preferredTier ?: mapAmountToPassTier(amount)
-            val now = System.currentTimeMillis()
-            val currentExpiry = AppSettings.getPassExpiryTimestamp(context)
-            val baseTime = if (currentExpiry > now) currentExpiry else now
-            val newExpiryTimestamp = baseTime + passTier.durationMs
-            val newExpiryDate = Date(newExpiryTimestamp)
-
-            val paymentDocRef = firestore.collection(COLL_RECEIVED_PAYMENTS).document(utr)
-            val userDocRef = firestore.collection(COLL_USERS).document(userId)
-            val pendingDocRef = firestore.collection(COLL_PENDING_VERIFICATIONS).document(utr)
-
-            // Step 1: Direct Firestore Payment Claim & Expiry Update
-            try {
-                paymentDocRef.set(
-                    mapOf(
-                        "isUsed" to true,
-                        "claimed" to true,
-                        "claimedByUserId" to userId,
-                        "claimedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
-                        "passTier" to passTier.id
-                    ),
-                    com.google.firebase.firestore.SetOptions.merge()
-                ).await()
-
-                val newFolder = when (passTier) {
-                    PassTier.DAILY -> "daily"
-                    PassTier.WEEKLY -> "weekly"
-                    PassTier.MONTHLY -> "monthly"
-                    PassTier.REMOVE_ADS -> "remove_ads"
-                }
-
-                firestore.collection("users").document(userId).set(
-                    mapOf(
-                        "userId" to userId,
-                        "activePassType" to passTier.id,
-                        "passExpiryTimestamp" to newExpiryTimestamp,
-                        "current_folder" to newFolder,
-                        "linkedHardwareId" to com.example.HardwareIdManager.getPermanentHardwareId(context),
-                        "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
-                    ),
-                    com.google.firebase.firestore.SetOptions.merge()
-                ).await()
-            } catch (e: Exception) {
-                Log.w(TAG, "Direct Firestore payment claim update encountered: ${e.message}")
+            val actionResult = LicenseManager.activatePassViaPayment(passTier, utr)
+            if (actionResult.isFailure) {
+                val errMsg = actionResult.exceptionOrNull()?.message ?: "Payment could not be verified by server."
+                _verificationState.value = PaymentVerificationState.Error(
+                    message = errMsg,
+                    canRetry = true,
+                    utr = utr
+                )
+                return
             }
 
-            // Step 2: Immediate Local and Memory Unlock inside NonCancellable block
+            val now = LicenseManager.getCurrentServerTimeMs()
+            val newExpiryTimestamp = AppSettings.getPassExpiryTimestamp(context)
+                .takeIf { it > now } ?: (now + passTier.durationMs)
+            val newExpiryDate = Date(newExpiryTimestamp)
+
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
                 PassManager.setPassStatus(context, true)
-                AppSettings.setPassExpiryTimestamp(context, newExpiryTimestamp, passTier.id)
-                LicenseManager.activatePassViaPayment(passTier, utr)
-
                 AppSettings.addLog(
                     title = "Payment Verified & Unlocked",
                     message = "UTR: $utr (₹$amount). Activated ${passTier.title} until $newExpiryDate.",
@@ -470,10 +432,8 @@ class PaymentVerificationRepository(
                 )
             }
 
-            // Step 3: Remove listener since verification succeeded
             cancelPendingListener()
 
-            // Step 4: Emit success state
             _verificationState.value = PaymentVerificationState.Success(
                 utr = utr,
                 amount = amount,
@@ -483,7 +443,7 @@ class PaymentVerificationRepository(
                 message = "Payment of ₹$amount verified successfully! ${passTier.title} is now active."
             )
 
-            Log.i(TAG, "Successfully claimed UTR $utr for user $userId. Unlocked until $newExpiryTimestamp.")
+            Log.i(TAG, "Successfully claimed UTR $utr via Action Queue for user $userId. Unlocked until $newExpiryTimestamp.")
 
         } catch (e: Exception) {
             Log.e(TAG, "Error executing claim for UTR $utr", e)

@@ -3,20 +3,25 @@ package com.example
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import com.example.auth.GoogleAuthManager
 import com.google.firebase.FirebaseApp
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
-import com.google.firebase.Timestamp
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
-import com.google.firebase.firestore.SetOptions
+import java.net.URL
+import java.security.MessageDigest
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
+import javax.net.ssl.HttpsURLConnection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -253,6 +258,7 @@ object LicenseManager {
     const val KEY_LAST_SERVER_SYNC_TIME = "cachedLastServerSyncTime"
     const val KEY_LAST_SERVER_SYNC_ELAPSED = "cachedLastServerSyncElapsed"
     const val KEY_LAST_SERVER_TIMESTAMP = "cachedLastServerTimestamp"
+    const val KEY_CACHE_HMAC = "cachedLicenseHmac"
 
     // Maximum allowed discrepancy between wall clock and monotonic elapsedRealtime (5 minutes)
     const val MAX_ALLOWED_CLOCK_DRIFT_MS = 5L * 60L * 1000L
@@ -445,18 +451,28 @@ object LicenseManager {
      */
     fun recordServerTimeSync(serverMs: Long) {
         if (serverMs > 0L) {
-            val nowElapsed = SystemClock.elapsedRealtime()
+            val nowElapsed = safeElapsedRealtime()
             val nowWall = System.currentTimeMillis()
             serverTimeBaselineMs = serverMs
             serverTimeBaselineElapsedMs = nowElapsed
             lastSuccessfulServerSyncElapsedMs = nowElapsed
             appContext?.let { ctx ->
                 try {
-                    ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
-                        .edit()
+                    val prefs = ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+                    val passTierId = prefs.getString(KEY_CACHED_PASS_TIER, "") ?: ""
+                    val passExpiry = prefs.getLong(KEY_CACHED_PASS_EXPIRY, 0L)
+                    val trialClaimed = prefs.getLong(KEY_CACHED_TRIAL_CLAIMED, 0L)
+                    val trialExpiry = prefs.getLong(KEY_CACHED_TRIAL_EXPIRY, 0L)
+                    val trialUsed = prefs.getBoolean(KEY_CACHED_TRIAL_USED, false)
+                    val hmac = computeLicenseCacheHmac(
+                        ctx, passTierId, passExpiry, trialClaimed, trialExpiry, trialUsed,
+                        nowWall, nowElapsed, serverMs
+                    )
+                    prefs.edit()
                         .putLong(KEY_LAST_SERVER_SYNC_TIME, nowWall)
                         .putLong(KEY_LAST_SERVER_SYNC_ELAPSED, nowElapsed)
                         .putLong(KEY_LAST_SERVER_TIMESTAMP, serverMs)
+                        .putString(KEY_CACHE_HMAC, hmac)
                         .apply()
                 } catch (_: Exception) {}
             }
@@ -472,7 +488,7 @@ object LicenseManager {
         val baseline = serverTimeBaselineMs
         val baselineElapsed = serverTimeBaselineElapsedMs
         return if (baseline > 0L && baselineElapsed > 0L) {
-            val elapsedDelta = SystemClock.elapsedRealtime() - baselineElapsed
+            val elapsedDelta = safeElapsedRealtime() - baselineElapsed
             baseline + elapsedDelta
         } else {
             System.currentTimeMillis()
@@ -480,12 +496,8 @@ object LicenseManager {
     }
 
     /**
-     * Mathematically evaluates whether local wall-clock time and monotonic elapsedRealtime
-     * have diverged beyond acceptable physical limits (elapsed time hooking / clock rollback).
-     *
-     * Legitimate offline operation:
-     * SystemClock.elapsedRealtime() advances at the exact same rate as wall-clock time
-     * (including during deep sleep / Doze). A divergence > 5 minutes indicates clock tampering.
+     * Mathematically evaluates whether local wall-clock time, authoritative server UTC time,
+     * and monotonic elapsedRealtime have diverged beyond acceptable physical limits.
      */
     fun isClockTamperingDetected(context: Context? = null): Boolean {
         val ctx = context ?: appContext ?: return false
@@ -495,12 +507,23 @@ object LicenseManager {
 
         val syncWall = prefs.getLong(KEY_LAST_SERVER_SYNC_TIME, 0L)
         val syncElapsed = prefs.getLong(KEY_LAST_SERVER_SYNC_ELAPSED, 0L)
+        val lastServerTs = prefs.getLong(KEY_LAST_SERVER_TIMESTAMP, 0L)
 
-        // If no server sync has been established yet, cannot prove tampering mathematically
-        if (syncWall <= 0L || syncElapsed <= 0L) return false
-
+        // Check in-memory server baseline even if prefs were cleared before check
         val currentWall = System.currentTimeMillis()
-        val currentElapsed = SystemClock.elapsedRealtime()
+        val currentElapsed = safeElapsedRealtime()
+
+        if (serverTimeBaselineMs > 0L && serverTimeBaselineElapsedMs > 0L) {
+            val expectedUtcNow = serverTimeBaselineMs + (currentElapsed - serverTimeBaselineElapsedMs)
+            val wallVsServerSkew = kotlin.math.abs(currentWall - expectedUtcNow)
+            if (wallVsServerSkew > MAX_ALLOWED_CLOCK_DRIFT_MS) {
+                Log.w(TAG, "Pre-launch/runtime clock tampering detected: wall=$currentWall vs expectedServerUtc=$expectedUtcNow (skew=${wallVsServerSkew}ms)")
+                return true
+            }
+        }
+
+        // If no persisted server sync exists yet, stop here
+        if (syncWall <= 0L || syncElapsed <= 0L) return false
 
         val deltaWall = currentWall - syncWall
         val deltaElapsed = currentElapsed - syncElapsed
@@ -511,13 +534,23 @@ object LicenseManager {
             return true
         }
 
-        // 2. Monotonic clock moved backwards (impossible without kernel/hooking tampering)
+        // 2. Monotonic clock moved backwards (kernel/hooking tampering)
         if (deltaElapsed < -5_000L) {
             Log.w(TAG, "Clock tampering detected: Monotonic elapsedRealtime moved backwards (${deltaElapsed}ms)")
             return true
         }
 
-        // 3. Mathematical discrepancy between elapsed realtime and wall-clock time
+        // 3. Cross-check against persisted authoritative UTC server timestamp across restarts
+        if (lastServerTs > 0L && deltaElapsed >= 0L && deltaElapsed < OFFLINE_GRACE_PERIOD_MS) {
+            val expectedWallFromServer = lastServerTs + deltaElapsed
+            val serverSkew = kotlin.math.abs(currentWall - expectedWallFromServer)
+            if (serverSkew > MAX_ALLOWED_CLOCK_DRIFT_MS) {
+                Log.w(TAG, "Clock tampering vs server UTC detected: wall=$currentWall vs expected=$expectedWallFromServer (skew=${serverSkew}ms)")
+                return true
+            }
+        }
+
+        // 4. Mathematical discrepancy between elapsed realtime and wall-clock time
         val drift = kotlin.math.abs(deltaWall - deltaElapsed)
         if (drift > MAX_ALLOWED_CLOCK_DRIFT_MS) {
             Log.w(TAG, "Clock tampering mathematically detected: deltaWall=$deltaWall, deltaElapsed=$deltaElapsed, drift=$drift > max=$MAX_ALLOWED_CLOCK_DRIFT_MS")
@@ -638,9 +671,43 @@ object LicenseManager {
         }
     }
 
+    private fun isUnitTestEnvironment(): Boolean {
+        return Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
+            runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
+    }
+
     /**
-     * Saves authoritative licensing and trial data to SharedPreferences local UI cache.
-     * Prevents time-reset and loading flicker during app startup.
+     * Computes hardware/package-bound HMAC-SHA256 signature over cached licensing fields so
+     * root users editing LICENSE_CACHE_PREFS.xml cannot forge active passes or timestamps.
+     */
+    private fun computeLicenseCacheHmac(
+        context: Context,
+        passTierId: String,
+        passExpiry: Long,
+        trialClaimed: Long,
+        trialExpiry: Long,
+        trialUsed: Boolean,
+        syncWall: Long,
+        syncElapsed: Long,
+        serverTimestamp: Long
+    ): String {
+        return try {
+            val hwId = DeviceUtils.getDeviceHardwareId(context)
+            val keyMaterial = "OM_ZT_CACHE_V2|$hwId|${context.packageName}".toByteArray(Charsets.UTF_8)
+            val digestKey = MessageDigest.getInstance("SHA-256").digest(keyMaterial)
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(digestKey, "HmacSHA256"))
+            val payload = "$passTierId|$passExpiry|$trialClaimed|$trialExpiry|$trialUsed|$syncWall|$syncElapsed|$serverTimestamp"
+            mac.doFinal(payload.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed computing cache HMAC: ${e.message}")
+            ""
+        }
+    }
+
+    /**
+     * Saves authoritative licensing and trial data to SharedPreferences local UI cache
+     * protected by an HMAC-SHA256 tag bound to device hardware identity.
      */
     fun saveAuthoritativeLicensingCache(
         context: Context,
@@ -651,37 +718,71 @@ object LicenseManager {
         trialUsed: Boolean
     ) {
         try {
-            val nowElapsed = SystemClock.elapsedRealtime()
+            val nowElapsed = safeElapsedRealtime()
             val nowWall = System.currentTimeMillis()
+            val serverTs = serverTimeBaselineMs.takeIf { it > 0L } ?: nowWall
+            val passTierId = passTier?.id ?: ""
             lastSuccessfulServerSyncElapsedMs = nowElapsed
+            val hmac = computeLicenseCacheHmac(
+                context, passTierId, passExpiry, trialClaimed, trialExpiry, trialUsed,
+                nowWall, nowElapsed, serverTs
+            )
             val prefs = context.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
             prefs.edit()
-                .putString(KEY_CACHED_PASS_TIER, passTier?.id ?: "")
+                .putString(KEY_CACHED_PASS_TIER, passTierId)
                 .putLong(KEY_CACHED_PASS_EXPIRY, passExpiry)
                 .putLong(KEY_CACHED_TRIAL_CLAIMED, trialClaimed)
                 .putLong(KEY_CACHED_TRIAL_EXPIRY, trialExpiry)
                 .putBoolean(KEY_CACHED_TRIAL_USED, trialUsed)
                 .putLong(KEY_LAST_SERVER_SYNC_TIME, nowWall)
                 .putLong(KEY_LAST_SERVER_SYNC_ELAPSED, nowElapsed)
+                .putLong(KEY_LAST_SERVER_TIMESTAMP, serverTs)
+                .putString(KEY_CACHE_HMAC, hmac)
                 .commit()
-            Log.d(TAG, "Saved authoritative licensing cache: passTier=${passTier?.id}, passExpiry=$passExpiry, trialClaimed=$trialClaimed, trialExpiry=$trialExpiry, trialUsed=$trialUsed")
+            Log.d(TAG, "Saved HMAC-signed authoritative licensing cache: passTier=${passTier?.id}, passExpiry=$passExpiry, trialClaimed=$trialClaimed, trialExpiry=$trialExpiry, trialUsed=$trialUsed")
         } catch (e: Exception) {
             Log.w(TAG, "Failed saving licensing cache: ${e.message}")
         }
     }
 
     /**
-     * Reads cached licensing data from SharedPreferences.
+     * Reads and cryptographically verifies cached licensing data from SharedPreferences.
+     * Any tampering, missing sync metadata, or HMAC mismatch wipes the cache immediately.
      */
     fun getCachedLicensingData(context: Context): CachedLicensingData {
         return try {
             val prefs = context.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
-            val passTierId = prefs.getString(KEY_CACHED_PASS_TIER, null)
-            val passTier = if (!passTierId.isNullOrBlank()) PassTier.fromId(passTierId) else null
+            val passTierId = prefs.getString(KEY_CACHED_PASS_TIER, "") ?: ""
             val passExpiry = prefs.getLong(KEY_CACHED_PASS_EXPIRY, 0L)
             val trialClaimed = prefs.getLong(KEY_CACHED_TRIAL_CLAIMED, 0L)
             val trialExpiry = prefs.getLong(KEY_CACHED_TRIAL_EXPIRY, 0L)
             val trialUsed = prefs.getBoolean(KEY_CACHED_TRIAL_USED, false)
+            val syncWall = prefs.getLong(KEY_LAST_SERVER_SYNC_TIME, 0L)
+            val syncElapsed = prefs.getLong(KEY_LAST_SERVER_SYNC_ELAPSED, 0L)
+            val serverTs = prefs.getLong(KEY_LAST_SERVER_TIMESTAMP, 0L)
+            val storedHmac = prefs.getString(KEY_CACHE_HMAC, "") ?: ""
+
+            if (syncWall <= 0L || syncElapsed <= 0L || storedHmac.isBlank()) {
+                if (passExpiry > 0L || trialExpiry > 0L) {
+                    Log.w(TAG, "Licensing cache missing integrity metadata; wiping cache.")
+                    clearLicensingCache(context)
+                }
+                return CachedLicensingData(null, 0L, 0L, 0L, false)
+            }
+
+            val expectedHmac = computeLicenseCacheHmac(
+                context, passTierId, passExpiry, trialClaimed, trialExpiry, trialUsed,
+                syncWall, syncElapsed, serverTs
+            )
+            if (expectedHmac.isBlank() ||
+                !MessageDigest.isEqual(storedHmac.toByteArray(Charsets.UTF_8), expectedHmac.toByteArray(Charsets.UTF_8))
+            ) {
+                Log.w(TAG, "Licensing cache HMAC mismatch! Tampering detected; wiping cache.")
+                clearLicensingCache(context)
+                return CachedLicensingData(null, 0L, 0L, 0L, false)
+            }
+
+            val passTier = if (passTierId.isNotBlank()) PassTier.fromId(passTierId) else null
             CachedLicensingData(passTier, passExpiry, trialClaimed, trialExpiry, trialUsed)
         } catch (e: Exception) {
             Log.w(TAG, "Failed reading licensing cache: ${e.message}")
@@ -722,22 +823,59 @@ object LicenseManager {
 
     fun setLastServerSyncForTesting(elapsedMs: Long, wallClockMs: Long? = null) {
         lastSuccessfulServerSyncElapsedMs = elapsedMs
-        wallClockMs?.let { wallMs ->
-            appContext?.let { ctx ->
-                ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
-                    .edit()
-                    .putLong(KEY_LAST_SERVER_SYNC_TIME, wallMs)
-                    .commit()
-            }
+        appContext?.let { ctx ->
+            val prefs = ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+            val passTierId = prefs.getString(KEY_CACHED_PASS_TIER, "") ?: ""
+            val passExpiry = prefs.getLong(KEY_CACHED_PASS_EXPIRY, 0L)
+            val trialClaimed = prefs.getLong(KEY_CACHED_TRIAL_CLAIMED, 0L)
+            val trialExpiry = prefs.getLong(KEY_CACHED_TRIAL_EXPIRY, 0L)
+            val trialUsed = prefs.getBoolean(KEY_CACHED_TRIAL_USED, false)
+            val wallMs = wallClockMs ?: prefs.getLong(KEY_LAST_SERVER_SYNC_TIME, System.currentTimeMillis())
+            val hmac = computeLicenseCacheHmac(
+                ctx, passTierId, passExpiry, trialClaimed, trialExpiry, trialUsed,
+                wallMs, elapsedMs, wallMs
+            )
+            prefs.edit()
+                .putLong(KEY_LAST_SERVER_SYNC_TIME, wallMs)
+                .putLong(KEY_LAST_SERVER_SYNC_ELAPSED, elapsedMs)
+                .putLong(KEY_LAST_SERVER_TIMESTAMP, wallMs)
+                .putString(KEY_CACHE_HMAC, hmac)
+                .commit()
         }
     }
 
     /**
-     * Synchronizes server time baseline using system clock.
+     * Synchronizes authoritative UTC server time baseline via TLS HTTPS Date header
+     * (immune to phone date/time tampering). Never trusts System.currentTimeMillis()
+     * in production builds.
      */
     suspend fun fetchServerTimeBaseline() = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        recordServerTimeSync(now)
+        var serverDateMs = 0L
+        var conn: HttpsURLConnection? = null
+        try {
+            val url = URL("https://clients3.google.com/generate_204")
+            conn = (url.openConnection() as? HttpsURLConnection)?.apply {
+                requestMethod = "HEAD"
+                connectTimeout = 3500
+                readTimeout = 3500
+                useCaches = false
+                connect()
+            }
+            val headerDate = conn?.date ?: 0L
+            if (headerDate > 1_700_000_000_000L) {
+                serverDateMs = headerDate
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "HTTPS authoritative clock fetch skipped/failed: ${e.message}")
+        } finally {
+            try { conn?.disconnect() } catch (_: Exception) {}
+        }
+
+        if (serverDateMs > 0L) {
+            recordServerTimeSync(serverDateMs)
+        } else if (isUnitTestEnvironment()) {
+            recordServerTimeSync(System.currentTimeMillis())
+        }
     }
 
     /**
@@ -874,6 +1012,14 @@ object LicenseManager {
      * Returns true ONLY if status is PassActive or TrialActive with valid remaining time.
      */
     fun isAccessGranted(): Boolean {
+        if (DeviceUtils.isRuntimeHookOrDebuggerDetected(appContext)) {
+            Log.w(TAG, "isAccessGranted blocked: Runtime hooking or debugger tamper detected.")
+            return false
+        }
+        if (isClockTamperingDetected(appContext)) {
+            Log.w(TAG, "isAccessGranted blocked: Clock tampering detected.")
+            return false
+        }
         return when (val status = _accessStatus.value) {
             is AccessStatus.PassActive -> status.remainingTimeMs > 0
             is AccessStatus.TrialActive -> status.remainingTimeMs > 0
@@ -928,6 +1074,8 @@ object LicenseManager {
             "firebaseUid" to currentUser.uid,
             "userEmail" to (currentUser.email ?: ""),
             "linkedHardwareId" to hwId,
+            "deviceIntegrityOk" to DeviceUtils.isFreeTrialAllowed(ctx),
+            "appSignatureSha256" to DeviceUtils.getApkSignatureSha256(ctx),
             "actionType" to actionType,
             "status" to "PENDING",
             "createdAt" to FieldValue.serverTimestamp()
@@ -958,6 +1106,11 @@ object LicenseManager {
                         }
 
                         if (snapshot != null && snapshot.exists()) {
+                            snapshot.getTimestamp("createdAt")?.toDate()?.time?.let { serverActionTs ->
+                                if (serverTimeBaselineMs == 0L) {
+                                    recordServerTimeSync(serverActionTs)
+                                }
+                            }
                             val status = snapshot.getString("status") ?: "PENDING"
                             if (status.equals("COMPLETED", ignoreCase = true)) {
                                 Log.i(TAG, "Action $actionType (doc ${docRef.id}) marked COMPLETED by Admin server.")
@@ -1021,29 +1174,38 @@ object LicenseManager {
     }
 
     /**
-     * Top-up / Recharge points via Zero-Trust Action Queue.
-     * Enqueues ADD_POINTS request to `pending_actions` and awaits server completion.
+     * Client-side arbitrary point top-ups are disabled under Zero-Trust architecture.
+     * Points may only be earned via server-verified Rewarded Ads or Referrals.
      */
+    @Suppress("UNUSED_PARAMETER")
     suspend fun addPoints(amount: Int): Result<Int> = withContext(Dispatchers.IO) {
-        if (amount <= 0) return@withContext Result.failure(IllegalArgumentException("Amount must be positive"))
+        Log.w(TAG, "Blocked client addPoints call under Zero-Trust security policy.")
+        Result.failure(UnsupportedOperationException("Client-side point grants are disabled."))
+    }
 
+    /**
+     * Claims a referral code via Zero-Trust Action Queue (`CLAIM_REFERRAL`).
+     * Admin Server validates eligibility, prevents self/duplicate referrals, and awards
+     * points atomically on both referee and referrer documents.
+     */
+    suspend fun claimReferralViaActionQueue(referralCode: String): Result<Int> = withContext(Dispatchers.IO) {
+        val cleanCode = referralCode.trim().uppercase(Locale.ROOT)
+        if (cleanCode.length != 8) {
+            return@withContext Result.failure(IllegalArgumentException("Referral code must be exactly 8 characters."))
+        }
         val result = executeActionQueueRequest(
-            actionType = "ADD_POINTS",
-            payload = mapOf(
-                "amount" to amount
-            )
+            actionType = "CLAIM_REFERRAL",
+            payload = mapOf("referralCode" to cleanCode)
         )
-
         result.fold(
             onSuccess = { snap ->
                 val newBalance = snap.getLong("newBalance")?.toInt()
                     ?: snap.getLong("pointsBalance")?.toInt()
-                    ?: (_pointsBalance.value + amount)
-                Log.i(TAG, "ADD_POINTS completed via Action Queue. New balance: $newBalance")
+                    ?: (_pointsBalance.value + WELCOME_BONUS_POINTS)
+                notifyReferralClaimed(newBalance)
                 Result.success(newBalance)
             },
             onFailure = { err ->
-                Log.e(TAG, "ADD_POINTS action failed: ${err.message}", err)
                 Result.failure(err)
             }
         )
@@ -1150,14 +1312,10 @@ object LicenseManager {
     }
 
     /**
-     * Authoritative Data Migration Engine
-     *
-     * Enforces the seamless user migration rules:
-     * Condition A: Same Gmail, New Phone/New CustomUserId -> Migrates data from old document to customUserId.
-     * Condition B: Same Phone/HardwareId, New Gmail -> Migrates data on this phone to the new Gmail account.
-     * Condition C: Existing Match -> customUserId matches both firebaseUid and hardwareId, no migration needed.
-     * Condition D: Completely New -> No match for firebaseUid or hardwareId, initializes fresh profile.
-     * If both phone and Gmail change simultaneously, both Condition A and B fail, leading to Condition D (fresh profile).
+     * Synchronizes device binding fields (`linkedHardwareId`, `firebaseUid`, `userEmail`) on the
+     * canonical `users/{uid}` document via `UPDATE_PROFILE` when needed.
+     * Cross-user/legacy migration (`legacyCustomUserId` / `linkedHardwareId` matching) is executed
+     * strictly server-side inside `INIT_PROFILE` so clients never query other user documents.
      */
     private suspend fun checkAndMigrateUserData(
         context: Context,
@@ -1177,79 +1335,6 @@ object LicenseManager {
 
         try {
             val targetSnap = targetDocRef.get().await()
-
-            // 1. Query existing data across the "users" collection for Migration Check
-            val uidMatches = if (!firebaseUid.isNullOrBlank()) {
-                try {
-                    db.collection(COLL_USERS)
-                        .whereEqualTo("firebaseUid", firebaseUid)
-                        .get()
-                        .await()
-                        .documents
-                        .filter { it.id != customUserId && (it.getBoolean("isMigrated") != true) }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Query users by firebaseUid failed: ${e.message}")
-                    emptyList()
-                }
-            } else {
-                emptyList()
-            }
-
-            val hwMatches = try {
-                db.collection(COLL_USERS)
-                    .whereEqualTo("linkedHardwareId", hardwareId)
-                    .get()
-                    .await()
-                    .documents
-                    .filter { it.getBoolean("isMigrated") != true }
-            } catch (e: Exception) {
-                Log.w(TAG, "Query users by linkedHardwareId failed: ${e.message}")
-                emptyList()
-            }
-
-            // --- CONDITION A: Same Gmail, New Phone/New CustomUserId ---
-            // If a document exists with the same firebaseUid but a different Document ID
-            if (uidMatches.isNotEmpty()) {
-                val sourceDocSnap = uidMatches.first()
-                val oldHwId = sourceDocSnap.getString("linkedHardwareId") ?: ""
-                Log.i(TAG, "Migration Condition A detected: Migrating from old doc ${sourceDocSnap.id} to new phone doc $customUserId for UID $firebaseUid")
-                val actionResult = executeActionQueueRequest(
-                    actionType = "MIGRATE_PROFILE",
-                    payload = mapOf(
-                        "oldDocumentId" to sourceDocSnap.id,
-                        "oldHardwareId" to oldHwId,
-                        "newHardwareId" to hardwareId,
-                        "firebaseUid" to (firebaseUid ?: ""),
-                        "condition" to "CONDITION_A"
-                    )
-                )
-                return@withContext actionResult.isSuccess
-            }
-
-            // --- CONDITION B: Same Phone/Same HardwareId, New Gmail / Cleared Data ---
-            // Strictly match ANY existing document with the same linkedHardwareId (excluding current customUserId and already migrated docs)
-            val hwDocWithDifferentUid = hwMatches.firstOrNull { doc ->
-                doc.id != customUserId && (doc.getBoolean("isMigrated") != true)
-            }
-
-            if (hwDocWithDifferentUid != null) {
-                Log.i(TAG, "Migration Condition B detected: Switching Gmail on same phone ($hardwareId) to $userEmail ($firebaseUid)")
-                val oldHwId = hwDocWithDifferentUid.getString("linkedHardwareId") ?: hardwareId
-                val actionResult = executeActionQueueRequest(
-                    actionType = "MIGRATE_PROFILE",
-                    payload = mapOf(
-                        "oldDocumentId" to hwDocWithDifferentUid.id,
-                        "oldHardwareId" to oldHwId,
-                        "newHardwareId" to hardwareId,
-                        "firebaseUid" to (firebaseUid ?: ""),
-                        "userEmail" to userEmail,
-                        "condition" to "CONDITION_B"
-                    )
-                )
-                return@withContext actionResult.isSuccess
-            }
-
-            // --- CONDITION C: Existing Match (Update Existing Record) ---
             if (targetSnap != null && targetSnap.exists()) {
                 val updates = mutableMapOf<String, Any>()
                 val targetHw = targetSnap.getString("linkedHardwareId") ?: ""
@@ -1257,7 +1342,7 @@ object LicenseManager {
                 if (targetHw != hardwareId && hardwareId.isNotBlank()) {
                     updates["linkedHardwareId"] = hardwareId
                 }
-                if (!firebaseUid.isNullOrBlank() && targetUid != firebaseUid) {
+                if (targetUid != firebaseUid) {
                     updates["firebaseUid"] = firebaseUid
                     updates["userEmail"] = userEmail
                 }
@@ -1265,13 +1350,10 @@ object LicenseManager {
                     val updateResult = executeActionQueueRequest("UPDATE_PROFILE", updates)
                     return@withContext updateResult.isSuccess
                 }
-                return@withContext true
             }
-
-            // If target does not exist, return true so syncUserLicensingDocument handles INIT_PROFILE
             true
         } catch (e: Exception) {
-            Log.e(TAG, "checkAndMigrateUserData encountered error: ${e.message}", e)
+            Log.w(TAG, "checkAndMigrateUserData notice: ${e.message}")
             false
         }
     }
@@ -1302,21 +1384,29 @@ object LicenseManager {
             // Authoritative server clock synchronization
             fetchServerTimeBaseline()
 
-            // 1. Identify current environment
-            val customUserId = resolveUserKey(ctx)
-            currentUserKey = customUserId
-            val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
+            // 1. Identify current authenticated user
             val currentUser = try {
                 FirebaseAuth.getInstance().currentUser
             } catch (_: Exception) {
                 null
             }
+            if (currentUser == null || currentUser.uid.isBlank()) {
+                Log.d(TAG, "No signed-in FirebaseAuth user; skipping users/{uid} cloud sync until login.")
+                hasLoadedTrial = true
+                hasLoadedLicensing = true
+                refreshAccessStatus()
+                return
+            }
 
-            // 2. Perform Migration Check before reading/syncing
+            val customUserId = currentUser.uid
+            currentUserKey = customUserId
+            val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
+
+            // 2. Perform device/UID alignment check before reading/syncing
             try {
                 checkAndMigrateUserData(ctx, customUserId, currentUser, hwId)
             } catch (e: Exception) {
-                Log.w(TAG, "Migration check failed: ${e.message}")
+                Log.w(TAG, "Profile alignment check notice: ${e.message}")
             }
 
             // 3. Load authoritative user document from Firestore
@@ -1410,12 +1500,21 @@ object LicenseManager {
             return
         }
 
-        val customUserId = if (userKey.isNotBlank()) userKey else resolveUserKey(ctx)
         val currentUser = try {
             FirebaseAuth.getInstance().currentUser
         } catch (_: Exception) {
             null
         }
+        if (currentUser == null || currentUser.uid.isBlank()) {
+            userDocListener?.remove()
+            userDocListener = null
+            hasLoadedTrial = true
+            hasLoadedLicensing = true
+            refreshAccessStatus()
+            return
+        }
+
+        val customUserId = currentUser.uid
 
         try {
             val db = FirebaseFirestore.getInstance()
@@ -1573,36 +1672,41 @@ object LicenseManager {
                                 }
                                 val context = ctx ?: return@launch
                                 val permanentHardwareId = HardwareIdManager.getPermanentHardwareId(context)
+                                val legacyCustomId = DeviceUtils.getSavedCustomUserIdOrNull(context)
                                 val email = userEmail ?: (currentAuthUser?.email ?: "")
 
                                 Log.i(TAG, "User document does not exist. Dispatching INIT_PROFILE to Action Queue for $customUserId...")
+                                val initPayload = mutableMapOf<String, Any>(
+                                    "userEmail" to email,
+                                    "linkedHardwareId" to permanentHardwareId,
+                                    "firebaseUid" to (currentAuthUser?.uid ?: "")
+                                )
+                                if (!legacyCustomId.isNullOrBlank() && legacyCustomId != customUserId) {
+                                    initPayload["legacyCustomUserId"] = legacyCustomId
+                                }
                                 val actionResult = executeActionQueueRequest(
                                     actionType = "INIT_PROFILE",
-                                    payload = mapOf(
-                                        "userEmail" to email,
-                                        "linkedHardwareId" to permanentHardwareId,
-                                        "firebaseUid" to (currentAuthUser?.uid ?: "")
-                                    )
+                                    payload = initPayload
                                 )
 
                                 if (actionResult.isSuccess) {
                                     val actionDoc = actionResult.getOrNull()
-                                    val newPoints = actionDoc?.getLong("pointsBalance")?.toInt() ?: 50
+                                    val newPoints = actionDoc?.getLong("pointsBalance")?.toInt() ?: 0
                                     val newReferral = actionDoc?.getString("referralCode") ?: generateReferralCode()
                                     _referralCode.value = newReferral
                                     _pointsBalance.value = newPoints
-                                    val now = System.currentTimeMillis()
-                                    if (DeviceUtils.isFreeTrialAllowed(context)) {
-                                        val trialExpiry = now + (48L * 3600L * 1000L)
-                                        serverTrialClaimed = now
-                                        serverTrialExpiry = trialExpiry
+                                    val now = getCurrentServerTimeMs()
+                                    val serverTrialClaimedMs = actionDoc?.getLong("trialClaimed") ?: 0L
+                                    val serverTrialExpiryMs = actionDoc?.getLong("trialExpiry") ?: 0L
+                                    if (serverTrialClaimedMs > 0L && serverTrialExpiryMs > now && DeviceUtils.isFreeTrialAllowed(context)) {
+                                        serverTrialClaimed = serverTrialClaimedMs
+                                        serverTrialExpiry = serverTrialExpiryMs
                                         serverTrialUsed = true
                                         _currentFolder.value = "trials"
                                     } else {
-                                        Log.w(TAG, "Device compromised (rooted/spoofed): Free trial blocked during INIT_PROFILE")
-                                        serverTrialClaimed = 0L
-                                        serverTrialExpiry = 0L
-                                        serverTrialUsed = true
+                                        serverTrialClaimed = serverTrialClaimedMs
+                                        serverTrialExpiry = serverTrialExpiryMs
+                                        serverTrialUsed = actionDoc?.getBoolean("trialUsed") ?: true
                                         _currentFolder.value = "free_mod"
                                     }
                                     hasLoadedLicensing = true
@@ -1635,16 +1739,27 @@ object LicenseManager {
     }
 
     /**
-     * Resolves the persistent custom User ID (format: OM-USER-XXXXXXXX).
-     * Retrieves and returns this persistent custom User ID from DeviceUtils.
-     * Acts as both the Firestore Document ID in the "users" collection and the userId field.
+     * Resolves the canonical Firestore Document ID for the active user:
+     * Strictly uses FirebaseAuth `uid` whenever signed in to match `users/{uid}` security rules
+     * and eliminate the `OM-USER-*` vs `uid` split-brain vulnerability.
+     * Falls back to `OM-USER-*` / ephemeral ID only when unauthenticated.
      */
     fun resolveUserKey(context: Context? = null, email: String? = null, uid: String? = null): String {
+        if (!uid.isNullOrBlank()) return uid
+        val authUid = try {
+            val targetCtx = context ?: appContext
+            if (targetCtx == null || FirebaseApp.getApps(targetCtx).isNotEmpty()) {
+                FirebaseAuth.getInstance().currentUser?.uid
+            } else null
+        } catch (_: Exception) {
+            null
+        }
+        if (!authUid.isNullOrBlank()) return authUid
+
         val targetContext = context ?: appContext
         return if (targetContext != null) {
             DeviceUtils.getCustomUserId(targetContext)
         } else {
-            // Strictly return a securely generated ephemeral UUID to prevent profile hijacking when context is missing
             "OM-USER-TEMP-${java.util.UUID.randomUUID().toString().replace("-", "").take(8).uppercase(Locale.ROOT)}"
         }
     }
@@ -1656,6 +1771,16 @@ object LicenseManager {
      */
     fun refreshAccessStatus(context: Context? = null) {
         val ctx = context ?: appContext
+        if (DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) {
+            Log.w(TAG, "Runtime hooking or release debugger detected; locking access.")
+            _accessStatus.value = AccessStatus.Expired(
+                isTrialUsed = true,
+                hasHadPreviousPass = true,
+                message = "Security policy violation detected. Access disabled."
+            )
+            return
+        }
+
         // Strict 2-hour offline grace check:
         if (isOfflineGracePeriodExpired(ctx)) {
             Log.w(TAG, "Offline grace period expired (limit: 2 hours). Enforcing zero-trust lock.")
@@ -1669,7 +1794,7 @@ object LicenseManager {
 
         val now = getCurrentServerTimeMs()
 
-        // Fast UI Boot: If user licensing has not yet loaded from Firestore, read from local UI cache to prevent time reset flicker
+        // Fast UI Boot: Show HMAC-verified cached state without promoting it to authoritative hasLoadedLicensing
         if (!hasLoadedLicensing) {
             if (ctx != null) {
                 val cached = getCachedLicensingData(ctx)
@@ -1695,8 +1820,7 @@ object LicenseManager {
                         expiryTimestamp = cached.passExpiry,
                         formattedRemaining = formatted
                     )
-                    hasLoadedLicensing = true
-                    Log.d(TAG, "Fast UI Boot: Populated PassActive (${cached.passTier.title}) from local UI cache while Firestore syncs.")
+                    Log.d(TAG, "Fast UI Boot: Populated PassActive (${cached.passTier.title}) from HMAC-verified cache while awaiting Firestore.")
                     return
                 }
 
@@ -1718,9 +1842,8 @@ object LicenseManager {
                             expiryTimestamp = cached.trialExpiry,
                             formattedRemaining = formatted
                         )
-                        hasLoadedLicensing = true
                         hasLoadedTrial = true
-                        Log.d(TAG, "Fast UI Boot: Populated TrialActive from local UI cache while Firestore syncs.")
+                        Log.d(TAG, "Fast UI Boot: Populated TrialActive from HMAC-verified cache while awaiting Firestore.")
                         return
                     } else {
                         Log.w(TAG, "Fast UI Boot: Free trial blocked due to device rooting or hardware spoofing.")

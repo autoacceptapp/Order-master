@@ -28,7 +28,7 @@ object AdConfig {
      * Fallback Banner Ad Unit ID when AdMob returns NO_FILL for unindexed GitHub APKs.
      */
     val fallbackBannerAdUnitId: String
-        get() = TEST_BANNER_AD_UNIT_ID
+        get() = if (BuildConfig.DEBUG) TEST_BANNER_AD_UNIT_ID else PROD_BANNER_AD_UNIT_ID
 
     /**
      * Primary Rewarded Video Ad Unit ID.
@@ -38,8 +38,8 @@ object AdConfig {
         get() = PROD_REWARDED_AD_UNIT_ID
 
     /**
-     * Fallback Rewarded Video Ad Unit ID when AdMob returns NO_FILL for unindexed GitHub APKs.
+     * Fallback Rewarded Video Ad Unit ID (restricted strictly to DEBUG builds).
      */
     val fallbackRewardedAdUnitId: String
-        get() = TEST_REWARDED_AD_UNIT_ID
+        get() = if (BuildConfig.DEBUG) TEST_REWARDED_AD_UNIT_ID else PROD_REWARDED_AD_UNIT_ID
 }

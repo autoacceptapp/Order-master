@@ -16,6 +16,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowToast
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
@@ -28,50 +29,63 @@ class OrderMasterTest {
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
         AppSettings.init(context)
+        AppSettings.resetBusinessStateForTest(context)
         database = AppDatabase.getDatabase(context)
     }
 
     @After
     fun tearDown() {
-        // AppDatabase singleton lifecycle handled by Room
+        AppSettings.resetBusinessStateForTest(context)
     }
 
     @Test
     fun testModularFilterSettings() {
-        // Test individual switches
-        AppSettings.setMinFareEnabled(context, false)
-        assertFalse(AppSettings.isMinFareEnabled(context))
+        // Local setter invocations must be strictly blocked and leave restricted defaults intact
         AppSettings.setMinFareEnabled(context, true)
-        assertTrue(AppSettings.isMinFareEnabled(context))
-
-        AppSettings.setMaxFareEnabled(context, false)
-        assertFalse(AppSettings.isMaxFareEnabled(context))
-
-        AppSettings.setMaxPickupDistanceEnabled(context, false)
-        assertFalse(AppSettings.isMaxPickupDistanceEnabled(context))
+        assertFalse(AppSettings.isMinFareEnabled(context))
+        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
 
         AppSettings.setMaxDropDistanceEnabled(context, true)
-        assertTrue(AppSettings.isMaxDropDistanceEnabled(context))
+        assertFalse(AppSettings.isMaxDropDistanceEnabled(context))
+
         AppSettings.setMaxDropDistance(context, 12.0f)
+        assertEquals(AppSettings.DEFAULT_MAX_DROP_DISTANCE, AppSettings.getMaxDropDistance(context), 0.01f)
+
+        // Authoritative Firestore snapshot drives modular filter toggles & thresholds in RAM
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "isMinFareEnabled" to true,
+                "isMaxFareEnabled" to false,
+                "isMaxPickupDistanceEnabled" to false,
+                "isMaxDropDistanceEnabled" to true,
+                "maxDropDistance" to 12.0
+            )
+        )
+        assertTrue(AppSettings.isMinFareEnabled(context))
+        assertFalse(AppSettings.isMaxFareEnabled(context))
+        assertFalse(AppSettings.isMaxPickupDistanceEnabled(context))
+        assertTrue(AppSettings.isMaxDropDistanceEnabled(context))
         assertEquals(12.0f, AppSettings.getMaxDropDistance(context), 0.01f)
     }
 
     @Test
     fun testQuickPresets() {
+        // Client-side presets are strictly blocked in Read-Only Thin-Client mode
         AppSettings.applyPreset(context, "peak")
-        assertEquals(80.0f, AppSettings.getMinFare(context), 0.01f)
-        assertEquals(2.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
+        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
+        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
 
         AppSettings.applyPreset(context, "short")
-        assertEquals(40.0f, AppSettings.getMinFare(context), 0.01f)
-        assertEquals(150.0f, AppSettings.getMaxFare(context), 0.01f)
-        assertEquals(1.5f, AppSettings.getMaxPickupDistance(context), 0.01f)
-        assertTrue(AppSettings.isMaxDropDistanceEnabled(context))
-        assertEquals(5.0f, AppSettings.getMaxDropDistance(context), 0.01f)
+        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.getMaxFare(context), 0.01f)
+        assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
+        assertFalse(AppSettings.isMaxDropDistanceEnabled(context))
 
         AppSettings.applyPreset(context, "default")
-        assertEquals(AppSettings.DEFAULT_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
-        assertEquals(AppSettings.DEFAULT_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
+        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
     }
 
     @Test

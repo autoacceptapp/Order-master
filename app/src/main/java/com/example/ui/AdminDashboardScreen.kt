@@ -59,10 +59,6 @@ import androidx.compose.ui.unit.dp
 import com.example.GlobalAdminManager
 import com.example.ui.theme.AmberAccent
 import com.example.ui.theme.PrimaryEmerald
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.SetOptions
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 
 /**
  * UI State for the Admin Dashboard.
@@ -111,31 +107,14 @@ fun AdminDashboardScreen(
 
     var isUpdating by remember { mutableStateOf(false) }
 
+    @Suppress("UNUSED_PARAMETER")
     fun toggleService(newActiveState: Boolean) {
-        isUpdating = true
-        coroutineScope.launch {
-            try {
-                val firestore = FirebaseFirestore.getInstance()
-                firestore.collection("app_settings").document("global")
-                    .set(
-                        mapOf(
-                            "isServiceActive" to newActiveState,
-                            "offlineMessage" to uiState.offlineMessage
-                        ),
-                        SetOptions.merge()
-                    ).await()
-                uiState = uiState.copy(isServiceActive = newActiveState)
-                Toast.makeText(
-                    context,
-                    if (newActiveState) "Global Service Activated" else "Global Service Deactivated",
-                    Toast.LENGTH_SHORT
-                ).show()
-            } catch (e: Exception) {
-                Toast.makeText(context, "Failed to update service: ${e.message}", Toast.LENGTH_SHORT).show()
-            } finally {
-                isUpdating = false
-            }
-        }
+        isUpdating = false
+        Toast.makeText(
+            context,
+            "Global kill switch is read-only here; manage it from the dedicated Admin App.",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     Scaffold(

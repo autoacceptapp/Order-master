@@ -34,6 +34,9 @@ object RewardedAdManager {
     @Volatile
     private var isLoading = false
 
+    @Volatile
+    private var isLoadedAdFallback = false
+
     /**
      * Checks if a rewarded ad is currently cached and ready to be shown.
      */
@@ -81,22 +84,23 @@ object RewardedAdManager {
                 object : RewardedAdLoadCallback() {
                     override fun onAdLoaded(ad: RewardedAd) {
                         rewardedAd = ad
+                        isLoadedAdFallback = isFallback
                         isLoading = false
                         retryCount = 0
-                        Log.i(TAG, "RewardedAd loaded successfully with adUnitId: $adUnitToLoad")
+                        Log.i(TAG, "RewardedAd loaded successfully with adUnitId: $adUnitToLoad (isFallback=$isFallback)")
                     }
 
                     override fun onAdFailedToLoad(adError: LoadAdError) {
                         rewardedAd = null
+                        isLoadedAdFallback = false
                         isLoading = false
                         Log.w(
                             TAG,
                             "RewardedAd notice for $adUnitToLoad: ${adError.message} (Code: ${adError.code}, Domain: ${adError.domain})."
                         )
-                        // If production ad unit failed (e.g. Code 3 NO_FILL on unlinked GitHub APK),
-                        // immediately fallback to Google's official test ad unit so the user can still watch ads & claim rewards.
-                        if (!isFallback && adUnitToLoad != AdConfig.fallbackRewardedAdUnitId) {
-                            Log.i(TAG, "Production RewardedAd failed to load. Falling back to official test ad unit...")
+                        // Strictly allow test ad fallback ONLY in debug builds
+                        if (BuildConfig.DEBUG && !isFallback && adUnitToLoad != AdConfig.fallbackRewardedAdUnitId) {
+                            Log.i(TAG, "Debug build: Production RewardedAd failed to load. Falling back to test ad unit...")
                             mainHandler.post {
                                 loadWithAdUnit(appContext, AdConfig.fallbackRewardedAdUnitId, isFallback = true)
                             }
@@ -128,17 +132,21 @@ object RewardedAdManager {
      */
     fun showAd(activity: Activity, onRewardEarned: () -> Unit) {
         val ad = rewardedAd
-        if (ad == null) {
-            Log.w(TAG, "Rewarded ad is not ready yet. Showing toast and triggering background load.")
+        if (ad == null || (!BuildConfig.DEBUG && isLoadedAdFallback)) {
+            Log.w(TAG, "Rewarded ad unavailable for production reward payout. Reloading production ad.")
+            rewardedAd = null
+            isLoadedAdFallback = false
             Toast.makeText(activity, "Ad is still loading, please try again", Toast.LENGTH_SHORT).show()
             loadAd(activity)
             return
         }
 
+        val currentAdIsFallback = isLoadedAdFallback
         ad.fullScreenContentCallback = object : FullScreenContentCallback() {
             override fun onAdDismissedFullScreenContent() {
                 Log.d(TAG, "Rewarded ad dismissed by user.")
                 rewardedAd = null
+                isLoadedAdFallback = false
                 loadAd(activity)
             }
 
@@ -148,6 +156,7 @@ object RewardedAdManager {
                     "Rewarded ad failed to show: code=${adError.code}, message='${adError.message}', domain='${adError.domain}'"
                 )
                 rewardedAd = null
+                isLoadedAdFallback = false
                 loadAd(activity)
             }
 
@@ -159,13 +168,19 @@ object RewardedAdManager {
         try {
             ad.show(activity, OnUserEarnedRewardListener { rewardItem ->
                 Log.i(TAG, "User earned reward: amount=${rewardItem.amount}, type=${rewardItem.type}")
-                onRewardEarned()
+                if (BuildConfig.DEBUG || !currentAdIsFallback) {
+                    onRewardEarned()
+                } else {
+                    Log.w(TAG, "Blocked reward grant from non-production ad in release build.")
+                }
                 rewardedAd = null
+                isLoadedAdFallback = false
                 loadAd(activity)
             })
         } catch (t: Throwable) {
             Log.e(TAG, "Exception showing RewardedAd: ${t.message}", t)
             rewardedAd = null
+            isLoadedAdFallback = false
             loadAd(activity)
         }
     }

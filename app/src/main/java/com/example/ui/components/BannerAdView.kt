@@ -22,6 +22,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.AdConfig
+import com.example.BuildConfig
 import com.google.android.gms.ads.AdListener
 import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.AdSize
@@ -108,10 +109,9 @@ fun BannerAdView(
                                     "BannerAdView",
                                     "Banner ad notice (unit: $currentAdUnitId): code=${error.code}, message='${error.message}', domain='${error.domain}'"
                                 )
-                                // If production ad fails (e.g. error code 3 NO_FILL on sideloaded/GitHub APK),
-                                // immediately fallback to official Google test unit so banner never remains blank.
-                                if (!isFallbackAttempted && currentAdUnitId != AdConfig.fallbackBannerAdUnitId) {
-                                    Log.i("BannerAdView", "Attempting fallback to test banner ad unit for guaranteed display.")
+                                // Only fallback to official test banner unit in DEBUG builds
+                                if (BuildConfig.DEBUG && !isFallbackAttempted && currentAdUnitId != AdConfig.fallbackBannerAdUnitId) {
+                                    Log.i("BannerAdView", "Debug build: Attempting fallback to test banner ad unit.")
                                     isFallbackAttempted = true
                                     currentAdUnitId = AdConfig.fallbackBannerAdUnitId
                                 }

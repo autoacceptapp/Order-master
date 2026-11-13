@@ -36,6 +36,19 @@ object DeviceUtils {
     private var cachedCustomUserId: String? = null
 
     /**
+     * Returns any previously saved legacy OM-USER-* custom ID without generating a new one.
+     * Used during profile migration into canonical Firebase Auth UID documents.
+     */
+    fun getSavedCustomUserIdOrNull(context: Context): String? {
+        return try {
+            val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.getString(KEY_CUSTOM_USER_ID, null)?.takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
      * Returns a persistent custom User ID formatted as "OM-USER-XXXXXXXX" (8 uppercase alphanumeric characters).
      * Saved in SharedPreferences so it remains permanent for the app installation.
      */
@@ -65,30 +78,26 @@ object DeviceUtils {
 
     /**
      * Returns an immutable, hardware-locked Device Hardware Fingerprint.
+     * Always recomputes and verifies against cached value so SharedPreferences tampering cannot spoof HW ID.
      * Example format: "HW-A1B2C3D4E5F6"
      */
     @Synchronized
     fun getDeviceHardwareId(context: Context): String {
         cachedHardwareId?.let { return it }
 
-        // Check local cache first
-        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val savedId = prefs.getString(KEY_CACHED_HW_ID, null)
-        if (!savedId.isNullOrBlank()) {
-            cachedHardwareId = savedId
-            return savedId
-        }
-
-        // Build hardware fingerprint combining multiple physical device characteristics
+        // Always recompute deterministic hardware fingerprint from physical device attributes
         val rawHardwareString = buildRawHardwareString(context)
         val sha256Hex = sha256(rawHardwareString)
-
-        // Format as standardized hardware key: "HW-" followed by first 16 characters in groups
         val formattedId = "HW-" + sha256Hex.take(16).uppercase(Locale.US)
 
+        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedId = prefs.getString(KEY_CACHED_HW_ID, null)
+        if (!savedId.isNullOrBlank() && savedId != formattedId) {
+            Log.w(TAG, "Hardware ID cache mismatch detected ($savedId != $formattedId); overriding tampered value.")
+        }
         prefs.edit().putString(KEY_CACHED_HW_ID, formattedId).apply()
         cachedHardwareId = formattedId
-        Log.i(TAG, "Generated Immutable Device Hardware ID: $formattedId")
+        Log.i(TAG, "Computed Verified Device Hardware ID: $formattedId")
         return formattedId
     }
 
@@ -136,7 +145,10 @@ object DeviceUtils {
         "/system/bin/failsafe/su",
         "/data/local/su",
         "/su/bin/su",
-        "/system/xbin/daemonsu"
+        "/system/xbin/daemonsu",
+        "/data/adb/magisk",
+        "/data/adb/ksu",
+        "/data/adb/ap"
     )
 
     // Known root management and hooking packages
@@ -146,9 +158,16 @@ object DeviceUtils {
         "eu.chainfire.supersu",
         "com.koushikdutta.superuser",
         "com.topjohnwu.magisk",
+        "io.github.vvb2060.magisk",
+        "me.weishu.kernelsu",
+        "me.bmax.apatch",
         "de.robv.android.xposed.installer",
+        "org.lsposed.manager",
+        "org.meowcat.edxposed.manager",
         "com.saurik.substrate",
-        "com.chelpus.lackypatch"
+        "com.chelpus.lackypatch",
+        "com.dimonvideo.luckypatcher",
+        "com.forpda.lp"
     )
 
     /**
@@ -182,7 +201,7 @@ object DeviceUtils {
             return true
         }
 
-        // 2. Check known su binaries
+        // 2. Check known su binaries & root daemons
         for (path in KNOWN_SU_PATHS) {
             try {
                 if (java.io.File(path).exists()) return true
@@ -195,7 +214,12 @@ object DeviceUtils {
             return true
         } catch (_: Throwable) {}
 
-        // 4. Check root management packages if context is provided
+        // 4. Inspect loaded native libraries for Frida / LSPosed / Substrate
+        if (isHookingFrameworkDetected()) {
+            return true
+        }
+
+        // 5. Check root management packages if context is provided
         if (context != null) {
             val pm = context.packageManager
             for (pkg in KNOWN_ROOT_PACKAGES) {
@@ -207,6 +231,86 @@ object DeviceUtils {
         }
 
         return false
+    }
+
+    /**
+     * Scans /proc/self/maps for injected instrumentation/hooking libraries (Frida, Xposed, LSPosed, Substrate).
+     */
+    fun isHookingFrameworkDetected(): Boolean {
+        if (isUnitTestEnvironment()) return false
+        return try {
+            val mapsFile = java.io.File("/proc/self/maps")
+            if (!mapsFile.exists() || !mapsFile.canRead()) return false
+            val indicators = listOf("frida", "xposed", "lsposed", "edxposed", "substrate", "riru", "zygisk")
+            mapsFile.bufferedReader().useLines { lines ->
+                lines.any { line ->
+                    val lower = line.lowercase(Locale.ROOT)
+                    indicators.any { marker -> lower.contains(marker) }
+                }
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Checks if a debugger is attached or a non-debug release build was re-packaged with FLAG_DEBUGGABLE.
+     */
+    fun isDebuggerOrDebuggableTamper(context: Context? = null): Boolean {
+        if (isUnitTestEnvironment()) return false
+        if (!BuildConfig.DEBUG && (android.os.Debug.isDebuggerConnected() || android.os.Debug.waitingForDebugger())) {
+            Log.w(TAG, "Tamper alert: Active debugger attached in release build.")
+            return true
+        }
+        if (context != null && !BuildConfig.DEBUG) {
+            val isDebuggable = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+            if (isDebuggable) {
+                Log.w(TAG, "Tamper alert: FLAG_DEBUGGABLE set on non-debug APK.")
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * Returns true if runtime hooking (Frida/Xposed) or release debugger tampering is detected.
+     */
+    fun isRuntimeHookOrDebuggerDetected(context: Context? = null): Boolean {
+        if (isUnitTestEnvironment()) return false
+        return isHookingFrameworkDetected() || isDebuggerOrDebuggableTamper(context)
+    }
+
+    /**
+     * Computes uppercase SHA-256 fingerprint of the APK's active signing certificate(s).
+     * Used by backend/Admin attestation to detect repacked/cloned APKs.
+     */
+    @Suppress("DEPRECATION")
+    fun getApkSignatureSha256(context: Context): String {
+        if (isUnitTestEnvironment()) return "ROBOLECTRIC_TEST_SIG"
+        return try {
+            val pm = context.packageManager
+            val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val pkgInfo = pm.getPackageInfo(
+                    context.packageName,
+                    android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
+                )
+                val signingInfo = pkgInfo.signingInfo
+                if (signingInfo == null) emptyArray()
+                else if (signingInfo.hasMultipleSigners()) signingInfo.apkContentsSigners
+                else signingInfo.signingCertificateHistory
+            } else {
+                pm.getPackageInfo(
+                    context.packageName,
+                    android.content.pm.PackageManager.GET_SIGNATURES
+                ).signatures ?: emptyArray()
+            }
+            val firstCert = signatures.firstOrNull() ?: return ""
+            val digest = MessageDigest.getInstance("SHA-256").digest(firstCert.toByteArray())
+            digest.joinToString("") { "%02X".format(it) }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Unable to read APK signing certificate: ${e.message}")
+            ""
+        }
     }
 
     /**
@@ -256,11 +360,11 @@ object DeviceUtils {
             return true
         }
 
-        return false
+        return isDebuggerOrDebuggableTamper(context)
     }
 
     /**
-     * Evaluates comprehensive integrity signals (Play Integrity, Root, Emulator, Hardware Spoofing).
+     * Evaluates comprehensive integrity signals (Play Integrity, Root, Emulator, Hardware Spoofing, Hooks).
      */
     fun isDeviceCompromised(context: Context): Boolean {
         if (isUnitTestEnvironment()) return false

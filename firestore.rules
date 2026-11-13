@@ -2,100 +2,237 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isAuthenticated() {
+    // Global Safety Net (Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Primitives ---
+    function isSignedIn() {
       return request.auth != null;
     }
 
-    // App Settings (e.g. global kill switch app_settings/global)
-    // All client apps can read; client writes are strictly disallowed (Admin only).
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (
+          exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') == 'admin'
+        )
+      );
+    }
+
+    function isOptString(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isOptNumber(data, key, minVal, maxVal) {
+      return !(key in data) || (data[key] is number && data[key] >= minVal && data[key] <= maxVal);
+    }
+
+    function isOptTimestamp(data, key) {
+      return !(key in data) || (data[key] is timestamp && data[key] <= request.time);
+    }
+
+    // --- Validation Blueprints ---
+    function isValidPendingVerificationCreate(data, utrParam) {
+      return data.keys().hasAll(['utr', 'status', 'isUsed', 'userId']) &&
+             data.keys().hasOnly([
+               'utr', 'status', 'isUsed', 'userId', 'firebaseUid',
+               'passName', 'passTier', 'amount', 'deviceHardwareId',
+               'timestamp', 'createdAt'
+             ]) &&
+             data.utr is string && data.utr.size() >= 9 && data.utr.size() <= 16 && data.utr == utrParam &&
+             data.status == 'PENDING' &&
+             data.isUsed == false &&
+             data.userId is string && data.userId == request.auth.uid &&
+             (!('firebaseUid' in data) || (data.firebaseUid is string && data.firebaseUid == request.auth.uid)) &&
+             isOptString(data, 'passName', 60) &&
+             isOptString(data, 'passTier', 40) &&
+             isOptNumber(data, 'amount', 0, 100000) &&
+             isOptString(data, 'deviceHardwareId', 128) &&
+             isOptTimestamp(data, 'timestamp') &&
+             isOptTimestamp(data, 'createdAt');
+    }
+
+    function isValidPendingActionCreate(data) {
+      return data.keys().hasAll(['userId', 'firebaseUid', 'actionType', 'status']) &&
+             data.keys().hasOnly([
+               'userId', 'firebaseUid', 'userEmail', 'linkedHardwareId', 'legacyCustomUserId',
+               'actionType', 'status', 'createdAt',
+               'referralCode', 'passTier', 'pointsCost', 'durationDays', 'durationMs',
+               'utr', 'transactionId', 'amount', 'featureId', 'hours',
+               'oldDocumentId', 'oldHardwareId', 'newHardwareId', 'condition',
+               'current_folder', 'deviceIntegrityOk', 'appSignatureSha256'
+             ]) &&
+             data.firebaseUid is string && data.firebaseUid == request.auth.uid &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.status == 'PENDING' &&
+             data.actionType in [
+               'INIT_PROFILE',
+               'MIGRATE_PROFILE',
+               'UPDATE_PROFILE',
+               'CLAIM_REFERRAL',
+               'REWARD_AD_WATCHED',
+               'PURCHASE_PASS',
+               'ACTIVATE_PASS_PAYMENT',
+               'UNLOCK_FEATURE'
+             ] &&
+             // Never allow client to supply arbitrary points amounts or REWARD_AD_WATCHED amounts
+             (!('amount' in data) || (data.actionType == 'ACTIVATE_PASS_PAYMENT' && data.amount is number && data.amount >= 0 && data.amount <= 100000)) &&
+             isOptString(data, 'userEmail', 256) &&
+             isOptString(data, 'linkedHardwareId', 128) &&
+             isOptString(data, 'legacyCustomUserId', 64) &&
+             isOptString(data, 'referralCode', 32) &&
+             isOptString(data, 'passTier', 40) &&
+             isOptNumber(data, 'pointsCost', 0, 100000) &&
+             isOptNumber(data, 'durationDays', 0, 3650) &&
+             isOptNumber(data, 'durationMs', 0, 315360000000) &&
+             isOptString(data, 'utr', 32) &&
+             isOptString(data, 'transactionId', 64) &&
+             isOptString(data, 'featureId', 64) &&
+             isOptNumber(data, 'hours', 1, 720) &&
+             isOptString(data, 'oldDocumentId', 128) &&
+             isOptString(data, 'oldHardwareId', 128) &&
+             isOptString(data, 'newHardwareId', 128) &&
+             isOptString(data, 'condition', 32) &&
+             isOptString(data, 'current_folder', 32) &&
+             (!('deviceIntegrityOk' in data) || data.deviceIntegrityOk is bool) &&
+             isOptString(data, 'appSignatureSha256', 128) &&
+             isOptTimestamp(data, 'createdAt');
+    }
+
+    // --- Collection Rules ---
+
+    // Admin Allowlist (read own marker only, managed via Firebase Console / Admin SDK)
+    match /admins/{adminId} {
+      allow get: if isSignedIn() && isValidId(adminId) && request.auth.uid == adminId;
+      allow list, create, update, delete: if false;
+    }
+
+    // Global App Settings (e.g., global kill switch app_settings/global)
     match /app_settings/{settingId} {
-      allow read: if true;
-      allow write: if false;
+      allow get: if isValidId(settingId);
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
-    // Public Admin Settings (e.g. payment_config)
+    // Public Admin Settings (payment_config, app_config)
     match /admin_settings/{settingId} {
-      allow read: if true;
-      allow write: if false;
+      allow get: if isValidId(settingId);
+      allow list: if isAdmin();
+      allow create, update, delete: if isAdmin();
     }
 
-    // Pending UTR Verifications: creator can create and view their own UTR submission
-    match /pending_verifications/{utr} {
-      allow create: if isAuthenticated() && (
-        request.resource.data.userId == request.auth.uid ||
-        request.resource.data.firebaseUid == request.auth.uid
-      );
-      allow read: if isAuthenticated() && (
-        resource.data.userId == request.auth.uid ||
-        resource.data.firebaseUid == request.auth.uid
-      );
-      allow update, delete: if false; // Only cloud backend/admin can verify or delete
-    }
-
-    // Global Announcements & In-App Popups for all users
+    // Global Announcements & In-App Popups
     match /global_messages/{messageId} {
-      allow read: if true;
-      allow write: if false; // Admin only
+      allow get: if isValidId(messageId);
+      allow list: if true;
+      allow create, update, delete: if isAdmin();
     }
 
-    // Users collection & referral subcollections
+    // Users Collection: Strictly READ-ONLY for clients (Zero-Trust Thin Client).
+    // All points, passes, trials, rules, bans, and migrations are written exclusively by Admin/Server.
     match /users/{userId} {
-      // Allow get for anyone to inspect device licensing and trial status by document ID
-      allow get: if true;
-      // Listing or querying collection requires authentication
-      allow list: if isAuthenticated();
-      
-      // User can create their initial profile without setting restricted fields
-      allow create: if isAuthenticated() && (
-        request.auth.uid == userId ||
-        request.resource.data.firebaseUid == request.auth.uid
-      ) && (
-        !('isBanned' in request.resource.data) || request.resource.data.isBanned == false
-      ) && (
-        !('pointsBalance' in request.resource.data) || request.resource.data.pointsBalance == 0
+      allow get: if isAdmin() || (
+        isSignedIn() &&
+        isValidId(userId) &&
+        (request.auth.uid == userId || (resource != null && existing().firebaseUid == request.auth.uid))
       );
-
-      // User can update their profile, but server-controlled fields are strictly immutable from client
-      allow update: if isAuthenticated() && (
-        request.auth.uid == userId ||
-        request.resource.data.firebaseUid == request.auth.uid ||
-        (resource != null && resource.data.firebaseUid == request.auth.uid)
-      ) && (
-        (!('pointsBalance' in request.resource.data) || request.resource.data.pointsBalance == resource.data.pointsBalance) &&
-        (!('passExpiresAt' in request.resource.data) || request.resource.data.passExpiresAt == resource.data.passExpiresAt) &&
-        (!('isBanned' in request.resource.data) || request.resource.data.isBanned == resource.data.isBanned) &&
-        (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)
+      allow list: if isAdmin() || (
+        isSignedIn() &&
+        existing().firebaseUid == request.auth.uid
       );
-
-      allow delete: if false;
+      allow create, update, delete: if isAdmin();
 
       // Targeted In-App Messages for specific user
       match /messages/{messageId} {
-        allow read: if isAuthenticated() && (request.auth.uid == userId || resource.data.targetUid == request.auth.uid);
-        allow write: if false; // Admin only
+        allow get: if isAdmin() || (isSignedIn() && isValidId(userId) && isValidId(messageId) && request.auth.uid == userId);
+        allow list: if isAdmin() || (isSignedIn() && isValidId(userId) && request.auth.uid == userId);
+        allow create, update, delete: if isAdmin();
       }
 
+      // Referral Audit Subcollection (Server/Admin only writes)
       match /referrals/{refereeId} {
-        allow read, write: if isAuthenticated();
+        allow get: if isAdmin() || (isSignedIn() && isValidId(userId) && isValidId(refereeId) && request.auth.uid == userId);
+        allow list: if isAdmin() || (isSignedIn() && isValidId(userId) && request.auth.uid == userId);
+        allow create, update, delete: if isAdmin();
       }
     }
 
-    // Action Queue: Client creates requests, listens to their own status, and deletes after completion
+    // Action Queue: Client creates validated PENDING requests for themselves, reads own docs, deletes own docs after completion.
     match /pending_actions/{docId} {
-      allow create: if isAuthenticated() && request.resource.data.firebaseUid == request.auth.uid;
-      allow read, delete: if isAuthenticated() && resource.data.firebaseUid == request.auth.uid;
-      allow update: if false;
+      allow get: if isAdmin() || (
+        isSignedIn() &&
+        isValidId(docId) &&
+        (resource == null || existing().firebaseUid == request.auth.uid)
+      );
+      allow list: if isAdmin() || (
+        isSignedIn() &&
+        existing().firebaseUid == request.auth.uid
+      );
+      allow create: if isAdmin() || (
+        isSignedIn() &&
+        isValidId(docId) &&
+        isValidPendingActionCreate(incoming())
+      );
+      allow update: if isAdmin();
+      allow delete: if isAdmin() || (
+        isSignedIn() &&
+        isValidId(docId) &&
+        existing().firebaseUid == request.auth.uid
+      );
     }
 
-    // Received payments: Authenticated users can read to verify payment and claim their own pass
-    match /received_payments/{utr} {
-      allow read: if isAuthenticated();
-      allow update: if isAuthenticated() && (
-        !resource.data.isUsed ||
-        resource.data.claimedByUserId == request.auth.uid ||
-        request.resource.data.claimedByUserId == request.auth.uid
+    // Pending UTR Verifications: Creator can create PENDING record and listen; only Admin can verify/update.
+    match /pending_verifications/{utr} {
+      allow get: if isAdmin() || (
+        isSignedIn() &&
+        isValidId(utr) &&
+        (resource == null || existing().userId == request.auth.uid || existing().firebaseUid == request.auth.uid)
       );
-      allow create, delete: if false;
+      allow list: if isAdmin() || (
+        isSignedIn() &&
+        (existing().userId == request.auth.uid || existing().firebaseUid == request.auth.uid)
+      );
+      allow create: if isAdmin() || (
+        isSignedIn() &&
+        isValidId(utr) &&
+        isValidPendingVerificationCreate(incoming(), utr)
+      );
+      allow update: if isAdmin();
+      allow delete: if isAdmin() || (
+        isSignedIn() &&
+        isValidId(utr) &&
+        (existing().userId == request.auth.uid || existing().firebaseUid == request.auth.uid)
+      );
+    }
+
+    // Received Payments: Strictly Admin/Server read/write (owner may read only after Admin assigns claimedByUserId).
+    match /received_payments/{utr} {
+      allow get: if isAdmin() || (
+        isSignedIn() &&
+        isValidId(utr) &&
+        resource != null &&
+        existing().claimedByUserId == request.auth.uid
+      );
+      allow list: if isAdmin() || (
+        isSignedIn() &&
+        existing().claimedByUserId == request.auth.uid
+      );
+      allow create, update, delete: if isAdmin();
     }
   }
 }

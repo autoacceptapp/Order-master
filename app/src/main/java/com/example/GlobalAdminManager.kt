@@ -61,7 +61,6 @@ object GlobalAdminManager {
     // Listener registrations
     private var globalSettingsListener: ListenerRegistration? = null
     private var userDocListener: ListenerRegistration? = null
-    private var customUserDocListener: ListenerRegistration? = null
 
     // State: Global Kill Switch
     private val _isServiceActive = MutableStateFlow(true)
@@ -175,8 +174,6 @@ object GlobalAdminManager {
         trackedUid = uid
         userDocListener?.remove()
         userDocListener = null
-        customUserDocListener?.remove()
-        customUserDocListener = null
 
         val ctx = appContext ?: return
         if (FirebaseApp.getApps(ctx).isEmpty()) return
@@ -189,8 +186,6 @@ object GlobalAdminManager {
 
         try {
             val firestore = FirebaseFirestore.getInstance()
-
-            // 1. Listen directly to users/{uid}
             val userDocRef = firestore.collection(COLL_USERS).document(uid)
             userDocListener = userDocRef.addSnapshotListener { snapshot, error ->
                 if (error != null) {
@@ -198,20 +193,6 @@ object GlobalAdminManager {
                     return@addSnapshotListener
                 }
                 processUserBanSnapshot(snapshot)
-            }
-
-            // 2. Also listen to users/{customUserId} as fallback if different
-            val customUserId = DeviceUtils.getCustomUserId(ctx)
-            if (customUserId.isNotBlank() && customUserId != uid) {
-                val customDocRef = firestore.collection(COLL_USERS).document(customUserId)
-                customUserDocListener = customDocRef.addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        return@addSnapshotListener
-                    }
-                    if (_banState.value is UserBanState.NotBanned && snapshot != null && snapshot.exists()) {
-                        processUserBanSnapshot(snapshot)
-                    }
-                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed attaching user ban listener: ${e.message}", e)
@@ -229,7 +210,7 @@ object GlobalAdminManager {
         }
 
         val banUntilTimestamp = extractBanUntilTimestamp(snapshot)
-        val now = System.currentTimeMillis()
+        val now = LicenseManager.getCurrentServerTimeMs()
 
         if (banUntilTimestamp != null && banUntilTimestamp > now) {
             val formatted = formatDateTime(banUntilTimestamp)
@@ -278,7 +259,7 @@ object GlobalAdminManager {
     private fun evaluateCurrentBanState() {
         val current = _banState.value
         if (current is UserBanState.Banned) {
-            if (System.currentTimeMillis() >= current.banUntilTimestamp) {
+            if (LicenseManager.getCurrentServerTimeMs() >= current.banUntilTimestamp) {
                 Log.i(TAG, "User ban expired naturally at timestamp ${current.banUntilTimestamp}. Lifting ban.")
                 _banState.value = UserBanState.NotBanned
                 updateBlockedState()
@@ -303,7 +284,7 @@ object GlobalAdminManager {
         }
         val currentBan = _banState.value
         if (currentBan is UserBanState.Banned) {
-            if (System.currentTimeMillis() < currentBan.banUntilTimestamp) {
+            if (LicenseManager.getCurrentServerTimeMs() < currentBan.banUntilTimestamp) {
                 Log.d(TAG, "Action blocked: User is banned until ${currentBan.formattedDateTime}.")
                 return false
             } else {

@@ -23,13 +23,13 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import com.google.firebase.FirebaseApp
+import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
-import com.google.firebase.firestore.SetOptions
 import com.example.data.PaymentVerificationRepository
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -67,7 +67,7 @@ object PassManager {
     @Synchronized
     fun checkAndRecordUtrRateLimit(
         context: Context,
-        now: Long = System.currentTimeMillis()
+        now: Long = LicenseManager.getCurrentServerTimeMs()
     ): Boolean {
         return try {
             val prefs = context.getSharedPreferences(PREFS_UTR_RATE_LIMIT, Context.MODE_PRIVATE)
@@ -242,7 +242,7 @@ object PassManager {
         try {
             val result = LicenseManager.activatePassViaPayment(tier, cleanUtr)
             if (result.isSuccess) {
-                val now = System.currentTimeMillis()
+                val now = LicenseManager.getCurrentServerTimeMs()
                 val currentExpiry = LicenseManager.activePassInfo.value?.expiryTimestamp ?: 0L
                 val finalExpiryTimestamp = if (currentExpiry > now) currentExpiry else (now + tier.durationMs)
 
@@ -379,23 +379,29 @@ object PassManager {
             // SCENARIO B: App came first OR status == "Pending" / not yet "Verified"
             Log.i(TAG, "Scenario B: Real-time listener waiting for server confirmation for $cleanUtr...")
 
-            // 1. Record pending entry in pending_verifications
-            // Strictly write: status: "PENDING", passName: preferredTier.title, amount: preferredTier.priceInInr, isUsed: false, utr: cleanUtr, userId: userId
-            try {
-                pendingDocRef.set(
-                    mapOf(
-                        "status" to "PENDING",
-                        "passName" to tier.title,
-                        "amount" to tier.priceInInr,
-                        "isUsed" to false,
-                        "utr" to cleanUtr,
-                        "userId" to userId,
-                        "createdAt" to FieldValue.serverTimestamp()
-                    ),
-                    SetOptions.merge()
-                ).await()
-            } catch (e: Exception) {
-                Log.w(TAG, "Recording pending verification ignored or suppressed: ${e.message}")
+            // 1. Create pending entry in pending_verifications only if absent (satisfies strict create rule)
+            if (pendingSnapshot == null || !pendingSnapshot.exists()) {
+                val firebaseUid = try {
+                    FirebaseAuth.getInstance().currentUser?.uid ?: userId
+                } catch (_: Exception) {
+                    userId
+                }
+                try {
+                    pendingDocRef.set(
+                        mapOf(
+                            "status" to "PENDING",
+                            "passName" to tier.title,
+                            "amount" to tier.priceInInr,
+                            "isUsed" to false,
+                            "utr" to cleanUtr,
+                            "userId" to userId,
+                            "firebaseUid" to firebaseUid,
+                            "createdAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Recording pending verification ignored or suppressed: ${e.message}")
+                }
             }
 
             // 2. Suspend with real-time snapshot listener wrapped in 120-second (2 minutes) timeout
@@ -564,10 +570,12 @@ object PassManager {
             if (doc.exists()) {
                 val paymentStatus = doc.getString("payment_status")
                     ?: doc.getString("paymentStatus")
-                    ?: if (doc.getBoolean("isPaymentVerified") == true) "SUCCESS" else "FAILED"
+                    ?: if (doc.getBoolean("isPaymentVerified") == true || !doc.getString("activePassType").isNullOrBlank()) "SUCCESS" else "FAILED"
 
-                val passExpiryDate: Long = doc.getLong("pass_expiry_date")
+                val passExpiryDate: Long = doc.getLong("passExpiryTimestamp")
+                    ?: doc.getLong("pass_expiry_date")
                     ?: doc.getLong("passExpiryDate")
+                    ?: doc.getLong("passExpiry")
                     ?: doc.getLong("subscriptionExpiryTimestamp")
                     ?: doc.getDate("subscriptionExpiry")?.time
                     ?: 0L

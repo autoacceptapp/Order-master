@@ -21,3 +21,5 @@ app/google-services.json
 *.jks
 release.jks
 app/release.jks
+*-debug.log
+

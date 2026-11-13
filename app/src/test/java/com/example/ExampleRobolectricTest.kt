@@ -10,6 +10,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowToast
 import kotlinx.coroutines.test.runTest
 
 @RunWith(RobolectricTestRunner::class)
@@ -32,40 +33,58 @@ class ExampleRobolectricTest {
     @Test
     fun `test app settings preferences and reactive state`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        AppSettings.resetBusinessStateForTest(context)
 
-        // Default values
-        assertTrue(AppSettings.isAutoAcceptEnabled(context))
-        assertEquals(AppSettings.DEFAULT_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
-        assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.getMaxFare(context), 0.01f)
-        assertEquals(3.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
-
-        // Update values
-        AppSettings.setAutoAcceptEnabled(context, false)
+        // Restricted safe default values before Firestore provisioning
         assertFalse(AppSettings.isAutoAcceptEnabled(context))
+        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.getMaxFare(context), 0.01f)
+        assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
+
+        // Business setters must NEVER mutate RAM StateFlows or local variables (Read-Only Client)
+        AppSettings.setAutoAcceptEnabled(context, true)
+        assertFalse(AppSettings.isAutoAcceptEnabled(context))
+        assertFalse(AppSettings.autoAcceptEnabled)
+        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
 
         AppSettings.setMinFare(context, 75.0f)
-        assertEquals(75.0f, AppSettings.getMinFare(context), 0.01f)
-        assertEquals(75.0f, AppSettings.getMinPrice(context), 0.01f)
+        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinPrice(context), 0.01f)
 
         AppSettings.setMaxFare(context, 800.0f)
-        assertEquals(800.0f, AppSettings.getMaxFare(context), 0.01f)
-        assertEquals(800.0f, AppSettings.getMaxPrice(context), 0.01f)
+        assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.getMaxFare(context), 0.01f)
+        assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.getMaxPrice(context), 0.01f)
 
         AppSettings.setMaxPickupDistance(context, 2.5f)
+        assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
+
+        // Authoritative Firestore snapshot drives RAM StateFlows
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "autoAcceptEnabled" to true,
+                "minFare" to 75.0,
+                "maxFare" to 800.0,
+                "maxPickupDistance" to 2.5
+            )
+        )
+        assertTrue(AppSettings.isAutoAcceptEnabled(context))
+        assertEquals(75.0f, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(75.0f, AppSettings.getMinPrice(context), 0.01f)
+        assertEquals(800.0f, AppSettings.getMaxFare(context), 0.01f)
+        assertEquals(800.0f, AppSettings.getMaxPrice(context), 0.01f)
         assertEquals(2.5f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
-        // Enforce 0.0 to 3.0 km clamp
-        AppSettings.setMaxPickupDistance(context, 7.5f)
+        // Enforce 0.0 to 3.0 km clamp on Firestore snapshot values
+        AppSettings.applyFirestoreSnapshotForTest(context, mapOf("maxPickupDistance" to 7.5))
         assertEquals(3.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
-        AppSettings.setMaxPickupDistance(context, -1.0f)
+        AppSettings.applyFirestoreSnapshotForTest(context, mapOf("maxPickupDistance" to -1.0))
         assertEquals(0.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
-        // Reset for subsequent tests
-        AppSettings.setAutoAcceptEnabled(context, true)
-        AppSettings.setMinFare(context, AppSettings.DEFAULT_MIN_FARE)
-        AppSettings.setMaxFare(context, AppSettings.DEFAULT_MAX_FARE)
-        AppSettings.setMaxPickupDistance(context, 3.0f)
+        // Reset to restricted defaults
+        AppSettings.resetBusinessStateForTest(context)
+        assertFalse(AppSettings.isAutoAcceptEnabled(context))
     }
 
     @Test
@@ -266,24 +285,32 @@ class ExampleRobolectricTest {
     @Test
     fun `test voice announcer app settings and state persistence`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        AppSettings.resetBusinessStateForTest(context)
 
-        // Check defaults
-        assertTrue(AppSettings.isVoiceAnnouncerEnabled(context))
+        // Check restricted defaults (voice announcer off until provisioned)
+        assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
         assertEquals("en", AppSettings.getVoiceLanguage(context))
 
-        // Update settings
-        AppSettings.setVoiceAnnouncerEnabled(context, false)
+        // Client setter for business/premium toggle must be strictly blocked
+        AppSettings.setVoiceAnnouncerEnabled(context, true)
         assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
         assertFalse(AppSettings.settingsState.value.isVoiceAnnouncerEnabled)
+        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
 
+        // Firestore snapshot enables voice announcer in RAM
+        AppSettings.applyFirestoreSnapshotForTest(context, mapOf("isVoiceAnnouncerEnabled" to true))
+        assertTrue(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertTrue(AppSettings.settingsState.value.isVoiceAnnouncerEnabled)
+
+        // Local UI preference (language) remains locally configurable
         AppSettings.setVoiceLanguage(context, "hi")
         assertEquals("hi", AppSettings.getVoiceLanguage(context))
         assertEquals("hi", AppSettings.settingsState.value.voiceLanguage)
 
         // Reset
-        AppSettings.setVoiceAnnouncerEnabled(context, true)
+        AppSettings.resetBusinessStateForTest(context)
         AppSettings.setVoiceLanguage(context, "en")
-        assertTrue(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
         assertEquals("en", AppSettings.getVoiceLanguage(context))
     }
 
@@ -824,43 +851,81 @@ class ExampleRobolectricTest {
     @Test
     fun `test app settings rate per km and destination blacklist persistence`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        AppSettings.resetBusinessStateForTest(context)
 
-        // Per-Km Rate
+        // Client setters for Per-Km Rate and Blacklist must be strictly blocked
         AppSettings.setMinPerKmRateEnabled(context, true)
-        assertTrue(AppSettings.isMinPerKmRateEnabled(context))
+        assertFalse(AppSettings.isMinPerKmRateEnabled(context))
+        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
+
         AppSettings.setMinPerKmRate(context, 14.0f)
+        assertEquals(AppSettings.DEFAULT_MIN_PER_KM_RATE, AppSettings.getMinPerKmRate(context), 0.01f)
+
+        AppSettings.setDestinationBlacklistEnabled(context, true)
+        assertFalse(AppSettings.isDestinationBlacklistEnabled(context))
+        AppSettings.setBlockedLocations(context, listOf("Airport", "Toll"))
+        assertTrue(AppSettings.getBlockedLocations(context).isEmpty())
+        AppSettings.addBlockedLocation(context, "Slum Area")
+        assertTrue(AppSettings.getBlockedLocations(context).isEmpty())
+        AppSettings.removeBlockedLocation(context, "Airport")
+        assertTrue(AppSettings.getBlockedLocations(context).isEmpty())
+
+        // Firestore snapshot updates Per-Km Rate and Destination Blacklist in RAM
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "isMinPerKmRateEnabled" to true,
+                "minPerKmRate" to 14.0,
+                "isDestinationBlacklistEnabled" to true,
+                "blockedLocations" to listOf("Airport", "Toll", "Slum Area")
+            )
+        )
+        assertTrue(AppSettings.isMinPerKmRateEnabled(context))
         assertEquals(14.0f, AppSettings.getMinPerKmRate(context), 0.01f)
         assertEquals(14.0f, AppSettings.settingsState.value.minPerKmRate, 0.01f)
-
-        // Destination Blacklist
-        AppSettings.setDestinationBlacklistEnabled(context, true)
         assertTrue(AppSettings.isDestinationBlacklistEnabled(context))
-        AppSettings.setBlockedLocations(context, listOf("Airport", "Toll"))
-        assertTrue(AppSettings.getBlockedLocations(context).contains("Airport"))
-        assertTrue(AppSettings.getBlockedLocations(context).contains("Toll"))
+        assertTrue(AppSettings.getBlockedLocations(context).containsAll(listOf("Airport", "Toll", "Slum Area")))
 
-        AppSettings.addBlockedLocation(context, "Slum Area")
-        assertTrue(AppSettings.getBlockedLocations(context).contains("Slum Area"))
-
-        AppSettings.removeBlockedLocation(context, "Airport")
-        assertFalse(AppSettings.getBlockedLocations(context).contains("Airport"))
+        AppSettings.resetBusinessStateForTest(context)
     }
 
     @Test
-    fun `test zero local storage for auto accept master toggle`() {
+    fun `test zero local storage for auto accept master toggle and business rules`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val prefs = context.getSharedPreferences(AppSettings.PREFS_NAME, Context.MODE_PRIVATE)
 
-        // Ensure changing autoAcceptEnabled updates in-memory state but NEVER writes to SharedPreferences
-        AppSettings.setAutoAcceptEnabled(context, false)
-        assertFalse(AppSettings.isAutoAcceptEnabled(context))
-        assertFalse(prefs.contains(AppSettings.KEY_AUTO_ACCEPT_ENABLED))
-        assertFalse(prefs.contains(AppSettings.KEY_SERVICE_ENABLED))
+        // Seed legacy business keys and confirm init() purges them from SharedPreferences
+        prefs.edit()
+            .putBoolean("key_auto_accept_enabled", true)
+            .putFloat("key_min_fare", 99.0f)
+            .putBoolean("key_floating_overlay_enabled", true)
+            .apply()
+        AppSettings.init(context)
 
+        // Ensure RAM updates NEVER write business keys to SharedPreferences
         AppSettings.setAutoAcceptEnabled(context, true)
-        assertTrue(AppSettings.isAutoAcceptEnabled(context))
-        assertFalse(prefs.contains(AppSettings.KEY_AUTO_ACCEPT_ENABLED))
-        assertFalse(prefs.contains(AppSettings.KEY_SERVICE_ENABLED))
+        AppSettings.setMinFare(context, 120.0f)
+        AppSettings.setMaxPickupDistance(context, 2.2f)
+        AppSettings.setFloatingOverlayEnabled(context, true)
+        AppSettings.setVoiceAnnouncerEnabled(context, true)
+        AppSettings.setBlockedLocations(context, listOf("Airport"))
+
+        val forbiddenKeys = listOf(
+            "key_auto_accept_enabled",
+            "key_service_enabled",
+            "key_min_fare",
+            "key_min_fare_enabled",
+            "key_max_fare",
+            "key_max_pickup_distance",
+            "key_blocked_locations",
+            "key_floating_overlay_enabled",
+            "key_voice_announcer_enabled",
+            "key_auto_click_enabled"
+        )
+        for (key in forbiddenKeys) {
+            assertFalse("Forbidden business key persisted in SharedPreferences: $key", prefs.contains(key))
+        }
+        AppSettings.resetBusinessStateForTest(context)
     }
 
     @Test
@@ -1011,6 +1076,77 @@ class ExampleRobolectricTest {
         assertFalse(MyAccessibilityService.REJECTION_INDICATORS_REGEX.containsMatchIn(standardOffer))
         assertFalse(MyAccessibilityService.ACTIVE_TRIP_INDICATORS_REGEX.containsMatchIn(standardOffer))
     }
+
+    @Test
+    fun `test zero trust thin client firestore snapshot sync signout reset and evaluation latency`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        AppSettings.resetBusinessStateForTest(context)
+
+        // 1. Missing Firestore doc falls back to strict safe restricted defaults
+        AppSettings.applyFirestoreSnapshotForTest(context, null)
+        assertFalse(AppSettings.isAutoAcceptEnabled(context))
+        assertEquals(0.0f, AppSettings.minFare.value, 0.01f)
+        assertEquals(0.0f, AppSettings.maxPickupDistanceFlow.value, 0.01f)
+        assertFalse(AppSettings.isFloatingOverlayEnabled(context))
+        assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertEquals(null, AppSettings.activePassTypeFlow.value)
+        assertEquals(0L, AppSettings.passExpiryTimestampFlow.value)
+        assertTrue(AppSettings.unlockedFeaturesFlow.value.isEmpty())
+
+        // 2. Push Firestore users/{uid} snapshot fields into RAM StateFlows
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L
+        val snapshotData = mapOf<String, Any?>(
+            "autoAcceptEnabled" to true,
+            "minFare" to 85.0,
+            "maxPickupDistance" to 2.0,
+            "isFloatingOverlayEnabled" to true,
+            "isVoiceAnnouncerEnabled" to true,
+            "activePassType" to "DAILY_PASS",
+            "passExpiryTimestamp" to futureExpiry,
+            "unlocked_features" to mapOf("FARE_FILTERS" to futureExpiry, "TTS_VOICE" to futureExpiry),
+            "blockedLocations" to listOf("Airport", "Highway Toll")
+        )
+        AppSettings.applyFirestoreSnapshotForTest(context, snapshotData)
+
+        assertTrue(AppSettings.isAutoAcceptEnabled(context))
+        assertEquals(85.0f, AppSettings.minFare.value, 0.01f)
+        assertEquals(2.0f, AppSettings.maxPickupDistanceFlow.value, 0.01f)
+        assertTrue(AppSettings.isFloatingOverlayEnabled(context))
+        assertTrue(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertEquals("DAILY_PASS", AppSettings.activePassTypeFlow.value)
+        assertEquals(futureExpiry, AppSettings.passExpiryTimestampFlow.value)
+        assertTrue(AppSettings.isPassActiveFlow.value)
+        assertEquals(futureExpiry, AppSettings.unlockedFeaturesFlow.value["FARE_FILTERS"])
+        assertEquals(listOf("Airport", "Highway Toll"), AppSettings.getBlockedLocations(context))
+
+        // 3. Verify synchronous order evaluation from RAM completes well under 300ms
+        val offer = ParsedRideOffer(
+            rawText = "₹120 • 1.2km away • Station to City Centre",
+            totalFare = 120.0,
+            fareBreakdown = listOf(120.0),
+            pickupDistanceKm = 1.2,
+            dropDistanceKm = 4.0,
+            dropText = "City Centre",
+            hasAcceptButton = true
+        )
+        val startNs = System.nanoTime()
+        val evaluation = TextAnalysisEngine.evaluateRideOffer(offer, AppSettings.settingsState.value)
+        val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+        assertTrue(evaluation.isAccepted)
+        assertTrue("Expected synchronous RAM evaluation <300ms, got ${elapsedMs}ms", elapsedMs < 300L)
+
+        // 4. Sign-out resets all business StateFlows to strict restricted defaults
+        AppSettings.signOut(context)
+        assertFalse(AppSettings.isAutoAcceptEnabled(context))
+        assertEquals(0.0f, AppSettings.minFare.value, 0.01f)
+        assertEquals(0.0f, AppSettings.maxPickupDistanceFlow.value, 0.01f)
+        assertFalse(AppSettings.isFloatingOverlayEnabled(context))
+        assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertEquals(null, AppSettings.activePassTypeFlow.value)
+        assertEquals(0L, AppSettings.passExpiryTimestampFlow.value)
+        assertTrue(AppSettings.unlockedFeaturesFlow.value.isEmpty())
+    }
 }
+
 
 

@@ -109,25 +109,14 @@ object HardwareIdManager {
     fun getHardwareDetails(context: Context): HardwareDetails {
         cachedHardwareDetails?.let { return it }
 
+        // Always recompute physical Widevine / hardware fingerprint to prevent SharedPreferences spoofing
+        val details = generatePermanentHardwareId(context)
+
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedId = prefs.getString(KEY_PERMANENT_HARDWARE_ID, null)
-        val savedHash = prefs.getString(KEY_FULL_SHA256, null)
-        val savedSource = prefs.getString(KEY_ID_SOURCE, null)
-
-        if (!savedId.isNullOrEmpty() && !savedHash.isNullOrEmpty() && !savedSource.isNullOrEmpty()) {
-            val details = HardwareDetails(
-                formattedId = savedId,
-                fullSha256 = savedHash,
-                source = savedSource,
-                isHardwareDrm = savedSource.contains("Widevine", ignoreCase = true)
-            )
-            cachedHardwareDetails = details
-            cachedHardwareId = details.formattedId
-            return details
+        if (!savedId.isNullOrEmpty() && savedId != details.formattedId) {
+            Log.w(TAG, "HardwareIdManager cache mismatch ($savedId != ${details.formattedId}); restoring genuine hardware ID.")
         }
-
-        // Generate permanent ID from physical Widevine DRM crypto-hardware
-        val details = generatePermanentHardwareId(context)
 
         prefs.edit()
             .putString(KEY_PERMANENT_HARDWARE_ID, details.formattedId)
