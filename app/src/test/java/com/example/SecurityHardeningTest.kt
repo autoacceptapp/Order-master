@@ -154,4 +154,61 @@ class SecurityHardeningTest {
             LicenseManager.hasLoadedLicensing
         )
     }
+
+    @Test
+    fun adminExplicitLockOverridesProPassAndLocalFilterXmlTampering() {
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = PassTier.MONTHLY,
+            passExpiry = futureExpiry,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = false
+        )
+        LicenseManager.refreshAccessStatus(context)
+        assertTrue(LicenseManager.isAccessGranted())
+
+        // Attacker manually writes enabled=true in local USER_FILTER_PREFS XML for MIN_FARE
+        val filterPrefs = context.getSharedPreferences(AppSettings.USER_FILTER_PREFS_NAME, Context.MODE_PRIVATE)
+        filterPrefs.edit()
+            .putBoolean("user_min_fare_enabled", true)
+            .putFloat("user_min_fare", 150f)
+            .putBoolean("user_auto_click_enabled", true)
+            .commit()
+
+        // Admin explicitly locks MIN_FARE and AUTO_CLICK via Firestore
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(FeatureIds.MIN_FARE to -1L, FeatureIds.AUTO_CLICK to -1L),
+            locked = setOf(FeatureIds.MIN_FARE, FeatureIds.AUTO_CLICK)
+        )
+        AppSettings.init(context)
+
+        assertTrue(LicenseManager.isFeatureLockedByAdmin(FeatureIds.MIN_FARE))
+        assertFalse("Admin lock must override Pro Pass!", LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE))
+        assertFalse("Locked filter must NEVER report enabled even if local XML was edited!", AppSettings.isMinFareEnabled(context))
+        assertFalse("Admin lock on AUTO_CLICK must block auto-accept capability!", LicenseManager.hasAnyAutoAcceptCapability())
+        assertFalse(AppSettings.isAutoClickEnabled(context))
+    }
+
+    @Test
+    fun freeModeGranularFilterUnlockEnablesOnlyChosenFiltersAndAutoAcceptCapability() {
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        assertFalse(LicenseManager.isAccessGranted())
+        assertFalse(LicenseManager.hasAnyAutoAcceptCapability())
+
+        // User unlocks ONLY MIN_FARE and DESTINATION_BLACKLIST in Free Mode
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.DESTINATION_BLACKLIST to futureExpiry
+            )
+        )
+
+        assertTrue(LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE))
+        assertFalse("Buying MIN_FARE must NOT unlock MAX_FARE", LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE))
+        assertTrue(LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST))
+        assertFalse(LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK))
+        assertTrue("Unlocking >= 1 filter in Free Mode must permit standard-speed Auto-Accept", LicenseManager.hasAnyAutoAcceptCapability())
+    }
 }

@@ -168,8 +168,9 @@ open class MyAccessibilityService : AccessibilityService() {
 
     private val accessCheckRunnable = object : Runnable {
         override fun run() {
-            val isPro = PassManager.isAccessGranted(this@MyAccessibilityService)
-            Log.d(TAG, "Periodic 30s check: Mode = ${if (isPro) "PRO MODE (Active Pass/Trial)" else "FREE MODE (Blind Accept)"}")
+            val isPro = LicenseManager.isAccessGranted()
+            val canAuto = LicenseManager.hasAnyAutoAcceptCapability()
+            Log.d(TAG, "Periodic 30s check: Mode = ${if (isPro) "PRO MODE" else if (canAuto) "FREE MODE (Custom Filters)" else "FREE MODE (Locked)"}")
             mainHandler.postDelayed(this, 30_000L)
         }
     }
@@ -554,9 +555,12 @@ open class MyAccessibilityService : AccessibilityService() {
         )
         broadcastLog("Detected ${offers.size} distinct order card${if (offers.size > 1) "s" else ""} [${if (isProMode) "Pro" else "Free"}]")
 
-        // Pay-Per-Use Feature Checks:
-        val isFareFiltersUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.FARE_FILTERS)
-        val isDistanceFiltersUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.DISTANCE_FILTERS)
+        // Granular Pay-Per-Use & Admin Lock/Unlock Feature Checks:
+        val isMinFareUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)
+        val isMaxFareUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)
+        val isMinPerKmRateUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)
+        val isPickupDistUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)
+        val isDropDistUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)
         val isBlacklistUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
         val isAutoClickSpeedUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK)
         val isTtsVoiceUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE)
@@ -568,12 +572,12 @@ open class MyAccessibilityService : AccessibilityService() {
         val minPerKmRate = AppSettings.getMinPerKmRate(this)
         val blockedLocations = AppSettings.getBlockedLocations(this)
 
-        // Dynamically override user's filter toggles based on feature unlock status
-        val isMinFareEnabled = isFareFiltersUnlocked && AppSettings.isMinFareEnabled(this)
-        val isMaxFareEnabled = isFareFiltersUnlocked && AppSettings.isMaxFareEnabled(this)
-        val isMinPerKmRateEnabled = isFareFiltersUnlocked && AppSettings.isMinPerKmRateEnabled(this)
-        val isMaxPickupDistEnabled = isDistanceFiltersUnlocked && AppSettings.isMaxPickupDistanceEnabled(this)
-        val isMaxDropDistEnabled = isDistanceFiltersUnlocked && AppSettings.isMaxDropDistanceEnabled(this)
+        // Enforce both user's toggle AND server-authoritative feature unlock status
+        val isMinFareEnabled = isMinFareUnlocked && AppSettings.isMinFareEnabled(this)
+        val isMaxFareEnabled = isMaxFareUnlocked && AppSettings.isMaxFareEnabled(this)
+        val isMinPerKmRateEnabled = isMinPerKmRateUnlocked && AppSettings.isMinPerKmRateEnabled(this)
+        val isMaxPickupDistEnabled = isPickupDistUnlocked && AppSettings.isMaxPickupDistanceEnabled(this)
+        val isMaxDropDistEnabled = isDropDistUnlocked && AppSettings.isMaxDropDistanceEnabled(this)
         val isDestinationBlacklistEnabled = isBlacklistUnlocked && AppSettings.isDestinationBlacklistEnabled(this)
         val effectiveBlockedLocations = if (isBlacklistUnlocked) blockedLocations else emptyList()
 
@@ -645,16 +649,16 @@ open class MyAccessibilityService : AccessibilityService() {
         // Find best matching valid offer for auto-accept
         val matchingOffers = evaluatedOffers.filter { it.second.isAccepted }
         if (matchingOffers.isNotEmpty() && isAutoAccept) {
-            val hasActiveAccess = LicenseManager.isAccessGranted() || isAutoClickSpeedUnlocked
+            val hasActiveAccess = LicenseManager.hasAnyAutoAcceptCapability()
             if (!hasActiveAccess) {
                 val topOffer = matchingOffers.first().first
                 AppSettings.addLog(
-                    title = "Pass / Trial Expired",
-                    message = "Matching ride detected (₹${topOffer.totalFare?.toInt() ?: 0}), but active subscription pass or trial is required. Automated clicking paused.",
+                    title = "Unlock Required",
+                    message = "Matching ride detected (₹${topOffer.totalFare?.toInt() ?: 0}), but an active Pass/Trial or at least 1 unlocked filter/Auto-Click feature is required.",
                     severity = LogSeverity.WARNING,
                     evaluation = matchingOffers.first().second
                 )
-                broadcastLog("Auto-Accept paused: Subscription pass or trial expired. Tap to renew.")
+                broadcastLog("Auto-Accept paused: Unlock a filter with Points or activate a Pass.")
                 return
             }
 
@@ -699,8 +703,11 @@ open class MyAccessibilityService : AccessibilityService() {
                 }
             }, acceptDelayMs)
         } else if (isAutoAccept && evaluatedOffers.isNotEmpty()) {
-            // Smart Auto-Reject: Only execute if FARE_FILTERS or another relevant filter is unlocked
-            val hasAnyFilterUnlocked = isFareFiltersUnlocked || isDistanceFiltersUnlocked || isBlacklistUnlocked
+            // Smart Auto-Reject: Execute if any evaluation filter is unlocked (and Auto-Click isn't Admin locked)
+            val hasAnyFilterUnlocked = !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) && (
+                isMinFareUnlocked || isMaxFareUnlocked || isMinPerKmRateUnlocked ||
+                    isPickupDistUnlocked || isDropDistUnlocked || isBlacklistUnlocked
+            )
             if (hasAnyFilterUnlocked) {
                 val isAutoClick = AppSettings.isAutoClickEnabled(this)
                 if (isAutoClick) {
@@ -752,10 +759,15 @@ open class MyAccessibilityService : AccessibilityService() {
      * located inside the spatial bounds of an invalid/rejected order card to clear the screen.
      */
     private suspend fun executeCardRejectClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
-        // Security check: Active pass/trial OR relevant filter feature unlocked
-        val hasAnyFilterUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.FARE_FILTERS) ||
-                LicenseManager.isFeatureUnlocked(FeatureIds.DISTANCE_FILTERS) ||
+        // Security check: Active pass/trial OR at least one unlocked granular filter (and AUTO_CLICK not Admin-locked)
+        val hasAnyFilterUnlocked = !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) && (
+            LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE) ||
+                LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE) ||
+                LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE) ||
+                LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE) ||
+                LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE) ||
                 LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
+        )
         if (!hasAnyFilterUnlocked) {
             Log.w(TAG, "executeCardRejectClick: Auto-reject blocked. No filters unlocked.")
             return

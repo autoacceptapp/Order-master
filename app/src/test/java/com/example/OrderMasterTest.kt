@@ -28,6 +28,7 @@ class OrderMasterTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        LicenseManager.resetStateForTesting(context)
         AppSettings.init(context)
         AppSettings.resetBusinessStateForTest(context)
         database = AppDatabase.getDatabase(context)
@@ -35,15 +36,16 @@ class OrderMasterTest {
 
     @After
     fun tearDown() {
+        LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
     }
 
     @Test
     fun testModularFilterSettings() {
-        // Local setter invocations must be strictly blocked and leave restricted defaults intact
+        // Locked filters cannot be turned ON or modified by user
         AppSettings.setMinFareEnabled(context, true)
         assertFalse(AppSettings.isMinFareEnabled(context))
-        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
+        assertEquals("Unlock Minimum Fare Filter with Points or Pro Pass", ShadowToast.getTextOfLatestToast())
 
         AppSettings.setMaxDropDistanceEnabled(context, true)
         assertFalse(AppSettings.isMaxDropDistanceEnabled(context))
@@ -51,17 +53,21 @@ class OrderMasterTest {
         AppSettings.setMaxDropDistance(context, 12.0f)
         assertEquals(AppSettings.DEFAULT_MAX_DROP_DISTANCE, AppSettings.getMaxDropDistance(context), 0.01f)
 
-        // Authoritative Firestore snapshot drives modular filter toggles & thresholds in RAM
-        AppSettings.applyFirestoreSnapshotForTest(
-            context,
-            mapOf(
-                "isMinFareEnabled" to true,
-                "isMaxFareEnabled" to false,
-                "isMaxPickupDistanceEnabled" to false,
-                "isMaxDropDistanceEnabled" to true,
-                "maxDropDistance" to 12.0
+        // Unlock ONLY MIN_FARE and MAX_DROP_DISTANCE via Points/Admin in Free Mode
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.MAX_DROP_DISTANCE to futureExpiry
             )
         )
+
+        // User CAN now configure unlocked filters, while still blocked on MAX_FARE & MAX_PICKUP_DISTANCE
+        AppSettings.setMinFareEnabled(context, true)
+        AppSettings.setMaxFareEnabled(context, true) // still locked
+        AppSettings.setMaxDropDistanceEnabled(context, true)
+        AppSettings.setMaxDropDistance(context, 12.0f)
+
         assertTrue(AppSettings.isMinFareEnabled(context))
         assertFalse(AppSettings.isMaxFareEnabled(context))
         assertFalse(AppSettings.isMaxPickupDistanceEnabled(context))
@@ -71,21 +77,33 @@ class OrderMasterTest {
 
     @Test
     fun testQuickPresets() {
-        // Client-side presets are strictly blocked in Read-Only Thin-Client mode
+        // Locked: presets blocked
         AppSettings.applyPreset(context, "peak")
-        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
+        assertEquals("Unlock filters or activate Pro Pass to apply presets", ShadowToast.getTextOfLatestToast())
         assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
         assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
+
+        // Unlock multiple filters (MIN_FARE + MAX_PICKUP_DISTANCE): preset updates ONLY unlocked filters
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.MAX_PICKUP_DISTANCE to futureExpiry
+            )
+        )
+
+        AppSettings.applyPreset(context, "peak")
+        assertEquals(100f, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(1.5f, AppSettings.getMaxPickupDistance(context), 0.01f)
+        assertFalse(AppSettings.isMaxDropDistanceEnabled(context)) // still locked!
 
         AppSettings.applyPreset(context, "short")
-        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
-        assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.getMaxFare(context), 0.01f)
-        assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
-        assertFalse(AppSettings.isMaxDropDistanceEnabled(context))
+        assertEquals(40f, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(1.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
         AppSettings.applyPreset(context, "default")
-        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
-        assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
+        assertEquals(AppSettings.DEFAULT_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(AppSettings.DEFAULT_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
     }
 
     @Test

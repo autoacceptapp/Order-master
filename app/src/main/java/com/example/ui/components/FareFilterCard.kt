@@ -99,6 +99,7 @@ fun FareFilterCard(
     testTag: String = "fare_filter_card",
     isProMode: Boolean = true,
     isUnlocked: Boolean = isProMode,
+    isAdminLocked: Boolean = false,
     featureId: String? = null,
     onUnlockClick: (() -> Unit)? = null,
     remainingTimeText: String? = null,
@@ -141,11 +142,13 @@ fun FareFilterCard(
         derivedStateOf { "Max: ₹${valueRange.endInclusive.toInt()}" }
     }
 
+    val effectivelyUnlocked = isUnlocked && !isAdminLocked
+
     Card(
         modifier = modifier
             .fillMaxWidth()
             .testTag(testTag)
-            .alpha(if (isUnlocked) 1f else 0.85f),
+            .alpha(if (effectivelyUnlocked) 1f else 0.85f),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
@@ -153,7 +156,7 @@ fun FareFilterCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         border = CardDefaults.outlinedCardBorder().copy(
             brush = Brush.linearGradient(
-                if (isEnabled && isUnlocked) {
+                if (isEnabled && effectivelyUnlocked) {
                     listOf(
                         accentColor.copy(alpha = 0.5f),
                         MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
@@ -190,7 +193,7 @@ fun FareFilterCard(
                             .size(42.dp)
                             .clip(CircleShape)
                             .background(
-                                if (isEnabled && isUnlocked) {
+                                if (isEnabled && effectivelyUnlocked) {
                                     accentColor.copy(alpha = 0.15f)
                                 } else {
                                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
@@ -201,7 +204,7 @@ fun FareFilterCard(
                         Icon(
                             imageVector = icon,
                             contentDescription = title,
-                            tint = if (isEnabled && isUnlocked) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                            tint = if (isEnabled && effectivelyUnlocked) accentColor else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(22.dp)
                         )
                     }
@@ -218,7 +221,33 @@ fun FareFilterCard(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                             )
-                            if (isUnlocked && remainingTimeText != null) {
+                            if (isAdminLocked) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.errorContainer
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = "Locked by Admin",
+                                            modifier = Modifier.size(11.dp),
+                                            tint = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                        Text(
+                                            text = "Locked by Admin",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                                fontSize = 9.sp
+                                            )
+                                        )
+                                    }
+                                }
+                            } else if (effectivelyUnlocked && remainingTimeText != null) {
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
                                     color = accentColor.copy(alpha = 0.15f)
@@ -233,7 +262,7 @@ fun FareFilterCard(
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
                                 }
-                            } else if (!isUnlocked) {
+                            } else if (!effectivelyUnlocked) {
                                 if (onUnlockClick != null) {
                                     FilledTonalButton(
                                         onClick = onUnlockClick,
@@ -300,9 +329,9 @@ fun FareFilterCard(
                 Spacer(modifier = Modifier.width(8.dp))
 
                 Switch(
-                    checked = isEnabled && isUnlocked,
-                    onCheckedChange = if (isUnlocked) currentOnToggle else null,
-                    enabled = isUnlocked,
+                    checked = isEnabled && effectivelyUnlocked,
+                    onCheckedChange = if (effectivelyUnlocked) currentOnToggle else null,
+                    enabled = effectivelyUnlocked,
                     modifier = Modifier.testTag("${testTag}_switch"),
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = Color.White,
@@ -314,10 +343,10 @@ fun FareFilterCard(
             }
 
             // =========================================================================
-            // 2. EXPANDABLE BODY: Visible when Switch is ON
+            // 2. EXPANDABLE BODY: Visible when Switch is ON & Unlocked
             // =========================================================================
             AnimatedVisibility(
-                visible = isEnabled,
+                visible = isEnabled && effectivelyUnlocked,
                 enter = fadeIn(animationSpec = spring()) + expandVertically(animationSpec = spring()),
                 exit = fadeOut(animationSpec = spring()) + shrinkVertically(animationSpec = spring())
             ) {
@@ -385,7 +414,7 @@ fun FareFilterCard(
                     ) {
                         OutlinedTextField(
                             value = textInput,
-                            enabled = isUnlocked,
+                            enabled = effectivelyUnlocked,
                             onValueChange = { newText ->
                                 textInput = newText.filter { it.isDigit() }
                                 val parsed = textInput.toFloatOrNull()
@@ -443,7 +472,7 @@ fun FareFilterCard(
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Slider(
                             value = localSliderValue,
-                            enabled = isUnlocked,
+                            enabled = effectivelyUnlocked,
                             onValueChange = { newVal ->
                                 isDraggingSlider = true
                                 localSliderValue = newVal
@@ -492,7 +521,7 @@ fun FareFilterCard(
                                 val isSelected = displayedRoundedFare == presetVal.roundToInt()
                                 FilterChip(
                                     selected = isSelected,
-                                    enabled = isUnlocked,
+                                    enabled = effectivelyUnlocked,
                                     onClick = {
                                         localSliderValue = presetVal
                                         currentOnValueChange(presetVal)

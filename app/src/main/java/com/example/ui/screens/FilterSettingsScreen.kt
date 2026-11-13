@@ -89,6 +89,7 @@ import com.example.LicenseManager
 import com.example.AccessStatus
 import com.example.FeatureIds
 import com.example.FeatureUnlockDialog
+import com.example.MultiFilterUnlockDialog
 import com.example.ui.OrderMasterViewModel
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import com.example.ui.components.FareFilterCard
@@ -108,6 +109,7 @@ fun FilterSettingsScreen(
     val settingsState by viewModel.settingsState.collectAsState()
     val accessStatus by LicenseManager.accessStatus.collectAsState()
     val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
+    val lockedFeatures by LicenseManager.lockedFeatures.collectAsState()
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
 
     val isProMode = when (val s = accessStatus) {
@@ -117,10 +119,13 @@ fun FilterSettingsScreen(
     }
 
     var featureToUnlock by remember { mutableStateOf<String?>(null) }
+    var showMultiFilterDialog by remember { mutableStateOf(false) }
 
     fun getRemainingTime(fId: String): String? {
-        if (isProMode) return "PRO ACTIVE"
+        if (LicenseManager.isFeatureLockedByAdmin(fId)) return null
         val ms = LicenseManager.getFeatureRemainingTimeMs(fId)
+        if (ms == Long.MAX_VALUE) return "ADMIN UNLOCKED"
+        if (isProMode) return "PRO ACTIVE"
         if (ms <= 0L) return null
         val totalMins = (ms / 60000L).coerceAtLeast(1L)
         val hrs = totalMins / 60
@@ -128,12 +133,36 @@ fun FilterSettingsScreen(
         return if (hrs > 0) "${hrs}h ${mins}m left" else "${mins}m left"
     }
 
-    val isFareUnlocked = isProMode || LicenseManager.isFeatureUnlocked(FeatureIds.FARE_FILTERS)
-    val isDistanceUnlocked = isProMode || LicenseManager.isFeatureUnlocked(FeatureIds.DISTANCE_FILTERS)
-    val isBlacklistUnlocked = isProMode || LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
-    val isTtsUnlocked = isProMode || LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE)
-    val isOverlayUnlocked = isProMode || LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)
-    val isAutoClickUnlocked = isProMode || LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK)
+    val isMinFareAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.MIN_FARE) }
+    val isMinFareUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) { LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE) }
+
+    val isMaxFareAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.MAX_FARE) }
+    val isMaxFareUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) { LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE) }
+
+    val isMinRateAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.MIN_PER_KM_RATE) }
+    val isMinRateUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) { LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE) }
+
+    val isPickupAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.MAX_PICKUP_DISTANCE) }
+    val isPickupUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) { LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE) }
+
+    val isDropAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.MAX_DROP_DISTANCE) }
+    val isDropUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) { LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE) }
+
+    val isBlacklistAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.DESTINATION_BLACKLIST) }
+    val isBlacklistUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) { LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST) }
+
+    val isTtsAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.TTS_VOICE) }
+    val isTtsUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) { LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE) }
+
+    val isOverlayAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.FLOATING_OVERLAY) }
+    val isOverlayUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) { LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY) }
+
+    val isAutoClickAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) }
+    val isAutoClickUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) { LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK) }
+    val hasAnyAutoCapability = remember(accessStatus, unlockedFeatures, lockedFeatures) {
+        LicenseManager.hasAnyAutoAcceptCapability()
+    }
+    val canApplyPresets = isProMode || isMinFareUnlocked || isMaxFareUnlocked || isPickupUnlocked || isDropUnlocked || isMinRateUnlocked
 
     var languageDropdownExpanded by remember { mutableStateOf(false) }
     var newBlacklistKeyword by remember { mutableStateOf("") }
@@ -143,12 +172,20 @@ fun FilterSettingsScreen(
     }
     var showPermissionDialog by remember { mutableStateOf(false) }
 
-    // Feature Unlock Micro-transaction Dialog
+    // Feature Unlock Micro-transaction Dialog (Single)
     featureToUnlock?.let { fId ->
         FeatureUnlockDialog(
             featureId = fId,
             onDismiss = { featureToUnlock = null },
             onSuccess = { featureToUnlock = null }
+        )
+    }
+
+    // Multi-Select Filter Purchase Dialog (Free Mode)
+    if (showMultiFilterDialog) {
+        MultiFilterUnlockDialog(
+            onDismiss = { showMultiFilterDialog = false },
+            onSuccess = { showMultiFilterDialog = false }
         )
     }
 
@@ -332,14 +369,39 @@ fun FilterSettingsScreen(
                             }
                             Text(
                                 text = if (isProMode)
-                                    "All filter rules unlocked. Ultra-fast auto-acceptance (300-700ms) with smart auto-reject."
+                                    "All unlocked filter rules active. Ultra-fast auto-acceptance (300-700ms) with smart auto-reject."
                                 else
-                                    "Unlock individual filter rules hourly with points, or upgrade to Pro Pass in the Captain Store for unlimited access.",
+                                    "Unlock any 1 or multiple filter rules with Points, or upgrade to Pro Pass in the Captain Store.",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 11.sp
                                 )
                             )
+                            if (!isProMode) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                FilledTonalButton(
+                                    onClick = { showMultiFilterDialog = true },
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier
+                                        .height(30.dp)
+                                        .testTag("buy_multiple_filters_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Tune,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Buy 1 or Multiple Filters (Points)",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -358,20 +420,21 @@ fun FilterSettingsScreen(
                     description = "Ignore rides paying below this baseline threshold",
                     icon = Icons.Default.CurrencyRupee,
                     isEnabled = settingsState.isMinFareEnabled,
-                    onToggle = { if (isFareUnlocked) viewModel.toggleMinFareFilter(it) },
+                    onToggle = { if (isMinFareUnlocked) viewModel.toggleMinFareFilter(it) },
                     value = settingsState.minFare,
-                    onValueChange = { if (isFareUnlocked) viewModel.setMinFare(it) },
+                    onValueChange = { if (isMinFareUnlocked) viewModel.setMinFare(it) },
                     valueRange = AppSettings.MIN_FARE_RANGE_START..AppSettings.MIN_FARE_RANGE_END,
                     presetValues = listOf(40f, 60f, 80f, 100f, 150f),
                     accentColor = Color(0xFF00E676),
                     validationWarning = if (minExceedsMax) "Minimum fare cannot exceed maximum fare (₹${settingsState.maxFare.toInt()})" else null,
                     testTag = "min_fare_filter_card",
                     isProMode = isProMode,
-                    isUnlocked = isFareUnlocked,
-                    featureId = FeatureIds.FARE_FILTERS,
-                    onUnlockClick = { featureToUnlock = FeatureIds.FARE_FILTERS },
-                    remainingTimeText = getRemainingTime(FeatureIds.FARE_FILTERS),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.FARE_FILTERS)?.pointsPerHour ?: 10
+                    isUnlocked = isMinFareUnlocked,
+                    isAdminLocked = isMinFareAdminLocked,
+                    featureId = FeatureIds.MIN_FARE,
+                    onUnlockClick = { if (!isMinFareAdminLocked) featureToUnlock = FeatureIds.MIN_FARE },
+                    remainingTimeText = getRemainingTime(FeatureIds.MIN_FARE),
+                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MIN_FARE)?.pointsPerHour ?: 5
                 )
             }
 
@@ -388,9 +451,9 @@ fun FilterSettingsScreen(
                     description = "Ceiling limit for long-distance and surge rides",
                     icon = Icons.Default.CurrencyRupee,
                     isEnabled = settingsState.isMaxFareEnabled,
-                    onToggle = { if (isFareUnlocked) viewModel.toggleMaxFareFilter(it) },
+                    onToggle = { if (isMaxFareUnlocked) viewModel.toggleMaxFareFilter(it) },
                     value = settingsState.maxFare,
-                    onValueChange = { if (isFareUnlocked) viewModel.setMaxFare(it) },
+                    onValueChange = { if (isMaxFareUnlocked) viewModel.setMaxFare(it) },
                     valueRange = AppSettings.MAX_FARE_RANGE_START..AppSettings.MAX_FARE_RANGE_END,
                     presetValues = listOf(200f, 300f, 500f, 800f, 1000f),
                     accentColor = Color(0xFF00E676),
@@ -398,11 +461,12 @@ fun FilterSettingsScreen(
                     validationWarning = if (minExceedsMax) "Maximum fare must be at least minimum fare (₹${settingsState.minFare.toInt()})" else null,
                     testTag = "max_fare_filter_card",
                     isProMode = isProMode,
-                    isUnlocked = isFareUnlocked,
-                    featureId = FeatureIds.FARE_FILTERS,
-                    onUnlockClick = { featureToUnlock = FeatureIds.FARE_FILTERS },
-                    remainingTimeText = getRemainingTime(FeatureIds.FARE_FILTERS),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.FARE_FILTERS)?.pointsPerHour ?: 10
+                    isUnlocked = isMaxFareUnlocked,
+                    isAdminLocked = isMaxFareAdminLocked,
+                    featureId = FeatureIds.MAX_FARE,
+                    onUnlockClick = { if (!isMaxFareAdminLocked) featureToUnlock = FeatureIds.MAX_FARE },
+                    remainingTimeText = getRemainingTime(FeatureIds.MAX_FARE),
+                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_FARE)?.pointsPerHour ?: 5
                 )
             }
 
@@ -415,14 +479,15 @@ fun FilterSettingsScreen(
                     subtitle = "Strict limit to reach customer (0.0 - 3.0 km)",
                     icon = Icons.Default.NearMe,
                     isEnabled = settingsState.isMaxPickupDistanceEnabled,
-                    onToggle = { if (isDistanceUnlocked) viewModel.toggleMaxPickupDistFilter(it) },
+                    onToggle = { if (isPickupUnlocked) viewModel.toggleMaxPickupDistFilter(it) },
                     testTag = "pickup_dist_filter_card",
                     isProMode = isProMode,
-                    isUnlocked = isDistanceUnlocked,
-                    featureId = FeatureIds.DISTANCE_FILTERS,
-                    onUnlockClick = { featureToUnlock = FeatureIds.DISTANCE_FILTERS },
-                    remainingTimeText = getRemainingTime(FeatureIds.DISTANCE_FILTERS),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.DISTANCE_FILTERS)?.pointsPerHour ?: 10
+                    isUnlocked = isPickupUnlocked,
+                    isAdminLocked = isPickupAdminLocked,
+                    featureId = FeatureIds.MAX_PICKUP_DISTANCE,
+                    onUnlockClick = { if (!isPickupAdminLocked) featureToUnlock = FeatureIds.MAX_PICKUP_DISTANCE },
+                    remainingTimeText = getRemainingTime(FeatureIds.MAX_PICKUP_DISTANCE),
+                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_PICKUP_DISTANCE)?.pointsPerHour ?: 5
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -453,8 +518,8 @@ fun FilterSettingsScreen(
 
                         Slider(
                             value = settingsState.maxPickupDistance,
-                            enabled = isDistanceUnlocked,
-                            onValueChange = { if (isDistanceUnlocked) viewModel.setMaxPickupDistance((it * 10).roundToInt() / 10f) },
+                            enabled = isPickupUnlocked,
+                            onValueChange = { if (isPickupUnlocked) viewModel.setMaxPickupDistance((it * 10).roundToInt() / 10f) },
                             valueRange = 0.0f..3.0f,
                             steps = 29, // 0.1km steps
                             modifier = Modifier.fillMaxWidth().testTag("pickup_dist_slider")
@@ -467,8 +532,8 @@ fun FilterSettingsScreen(
                         ) {
                             listOf(1.0f, 1.5f, 2.0f, 2.5f, 3.0f).forEach { distVal ->
                                 OutlinedButton(
-                                    onClick = { if (isDistanceUnlocked) viewModel.setMaxPickupDistance(distVal) },
-                                    enabled = isDistanceUnlocked,
+                                    onClick = { if (isPickupUnlocked) viewModel.setMaxPickupDistance(distVal) },
+                                    enabled = isPickupUnlocked,
                                     modifier = Modifier.weight(1f),
                                     contentPadding = PaddingValues(0.dp),
                                     shape = RoundedCornerShape(8.dp)
@@ -490,14 +555,15 @@ fun FilterSettingsScreen(
                     subtitle = "Filter out rides with excessive trip distance",
                     icon = Icons.Default.DirectionsCar,
                     isEnabled = settingsState.isMaxDropDistanceEnabled,
-                    onToggle = { if (isDistanceUnlocked) viewModel.toggleMaxDropDistFilter(it) },
+                    onToggle = { if (isDropUnlocked) viewModel.toggleMaxDropDistFilter(it) },
                     testTag = "drop_dist_filter_card",
                     isProMode = isProMode,
-                    isUnlocked = isDistanceUnlocked,
-                    featureId = FeatureIds.DISTANCE_FILTERS,
-                    onUnlockClick = { featureToUnlock = FeatureIds.DISTANCE_FILTERS },
-                    remainingTimeText = getRemainingTime(FeatureIds.DISTANCE_FILTERS),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.DISTANCE_FILTERS)?.pointsPerHour ?: 10
+                    isUnlocked = isDropUnlocked,
+                    isAdminLocked = isDropAdminLocked,
+                    featureId = FeatureIds.MAX_DROP_DISTANCE,
+                    onUnlockClick = { if (!isDropAdminLocked) featureToUnlock = FeatureIds.MAX_DROP_DISTANCE },
+                    remainingTimeText = getRemainingTime(FeatureIds.MAX_DROP_DISTANCE),
+                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_DROP_DISTANCE)?.pointsPerHour ?: 5
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -528,8 +594,8 @@ fun FilterSettingsScreen(
 
                         Slider(
                             value = settingsState.maxDropDistance,
-                            enabled = isDistanceUnlocked,
-                            onValueChange = { if (isDistanceUnlocked) viewModel.setMaxDropDistance((it * 2).roundToInt() / 2f) },
+                            enabled = isDropUnlocked,
+                            onValueChange = { if (isDropUnlocked) viewModel.setMaxDropDistance((it * 2).roundToInt() / 2f) },
                             valueRange = 1.0f..30.0f,
                             steps = 57, // 0.5km steps
                             modifier = Modifier.fillMaxWidth().testTag("drop_dist_slider")
@@ -542,8 +608,8 @@ fun FilterSettingsScreen(
                         ) {
                             listOf(5.0f, 10.0f, 15.0f, 20.0f, 30.0f).forEach { distVal ->
                                 OutlinedButton(
-                                    onClick = { if (isDistanceUnlocked) viewModel.setMaxDropDistance(distVal) },
-                                    enabled = isDistanceUnlocked,
+                                    onClick = { if (isDropUnlocked) viewModel.setMaxDropDistance(distVal) },
+                                    enabled = isDropUnlocked,
                                     modifier = Modifier.weight(1f),
                                     contentPadding = PaddingValues(0.dp),
                                     shape = RoundedCornerShape(8.dp)
@@ -565,14 +631,15 @@ fun FilterSettingsScreen(
                     subtitle = "Reject offers paying less than ₹/km (fare ÷ total trip distance)",
                     icon = Icons.Default.Speed,
                     isEnabled = settingsState.isMinPerKmRateEnabled,
-                    onToggle = { if (isFareUnlocked) viewModel.toggleMinPerKmRate(it) },
+                    onToggle = { if (isMinRateUnlocked) viewModel.toggleMinPerKmRate(it) },
                     testTag = "min_per_km_rate_filter_card",
                     isProMode = isProMode,
-                    isUnlocked = isFareUnlocked,
-                    featureId = FeatureIds.FARE_FILTERS,
-                    onUnlockClick = { featureToUnlock = FeatureIds.FARE_FILTERS },
-                    remainingTimeText = getRemainingTime(FeatureIds.FARE_FILTERS),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.FARE_FILTERS)?.pointsPerHour ?: 10
+                    isUnlocked = isMinRateUnlocked,
+                    isAdminLocked = isMinRateAdminLocked,
+                    featureId = FeatureIds.MIN_PER_KM_RATE,
+                    onUnlockClick = { if (!isMinRateAdminLocked) featureToUnlock = FeatureIds.MIN_PER_KM_RATE },
+                    remainingTimeText = getRemainingTime(FeatureIds.MIN_PER_KM_RATE),
+                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MIN_PER_KM_RATE)?.pointsPerHour ?: 5
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -603,8 +670,8 @@ fun FilterSettingsScreen(
 
                         Slider(
                             value = settingsState.minPerKmRate,
-                            enabled = isFareUnlocked,
-                            onValueChange = { if (isFareUnlocked) viewModel.setMinPerKmRate(it.roundToInt().toFloat()) },
+                            enabled = isMinRateUnlocked,
+                            onValueChange = { if (isMinRateUnlocked) viewModel.setMinPerKmRate(it.roundToInt().toFloat()) },
                             valueRange = 5.0f..30.0f,
                             steps = 24, // 1 ₹/km steps
                             modifier = Modifier.fillMaxWidth().testTag("min_per_km_slider")
@@ -617,8 +684,8 @@ fun FilterSettingsScreen(
                         ) {
                             listOf(8f, 10f, 12f, 15f, 20f).forEach { rateVal ->
                                 OutlinedButton(
-                                    onClick = { if (isFareUnlocked) viewModel.setMinPerKmRate(rateVal) },
-                                    enabled = isFareUnlocked,
+                                    onClick = { if (isMinRateUnlocked) viewModel.setMinPerKmRate(rateVal) },
+                                    enabled = isMinRateUnlocked,
                                     modifier = Modifier.weight(1f),
                                     contentPadding = PaddingValues(0.dp),
                                     shape = RoundedCornerShape(8.dp)
@@ -644,8 +711,9 @@ fun FilterSettingsScreen(
                     testTag = "destination_blacklist_filter_card",
                     isProMode = isProMode,
                     isUnlocked = isBlacklistUnlocked,
+                    isAdminLocked = isBlacklistAdminLocked,
                     featureId = FeatureIds.DESTINATION_BLACKLIST,
-                    onUnlockClick = { featureToUnlock = FeatureIds.DESTINATION_BLACKLIST },
+                    onUnlockClick = { if (!isBlacklistAdminLocked) featureToUnlock = FeatureIds.DESTINATION_BLACKLIST },
                     remainingTimeText = getRemainingTime(FeatureIds.DESTINATION_BLACKLIST),
                     pointsPerHour = FeatureIds.getPricing(FeatureIds.DESTINATION_BLACKLIST)?.pointsPerHour ?: 5
                 ) {
@@ -740,8 +808,9 @@ fun FilterSettingsScreen(
                     testTag = "voice_tts_filter_card",
                     isProMode = isProMode,
                     isUnlocked = isTtsUnlocked,
+                    isAdminLocked = isTtsAdminLocked,
                     featureId = FeatureIds.TTS_VOICE,
-                    onUnlockClick = { featureToUnlock = FeatureIds.TTS_VOICE },
+                    onUnlockClick = { if (!isTtsAdminLocked) featureToUnlock = FeatureIds.TTS_VOICE },
                     remainingTimeText = getRemainingTime(FeatureIds.TTS_VOICE),
                     pointsPerHour = FeatureIds.getPricing(FeatureIds.TTS_VOICE)?.pointsPerHour ?: 10
                 ) {
@@ -819,6 +888,7 @@ fun FilterSettingsScreen(
                     icon = Icons.Default.Layers,
                     isEnabled = settingsState.isFloatingOverlayEnabled,
                     onToggle = { enable ->
+                        if (isOverlayAdminLocked) return@FilterCard
                         if (!isOverlayUnlocked) {
                             featureToUnlock = FeatureIds.FLOATING_OVERLAY
                         } else if (enable) {
@@ -836,8 +906,9 @@ fun FilterSettingsScreen(
                     testTag = "floating_overlay_filter_card",
                     isProMode = isProMode,
                     isUnlocked = isOverlayUnlocked,
+                    isAdminLocked = isOverlayAdminLocked,
                     featureId = FeatureIds.FLOATING_OVERLAY,
-                    onUnlockClick = { featureToUnlock = FeatureIds.FLOATING_OVERLAY },
+                    onUnlockClick = { if (!isOverlayAdminLocked) featureToUnlock = FeatureIds.FLOATING_OVERLAY },
                     remainingTimeText = getRemainingTime(FeatureIds.FLOATING_OVERLAY),
                     pointsPerHour = FeatureIds.getPricing(FeatureIds.FLOATING_OVERLAY)?.pointsPerHour ?: 5
                 ) {
@@ -960,7 +1031,22 @@ fun FilterSettingsScreen(
                                         text = "Auto-Click Automation Mode",
                                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                                     )
-                                    if (isAutoClickUnlocked && getRemainingTime(FeatureIds.AUTO_CLICK) != null) {
+                                    if (isAutoClickAdminLocked) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = MaterialTheme.colorScheme.errorContainer
+                                        ) {
+                                            Text(
+                                                text = "Locked by Admin",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                                    fontSize = 9.sp
+                                                ),
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    } else if (isAutoClickUnlocked && getRemainingTime(FeatureIds.AUTO_CLICK) != null) {
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
                                             color = Color(0xFF00E676).copy(alpha = 0.15f)
@@ -989,7 +1075,7 @@ fun FilterSettingsScreen(
                                             )
                                             Spacer(modifier = Modifier.width(3.dp))
                                             Text(
-                                                text = "Unlock (15 Pts/Hr)",
+                                                text = "300ms Boost (15 Pts/Hr)",
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.Bold
                                             )
@@ -997,36 +1083,39 @@ fun FilterSettingsScreen(
                                     }
                                 }
                                 Text(
-                                    text = if (!isAutoClickUnlocked)
-                                        "🔒 Feature Locked (15 Pts/Hr or Pro Pass)"
-                                    else if (settingsState.isAutoClickEnabled)
-                                        "🟢 Green HUD: Full Auto Click"
-                                    else
-                                        "🔴 Red HUD: Voice Alert Only",
+                                    text = when {
+                                        isAutoClickAdminLocked -> "🔒 Auto-Click locked by Admin"
+                                        !hasAnyAutoCapability -> "🔒 Unlock any filter or Auto-Click (15 Pts/Hr)"
+                                        settingsState.isAutoClickEnabled && isAutoClickUnlocked -> "🟢 Green HUD: Full Auto Click (300-700ms Pro Speed)"
+                                        settingsState.isAutoClickEnabled -> "🟢 Green HUD: Full Auto Click (Standard Speed)"
+                                        else -> "🔴 Red HUD: Voice Alert Only"
+                                    },
                                     style = MaterialTheme.typography.bodySmall.copy(
-                                        color = if (!isAutoClickUnlocked)
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        else if (settingsState.isAutoClickEnabled)
-                                            Color(0xFF047857)
-                                        else
-                                            Color(0xFFB91C1C),
+                                        color = when {
+                                            isAutoClickAdminLocked -> MaterialTheme.colorScheme.error
+                                            !hasAnyAutoCapability -> MaterialTheme.colorScheme.onSurfaceVariant
+                                            settingsState.isAutoClickEnabled -> Color(0xFF047857)
+                                            else -> Color(0xFFB91C1C)
+                                        },
                                         fontWeight = FontWeight.Bold
                                     )
                                 )
                             }
+                            val autoClickSwitchEnabled = !isAutoClickAdminLocked && hasAnyAutoCapability
                             Switch(
-                                checked = settingsState.isAutoClickEnabled,
+                                checked = settingsState.isAutoClickEnabled && autoClickSwitchEnabled,
                                 onCheckedChange = {
-                                    if (!isAutoClickUnlocked) {
+                                    if (isAutoClickAdminLocked) return@Switch
+                                    if (!hasAnyAutoCapability) {
                                         featureToUnlock = FeatureIds.AUTO_CLICK
                                     } else {
                                         viewModel.toggleAutoClick(it)
                                     }
                                 },
-                                enabled = isAutoClickUnlocked,
+                                enabled = autoClickSwitchEnabled,
                                 thumbContent = {
                                     Icon(
-                                        imageVector = if (settingsState.isAutoClickEnabled) Icons.Default.TouchApp else Icons.Default.RecordVoiceOver,
+                                        imageVector = if (settingsState.isAutoClickEnabled && autoClickSwitchEnabled) Icons.Default.TouchApp else Icons.Default.RecordVoiceOver,
                                         contentDescription = null,
                                         modifier = Modifier.size(SwitchDefaults.IconSize)
                                     )
@@ -1109,8 +1198,8 @@ fun FilterSettingsScreen(
         // 6. SAVE/RESTORE QUICK PRESETS BAR AT THE BOTTOM
         // =========================================================================================
         QuickPresetsBar(
-            onApplyPreset = { presetName -> if (isProMode) viewModel.applyPreset(presetName) },
-            isProMode = isProMode,
+            onApplyPreset = { presetName -> if (canApplyPresets) viewModel.applyPreset(presetName) },
+            canApply = canApplyPresets,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 8.dp)
@@ -1131,27 +1220,29 @@ private fun FilterCard(
     testTag: String,
     isProMode: Boolean = true,
     isUnlocked: Boolean = isProMode,
+    isAdminLocked: Boolean = false,
     featureId: String? = null,
     onUnlockClick: (() -> Unit)? = null,
     remainingTimeText: String? = null,
     pointsPerHour: Int = 10,
     content: @Composable () -> Unit
 ) {
+    val effectivelyUnlocked = isUnlocked && !isAdminLocked
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .testTag(testTag)
-            .alpha(if (isUnlocked) 1f else 0.85f),
+            .alpha(if (effectivelyUnlocked) 1f else 0.85f),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (isEnabled && isUnlocked)
+            containerColor = if (isEnabled && effectivelyUnlocked)
                 MaterialTheme.colorScheme.surface
             else
                 MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
         ),
         border = CardDefaults.outlinedCardBorder().copy(
             brush = androidx.compose.ui.graphics.SolidColor(
-                if (isEnabled && isUnlocked)
+                if (isEnabled && effectivelyUnlocked)
                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                 else
                     MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
@@ -1179,7 +1270,7 @@ private fun FilterCard(
                         modifier = Modifier
                             .size(36.dp)
                             .background(
-                                if (isEnabled && isUnlocked)
+                                if (isEnabled && effectivelyUnlocked)
                                     MaterialTheme.colorScheme.primaryContainer
                                 else
                                     MaterialTheme.colorScheme.surfaceVariant,
@@ -1190,7 +1281,7 @@ private fun FilterCard(
                         Icon(
                             imageVector = icon,
                             contentDescription = null,
-                            tint = if (isEnabled && isUnlocked)
+                            tint = if (isEnabled && effectivelyUnlocked)
                                 MaterialTheme.colorScheme.primary
                             else
                                 MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1207,13 +1298,39 @@ private fun FilterCard(
                                 text = title,
                                 style = MaterialTheme.typography.titleSmall.copy(
                                     fontWeight = FontWeight.Bold,
-                                    color = if (isEnabled && isUnlocked)
+                                    color = if (isEnabled && effectivelyUnlocked)
                                         MaterialTheme.colorScheme.onSurface
                                     else
                                         MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             )
-                            if (isUnlocked && remainingTimeText != null) {
+                            if (isAdminLocked) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.errorContainer
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = "Locked by Admin",
+                                            modifier = Modifier.size(11.dp),
+                                            tint = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                        Text(
+                                            text = "Locked by Admin",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                                fontSize = 9.sp
+                                            )
+                                        )
+                                    }
+                                }
+                            } else if (effectivelyUnlocked && remainingTimeText != null) {
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
                                     color = Color(0xFF00E676).copy(alpha = 0.15f)
@@ -1228,7 +1345,7 @@ private fun FilterCard(
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
                                 }
-                            } else if (!isUnlocked) {
+                            } else if (!effectivelyUnlocked) {
                                 if (onUnlockClick != null) {
                                     FilledTonalButton(
                                         onClick = onUnlockClick,
@@ -1293,9 +1410,10 @@ private fun FilterCard(
 
                 // Individual Toggle Switch
                 Switch(
-                    checked = isEnabled && isUnlocked,
-                    onCheckedChange = if (isUnlocked) onToggle else null,
-                    enabled = isUnlocked,
+                    checked = isEnabled && effectivelyUnlocked,
+                    onCheckedChange = if (effectivelyUnlocked) onToggle else null,
+                    enabled = effectivelyUnlocked,
+                    modifier = Modifier.testTag("${testTag}_switch"),
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = Color.White,
                         checkedTrackColor = MaterialTheme.colorScheme.primary
@@ -1304,7 +1422,7 @@ private fun FilterCard(
             }
 
             // Expandable control inputs when filter is active
-            AnimatedVisibility(visible = isEnabled && isUnlocked) {
+            AnimatedVisibility(visible = isEnabled && effectivelyUnlocked) {
                 Column(modifier = Modifier.padding(top = 4.dp)) {
                     content()
                 }
@@ -1320,12 +1438,12 @@ private fun FilterCard(
 private fun QuickPresetsBar(
     onApplyPreset: (String) -> Unit,
     modifier: Modifier = Modifier,
-    isProMode: Boolean = true
+    canApply: Boolean = true
 ) {
     Surface(
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-        modifier = modifier.alpha(if (isProMode) 1f else 0.55f)
+        modifier = modifier.alpha(if (canApply) 1f else 0.55f)
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -1341,20 +1459,20 @@ private fun QuickPresetsBar(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Icon(
-                        imageVector = if (isProMode) Icons.Default.Speed else Icons.Default.Lock,
+                        imageVector = if (canApply) Icons.Default.Speed else Icons.Default.Lock,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = if (isProMode) "Quick Rule Presets" else "Quick Rule Presets (Pro Feature)",
+                        text = if (canApply) "Quick Rule Presets" else "Quick Rule Presets (Unlock Filter)",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.Bold
                         )
                     )
                 }
                 Text(
-                    text = if (isProMode) "Tap to restore" else "Pro Only",
+                    text = if (canApply) "Tap to restore" else "Locked",
                     style = MaterialTheme.typography.labelSmall.copy(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 10.sp
@@ -1369,25 +1487,25 @@ private fun QuickPresetsBar(
                 PresetChip(
                     name = "Peak Hours",
                     onClick = { onApplyPreset("peak") },
-                    enabled = isProMode,
+                    enabled = canApply,
                     modifier = Modifier.weight(1f)
                 )
                 PresetChip(
                     name = "Short Trips",
                     onClick = { onApplyPreset("short") },
-                    enabled = isProMode,
+                    enabled = canApply,
                     modifier = Modifier.weight(1f)
                 )
                 PresetChip(
                     name = "High Value",
                     onClick = { onApplyPreset("high") },
-                    enabled = isProMode,
+                    enabled = canApply,
                     modifier = Modifier.weight(1f)
                 )
                 PresetChip(
                     name = "Default",
                     onClick = { onApplyPreset("default") },
-                    enabled = isProMode,
+                    enabled = canApply,
                     modifier = Modifier.weight(1f)
                 )
             }

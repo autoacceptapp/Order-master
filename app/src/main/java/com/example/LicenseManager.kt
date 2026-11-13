@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import com.example.auth.GoogleAuthManager
 import com.google.firebase.FirebaseApp
 import com.google.firebase.Timestamp
@@ -167,28 +168,60 @@ object FeatureIds {
     const val AUTO_CLICK = "auto_click"
     const val FARE_FILTERS = "fare_filters"
     const val DISTANCE_FILTERS = "distance_filters"
+    const val MIN_FARE = "min_fare"
+    const val MAX_FARE = "max_fare"
+    const val MAX_PICKUP_DISTANCE = "max_pickup_distance"
+    const val MAX_DROP_DISTANCE = "max_drop_distance"
+    const val MIN_PER_KM_RATE = "min_per_km_rate"
     const val TTS_VOICE = "tts_voice"
     const val FLOATING_OVERLAY = "floating_overlay"
     const val DESTINATION_BLACKLIST = "destination_blacklist"
 
+    val FILTER_FEATURE_IDS = listOf(
+        MIN_FARE,
+        MAX_FARE,
+        MAX_PICKUP_DISTANCE,
+        MAX_DROP_DISTANCE,
+        MIN_PER_KM_RATE,
+        DESTINATION_BLACKLIST
+    )
+
     val ALL_FEATURES = listOf(
         FeatureUnlockPricing(
-            id = AUTO_CLICK,
-            title = "Ultra-Fast Auto-Accept (300ms)",
-            pointsPerHour = 15,
-            description = "Sub-second response speed (300-700ms) for high-priority order capture."
+            id = MIN_FARE,
+            title = "Minimum Fare Filter",
+            pointsPerHour = 5,
+            description = "Set your own minimum ride fare threshold (₹)."
         ),
         FeatureUnlockPricing(
-            id = FARE_FILTERS,
-            title = "Fare & Rate Filters",
-            pointsPerHour = 10,
-            description = "Min Fare, Max Fare, and Minimum Rate Per-KM evaluation."
+            id = MAX_FARE,
+            title = "Maximum Fare Filter",
+            pointsPerHour = 5,
+            description = "Set your own maximum fare ceiling (₹)."
         ),
         FeatureUnlockPricing(
-            id = DISTANCE_FILTERS,
-            title = "Distance Filters",
-            pointsPerHour = 10,
-            description = "Maximum pickup and drop-off distance threshold evaluation."
+            id = MAX_PICKUP_DISTANCE,
+            title = "Maximum Pickup Distance",
+            pointsPerHour = 5,
+            description = "Filter rides beyond your chosen pickup km limit."
+        ),
+        FeatureUnlockPricing(
+            id = MAX_DROP_DISTANCE,
+            title = "Maximum Drop Distance",
+            pointsPerHour = 5,
+            description = "Filter long trips beyond your drop km limit."
+        ),
+        FeatureUnlockPricing(
+            id = MIN_PER_KM_RATE,
+            title = "Minimum Rate Per-KM",
+            pointsPerHour = 5,
+            description = "Reject rides paying below your target ₹/km rate."
+        ),
+        FeatureUnlockPricing(
+            id = DESTINATION_BLACKLIST,
+            title = "Destination Blacklist",
+            pointsPerHour = 5,
+            description = "Automatically block and bypass unwanted drop areas."
         ),
         FeatureUnlockPricing(
             id = TTS_VOICE,
@@ -203,15 +236,37 @@ object FeatureIds {
             description = "On-screen floating widget showing quick status and controls."
         ),
         FeatureUnlockPricing(
-            id = DESTINATION_BLACKLIST,
-            title = "Destination Blacklist",
-            pointsPerHour = 5,
-            description = "Automatically block and bypass unwanted drop areas."
+            id = AUTO_CLICK,
+            title = "Ultra-Fast Auto-Accept (300ms)",
+            pointsPerHour = 15,
+            description = "Sub-second response speed (300-700ms) for high-priority order capture."
         )
     )
 
+    private val BUNDLE_PRICING = mapOf(
+        FARE_FILTERS to FeatureUnlockPricing(
+            id = FARE_FILTERS,
+            title = "All Fare & Rate Filters",
+            pointsPerHour = 10,
+            description = "Min Fare, Max Fare, and Minimum Rate Per-KM evaluation."
+        ),
+        DISTANCE_FILTERS to FeatureUnlockPricing(
+            id = DISTANCE_FILTERS,
+            title = "All Distance Filters",
+            pointsPerHour = 10,
+            description = "Maximum pickup and drop-off distance threshold evaluation."
+        )
+    )
+
+    fun parentGroupFor(featureId: String): String? = when (featureId.lowercase()) {
+        MIN_FARE, MAX_FARE, MIN_PER_KM_RATE -> FARE_FILTERS
+        MAX_PICKUP_DISTANCE, MAX_DROP_DISTANCE -> DISTANCE_FILTERS
+        else -> null
+    }
+
     fun getPricing(featureId: String): FeatureUnlockPricing? =
         ALL_FEATURES.firstOrNull { it.id.equals(featureId, ignoreCase = true) }
+            ?: BUNDLE_PRICING[featureId.lowercase()]
 }
 
 
@@ -316,9 +371,13 @@ object LicenseManager {
     private val _currentFolder = MutableStateFlow("free_mod")
     val currentFolder: StateFlow<String> = _currentFolder.asStateFlow()
 
-    // Pay-Per-Use feature unlocks map: featureId -> expiryTimestamp (Long ms)
+    // Pay-Per-Use & Admin feature unlocks map: featureId -> expiryTimestamp (Long ms; -1L = Admin permanent unlock)
     private val _unlockedFeatures = MutableStateFlow<Map<String, Long>>(emptyMap())
     val unlockedFeatures: StateFlow<Map<String, Long>> = _unlockedFeatures.asStateFlow()
+
+    // Explicit Admin Lock set: any feature ID listed here stays strictly LOCKED regardless of pass/points
+    private val _lockedFeatures = MutableStateFlow<Set<String>>(emptySet())
+    val lockedFeatures: StateFlow<Set<String>> = _lockedFeatures.asStateFlow()
 
     // Global Service Switch & User Ban StateFlows
     private const val SERVICE_ACTIVE_MASK_TRUE = 0x3F9A6C1EL
@@ -819,6 +878,8 @@ object LicenseManager {
         _accessStatus.value = AccessStatus.Loading
         _activePassInfo.value = null
         _trialInfo.value = null
+        _unlockedFeatures.value = emptyMap()
+        _lockedFeatures.value = emptySet()
     }
 
     fun setLastServerSyncForTesting(elapsedMs: Long, wallClockMs: Long? = null) {
@@ -1578,14 +1639,32 @@ object LicenseManager {
                     )
                     _currentFolder.value = expectedFolder
 
-                    // Parse Pay-Per-Use feature unlocks map
-                    val rawFeatures = snapshot.get("unlocked_features") as? Map<*, *>
+                    // Parse Pay-Per-Use & Admin feature unlocks map (-1L or Long.MAX_VALUE = permanent unlock)
+                    val rawFeatures = (snapshot.get("unlocked_features") as? Map<*, *>)
+                        ?: (snapshot.get("unlockedFeatures") as? Map<*, *>)
                     val parsedFeatures = rawFeatures?.mapNotNull { (k, v) ->
                         val featureKey = k as? String ?: return@mapNotNull null
-                        val exp = (v as? Number)?.toLong() ?: return@mapNotNull null
+                        val exp = when (v) {
+                            is Number -> v.toLong()
+                            true -> -1L
+                            else -> return@mapNotNull null
+                        }
                         featureKey to exp
                     }?.toMap() ?: emptyMap()
                     _unlockedFeatures.value = parsedFeatures
+
+                    // Parse explicit Admin Lock list/map (locked_features / lockedFeatures)
+                    val rawLocked = snapshot.get("locked_features") ?: snapshot.get("lockedFeatures")
+                    val parsedLocked: Set<String> = when (rawLocked) {
+                        is List<*> -> rawLocked.mapNotNull { (it as? String)?.trim()?.lowercase() }
+                            .filter { it.isNotEmpty() }.toSet()
+                        is Map<*, *> -> rawLocked.mapNotNull { (k, v) ->
+                            val key = (k as? String)?.trim()?.lowercase() ?: return@mapNotNull null
+                            if (v == true) key else null
+                        }.toSet()
+                        else -> emptySet()
+                    }
+                    _lockedFeatures.value = parsedLocked
 
                     // Read banUntil (Timestamp) field from user's document
                     val banUntilObj = snapshot.get("banUntil")
@@ -2008,14 +2087,91 @@ object LicenseManager {
     }
 
     /**
-     * Pay-Per-Use Feature Checks:
-     * Returns true if a full Pro Pass or Trial is active, OR if the specific feature is unlocked
-     * and has an expiry timestamp greater than authoritative server time.
+     * Returns true if the Admin app explicitly locked this feature (or its parent group) for the user.
+     * Explicit Admin locks override Pro Passes, Trials, and Point unlocks.
+     */
+    fun isFeatureLockedByAdmin(featureId: String): Boolean {
+        val locked = _lockedFeatures.value
+        if (locked.isEmpty()) return false
+        val normalized = featureId.lowercase()
+        if (locked.contains(normalized)) return true
+        val parent = FeatureIds.parentGroupFor(normalized)
+        return parent != null && locked.contains(parent)
+    }
+
+    private fun findFeatureUnlockExpiry(featureId: String): Long? {
+        val map = _unlockedFeatures.value
+        if (map.isEmpty()) return null
+        val target = featureId.lowercase()
+        map.entries.firstOrNull { it.key.equals(target, ignoreCase = true) }?.let { return it.value }
+        val parent = FeatureIds.parentGroupFor(target)
+        if (parent != null) {
+            map.entries.firstOrNull { it.key.equals(parent, ignoreCase = true) }?.let { return it.value }
+        }
+        return null
+    }
+
+    /**
+     * Pay-Per-Use & Admin Lock/Unlock Feature Check:
+     * 1. Denies immediately if security violation / ban / explicit Admin lock applies.
+     * 2. Returns true if full Pro Pass or Trial is active (unless explicitly locked by Admin).
+     * 3. In Free Mode, returns true if the specific feature (or its group) was unlocked by Points
+     *    or Admin (-1L / permanent or future server expiry timestamp).
      */
     fun isFeatureUnlocked(featureId: String): Boolean {
+        if (isClockTamperingDetected() || _isBannedFlow.value) return false
+        val ctx = appContext
+        if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return false
+        if (isFeatureLockedByAdmin(featureId)) return false
         if (isAccessGranted()) return true
-        val expiry = _unlockedFeatures.value[featureId] ?: return false
-        return expiry > getCurrentServerTimeMs()
+
+        val now = getCurrentServerTimeMs()
+        val directExpiry = findFeatureUnlockExpiry(featureId)
+        if (directExpiry != null && (directExpiry == -1L || directExpiry > now)) {
+            return true
+        }
+
+        // Legacy bundle checks: if querying FARE_FILTERS / DISTANCE_FILTERS, return true if any child filter is unlocked
+        return when (featureId.lowercase()) {
+            FeatureIds.FARE_FILTERS -> listOf(
+                FeatureIds.MIN_FARE,
+                FeatureIds.MAX_FARE,
+                FeatureIds.MIN_PER_KM_RATE
+            ).any { child ->
+                !isFeatureLockedByAdmin(child) && (findFeatureUnlockExpiry(child)?.let { it == -1L || it > now } == true)
+            }
+            FeatureIds.DISTANCE_FILTERS -> listOf(
+                FeatureIds.MAX_PICKUP_DISTANCE,
+                FeatureIds.MAX_DROP_DISTANCE
+            ).any { child ->
+                !isFeatureLockedByAdmin(child) && (findFeatureUnlockExpiry(child)?.let { it == -1L || it > now } == true)
+            }
+            else -> false
+        }
+    }
+
+    /**
+     * Returns true when automation clicking can run for the user:
+     * - Service active, unbanned, clean clock/hooks, and AUTO_CLICK not locked by Admin
+     * - Either active Pro Pass/Trial OR AUTO_CLICK unlocked OR at least one filter unlocked in Free Mode
+     */
+    fun hasAnyAutoAcceptCapability(): Boolean {
+        if (!isServiceActive() || _isBannedFlow.value || isClockTamperingDetected()) return false
+        val ctx = appContext
+        if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return false
+        if (isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) return false
+        if (isAccessGranted() || isFeatureUnlocked(FeatureIds.AUTO_CLICK)) return true
+
+        return listOf(
+            FeatureIds.MIN_FARE,
+            FeatureIds.MAX_FARE,
+            FeatureIds.MAX_PICKUP_DISTANCE,
+            FeatureIds.MAX_DROP_DISTANCE,
+            FeatureIds.MIN_PER_KM_RATE,
+            FeatureIds.DESTINATION_BLACKLIST,
+            FeatureIds.FARE_FILTERS,
+            FeatureIds.DISTANCE_FILTERS
+        ).any { isFeatureUnlocked(it) }
     }
 
     /**
@@ -2033,10 +2189,11 @@ object LicenseManager {
 
     /**
      * Returns remaining active time in milliseconds for a specific feature.
-     * If Pro Pass/Trial is active, returns remaining pass duration.
-     * Otherwise returns remaining feature unlock duration based on server time (or 0L if expired/locked).
+     * Returns Long.MAX_VALUE when permanently unlocked by Admin (`-1L` or `Long.MAX_VALUE`).
+     * Returns 0L when locked or expired.
      */
     fun getFeatureRemainingTimeMs(featureId: String): Long {
+        if (isFeatureLockedByAdmin(featureId)) return 0L
         if (isAccessGranted()) {
             return when (val status = _accessStatus.value) {
                 is AccessStatus.PassActive -> status.remainingTimeMs
@@ -2044,7 +2201,8 @@ object LicenseManager {
                 else -> 0L
             }
         }
-        val expiry = _unlockedFeatures.value[featureId] ?: return 0L
+        val expiry = findFeatureUnlockExpiry(featureId) ?: return 0L
+        if (expiry == -1L || expiry == Long.MAX_VALUE) return Long.MAX_VALUE
         val now = getCurrentServerTimeMs()
         return (expiry - now).coerceAtLeast(0L)
     }
@@ -2052,10 +2210,12 @@ object LicenseManager {
     /**
      * Purchases an hourly micro-transaction unlock for a specific feature using wallet points
      * via the Zero-Trust Action Queue.
-     * Enqueues UNLOCK_FEATURE request to `pending_actions` and awaits server completion.
      */
     suspend fun unlockFeature(featureId: String, hours: Int = 1): Result<Long> = withContext(Dispatchers.IO) {
         if (hours <= 0) return@withContext Result.failure(IllegalArgumentException("Hours must be positive"))
+        if (isFeatureLockedByAdmin(featureId)) {
+            return@withContext Result.failure(IllegalStateException("This feature is locked by Admin."))
+        }
 
         val pricing = FeatureIds.getPricing(featureId)
             ?: return@withContext Result.failure(IllegalArgumentException("Unknown feature ID: $featureId"))
@@ -2072,7 +2232,7 @@ object LicenseManager {
         val result = executeActionQueueRequest(
             actionType = "UNLOCK_FEATURE",
             payload = mapOf(
-                "featureId" to featureId,
+                "featureId" to pricing.id,
                 "hours" to hours,
                 "pointsCost" to totalCost,
                 "durationMs" to (hours * 3600L * 1000L)
@@ -2085,9 +2245,9 @@ object LicenseManager {
                     ?: snap.getLong("newExpiry")
                     ?: (getCurrentServerTimeMs() + (hours * 3600L * 1000L))
                 val updatedMap = _unlockedFeatures.value.toMutableMap()
-                updatedMap[featureId] = newExpiry
+                updatedMap[pricing.id] = newExpiry
                 _unlockedFeatures.value = updatedMap
-                Log.i(TAG, "UNLOCK_FEATURE completed via Action Queue for $featureId. New expiry: $newExpiry")
+                Log.i(TAG, "UNLOCK_FEATURE completed via Action Queue for ${pricing.id}. New expiry: $newExpiry")
                 Result.success(newExpiry)
             },
             onFailure = { err ->
@@ -2095,6 +2255,60 @@ object LicenseManager {
                 Result.failure(err)
             }
         )
+    }
+
+    /**
+     * Unlocks one or multiple selected features/filters simultaneously in Free Mode using Points
+     * via validated Action Queue requests.
+     */
+    suspend fun unlockMultipleFeatures(
+        featureIds: List<String>,
+        hours: Int = 1
+    ): Result<Map<String, Long>> = withContext(Dispatchers.IO) {
+        if (hours <= 0) return@withContext Result.failure(IllegalArgumentException("Hours must be positive"))
+        val distinctIds = featureIds.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.distinct()
+        if (distinctIds.isEmpty()) {
+            return@withContext Result.failure(IllegalArgumentException("Select at least one filter or feature"))
+        }
+
+        val blocked = distinctIds.filter { isFeatureLockedByAdmin(it) }
+        if (blocked.isNotEmpty()) {
+            return@withContext Result.failure(IllegalStateException("Locked by Admin: ${blocked.joinToString()}"))
+        }
+
+        val pricings = distinctIds.map { id ->
+            FeatureIds.getPricing(id)
+                ?: return@withContext Result.failure(IllegalArgumentException("Unknown feature ID: $id"))
+        }
+
+        val totalCost = pricings.sumOf { it.pointsPerHour * hours }
+        val currentPoints = _pointsBalance.value
+        if (currentPoints < totalCost) {
+            return@withContext Result.failure(
+                IllegalStateException("Insufficient points. Need $totalCost pts for ${pricings.size} feature(s), you have $currentPoints pts.")
+            )
+        }
+
+        val unlockedResults = mutableMapOf<String, Long>()
+        for (pricing in pricings) {
+            val res = unlockFeature(pricing.id, hours)
+            if (res.isFailure) {
+                return@withContext Result.failure(
+                    res.exceptionOrNull() ?: IllegalStateException("Failed unlocking ${pricing.title}")
+                )
+            }
+            unlockedResults[pricing.id] = res.getOrDefault(0L)
+        }
+        Result.success(unlockedResults)
+    }
+
+    @VisibleForTesting
+    internal fun setFeatureLocksForTesting(
+        unlocked: Map<String, Long>,
+        locked: Set<String> = emptySet()
+    ) {
+        _unlockedFeatures.value = unlocked
+        _lockedFeatures.value = locked.map { it.lowercase() }.toSet()
     }
 }
 

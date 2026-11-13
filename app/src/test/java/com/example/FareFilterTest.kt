@@ -22,12 +22,14 @@ class FareFilterTest {
     @Before
     fun setUp() {
         context = ApplicationProvider.getApplicationContext()
+        LicenseManager.resetStateForTesting(context)
         AppSettings.init(context)
         AppSettings.resetBusinessStateForTest(context)
     }
 
     @After
     fun tearDown() {
+        LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
     }
 
@@ -44,11 +46,11 @@ class FareFilterTest {
 
     @Test
     fun testReactiveStateFlows() {
-        // Client business setters must be strictly blocked and never mutate RAM StateFlows
+        // While filters are locked, client setters must remain blocked
         AppSettings.setMinFare(context, 75f)
         assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.minFare.value, 0.01f)
         assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.settingsState.value.minFare, 0.01f)
-        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
+        assertEquals("Unlock Minimum Fare Filter with Points or Pro Pass", ShadowToast.getTextOfLatestToast())
 
         AppSettings.setMinFareEnabled(context, true)
         assertFalse(AppSettings.isMinFareEnabled.value)
@@ -62,39 +64,36 @@ class FareFilterTest {
         assertFalse(AppSettings.isMaxFareEnabled.value)
         assertFalse(AppSettings.settingsState.value.isMaxFareEnabled)
 
-        // Firestore snapshot listener pushes Admin-managed values directly into RAM StateFlows
-        AppSettings.applyFirestoreSnapshotForTest(
-            context,
-            mapOf(
-                "minFare" to 75.0,
-                "isMinFareEnabled" to true,
-                "maxFare" to 800.0,
-                "isMaxFareEnabled" to true
+        // When features are unlocked (Points or Admin -1L), user CAN set values & toggle switches ON/OFF
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.MAX_FARE to -1L
             )
         )
+
+        AppSettings.setMinFare(context, 75f)
+        AppSettings.setMinFareEnabled(context, true)
+        AppSettings.setMaxFare(context, 800f)
+        AppSettings.setMaxFareEnabled(context, true)
+
         assertEquals(75f, AppSettings.minFare.value, 0.01f)
         assertEquals(75f, AppSettings.settingsState.value.minFare, 0.01f)
         assertTrue(AppSettings.isMinFareEnabled.value)
-        assertTrue(AppSettings.settingsState.value.isMinFareEnabled)
+        assertTrue(AppSettings.isMinFareEnabled(context))
         assertEquals(800f, AppSettings.maxFare.value, 0.01f)
         assertEquals(800f, AppSettings.settingsState.value.maxFare, 0.01f)
         assertTrue(AppSettings.isMaxFareEnabled.value)
-        assertTrue(AppSettings.settingsState.value.isMaxFareEnabled)
+        assertTrue(AppSettings.isMaxFareEnabled(context))
 
-        // Disabling via Firestore snapshot updates RAM flows immediately
-        AppSettings.applyFirestoreSnapshotForTest(
-            context,
-            mapOf(
-                "minFare" to 75.0,
-                "isMinFareEnabled" to false,
-                "maxFare" to 800.0,
-                "isMaxFareEnabled" to false
-            )
+        // Admin explicitly locking MIN_FARE immediately disables effective getter & further edits
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(FeatureIds.MIN_FARE to futureExpiry, FeatureIds.MAX_FARE to -1L),
+            locked = setOf(FeatureIds.MIN_FARE)
         )
-        assertFalse(AppSettings.isMinFareEnabled.value)
-        assertFalse(AppSettings.settingsState.value.isMinFareEnabled)
-        assertFalse(AppSettings.isMaxFareEnabled.value)
-        assertFalse(AppSettings.settingsState.value.isMaxFareEnabled)
+        assertFalse(AppSettings.isMinFareEnabled(context))
+        assertTrue(AppSettings.isMaxFareEnabled(context))
     }
 
     @Test

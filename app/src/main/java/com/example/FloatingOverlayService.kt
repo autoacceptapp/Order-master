@@ -425,11 +425,17 @@ class FloatingOverlayService : Service() {
             return
         }
 
-        if (!PassManager.isAccessGranted(this)) {
-            Toast.makeText(this, "Subscription Expired! Opening Captain Store...", Toast.LENGTH_LONG).show()
+        if (LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) {
+            Toast.makeText(this, "Auto-Click mode is locked by Admin.", Toast.LENGTH_SHORT).show()
+            updateVisualState(false)
+            return
+        }
+
+        if (!LicenseManager.hasAnyAutoAcceptCapability()) {
+            Toast.makeText(this, "Unlock at least 1 filter with Points or activate a Pass.", Toast.LENGTH_LONG).show()
             AppSettings.addLog(
-                title = "Overlay Blocked - Pass Expired",
-                message = "Automation clicks locked. Please renew pass in the Store.",
+                title = "Overlay Blocked - Locked",
+                message = "Automation clicks require a Pro Pass, Trial, or at least 1 Points-unlocked filter.",
                 severity = LogSeverity.WARNING
             )
             PassManager.openStore(this)
@@ -458,11 +464,11 @@ class FloatingOverlayService : Service() {
      * Updates the button background color and sub-badge:
      * - Green: Full Automation Mode
      * - Red: Voice-Only Mode
-     * - Dark Red/Lock: Expired
+     * - Dark Red/Lock: Locked
      */
     private fun updateVisualState(isAutoClickEnabled: Boolean) {
-        val isLicensed = LicenseManager.isAccessGranted()
-        val effectiveAutoClick = isLicensed && isAutoClickEnabled
+        val isLicensed = LicenseManager.hasAnyAutoAcceptCapability()
+        val effectiveAutoClick = isLicensed && isAutoClickEnabled && !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)
 
         val bgColor = if (effectiveAutoClick) COLOR_FULL_AUTO_BG else COLOR_VOICE_ONLY_BG
         val strokeColor = if (effectiveAutoClick) COLOR_FULL_AUTO_BORDER else COLOR_VOICE_ONLY_BORDER

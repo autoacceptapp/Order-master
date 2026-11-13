@@ -33,6 +33,7 @@ class ExampleRobolectricTest {
     @Test
     fun `test app settings preferences and reactive state`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
 
         // Restricted safe default values before Firestore provisioning
@@ -41,24 +42,20 @@ class ExampleRobolectricTest {
         assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.getMaxFare(context), 0.01f)
         assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
 
-        // Business setters must NEVER mutate RAM StateFlows or local variables (Read-Only Client)
-        AppSettings.setAutoAcceptEnabled(context, true)
-        assertFalse(AppSettings.isAutoAcceptEnabled(context))
-        assertFalse(AppSettings.autoAcceptEnabled)
-        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
-
+        // While filters are locked in Free Mode, filter setters stay blocked
         AppSettings.setMinFare(context, 75.0f)
         assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
-        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinPrice(context), 0.01f)
+        assertEquals("Unlock Minimum Fare Filter with Points or Pro Pass", ShadowToast.getTextOfLatestToast())
 
-        AppSettings.setMaxFare(context, 800.0f)
-        assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.getMaxFare(context), 0.01f)
-        assertEquals(AppSettings.DEFAULT_MAX_FARE, AppSettings.getMaxPrice(context), 0.01f)
-
-        AppSettings.setMaxPickupDistance(context, 2.5f)
-        assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
-
-        // Authoritative Firestore snapshot drives RAM StateFlows
+        // Authoritative Firestore snapshot drives RAM StateFlows & unlock state
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.MAX_FARE to futureExpiry,
+                FeatureIds.MAX_PICKUP_DISTANCE to futureExpiry
+            )
+        )
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf(
@@ -75,14 +72,21 @@ class ExampleRobolectricTest {
         assertEquals(800.0f, AppSettings.getMaxPrice(context), 0.01f)
         assertEquals(2.5f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
-        // Enforce 0.0 to 3.0 km clamp on Firestore snapshot values
-        AppSettings.applyFirestoreSnapshotForTest(context, mapOf("maxPickupDistance" to 7.5))
+        // Now that filters are unlocked, user CAN manually adjust thresholds & auto-accept toggle
+        AppSettings.setMinFare(context, 120.0f)
+        AppSettings.setMaxPickupDistance(context, 1.8f)
+        assertEquals(120.0f, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(1.8f, AppSettings.getMaxPickupDistance(context), 0.01f)
+
+        // Enforce 0.0 to 3.0 km clamp on pickup distance
+        AppSettings.setMaxPickupDistance(context, 7.5f)
         assertEquals(3.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
-        AppSettings.applyFirestoreSnapshotForTest(context, mapOf("maxPickupDistance" to -1.0))
+        AppSettings.setMaxPickupDistance(context, -1.0f)
         assertEquals(0.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
         // Reset to restricted defaults
+        LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
         assertFalse(AppSettings.isAutoAcceptEnabled(context))
     }
@@ -285,20 +289,23 @@ class ExampleRobolectricTest {
     @Test
     fun `test voice announcer app settings and state persistence`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
 
-        // Check restricted defaults (voice announcer off until provisioned)
+        // Check restricted defaults (voice announcer off & locked initially)
         assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
         assertEquals("en", AppSettings.getVoiceLanguage(context))
 
-        // Client setter for business/premium toggle must be strictly blocked
+        // While TTS_VOICE is locked, toggle remains blocked
         AppSettings.setVoiceAnnouncerEnabled(context, true)
         assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
         assertFalse(AppSettings.settingsState.value.isVoiceAnnouncerEnabled)
-        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
+        assertEquals("Unlock Voice Announcements with Points or Pro Pass", ShadowToast.getTextOfLatestToast())
 
-        // Firestore snapshot enables voice announcer in RAM
-        AppSettings.applyFirestoreSnapshotForTest(context, mapOf("isVoiceAnnouncerEnabled" to true))
+        // Once TTS_VOICE is unlocked (Points or Admin -1L), user CAN toggle voice announcements ON/OFF
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(unlocked = mapOf(FeatureIds.TTS_VOICE to futureExpiry))
+        AppSettings.setVoiceAnnouncerEnabled(context, true)
         assertTrue(AppSettings.isVoiceAnnouncerEnabled(context))
         assertTrue(AppSettings.settingsState.value.isVoiceAnnouncerEnabled)
 
@@ -308,6 +315,7 @@ class ExampleRobolectricTest {
         assertEquals("hi", AppSettings.settingsState.value.voiceLanguage)
 
         // Reset
+        LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
         AppSettings.setVoiceLanguage(context, "en")
         assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
@@ -851,12 +859,13 @@ class ExampleRobolectricTest {
     @Test
     fun `test app settings rate per km and destination blacklist persistence`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
 
-        // Client setters for Per-Km Rate and Blacklist must be strictly blocked
+        // While Per-Km Rate and Blacklist are locked in Free Mode, setters must stay blocked
         AppSettings.setMinPerKmRateEnabled(context, true)
         assertFalse(AppSettings.isMinPerKmRateEnabled(context))
-        assertEquals("Settings are managed by Admin app", ShadowToast.getTextOfLatestToast())
+        assertEquals("Unlock Minimum Per-KM Filter with Points or Pro Pass", ShadowToast.getTextOfLatestToast())
 
         AppSettings.setMinPerKmRate(context, 14.0f)
         assertEquals(AppSettings.DEFAULT_MIN_PER_KM_RATE, AppSettings.getMinPerKmRate(context), 0.01f)
@@ -870,22 +879,27 @@ class ExampleRobolectricTest {
         AppSettings.removeBlockedLocation(context, "Airport")
         assertTrue(AppSettings.getBlockedLocations(context).isEmpty())
 
-        // Firestore snapshot updates Per-Km Rate and Destination Blacklist in RAM
-        AppSettings.applyFirestoreSnapshotForTest(
-            context,
-            mapOf(
-                "isMinPerKmRateEnabled" to true,
-                "minPerKmRate" to 14.0,
-                "isDestinationBlacklistEnabled" to true,
-                "blockedLocations" to listOf("Airport", "Toll", "Slum Area")
+        // Once unlocked (Points or Admin -1L), user CAN set Per-Km Rate and Destination Blacklist manually
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_PER_KM_RATE to futureExpiry,
+                FeatureIds.DESTINATION_BLACKLIST to futureExpiry
             )
         )
+        AppSettings.setMinPerKmRateEnabled(context, true)
+        AppSettings.setMinPerKmRate(context, 14.0f)
+        AppSettings.setDestinationBlacklistEnabled(context, true)
+        AppSettings.setBlockedLocations(context, listOf("Airport", "Toll"))
+        AppSettings.addBlockedLocation(context, "Slum Area")
+
         assertTrue(AppSettings.isMinPerKmRateEnabled(context))
         assertEquals(14.0f, AppSettings.getMinPerKmRate(context), 0.01f)
         assertEquals(14.0f, AppSettings.settingsState.value.minPerKmRate, 0.01f)
         assertTrue(AppSettings.isDestinationBlacklistEnabled(context))
         assertTrue(AppSettings.getBlockedLocations(context).containsAll(listOf("Airport", "Toll", "Slum Area")))
 
+        LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
     }
 
@@ -1080,6 +1094,7 @@ class ExampleRobolectricTest {
     @Test
     fun `test zero trust thin client firestore snapshot sync signout reset and evaluation latency`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
 
         // 1. Missing Firestore doc falls back to strict safe restricted defaults
@@ -1095,6 +1110,15 @@ class ExampleRobolectricTest {
 
         // 2. Push Firestore users/{uid} snapshot fields into RAM StateFlows
         val futureExpiry = System.currentTimeMillis() + 86_400_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.FARE_FILTERS to futureExpiry,
+                FeatureIds.DISTANCE_FILTERS to futureExpiry,
+                FeatureIds.FLOATING_OVERLAY to futureExpiry,
+                FeatureIds.TTS_VOICE to futureExpiry,
+                FeatureIds.DESTINATION_BLACKLIST to futureExpiry
+            )
+        )
         val snapshotData = mapOf<String, Any?>(
             "autoAcceptEnabled" to true,
             "minFare" to 85.0,
@@ -1103,7 +1127,10 @@ class ExampleRobolectricTest {
             "isVoiceAnnouncerEnabled" to true,
             "activePassType" to "DAILY_PASS",
             "passExpiryTimestamp" to futureExpiry,
-            "unlocked_features" to mapOf("FARE_FILTERS" to futureExpiry, "TTS_VOICE" to futureExpiry),
+            "unlocked_features" to mapOf(
+                FeatureIds.FARE_FILTERS to futureExpiry,
+                FeatureIds.TTS_VOICE to futureExpiry
+            ),
             "blockedLocations" to listOf("Airport", "Highway Toll")
         )
         AppSettings.applyFirestoreSnapshotForTest(context, snapshotData)
@@ -1116,7 +1143,7 @@ class ExampleRobolectricTest {
         assertEquals("DAILY_PASS", AppSettings.activePassTypeFlow.value)
         assertEquals(futureExpiry, AppSettings.passExpiryTimestampFlow.value)
         assertTrue(AppSettings.isPassActiveFlow.value)
-        assertEquals(futureExpiry, AppSettings.unlockedFeaturesFlow.value["FARE_FILTERS"])
+        assertEquals(futureExpiry, AppSettings.unlockedFeaturesFlow.value[FeatureIds.FARE_FILTERS])
         assertEquals(listOf("Airport", "Highway Toll"), AppSettings.getBlockedLocations(context))
 
         // 3. Verify synchronous order evaluation from RAM completes well under 300ms
@@ -1137,6 +1164,7 @@ class ExampleRobolectricTest {
 
         // 4. Sign-out resets all business StateFlows to strict restricted defaults
         AppSettings.signOut(context)
+        LicenseManager.resetStateForTesting(context)
         assertFalse(AppSettings.isAutoAcceptEnabled(context))
         assertEquals(0.0f, AppSettings.minFare.value, 0.01f)
         assertEquals(0.0f, AppSettings.maxPickupDistanceFlow.value, 0.01f)

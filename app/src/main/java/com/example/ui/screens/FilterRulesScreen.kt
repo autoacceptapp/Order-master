@@ -17,10 +17,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CurrencyRupee
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.PriceChange
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -32,6 +34,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,21 +45,17 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.AccessStatus
 import com.example.AppSettings
+import com.example.FeatureIds
+import com.example.FeatureUnlockDialog
+import com.example.LicenseManager
 import com.example.ui.OrderMasterViewModel
 import com.example.ui.components.FareFilterCard
 
 /**
  * FilterRulesScreen:
- * Displays all modular automation filters with an interactive, rich "Fare Range Filter" section.
- *
- * Requirements fulfilled:
- * - Baseline ranges:
- *   * Min Fare Range: 20f to 500f (Default: 50f)
- *   * Max Fare Range: 100f to 2000f (Default: 500f)
- * - Two interactive `FareFilterCard` components for Min Fare and Max Fare.
- * - Reactive state synchronization with `AppSettings` via `OrderMasterViewModel`.
- * - Cross-boundary validation ensuring minFare cannot exceed maxFare.
+ * Displays modular automation filters with granular LicenseManager Lock/Unlock enforcement.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -63,6 +64,50 @@ fun FilterRulesScreen(
     modifier: Modifier = Modifier
 ) {
     val settingsState by viewModel.settingsState.collectAsState()
+    val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
+    val lockedFeatures by LicenseManager.lockedFeatures.collectAsState()
+
+    val isProMode = when (val s = accessStatus) {
+        is AccessStatus.PassActive -> s.remainingTimeMs > 0
+        is AccessStatus.TrialActive -> s.remainingTimeMs > 0
+        else -> false
+    }
+
+    var featureToUnlock by remember { mutableStateOf<String?>(null) }
+
+    featureToUnlock?.let { fId ->
+        FeatureUnlockDialog(
+            featureId = fId,
+            onDismiss = { featureToUnlock = null },
+            onSuccess = { featureToUnlock = null }
+        )
+    }
+
+    fun getRemainingTime(fId: String): String? {
+        if (LicenseManager.isFeatureLockedByAdmin(fId)) return null
+        val ms = LicenseManager.getFeatureRemainingTimeMs(fId)
+        if (ms == Long.MAX_VALUE) return "ADMIN UNLOCKED"
+        if (isProMode) return "PRO ACTIVE"
+        if (ms <= 0L) return null
+        val totalMins = (ms / 60000L).coerceAtLeast(1L)
+        val hrs = totalMins / 60
+        val mins = totalMins % 60
+        return if (hrs > 0) "${hrs}h ${mins}m left" else "${mins}m left"
+    }
+
+    val isMinFareAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.MIN_FARE) }
+    val isMinFareUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) {
+        LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)
+    }
+    val isMaxFareAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.MAX_FARE) }
+    val isMaxFareUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) {
+        LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)
+    }
+    val isPickupAdminLocked = remember(lockedFeatures) { LicenseManager.isFeatureLockedByAdmin(FeatureIds.MAX_PICKUP_DISTANCE) }
+    val isPickupUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) {
+        LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)
+    }
 
     // Preset Chip lists per requirements
     val minFarePresets = listOf(40f, 60f, 80f, 100f, 150f)
@@ -140,14 +185,21 @@ fun FilterRulesScreen(
                 description = "Ignore rides paying below this baseline threshold",
                 icon = Icons.Default.CurrencyRupee,
                 isEnabled = settingsState.isMinFareEnabled,
-                onToggle = { enabled -> viewModel.toggleMinFareFilter(enabled) },
+                onToggle = { enabled -> if (isMinFareUnlocked) viewModel.toggleMinFareFilter(enabled) },
                 value = settingsState.minFare,
-                onValueChange = { newMin -> viewModel.setMinFare(newMin) },
+                onValueChange = { newMin -> if (isMinFareUnlocked) viewModel.setMinFare(newMin) },
                 valueRange = AppSettings.MIN_FARE_RANGE_START..AppSettings.MIN_FARE_RANGE_END,
                 presetValues = minFarePresets,
                 accentColor = emeraldGreen,
                 validationWarning = minWarning,
-                testTag = "min_fare_filter_card"
+                testTag = "min_fare_filter_card",
+                isProMode = isProMode,
+                isUnlocked = isMinFareUnlocked,
+                isAdminLocked = isMinFareAdminLocked,
+                featureId = FeatureIds.MIN_FARE,
+                onUnlockClick = { if (!isMinFareAdminLocked) featureToUnlock = FeatureIds.MIN_FARE },
+                remainingTimeText = getRemainingTime(FeatureIds.MIN_FARE),
+                pointsPerHour = FeatureIds.getPricing(FeatureIds.MIN_FARE)?.pointsPerHour ?: 5
             )
         }
 
@@ -160,15 +212,22 @@ fun FilterRulesScreen(
                 description = "Cap long-distance / outstation surge offers",
                 icon = Icons.Default.PriceChange,
                 isEnabled = settingsState.isMaxFareEnabled,
-                onToggle = { enabled -> viewModel.toggleMaxFareFilter(enabled) },
+                onToggle = { enabled -> if (isMaxFareUnlocked) viewModel.toggleMaxFareFilter(enabled) },
                 value = settingsState.maxFare,
-                onValueChange = { newMax -> viewModel.setMaxFare(newMax) },
+                onValueChange = { newMax -> if (isMaxFareUnlocked) viewModel.setMaxFare(newMax) },
                 valueRange = AppSettings.MAX_FARE_RANGE_START..AppSettings.MAX_FARE_RANGE_END,
                 presetValues = maxFarePresets,
                 accentColor = emeraldGreen,
                 secondaryBadgeColor = MaterialTheme.colorScheme.secondaryContainer,
                 validationWarning = maxWarning,
-                testTag = "max_fare_filter_card"
+                testTag = "max_fare_filter_card",
+                isProMode = isProMode,
+                isUnlocked = isMaxFareUnlocked,
+                isAdminLocked = isMaxFareAdminLocked,
+                featureId = FeatureIds.MAX_FARE,
+                onUnlockClick = { if (!isMaxFareAdminLocked) featureToUnlock = FeatureIds.MAX_FARE },
+                remainingTimeText = getRemainingTime(FeatureIds.MAX_FARE),
+                pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_FARE)?.pointsPerHour ?: 5
             )
         }
 
@@ -176,6 +235,7 @@ fun FilterRulesScreen(
         // 3. MAXIMUM PICKUP DISTANCE (0.0 km - 3.0 km)
         // =========================================================================
         item {
+            val effectivelyUnlocked = isPickupUnlocked && !isPickupAdminLocked
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -208,7 +268,7 @@ fun FilterRulesScreen(
                                     .size(42.dp)
                                     .clip(CircleShape)
                                     .background(
-                                        if (settingsState.isMaxPickupDistanceEnabled) {
+                                        if (settingsState.isMaxPickupDistanceEnabled && effectivelyUnlocked) {
                                             MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                                         } else {
                                             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
@@ -219,7 +279,7 @@ fun FilterRulesScreen(
                                 Icon(
                                     imageVector = Icons.Default.NearMe,
                                     contentDescription = "Pickup Distance",
-                                    tint = if (settingsState.isMaxPickupDistanceEnabled) {
+                                    tint = if (settingsState.isMaxPickupDistanceEnabled && effectivelyUnlocked) {
                                         MaterialTheme.colorScheme.primary
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -238,17 +298,45 @@ fun FilterRulesScreen(
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "Strict limit to reach customer (0.0 - 3.0 km)",
+                                    text = when {
+                                        isPickupAdminLocked -> "Locked by Admin"
+                                        !effectivelyUnlocked -> "Unlock for ${FeatureIds.getPricing(FeatureIds.MAX_PICKUP_DISTANCE)?.pointsPerHour ?: 5} Pts/Hr or Pro Pass"
+                                        else -> "Strict limit to reach customer (0.0 - 3.0 km)"
+                                    },
                                     style = MaterialTheme.typography.bodySmall.copy(
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = if (isPickupAdminLocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 )
+                                if (!effectivelyUnlocked && !isPickupAdminLocked) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    FilledTonalButton(
+                                        onClick = { featureToUnlock = FeatureIds.MAX_PICKUP_DISTANCE },
+                                        shape = RoundedCornerShape(6.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(26.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(11.dp)
+                                        )
+                                        Spacer(modifier = Modifier.padding(2.dp))
+                                        Text(
+                                            text = "Unlock (${FeatureIds.getPricing(FeatureIds.MAX_PICKUP_DISTANCE)?.pointsPerHour ?: 5} Pts/Hr)",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
                             }
                         }
 
                         Switch(
-                            checked = settingsState.isMaxPickupDistanceEnabled,
-                            onCheckedChange = { viewModel.toggleMaxPickupDistFilter(it) },
+                            checked = settingsState.isMaxPickupDistanceEnabled && effectivelyUnlocked,
+                            onCheckedChange = if (effectivelyUnlocked) {
+                                { viewModel.toggleMaxPickupDistFilter(it) }
+                            } else null,
+                            enabled = effectivelyUnlocked,
                             modifier = Modifier.testTag("max_pickup_switch"),
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,
@@ -257,7 +345,7 @@ fun FilterRulesScreen(
                         )
                     }
 
-                    if (settingsState.isMaxPickupDistanceEnabled) {
+                    if (settingsState.isMaxPickupDistanceEnabled && effectivelyUnlocked) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -287,6 +375,7 @@ fun FilterRulesScreen(
 
                         Slider(
                             value = settingsState.maxPickupDistance,
+                            enabled = effectivelyUnlocked,
                             onValueChange = { viewModel.setMaxPickupDistance(it) },
                             valueRange = AppSettings.MIN_PICKUP_DISTANCE_KM..AppSettings.MAX_PICKUP_DISTANCE_KM,
                             steps = 5,

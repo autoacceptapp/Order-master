@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -51,6 +52,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -1271,8 +1273,11 @@ fun FeatureUnlockDialog(
     var hours by remember { mutableStateOf(1) }
     var isLoading by remember { mutableStateOf(false) }
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
+    val lockedFeatures by LicenseManager.lockedFeatures.collectAsState()
+    val isAdminLocked = lockedFeatures.contains(featureId.lowercase()) ||
+        (FeatureIds.parentGroupFor(featureId)?.let { lockedFeatures.contains(it) } == true)
     val totalCost = pointsPerHour * hours
-    val hasEnoughPoints = pointsBalance >= totalCost
+    val hasEnoughPoints = pointsBalance >= totalCost && !isAdminLocked
 
     AlertDialog(
         onDismissRequest = { if (!isLoading) onDismiss() },
@@ -1287,6 +1292,22 @@ fun FeatureUnlockDialog(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                if (isAdminLocked) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "This feature is currently locked by the Admin and cannot be unlocked with Points.",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
                 pricing?.description?.let { desc ->
                     Text(
                         text = desc,
@@ -1320,7 +1341,7 @@ fun FeatureUnlockDialog(
                         onValueChange = { hours = it.toInt().coerceIn(1, 12) },
                         valueRange = 1f..12f,
                         steps = 10,
-                        enabled = !isLoading
+                        enabled = !isLoading && !isAdminLocked
                     )
 
                     Row(
@@ -1330,7 +1351,7 @@ fun FeatureUnlockDialog(
                         listOf(1, 2, 4, 8, 12).forEach { quickHour ->
                             FilledTonalButton(
                                 onClick = { hours = quickHour },
-                                enabled = !isLoading,
+                                enabled = !isLoading && !isAdminLocked,
                                 shape = RoundedCornerShape(8.dp),
                                 contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
                                 modifier = Modifier
@@ -1393,11 +1414,11 @@ fun FeatureUnlockDialog(
                                 text = "$totalCost Points",
                                 style = MaterialTheme.typography.titleMedium.copy(
                                     fontWeight = FontWeight.ExtraBold,
-                                    color = if (hasEnoughPoints) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                    color = if (pointsBalance >= totalCost) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
                                 )
                             )
                         }
-                        if (!hasEnoughPoints) {
+                        if (pointsBalance < totalCost) {
                             Text(
                                 text = "Insufficient points balance (Need ${totalCost - pointsBalance} more pts). Earn points with Refer & Earn.",
                                 style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.error)
@@ -1445,7 +1466,275 @@ fun FeatureUnlockDialog(
                     Text("Processing...")
                 } else {
                     Text(
-                        text = "Pay & Unlock ($totalCost Pts)",
+                        text = if (isAdminLocked) "Locked by Admin" else "Pay & Unlock ($totalCost Pts)",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
+        },
+        dismissButton = {
+            if (!isLoading) {
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel")
+                }
+            }
+        }
+    )
+}
+
+/**
+ * Multi-Select Free-Mode Feature/Filter Purchase Dialog using Points Wallet.
+ * Users can pick any 1 or multiple unlocked-candidate filters or features simultaneously.
+ * Any feature explicitly locked by Admin in `locked_features` cannot be selected.
+ */
+@Composable
+fun MultiFilterUnlockDialog(
+    initiallySelectedIds: Set<String> = emptySet(),
+    onDismiss: () -> Unit,
+    onSuccess: () -> Unit
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val pointsBalance by LicenseManager.pointsBalance.collectAsState()
+    val lockedFeatures by LicenseManager.lockedFeatures.collectAsState()
+    val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
+
+    var selectedIds by remember {
+        mutableStateOf(
+            initiallySelectedIds.filter { id -> !LicenseManager.isFeatureLockedByAdmin(id) }.toSet()
+        )
+    }
+    var hours by remember { mutableStateOf(1) }
+    var isLoading by remember { mutableStateOf(false) }
+
+    val selectedPricings = FeatureIds.ALL_FEATURES.filter { selectedIds.contains(it.id) }
+    val hourlyCost = selectedPricings.sumOf { it.pointsPerHour }
+    val totalCost = hourlyCost * hours
+    val hasEnoughPoints = selectedPricings.isNotEmpty() && pointsBalance >= totalCost
+
+    AlertDialog(
+        onDismissRequest = { if (!isLoading) onDismiss() },
+        title = {
+            Text(
+                text = "Buy Filters with Points",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Select 1 or multiple filters/features to unlock together in Free Mode:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 260.dp)
+                        .testTag("multi_filter_unlock_list"),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(FeatureIds.ALL_FEATURES, key = { it.id }) { item ->
+                        val isAdminLocked = lockedFeatures.contains(item.id) ||
+                            (FeatureIds.parentGroupFor(item.id)?.let { lockedFeatures.contains(it) } == true)
+                        val alreadyUnlocked = unlockedFeatures[item.id]?.let {
+                            it == -1L || it > LicenseManager.getCurrentServerTimeMs()
+                        } == true
+                        val isSelected = selectedIds.contains(item.id)
+
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = when {
+                                isAdminLocked -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
+                                isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !isLoading && !isAdminLocked) {
+                                    selectedIds = if (isSelected) selectedIds - item.id else selectedIds + item.id
+                                }
+                                .testTag("multi_filter_option_${item.id}")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Checkbox(
+                                    checked = isSelected,
+                                    enabled = !isLoading && !isAdminLocked,
+                                    onCheckedChange = { checked ->
+                                        selectedIds = if (checked) selectedIds + item.id else selectedIds - item.id
+                                    }
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.title,
+                                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
+                                    )
+                                    Text(
+                                        text = when {
+                                            isAdminLocked -> "Locked by Admin"
+                                            alreadyUnlocked -> "${item.pointsPerHour} Pts/Hr • Active (extend)"
+                                            else -> "${item.pointsPerHour} Pts/Hr"
+                                        },
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = if (isAdminLocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 10.sp
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Duration quick buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Duration: $hours hr(s)",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                    Text(
+                        text = "Balance: $pointsBalance Pts",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(1, 2, 4, 8, 12).forEach { quickHour ->
+                        FilledTonalButton(
+                            onClick = { hours = quickHour },
+                            enabled = !isLoading,
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(30.dp),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = if (hours == quickHour)
+                                    MaterialTheme.colorScheme.primary
+                                else
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = if (hours == quickHour)
+                                    MaterialTheme.colorScheme.onPrimary
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        ) {
+                            Text(
+                                text = "${quickHour}h",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Selected (${selectedPricings.size}):",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                text = "$hourlyCost Pts/Hr",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "Total Cost:",
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "$totalCost Pts",
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = if (pointsBalance >= totalCost) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                )
+                            )
+                        }
+                        if (selectedPricings.isNotEmpty() && pointsBalance < totalCost) {
+                            Text(
+                                text = "Need ${totalCost - pointsBalance} more points.",
+                                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.error)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (isLoading || !hasEnoughPoints) return@Button
+                    isLoading = true
+                    coroutineScope.launch {
+                        val result = LicenseManager.unlockMultipleFeatures(selectedPricings.map { it.id }, hours)
+                        isLoading = false
+                        result.onSuccess { unlocked ->
+                            Toast.makeText(
+                                context,
+                                "Unlocked ${unlocked.size} filter(s) for $hours hr(s)!",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            onSuccess()
+                            onDismiss()
+                        }.onFailure { err ->
+                            Toast.makeText(
+                                context,
+                                "Unlock failed: ${err.message}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                },
+                enabled = !isLoading && hasEnoughPoints,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.testTag("multi_filter_confirm_button")
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Unlocking...")
+                } else {
+                    Text(
+                        text = if (selectedPricings.isEmpty()) "Select Filters" else "Pay & Unlock ($totalCost Pts)",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }
