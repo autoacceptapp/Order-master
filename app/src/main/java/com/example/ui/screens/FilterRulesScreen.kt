@@ -69,7 +69,7 @@ fun FilterRulesScreen(
     val lockedFeatures by LicenseManager.lockedFeatures.collectAsState()
 
     val isProMode = when (val s = accessStatus) {
-        is AccessStatus.PassActive -> s.remainingTimeMs > 0
+        is AccessStatus.PassActive -> s.passTier.isProPass && s.remainingTimeMs > 0
         is AccessStatus.TrialActive -> s.remainingTimeMs > 0
         else -> false
     }
@@ -323,6 +323,8 @@ fun FilterRulesScreen(
                                         Spacer(modifier = Modifier.padding(2.dp))
                                         Text(
                                             text = "Unlock (${FeatureIds.getPricing(FeatureIds.MAX_PICKUP_DISTANCE)?.pointsPerHour ?: 5} Pts/Hr)",
+                                            maxLines = 1,
+                                            softWrap = false,
                                             fontSize = 10.sp,
                                             fontWeight = FontWeight.Bold
                                         )

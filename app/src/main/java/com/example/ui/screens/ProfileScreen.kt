@@ -99,6 +99,9 @@ fun ProfileScreen(
     val coroutineScope = rememberCoroutineScope()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
     val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
+    val removeAdsExpiryMs by LicenseManager.removeAdsExpiryMs.collectAsState()
+    val isAdsRemoved = remember(accessStatus, unlockedFeatures, removeAdsExpiryMs) { LicenseManager.isAdsRemoved() }
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
     val totalOrders by viewModel.totalOrdersCount.collectAsState()
     val acceptedOrders by viewModel.acceptedOrdersCount.collectAsState()
@@ -549,13 +552,30 @@ fun ProfileScreen(
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
                                 }
+                                if (isAdsRemoved) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Color(0xFF8B5CF6).copy(alpha = 0.18f)
+                                    ) {
+                                        Text(
+                                            text = "AD FREE",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 10.sp,
+                                                color = Color(0xFF8B5CF6)
+                                            ),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
                             }
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = when (currentAccess) {
                                     is AccessStatus.PassActive -> "${currentAccess.passTier.title} Active • ${currentAccess.formattedRemaining}"
                                     is AccessStatus.TrialActive -> "2-Day Free Trial • ${currentAccess.formattedRemaining} left"
-                                    is AccessStatus.Expired -> "Trial Ended • Tap to activate a pass"
+                                    is AccessStatus.Expired -> "Free Mode • Buy filters with Points or get Pro Pass"
                                     AccessStatus.Loading -> "Checking cloud license..."
                                 },
                                 style = MaterialTheme.typography.bodySmall,

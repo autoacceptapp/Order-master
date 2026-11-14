@@ -123,7 +123,7 @@ fun AppSettingsScreen(
     // Reactive licensing and operating mode (Free vs Pro)
     val accessStatus by LicenseManager.accessStatus.collectAsState()
     val isProMode = when (val s = accessStatus) {
-        is AccessStatus.PassActive -> s.remainingTimeMs > 0
+        is AccessStatus.PassActive -> s.passTier.isProPass && s.remainingTimeMs > 0
         is AccessStatus.TrialActive -> s.remainingTimeMs > 0
         else -> false
     }

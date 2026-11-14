@@ -122,6 +122,9 @@ fun HomeScreen(
     val ttsStatus by viewModel.ttsStatus.collectAsState()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
     val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
+    val removeAdsExpiryMs by LicenseManager.removeAdsExpiryMs.collectAsState()
+    val isAdsRemoved = remember(accessStatus, unlockedFeatures, removeAdsExpiryMs) { LicenseManager.isAdsRemoved() }
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
 
     val isServiceRunningInSystem = AppSettings.isAccessibilityServiceEnabled(context)
@@ -212,6 +215,7 @@ fun HomeScreen(
         LicenseStatusHomeCard(
             accessStatus = accessStatus,
             pointsBalance = pointsBalance,
+            isAdsRemoved = isAdsRemoved,
             onOpenStore = onNavigateToSubscription
         )
 
@@ -956,6 +960,7 @@ private fun GoogleAuthStatusCard(
 private fun LicenseStatusHomeCard(
     accessStatus: AccessStatus,
     pointsBalance: Int,
+    isAdsRemoved: Boolean = false,
     onOpenStore: () -> Unit
 ) {
     val currentAccess = accessStatus
@@ -974,7 +979,7 @@ private fun LicenseStatusHomeCard(
                     when (currentAccess) {
                         is AccessStatus.PassActive -> PrimaryEmerald.copy(alpha = 0.6f)
                         is AccessStatus.TrialActive -> Color(0xFF0284C7).copy(alpha = 0.6f)
-                        else -> PrimaryEmerald.copy(alpha = 0.4f)
+                        else -> AmberAccent.copy(alpha = 0.55f)
                     },
                     AmberAccent.copy(alpha = 0.3f)
                 )
@@ -1000,7 +1005,7 @@ private fun LicenseStatusHomeCard(
                     color = when (currentAccess) {
                         is AccessStatus.PassActive -> PrimaryEmerald.copy(alpha = 0.15f)
                         is AccessStatus.TrialActive -> Color(0xFF0284C7).copy(alpha = 0.15f)
-                        else -> PrimaryEmerald.copy(alpha = 0.15f)
+                        else -> AmberAccent.copy(alpha = 0.18f)
                     },
                     modifier = Modifier.size(38.dp)
                 ) {
@@ -1009,13 +1014,15 @@ private fun LicenseStatusHomeCard(
                             imageVector = when (currentAccess) {
                                 is AccessStatus.PassActive -> Icons.Default.CardGiftcard
                                 is AccessStatus.TrialActive -> Icons.Default.FlashOn
-                                else -> Icons.Default.CheckCircle
+                                is AccessStatus.Expired -> Icons.Default.Lock
+                                AccessStatus.Loading -> Icons.Default.CheckCircle
                             },
                             contentDescription = null,
                             tint = when (currentAccess) {
                                 is AccessStatus.PassActive -> PrimaryEmerald
                                 is AccessStatus.TrialActive -> Color(0xFF0284C7)
-                                else -> PrimaryEmerald
+                                is AccessStatus.Expired -> AmberAccent
+                                AccessStatus.Loading -> PrimaryEmerald
                             },
                             modifier = Modifier.size(20.dp)
                         )
@@ -1028,7 +1035,7 @@ private fun LicenseStatusHomeCard(
                             text = when (currentAccess) {
                                 is AccessStatus.PassActive -> currentAccess.passTier.title
                                 is AccessStatus.TrialActive -> "2-Day Free Trial"
-                                is AccessStatus.Expired -> "Permissions & Automation Active"
+                                is AccessStatus.Expired -> "Free Mode Active"
                                 AccessStatus.Loading -> "Verifying..."
                             },
                             style = MaterialTheme.typography.labelLarge.copy(
@@ -1045,12 +1052,31 @@ private fun LicenseStatusHomeCard(
                                 color = AmberAccent
                             )
                         )
+                        if (isAdsRemoved) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFF8B5CF6).copy(alpha = 0.18f)
+                            ) {
+                                Text(
+                                    text = "AD FREE",
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 9.sp,
+                                        color = Color(0xFF8B5CF6)
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
                     }
                     Text(
                         text = when (currentAccess) {
                             is AccessStatus.PassActive -> "Expires in ${currentAccess.formattedRemaining}"
                             is AccessStatus.TrialActive -> "Remaining: ${currentAccess.formattedRemaining}"
-                            is AccessStatus.Expired -> "Full access enabled without pass"
+                            is AccessStatus.Expired -> "Buy filters with Points or get Pro Pass"
                             AccessStatus.Loading -> "Checking system status..."
                         },
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
@@ -1059,9 +1085,7 @@ private fun LicenseStatusHomeCard(
                 }
             }
 
-            // Show Manage or Store button ONLY if user has an active pass/trial;
-            // The "Pass-by" button has been completely deleted as requested.
-            if (currentAccess is AccessStatus.PassActive || currentAccess is AccessStatus.TrialActive) {
+            if (currentAccess !is AccessStatus.Loading) {
                 Button(
                     onClick = onOpenStore,
                     shape = RoundedCornerShape(10.dp),

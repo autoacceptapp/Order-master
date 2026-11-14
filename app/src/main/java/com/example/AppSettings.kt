@@ -629,7 +629,7 @@ object AppSettings {
                 }.collect { (status, isServiceActive) ->
                     when (status) {
                         is AccessStatus.PassActive -> {
-                            if (status.expiryTimestamp > 0L) {
+                            if (status.passTier.isProPass && status.expiryTimestamp > 0L) {
                                 _passExpiryTimestampFlow.value = status.expiryTimestamp
                                 _isPassActiveFlow.value = status.remainingTimeMs > 0
                             }
@@ -884,8 +884,10 @@ object AppSettings {
         _isFloatingOverlayEnabledFlow.value = finalOverlayEnabled
         _isVoiceAnnouncerEnabledFlow.value = finalVoiceEnabled
         _activePassTypeFlow.value = passTypeVal
-        _passExpiryTimestampFlow.value = passExpiryVal
-        _isPassActiveFlow.value = passExpiryVal > LicenseManager.getCurrentServerTimeMs()
+        val parsedPassTier = PassTier.fromId(passTypeVal)
+        val isProPassType = parsedPassTier == null || parsedPassTier.isProPass
+        _passExpiryTimestampFlow.value = if (isProPassType) passExpiryVal else 0L
+        _isPassActiveFlow.value = isProPassType && passExpiryVal > LicenseManager.getCurrentServerTimeMs()
         _unlockedFeaturesFlow.value = unlockedFeaturesVal
         _lockedFeaturesFlow.value = lockedFeaturesVal
         _isFirestoreSyncedFlow.value = true

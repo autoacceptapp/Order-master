@@ -110,31 +110,32 @@ fun FareFilterCard(
     val currentOnToggle by rememberUpdatedState(onToggle)
     val currentOnValueChangeFinished by rememberUpdatedState(onValueChangeFinished)
 
-    // Local visual dragging state to ensure 60/120 FPS fluid slider motion without triggering upstream DB writes
-    var localSliderValue by remember(value) {
+    // Local visual dragging state synced cleanly via LaunchedEffect to prevent remember(value) key desync
+    var localSliderValue by remember {
         mutableFloatStateOf(value.coerceIn(valueRange))
     }
     var isDraggingSlider by remember { mutableStateOf(false) }
 
     // Internal text input state kept in sync with the external numeric value
-    var textInput by remember(value) {
-        mutableStateOf(value.roundToInt().toString())
+    var textInput by remember {
+        mutableStateOf(value.coerceIn(valueRange).roundToInt().toString())
     }
     var isInputError by remember { mutableStateOf(false) }
 
     // Synchronize local states whenever the external value updates (unless user is actively dragging)
-    LaunchedEffect(value) {
+    LaunchedEffect(value, valueRange) {
         if (!isDraggingSlider) {
-            localSliderValue = value.coerceIn(valueRange)
-            textInput = value.roundToInt().toString()
+            val coerced = value.coerceIn(valueRange)
+            localSliderValue = coerced
+            val currentParsed = textInput.toFloatOrNull()?.roundToInt()
+            if (currentParsed != coerced.roundToInt()) {
+                textInput = coerced.roundToInt().toString()
+            }
             isInputError = false
         }
     }
 
-    // Derived states to prevent recomposing outer elements when only the number changes
-    val displayedRoundedFare by remember {
-        derivedStateOf { localSliderValue.roundToInt() }
-    }
+    val displayedRoundedFare = localSliderValue.roundToInt()
     val minRangeLabel by remember(valueRange.start) {
         derivedStateOf { "Min: ₹${valueRange.start.toInt()}" }
     }
@@ -210,24 +211,25 @@ fun FareFilterCard(
                     }
 
                     Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            )
                             if (isAdminLocked) {
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
                                     color = MaterialTheme.colorScheme.errorContainer
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
@@ -239,10 +241,12 @@ fun FareFilterCard(
                                         )
                                         Text(
                                             text = "Locked by Admin",
+                                            maxLines = 1,
+                                            softWrap = false,
                                             style = MaterialTheme.typography.labelSmall.copy(
                                                 fontWeight = FontWeight.Bold,
                                                 color = MaterialTheme.colorScheme.onErrorContainer,
-                                                fontSize = 9.sp
+                                                fontSize = 10.sp
                                             )
                                         )
                                     }
@@ -254,12 +258,14 @@ fun FareFilterCard(
                                 ) {
                                     Text(
                                         text = remainingTimeText,
+                                        maxLines = 1,
+                                        softWrap = false,
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Bold,
                                             color = accentColor,
-                                            fontSize = 9.sp
+                                            fontSize = 10.sp
                                         ),
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                                     )
                                 }
                             } else if (!effectivelyUnlocked) {
@@ -267,7 +273,7 @@ fun FareFilterCard(
                                     FilledTonalButton(
                                         onClick = onUnlockClick,
                                         shape = RoundedCornerShape(6.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                                         modifier = Modifier
                                             .height(26.dp)
                                             .testTag("${testTag}_unlock_button")
@@ -277,11 +283,13 @@ fun FareFilterCard(
                                             contentDescription = null,
                                             modifier = Modifier.size(11.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
                                         Text(
                                             text = "Unlock ($pointsPerHour Pts/Hr)",
+                                            maxLines = 1,
+                                            softWrap = false,
                                             style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 9.sp,
+                                                fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold
                                             )
                                         )
@@ -292,7 +300,7 @@ fun FareFilterCard(
                                         color = MaterialTheme.colorScheme.tertiaryContainer
                                     ) {
                                         Row(
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
@@ -304,6 +312,8 @@ fun FareFilterCard(
                                             )
                                             Text(
                                                 text = "Pro Feature",
+                                                maxLines = 1,
+                                                softWrap = false,
                                                 style = MaterialTheme.typography.labelSmall.copy(
                                                     fontWeight = FontWeight.Bold,
                                                     color = MaterialTheme.colorScheme.onTertiaryContainer,
@@ -315,7 +325,7 @@ fun FareFilterCard(
                                 }
                             }
                         }
-                        Spacer(modifier = Modifier.height(2.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = description,
                             style = MaterialTheme.typography.bodySmall.copy(
@@ -533,6 +543,8 @@ fun FareFilterCard(
                                     label = {
                                         Text(
                                             text = "₹${presetVal.toInt()}",
+                                            maxLines = 1,
+                                            softWrap = false,
                                             fontSize = 12.sp,
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                         )

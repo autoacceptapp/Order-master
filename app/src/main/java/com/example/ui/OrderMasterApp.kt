@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -114,8 +115,9 @@ fun OrderMasterApp(
 ) {
     val accessStatus by LicenseManager.accessStatus.collectAsState()
     val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
+    val removeAdsExpiryMs by LicenseManager.removeAdsExpiryMs.collectAsState()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
-    val isAdsRemoved = remember(accessStatus, unlockedFeatures) { LicenseManager.isAdsRemoved() }
+    val isAdsRemoved = remember(accessStatus, unlockedFeatures, removeAdsExpiryMs) { LicenseManager.isAdsRemoved() }
 
     // Sync cloud licensing and points whenever Gmail auth state updates
     LaunchedEffect(userAuthState.userEmail, userAuthState.uid) {
@@ -254,9 +256,9 @@ fun OrderMasterApp(
                             // Branding Icon
                             Box(
                                 modifier = Modifier
-                                    .padding(start = 16.dp, end = 4.dp)
-                                    .size(36.dp)
-                                    .clip(RoundedCornerShape(10.dp))
+                                    .padding(start = 12.dp, end = 2.dp)
+                                    .size(32.dp)
+                                    .clip(RoundedCornerShape(9.dp))
                                     .background(
                                         Brush.linearGradient(
                                             listOf(
@@ -271,7 +273,7 @@ fun OrderMasterApp(
                                     imageVector = Icons.Outlined.ElectricBolt,
                                     contentDescription = "Order Master Brand",
                                     tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                             }
                         }
@@ -289,9 +291,13 @@ fun OrderMasterApp(
                                     Screen.Subscription.route -> "Captain Store"
                                     else -> "Order Master"
                                 },
-                                style = MaterialTheme.typography.titleLarge.copy(
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontSize = 17.sp,
                                     fontWeight = FontWeight.Black,
-                                    letterSpacing = (-0.5).sp
+                                    letterSpacing = (-0.4).sp
                                 )
                             )
                         }
@@ -306,7 +312,9 @@ fun OrderMasterApp(
                                     }
                                 }
                             },
-                            modifier = Modifier.testTag("top_bar_store_button")
+                            modifier = Modifier
+                                .size(width = 42.dp, height = 48.dp)
+                                .testTag("top_bar_store_button")
                         ) {
                             Icon(
                                 imageVector = if (currentRoute == Screen.Subscription.route) Icons.Filled.CardGiftcard else Icons.Outlined.CardGiftcard,
@@ -325,7 +333,9 @@ fun OrderMasterApp(
                                     launchSingleTop = true
                                 }
                             },
-                            modifier = Modifier.testTag("top_bar_remove_ads_button")
+                            modifier = Modifier
+                                .size(width = 42.dp, height = 48.dp)
+                                .testTag("top_bar_remove_ads_button")
                         ) {
                             Icon(
                                 imageVector = if (isAdsRemoved) Icons.Filled.WorkspacePremium else Icons.Outlined.WorkspacePremium,
@@ -343,7 +353,9 @@ fun OrderMasterApp(
                                     }
                                 }
                             },
-                            modifier = Modifier.testTag("top_bar_profile_button")
+                            modifier = Modifier
+                                .size(width = 42.dp, height = 48.dp)
+                                .testTag("top_bar_profile_button")
                         ) {
                             Icon(
                                 imageVector = if (currentRoute == Screen.Profile.route) Icons.Filled.Person else Icons.Outlined.Person,
@@ -358,7 +370,9 @@ fun OrderMasterApp(
                         // App Guide & Filter Tutorial Help Button
                         IconButton(
                             onClick = { showTutorialGuide = true },
-                            modifier = Modifier.testTag("top_bar_guide_button")
+                            modifier = Modifier
+                                .size(width = 42.dp, height = 48.dp)
+                                .testTag("top_bar_guide_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.HelpOutline,
@@ -376,7 +390,9 @@ fun OrderMasterApp(
                                     }
                                 }
                             },
-                            modifier = Modifier.testTag("top_bar_settings_button")
+                            modifier = Modifier
+                                .size(width = 42.dp, height = 48.dp)
+                                .testTag("top_bar_settings_button")
                         ) {
                             Icon(
                                 imageVector = if (currentRoute == Screen.Settings.route) Icons.Filled.Settings else Icons.Outlined.Settings,

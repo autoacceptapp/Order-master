@@ -96,8 +96,11 @@ enum class PassTier(
         durationDays = 28,
         durationMs = 28L * 24L * 3600L * 1000L,
         tag = "Ad Free",
-        description = "28 Days complete Ad-Free uninterrupted experience"
+        description = "28 Days Ad-Free experience only (Pro features require Daily/Weekly/Monthly Pass or Trial)"
     );
+
+    val isProPass: Boolean
+        get() = this != REMOVE_ADS
 
     companion object {
         fun fromId(id: String?): PassTier? = entries.firstOrNull { it.id.equals(id, ignoreCase = true) }
@@ -307,6 +310,7 @@ object LicenseManager {
     const val LICENSE_CACHE_PREFS = "LICENSE_CACHE_PREFS"
     const val KEY_CACHED_PASS_TIER = "cachedPassTier"
     const val KEY_CACHED_PASS_EXPIRY = "cachedPassExpiry"
+    const val KEY_CACHED_REMOVE_ADS_EXPIRY = "cachedRemoveAdsExpiry"
     const val KEY_CACHED_TRIAL_CLAIMED = "cachedTrialClaimed"
     const val KEY_CACHED_TRIAL_EXPIRY = "cachedTrialExpiry"
     const val KEY_CACHED_TRIAL_USED = "cachedTrialUsed"
@@ -326,7 +330,8 @@ object LicenseManager {
         val passExpiry: Long,
         val trialClaimed: Long,
         val trialExpiry: Long,
-        val trialUsed: Boolean
+        val trialUsed: Boolean,
+        val removeAdsExpiry: Long = 0L
     )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -378,6 +383,10 @@ object LicenseManager {
     // Explicit Admin Lock set: any feature ID listed here stays strictly LOCKED regardless of pass/points
     private val _lockedFeatures = MutableStateFlow<Set<String>>(emptySet())
     val lockedFeatures: StateFlow<Set<String>> = _lockedFeatures.asStateFlow()
+
+    // Independent Remove Ads Pass expiry timestamp (Long ms; 0L = ads enabled)
+    private val _removeAdsExpiryMs = MutableStateFlow(0L)
+    val removeAdsExpiryMs: StateFlow<Long> = _removeAdsExpiryMs.asStateFlow()
 
     // Global Service Switch & User Ban StateFlows
     private const val SERVICE_ACTIVE_MASK_TRUE = 0x3F9A6C1EL
@@ -441,12 +450,12 @@ object LicenseManager {
         trialExpiry: Long = serverTrialExpiry,
         now: Long = getCurrentServerTimeMs()
     ): String {
-        if (passTier != null && passExpiry > now) {
+        if (passTier != null && passTier.isProPass && passExpiry > now) {
             return when (passTier) {
                 PassTier.DAILY -> "daily"
                 PassTier.WEEKLY -> "weekly"
                 PassTier.MONTHLY -> "monthly"
-                PassTier.REMOVE_ADS -> "remove_ads"
+                PassTier.REMOVE_ADS -> "free_mod"
             }
         }
         if (trialClaimed > 0L && trialExpiry > now) {
@@ -461,6 +470,8 @@ object LicenseManager {
     private var serverPassTier: PassTier? = null
     @Volatile
     private var serverPassExpiry: Long = 0L
+    @Volatile
+    private var serverRemoveAdsExpiry: Long = 0L
     @Volatile
     private var serverTrialClaimed: Long = 0L
     @Volatile
@@ -520,12 +531,13 @@ object LicenseManager {
                     val prefs = ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
                     val passTierId = prefs.getString(KEY_CACHED_PASS_TIER, "") ?: ""
                     val passExpiry = prefs.getLong(KEY_CACHED_PASS_EXPIRY, 0L)
+                    val removeAdsExpiry = prefs.getLong(KEY_CACHED_REMOVE_ADS_EXPIRY, 0L)
                     val trialClaimed = prefs.getLong(KEY_CACHED_TRIAL_CLAIMED, 0L)
                     val trialExpiry = prefs.getLong(KEY_CACHED_TRIAL_EXPIRY, 0L)
                     val trialUsed = prefs.getBoolean(KEY_CACHED_TRIAL_USED, false)
                     val hmac = computeLicenseCacheHmac(
                         ctx, passTierId, passExpiry, trialClaimed, trialExpiry, trialUsed,
-                        nowWall, nowElapsed, serverMs
+                        nowWall, nowElapsed, serverMs, removeAdsExpiry
                     )
                     prefs.edit()
                         .putLong(KEY_LAST_SERVER_SYNC_TIME, nowWall)
@@ -628,6 +640,8 @@ object LicenseManager {
         clearLicensingCache(context)
         serverPassTier = null
         serverPassExpiry = 0L
+        serverRemoveAdsExpiry = 0L
+        _removeAdsExpiryMs.value = 0L
         serverTrialClaimed = 0L
         serverTrialExpiry = 0L
         serverTrialUsed = true // Block free trial exploitation on tampered environments
@@ -748,7 +762,8 @@ object LicenseManager {
         trialUsed: Boolean,
         syncWall: Long,
         syncElapsed: Long,
-        serverTimestamp: Long
+        serverTimestamp: Long,
+        removeAdsExpiry: Long = 0L
     ): String {
         return try {
             val hwId = DeviceUtils.getDeviceHardwareId(context)
@@ -756,7 +771,7 @@ object LicenseManager {
             val digestKey = MessageDigest.getInstance("SHA-256").digest(keyMaterial)
             val mac = Mac.getInstance("HmacSHA256")
             mac.init(SecretKeySpec(digestKey, "HmacSHA256"))
-            val payload = "$passTierId|$passExpiry|$trialClaimed|$trialExpiry|$trialUsed|$syncWall|$syncElapsed|$serverTimestamp"
+            val payload = "$passTierId|$passExpiry|$trialClaimed|$trialExpiry|$trialUsed|$syncWall|$syncElapsed|$serverTimestamp|$removeAdsExpiry"
             mac.doFinal(payload.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
         } catch (e: Exception) {
             Log.w(TAG, "Failed computing cache HMAC: ${e.message}")
@@ -774,22 +789,30 @@ object LicenseManager {
         passExpiry: Long,
         trialClaimed: Long,
         trialExpiry: Long,
-        trialUsed: Boolean
+        trialUsed: Boolean,
+        removeAdsExpiry: Long = 0L
     ) {
         try {
             val nowElapsed = safeElapsedRealtime()
             val nowWall = System.currentTimeMillis()
             val serverTs = serverTimeBaselineMs.takeIf { it > 0L } ?: nowWall
-            val passTierId = passTier?.id ?: ""
+            val effectivePassTier = passTier?.takeIf { it.isProPass }
+            val effectivePassExpiry = if (effectivePassTier != null) passExpiry else 0L
+            val finalRemoveAdsExpiry = maxOf(
+                removeAdsExpiry,
+                if (passTier == PassTier.REMOVE_ADS) passExpiry else 0L
+            )
+            val passTierId = effectivePassTier?.id ?: ""
             lastSuccessfulServerSyncElapsedMs = nowElapsed
             val hmac = computeLicenseCacheHmac(
-                context, passTierId, passExpiry, trialClaimed, trialExpiry, trialUsed,
-                nowWall, nowElapsed, serverTs
+                context, passTierId, effectivePassExpiry, trialClaimed, trialExpiry, trialUsed,
+                nowWall, nowElapsed, serverTs, finalRemoveAdsExpiry
             )
             val prefs = context.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
             prefs.edit()
                 .putString(KEY_CACHED_PASS_TIER, passTierId)
-                .putLong(KEY_CACHED_PASS_EXPIRY, passExpiry)
+                .putLong(KEY_CACHED_PASS_EXPIRY, effectivePassExpiry)
+                .putLong(KEY_CACHED_REMOVE_ADS_EXPIRY, finalRemoveAdsExpiry)
                 .putLong(KEY_CACHED_TRIAL_CLAIMED, trialClaimed)
                 .putLong(KEY_CACHED_TRIAL_EXPIRY, trialExpiry)
                 .putBoolean(KEY_CACHED_TRIAL_USED, trialUsed)
@@ -798,7 +821,7 @@ object LicenseManager {
                 .putLong(KEY_LAST_SERVER_TIMESTAMP, serverTs)
                 .putString(KEY_CACHE_HMAC, hmac)
                 .commit()
-            Log.d(TAG, "Saved HMAC-signed authoritative licensing cache: passTier=${passTier?.id}, passExpiry=$passExpiry, trialClaimed=$trialClaimed, trialExpiry=$trialExpiry, trialUsed=$trialUsed")
+            Log.d(TAG, "Saved HMAC-signed authoritative licensing cache: passTier=${effectivePassTier?.id}, passExpiry=$effectivePassExpiry, removeAdsExpiry=$finalRemoveAdsExpiry, trialClaimed=$trialClaimed, trialExpiry=$trialExpiry, trialUsed=$trialUsed")
         } catch (e: Exception) {
             Log.w(TAG, "Failed saving licensing cache: ${e.message}")
         }
@@ -813,6 +836,7 @@ object LicenseManager {
             val prefs = context.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
             val passTierId = prefs.getString(KEY_CACHED_PASS_TIER, "") ?: ""
             val passExpiry = prefs.getLong(KEY_CACHED_PASS_EXPIRY, 0L)
+            val removeAdsExpiry = prefs.getLong(KEY_CACHED_REMOVE_ADS_EXPIRY, 0L)
             val trialClaimed = prefs.getLong(KEY_CACHED_TRIAL_CLAIMED, 0L)
             val trialExpiry = prefs.getLong(KEY_CACHED_TRIAL_EXPIRY, 0L)
             val trialUsed = prefs.getBoolean(KEY_CACHED_TRIAL_USED, false)
@@ -822,30 +846,30 @@ object LicenseManager {
             val storedHmac = prefs.getString(KEY_CACHE_HMAC, "") ?: ""
 
             if (syncWall <= 0L || syncElapsed <= 0L || storedHmac.isBlank()) {
-                if (passExpiry > 0L || trialExpiry > 0L) {
+                if (passExpiry > 0L || trialExpiry > 0L || removeAdsExpiry > 0L) {
                     Log.w(TAG, "Licensing cache missing integrity metadata; wiping cache.")
                     clearLicensingCache(context)
                 }
-                return CachedLicensingData(null, 0L, 0L, 0L, false)
+                return CachedLicensingData(null, 0L, 0L, 0L, false, 0L)
             }
 
             val expectedHmac = computeLicenseCacheHmac(
                 context, passTierId, passExpiry, trialClaimed, trialExpiry, trialUsed,
-                syncWall, syncElapsed, serverTs
+                syncWall, syncElapsed, serverTs, removeAdsExpiry
             )
             if (expectedHmac.isBlank() ||
                 !MessageDigest.isEqual(storedHmac.toByteArray(Charsets.UTF_8), expectedHmac.toByteArray(Charsets.UTF_8))
             ) {
                 Log.w(TAG, "Licensing cache HMAC mismatch! Tampering detected; wiping cache.")
                 clearLicensingCache(context)
-                return CachedLicensingData(null, 0L, 0L, 0L, false)
+                return CachedLicensingData(null, 0L, 0L, 0L, false, 0L)
             }
 
             val passTier = if (passTierId.isNotBlank()) PassTier.fromId(passTierId) else null
-            CachedLicensingData(passTier, passExpiry, trialClaimed, trialExpiry, trialUsed)
+            CachedLicensingData(passTier, passExpiry, trialClaimed, trialExpiry, trialUsed, removeAdsExpiry)
         } catch (e: Exception) {
             Log.w(TAG, "Failed reading licensing cache: ${e.message}")
-            CachedLicensingData(null, 0L, 0L, 0L, false)
+            CachedLicensingData(null, 0L, 0L, 0L, false, 0L)
         }
     }
 
@@ -867,6 +891,8 @@ object LicenseManager {
         clearLicensingCache(context)
         serverPassTier = null
         serverPassExpiry = 0L
+        serverRemoveAdsExpiry = 0L
+        _removeAdsExpiryMs.value = 0L
         serverTrialClaimed = 0L
         serverTrialExpiry = 0L
         serverTrialUsed = false
@@ -888,13 +914,14 @@ object LicenseManager {
             val prefs = ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
             val passTierId = prefs.getString(KEY_CACHED_PASS_TIER, "") ?: ""
             val passExpiry = prefs.getLong(KEY_CACHED_PASS_EXPIRY, 0L)
+            val removeAdsExpiry = prefs.getLong(KEY_CACHED_REMOVE_ADS_EXPIRY, 0L)
             val trialClaimed = prefs.getLong(KEY_CACHED_TRIAL_CLAIMED, 0L)
             val trialExpiry = prefs.getLong(KEY_CACHED_TRIAL_EXPIRY, 0L)
             val trialUsed = prefs.getBoolean(KEY_CACHED_TRIAL_USED, false)
             val wallMs = wallClockMs ?: prefs.getLong(KEY_LAST_SERVER_SYNC_TIME, System.currentTimeMillis())
             val hmac = computeLicenseCacheHmac(
                 ctx, passTierId, passExpiry, trialClaimed, trialExpiry, trialUsed,
-                wallMs, elapsedMs, wallMs
+                wallMs, elapsedMs, wallMs, removeAdsExpiry
             )
             prefs.edit()
                 .putLong(KEY_LAST_SERVER_SYNC_TIME, wallMs)
@@ -1082,7 +1109,7 @@ object LicenseManager {
             return false
         }
         return when (val status = _accessStatus.value) {
-            is AccessStatus.PassActive -> status.remainingTimeMs > 0
+            is AccessStatus.PassActive -> status.passTier.isProPass && status.remainingTimeMs > 0
             is AccessStatus.TrialActive -> status.remainingTimeMs > 0
             else -> false
         }
@@ -1099,6 +1126,8 @@ object LicenseManager {
                 currentUserKey = customUserId
                 docInitAttempted.set(false)
                 hasLoadedLicensing = false
+                serverRemoveAdsExpiry = 0L
+                _removeAdsExpiryMs.value = 0L
                 _unlockedFeatures.value = emptyMap()
                 _accessStatus.value = AccessStatus.Loading
             }
@@ -1482,8 +1511,12 @@ object LicenseManager {
                     val trialClaimed = snapshot.getLong("trialClaimed") ?: snapshot.getLong("firstClaimedTimestamp") ?: 0L
                     val trialExpiry = snapshot.getLong("trialExpiry") ?: snapshot.getLong("trialExpiryTimestamp") ?: 0L
                     val isUsed = snapshot.getBoolean("trialUsed") ?: snapshot.getBoolean("isUsed") ?: (trialClaimed > 0L)
-                    val passType = snapshot.getString("activePassType")
-                    val passExpiry = snapshot.getLong("passExpiryTimestamp") ?: 0L
+                    val passType = snapshot.getString("activePassType") ?: snapshot.getString("passType")
+                    val passExpiry = snapshot.getLong("passExpiryTimestamp") ?: snapshot.getLong("passExpiry") ?: 0L
+                    val removeAdsExpiry = snapshot.getLong("removeAdsExpiryTimestamp")
+                        ?: snapshot.getLong("removeAdsExpiry")
+                        ?: snapshot.getLong("removeAdsExpiryMs")
+                        ?: 0L
                     val tier = PassTier.fromId(passType)
 
                     if (trialClaimed > 0L) {
@@ -1498,6 +1531,12 @@ object LicenseManager {
                         serverTrialUsed = false
                         hasLoadedTrial = true
                     }
+
+                    serverRemoveAdsExpiry = maxOf(
+                        removeAdsExpiry,
+                        if (tier == PassTier.REMOVE_ADS) passExpiry else 0L
+                    )
+                    _removeAdsExpiryMs.value = if (serverRemoveAdsExpiry > now) serverRemoveAdsExpiry else 0L
 
                     val folder = computeCurrentFolder(tier, passExpiry, serverTrialClaimed, serverTrialExpiry, now)
                     _currentFolder.value = folder
@@ -1599,6 +1638,10 @@ object LicenseManager {
                     val passExpiry = snapshot.getLong("passExpiryTimestamp")
                         ?: snapshot.getLong("passExpiry")
                         ?: 0L
+                    val removeAdsExpiry = snapshot.getLong("removeAdsExpiryTimestamp")
+                        ?: snapshot.getLong("removeAdsExpiry")
+                        ?: snapshot.getLong("removeAdsExpiryMs")
+                        ?: 0L
                     val code = snapshot.getString("referralCode")
                     val hasClaimed = snapshot.getBoolean("hasClaimedReferral") ?: false
                     val refCount = snapshot.getLong("referralCount")?.toInt() ?: 0
@@ -1616,8 +1659,15 @@ object LicenseManager {
                     _pointsBalance.value = points
                     _hasClaimedReferral.value = hasClaimed
                     _referralCount.value = refCount
-                    serverPassTier = PassTier.fromId(passType)
-                    serverPassExpiry = passExpiry
+                    val parsedTier = PassTier.fromId(passType)
+                    serverPassTier = parsedTier?.takeIf { it.isProPass }
+                    serverPassExpiry = if (parsedTier?.isProPass == true) passExpiry else 0L
+                    serverRemoveAdsExpiry = maxOf(
+                        removeAdsExpiry,
+                        if (parsedTier == PassTier.REMOVE_ADS) passExpiry else 0L
+                    )
+                    val currentTimeNow = getCurrentServerTimeMs()
+                    _removeAdsExpiryMs.value = if (serverRemoveAdsExpiry > currentTimeNow) serverRemoveAdsExpiry else 0L
 
                     // Save authoritative data to local SharedPreferences cache
                     ctx?.let { c ->
@@ -1627,7 +1677,8 @@ object LicenseManager {
                             passExpiry = serverPassExpiry,
                             trialClaimed = serverTrialClaimed,
                             trialExpiry = serverTrialExpiry,
-                            trialUsed = serverTrialUsed
+                            trialUsed = serverTrialUsed,
+                            removeAdsExpiry = serverRemoveAdsExpiry
                         )
                     }
 
@@ -1877,9 +1928,14 @@ object LicenseManager {
         if (!hasLoadedLicensing) {
             if (ctx != null) {
                 val cached = getCachedLicensingData(ctx)
+                val effectiveRemoveAds = maxOf(
+                    cached.removeAdsExpiry,
+                    if (cached.passTier == PassTier.REMOVE_ADS) cached.passExpiry else 0L
+                )
+                _removeAdsExpiryMs.value = if (effectiveRemoveAds > now) effectiveRemoveAds else 0L
 
-                // 1. Check cached Paid Subscription Pass
-                if (cached.passTier != null && cached.passExpiry > now) {
+                // 1. Check cached Paid Pro Pass (Daily/Weekly/Monthly ONLY; Remove Ads Pass never unlocks Pro)
+                if (cached.passTier != null && cached.passTier.isProPass && cached.passExpiry > now) {
                     val timeLeft = cached.passExpiry - now
                     val formatted = formatRemainingTime(timeLeft)
                     _currentFolder.value = computeCurrentFolder(
@@ -1936,15 +1992,21 @@ object LicenseManager {
             return
         }
 
-        val tier = serverPassTier
-        val passExpiry = serverPassExpiry
+        val rawTier = serverPassTier
+        val tier = rawTier?.takeIf { it.isProPass }
+        val passExpiry = if (tier != null) serverPassExpiry else 0L
+        val effectiveRemoveAds = maxOf(
+            serverRemoveAdsExpiry,
+            if (rawTier == PassTier.REMOVE_ADS) serverPassExpiry else 0L
+        )
+        _removeAdsExpiryMs.value = if (effectiveRemoveAds > now) effectiveRemoveAds else 0L
         val trialClaimed = serverTrialClaimed
         val trialExpiry = serverTrialExpiry
         val trialUsed = serverTrialUsed
 
         _currentFolder.value = computeCurrentFolder(tier, passExpiry, trialClaimed, trialExpiry, now)
 
-        // 1. Check Paid Subscription Pass First
+        // 1. Check Paid Pro Pass First (Daily/Weekly/Monthly ONLY)
         if (tier != null && passExpiry > now) {
             val timeLeft = passExpiry - now
             val formatted = formatRemainingTime(timeLeft)
@@ -1962,6 +2024,8 @@ object LicenseManager {
             )
             return
         }
+
+        _activePassInfo.value = null
 
         // 2. Check 2-Day Free Trial
         val trialInfoObj = TrialInfo(
@@ -2176,15 +2240,33 @@ object LicenseManager {
 
     /**
      * Checks if ads should be suppressed.
-     * Returns true if user has an active Remove Ads pass or feature unlock,
-     * or active Pro access.
+     * Returns true STRICTLY when user holds an active Remove Ads Pass (removeAdsExpiryMs or
+     * unlocked_features["remove_ads_pass"]). Daily/Weekly/Monthly Passes and Free Trial still show ads.
      */
     fun isAdsRemoved(): Boolean {
-        val status = _accessStatus.value
-        if (status is AccessStatus.PassActive && (status.passTier == PassTier.REMOVE_ADS || status.passTier == PassTier.MONTHLY)) {
-            return status.remainingTimeMs > 0
+        if (isClockTamperingDetected() || _isBannedFlow.value) return false
+        val ctx = appContext
+        if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return false
+
+        val now = getCurrentServerTimeMs()
+        if (_removeAdsExpiryMs.value > now) {
+            return true
         }
-        return isFeatureUnlocked("remove_ads_pass")
+
+        val status = _accessStatus.value
+        if (status is AccessStatus.PassActive && status.passTier == PassTier.REMOVE_ADS && status.remainingTimeMs > 0) {
+            return true
+        }
+
+        val directExpiry = _unlockedFeatures.value.entries.firstOrNull {
+            it.key.equals(PassTier.REMOVE_ADS.id, ignoreCase = true) ||
+                it.key.equals("remove_ads", ignoreCase = true)
+        }?.value
+        if (directExpiry != null && (directExpiry == -1L || directExpiry > now)) {
+            return true
+        }
+
+        return false
     }
 
     /**

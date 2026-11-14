@@ -128,6 +128,9 @@ fun SubscriptionScreen(
     val coroutineScope = rememberCoroutineScope()
 
     val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
+    val removeAdsExpiryMs by LicenseManager.removeAdsExpiryMs.collectAsState()
+    val isAdsRemoved = remember(accessStatus, unlockedFeatures, removeAdsExpiryMs) { LicenseManager.isAdsRemoved() }
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
     val isPaymentSystemActive by GlobalAdminManager.isPaymentSystemActive.collectAsState()
@@ -231,7 +234,9 @@ fun SubscriptionScreen(
             item {
                 AccessStatusBanner(
                     accessStatus = accessStatus,
-                    hardwareId = hardwareId
+                    hardwareId = hardwareId,
+                    isAdsRemoved = isAdsRemoved,
+                    removeAdsExpiryMs = removeAdsExpiryMs
                 )
             }
 
@@ -404,7 +409,10 @@ fun SubscriptionScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "Redeem your reward points to activate unlimited auto-acceptance:",
+                        text = if (tier == PassTier.REMOVE_ADS)
+                            "Redeem your reward points to remove banner ads across the app (does not unlock filters or Pro automation):"
+                        else
+                            "Redeem your reward points to unlock Pro filters & unlimited auto-acceptance (banner ads require Remove Ads Pass):",
                         style = MaterialTheme.typography.bodyMedium
                     )
 
@@ -455,7 +463,12 @@ fun SubscriptionScreen(
                             isProcessing = false
                             selectedPassForPointsPurchase = null
                             if (res.isSuccess) {
-                                Toast.makeText(context, "🎉 ${tier.title} Activated! Unlimited auto-accept enabled.", Toast.LENGTH_LONG).show()
+                                val successMsg = if (tier == PassTier.REMOVE_ADS) {
+                                    "🎉 Remove Ads Pass Activated! Banner ads hidden for ${tier.durationDays} days."
+                                } else {
+                                    "🎉 ${tier.title} Activated! Pro features unlocked."
+                                }
+                                Toast.makeText(context, successMsg, Toast.LENGTH_LONG).show()
                             } else {
                                 errorMessage = res.exceptionOrNull()?.message ?: "Points activation failed."
                             }
@@ -710,7 +723,9 @@ private fun WalletHeaderCard(
 @Composable
 private fun AccessStatusBanner(
     accessStatus: AccessStatus,
-    hardwareId: String
+    hardwareId: String,
+    isAdsRemoved: Boolean = false,
+    removeAdsExpiryMs: Long = 0L
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val pulseScale by infiniteTransition.animateFloat(
@@ -723,7 +738,58 @@ private fun AccessStatusBanner(
         label = "banner_pulse"
     )
 
-    when (accessStatus) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (isAdsRemoved) {
+            val adFreeRemaining = (removeAdsExpiryMs - LicenseManager.getCurrentServerTimeMs()).coerceAtLeast(0L)
+            val adFreeLabel = if (adFreeRemaining > 0L) LicenseManager.formatRemainingTime(adFreeRemaining) else "Active"
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("status_remove_ads_active_card"),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFF8B5CF6).copy(alpha = 0.12f)
+                ),
+                border = BorderStroke(1.2.dp, Color(0xFF8B5CF6).copy(alpha = 0.55f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color(0xFF8B5CF6),
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Shield,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Remove Ads Pass Active • $adFreeLabel",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Banner ads disabled only. Pro features still require Daily/Weekly/Monthly Pass, Trial, or Points filters.",
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
+        when (accessStatus) {
         is AccessStatus.PassActive -> {
             Card(
                 modifier = Modifier
@@ -910,14 +976,14 @@ private fun AccessStatusBanner(
 
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (accessStatus.hasHadPreviousPass) "Subscription Pass Expired" else "2-Day Free Trial Ended",
+                                text = "Free Mode • Pro Pass Inactive",
                                 style = MaterialTheme.typography.titleMedium.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.error
                                 )
                             )
                             Text(
-                                text = "Automation clicks paused until a pass is activated.",
+                                text = "Buy any 1 or multiple filters with Points in Filter Rules, or activate a Daily / Weekly / Monthly Pass below.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -948,6 +1014,7 @@ private fun AccessStatusBanner(
                 }
             }
         }
+    }
     }
 }
 
@@ -1057,14 +1124,21 @@ private fun PassCard(
 
             // Features Checklist
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                PassFeatureItem("Unlimited high-speed auto-acceptance (${passTier.durationDays} Day${if (passTier.durationDays > 1) "s" else ""})")
-                PassFeatureItem("Zero point deduction per accepted ride")
-                PassFeatureItem("Surge radar & minimum fare filter evaluation")
-                if (isWeekly || isMonthly) {
-                    PassFeatureItem("High-priority voice text-to-speech announcer")
-                }
-                if (isMonthly) {
-                    PassFeatureItem("Cross-device sync & hardware transfer support")
+                if (isRemoveAds) {
+                    PassFeatureItem("Removes all banner ads across the app (${passTier.durationDays} Days)")
+                    PassFeatureItem("Ads-only pass: does not unlock filters or Pro auto-accept")
+                    PassFeatureItem("Pair with Daily/Weekly/Monthly Pass, Trial, or Points filters")
+                } else {
+                    PassFeatureItem("Unlocks all unlocked filters & high-speed auto-acceptance (${passTier.durationDays} Day${if (passTier.durationDays > 1) "s" else ""})")
+                    PassFeatureItem("Zero point deduction per accepted ride")
+                    PassFeatureItem("Surge radar & manual filter threshold customization")
+                    PassFeatureItem("Note: Banner ads require a separate Remove Ads Pass")
+                    if (isWeekly || isMonthly) {
+                        PassFeatureItem("High-priority voice text-to-speech announcer")
+                    }
+                    if (isMonthly) {
+                        PassFeatureItem("Cross-device sync & hardware transfer support")
+                    }
                 }
             }
 

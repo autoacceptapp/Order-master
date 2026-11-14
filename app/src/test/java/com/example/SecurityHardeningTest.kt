@@ -211,4 +211,132 @@ class SecurityHardeningTest {
         assertFalse(LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK))
         assertTrue("Unlocking >= 1 filter in Free Mode must permit standard-speed Auto-Accept", LicenseManager.hasAnyAutoAcceptCapability())
     }
+
+    @Test
+    fun proPassesAndTrialKeepAdsEnabledUnlessRemoveAdsPassIsActive() {
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L
+
+        // 1. Daily, Weekly, and Monthly Passes unlock Pro features, NOT ad removal
+        listOf(PassTier.DAILY, PassTier.WEEKLY, PassTier.MONTHLY).forEach { tier ->
+            LicenseManager.resetStateForTesting(context)
+            LicenseManager.saveAuthoritativeLicensingCache(
+                context = context,
+                passTier = tier,
+                passExpiry = futureExpiry,
+                trialClaimed = 0L,
+                trialExpiry = 0L,
+                trialUsed = false
+            )
+            LicenseManager.refreshAccessStatus(context)
+
+            assertTrue("${tier.title} must grant Pro access", LicenseManager.isAccessGranted())
+            assertTrue("${tier.title} must unlock MIN_FARE", LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE))
+            assertFalse("${tier.title} MUST still show ads", LicenseManager.isAdsRemoved())
+        }
+
+        // 2. Active 2-Day Trial also keeps ads enabled
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = null,
+            passExpiry = 0L,
+            trialClaimed = System.currentTimeMillis() - 10_000L,
+            trialExpiry = futureExpiry,
+            trialUsed = true
+        )
+        LicenseManager.refreshAccessStatus(context)
+        assertTrue("Trial must grant Pro access", LicenseManager.isAccessGranted())
+        assertFalse("Trial MUST still show ads", LicenseManager.isAdsRemoved())
+    }
+
+    @Test
+    fun removeAdsPassStrictlyRemovesAdsOnlyWithoutUnlockingFeaturesOrProMode() {
+        val futureExpiry = System.currentTimeMillis() + 28L * 86_400_000L
+
+        // Case A: Remove Ads stored as removeAdsExpiry timestamp
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = null,
+            passExpiry = 0L,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = true,
+            removeAdsExpiry = futureExpiry
+        )
+        LicenseManager.refreshAccessStatus(context)
+
+        assertTrue("Remove Ads Pass must hide ads", LicenseManager.isAdsRemoved())
+        assertFalse("Remove Ads Pass must NEVER grant Pro access", LicenseManager.isAccessGranted())
+        assertFalse("Remove Ads Pass must NOT emit PassActive Pro status", LicenseManager.accessStatus.value is AccessStatus.PassActive)
+        assertFalse("Remove Ads Pass must NEVER grant Auto-Accept capability", LicenseManager.hasAnyAutoAcceptCapability())
+        assertFalse("Remove Ads Pass must NOT unlock MIN_FARE", LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE))
+        assertFalse("Remove Ads Pass must NOT unlock MAX_FARE", LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE))
+        assertFalse("Remove Ads Pass must NOT unlock AUTO_CLICK", LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK))
+        assertFalse("Remove Ads Pass must NOT unlock TTS_VOICE", LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE))
+        assertFalse("Remove Ads Pass must NOT unlock FLOATING_OVERLAY", LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY))
+
+        // Case B: Backward-compatible legacy document format where activePassType == remove_ads_pass
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = PassTier.REMOVE_ADS,
+            passExpiry = futureExpiry,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = true
+        )
+        LicenseManager.refreshAccessStatus(context)
+
+        assertTrue("Legacy activePassType=remove_ads_pass must still hide ads", LicenseManager.isAdsRemoved())
+        assertFalse("Legacy remove_ads_pass must NEVER grant Pro access", LicenseManager.isAccessGranted())
+        assertFalse("Legacy remove_ads_pass must NEVER emit PassActive", LicenseManager.accessStatus.value is AccessStatus.PassActive)
+        assertFalse("Legacy remove_ads_pass must NOT unlock filters", LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE))
+
+        // Case C: Remove Ads via unlocked_features["remove_ads_pass"] only hides ads
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.setFeatureLocksForTesting(unlocked = mapOf(PassTier.REMOVE_ADS.id to futureExpiry))
+        assertTrue("unlocked_features[remove_ads_pass] must hide ads", LicenseManager.isAdsRemoved())
+        assertFalse("unlocked_features[remove_ads_pass] must NOT grant Pro", LicenseManager.isAccessGranted())
+        assertFalse("unlocked_features[remove_ads_pass] must NOT unlock filters", LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE))
+    }
+
+    @Test
+    fun monthlyProPassCombinedWithRemoveAdsPassEnablesBothProAndAdFree() {
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = PassTier.MONTHLY,
+            passExpiry = futureExpiry,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = true,
+            removeAdsExpiry = futureExpiry
+        )
+        LicenseManager.refreshAccessStatus(context)
+
+        assertTrue("Pro Pass must be active", LicenseManager.isAccessGranted())
+        assertTrue("MIN_FARE must be unlocked", LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE))
+        assertTrue("Separate Remove Ads expiry must remove ads", LicenseManager.isAdsRemoved())
+    }
+
+    @Test
+    fun tamperedRemoveAdsCacheTimestampIsRejectedByHmac() {
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = null,
+            passExpiry = 0L,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = true,
+            removeAdsExpiry = 0L
+        )
+        val prefs = context.getSharedPreferences(LicenseManager.LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putLong(LicenseManager.KEY_CACHED_REMOVE_ADS_EXPIRY, futureExpiry).commit()
+
+        val tampered = LicenseManager.getCachedLicensingData(context)
+        assertEquals("Tampered removeAdsExpiry must be rejected and zeroed", 0L, tampered.removeAdsExpiry)
+        LicenseManager.refreshAccessStatus(context)
+        assertFalse("Tampered cache must never remove ads", LicenseManager.isAdsRemoved())
+    }
 }

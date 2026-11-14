@@ -113,7 +113,7 @@ fun FilterSettingsScreen(
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
 
     val isProMode = when (val s = accessStatus) {
-        is AccessStatus.PassActive -> s.remainingTimeMs > 0
+        is AccessStatus.PassActive -> s.passTier.isProPass && s.remainingTimeMs > 0
         is AccessStatus.TrialActive -> s.remainingTimeMs > 0
         else -> false
     }
@@ -341,12 +341,14 @@ fun FilterSettingsScreen(
                             )
                         }
                         Column(modifier = Modifier.weight(1f)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Text(
                                     text = if (isProMode) "PRO MODE ACTIVE" else "FREEMIUM MODE",
+                                    maxLines = 1,
+                                    softWrap = false,
                                     style = MaterialTheme.typography.titleSmall.copy(
                                         fontWeight = FontWeight.Bold,
                                         color = if (isProMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
@@ -358,8 +360,10 @@ fun FilterSettingsScreen(
                                 ) {
                                     Text(
                                         text = "$pointsBalance Pts Balance",
+                                        maxLines = 1,
+                                        softWrap = false,
                                         style = MaterialTheme.typography.labelSmall.copy(
-                                            fontSize = 9.sp,
+                                            fontSize = 10.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onPrimaryContainer
                                         ),
@@ -531,14 +535,25 @@ fun FilterSettingsScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             listOf(1.0f, 1.5f, 2.0f, 2.5f, 3.0f).forEach { distVal ->
+                                val selected = kotlin.math.abs(settingsState.maxPickupDistance - distVal) < 0.05f
                                 OutlinedButton(
                                     onClick = { if (isPickupUnlocked) viewModel.setMaxPickupDistance(distVal) },
                                     enabled = isPickupUnlocked,
                                     modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(0.dp),
-                                    shape = RoundedCornerShape(8.dp)
+                                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = if (selected) ButtonDefaults.outlinedButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                        contentColor = MaterialTheme.colorScheme.primary
+                                    ) else ButtonDefaults.outlinedButtonColors()
                                 ) {
-                                    Text("${distVal}km", fontSize = 11.sp)
+                                    Text(
+                                        text = "${distVal}km",
+                                        fontSize = 11.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
                                 }
                             }
                         }
@@ -607,14 +622,25 @@ fun FilterSettingsScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             listOf(5.0f, 10.0f, 15.0f, 20.0f, 30.0f).forEach { distVal ->
+                                val selected = kotlin.math.abs(settingsState.maxDropDistance - distVal) < 0.25f
                                 OutlinedButton(
                                     onClick = { if (isDropUnlocked) viewModel.setMaxDropDistance(distVal) },
                                     enabled = isDropUnlocked,
                                     modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(0.dp),
-                                    shape = RoundedCornerShape(8.dp)
+                                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = if (selected) ButtonDefaults.outlinedButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                        contentColor = MaterialTheme.colorScheme.primary
+                                    ) else ButtonDefaults.outlinedButtonColors()
                                 ) {
-                                    Text("${distVal.toInt()}km", fontSize = 11.sp)
+                                    Text(
+                                        text = "${distVal.toInt()}km",
+                                        fontSize = 11.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
                                 }
                             }
                         }
@@ -683,14 +709,25 @@ fun FilterSettingsScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             listOf(8f, 10f, 12f, 15f, 20f).forEach { rateVal ->
+                                val selected = settingsState.minPerKmRate.roundToInt() == rateVal.toInt()
                                 OutlinedButton(
                                     onClick = { if (isMinRateUnlocked) viewModel.setMinPerKmRate(rateVal) },
                                     enabled = isMinRateUnlocked,
                                     modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(0.dp),
-                                    shape = RoundedCornerShape(8.dp)
+                                    contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = if (selected) ButtonDefaults.outlinedButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+                                        contentColor = MaterialTheme.colorScheme.primary
+                                    ) else ButtonDefaults.outlinedButtonColors()
                                 ) {
-                                    Text("₹${rateVal.toInt()}", fontSize = 11.sp)
+                                    Text(
+                                        text = "₹${rateVal.toInt()}",
+                                        fontSize = 11.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
                                 }
                             }
                         }
@@ -1023,65 +1060,68 @@ fun FilterSettingsScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = "Auto-Click Automation Mode",
-                                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
-                                    )
-                                    if (isAutoClickAdminLocked) {
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = MaterialTheme.colorScheme.errorContainer
-                                        ) {
-                                            Text(
-                                                text = "Locked by Admin",
-                                                style = MaterialTheme.typography.labelSmall.copy(
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                                    fontSize = 9.sp
-                                                ),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    } else if (isAutoClickUnlocked && getRemainingTime(FeatureIds.AUTO_CLICK) != null) {
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = Color(0xFF00E676).copy(alpha = 0.15f)
-                                        ) {
-                                            Text(
-                                                text = getRemainingTime(FeatureIds.AUTO_CLICK)!!,
-                                                style = MaterialTheme.typography.labelSmall.copy(
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF00E676),
-                                                    fontSize = 9.sp
-                                                ),
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    } else if (!isAutoClickUnlocked) {
-                                        FilledTonalButton(
-                                            onClick = { featureToUnlock = FeatureIds.AUTO_CLICK },
-                                            shape = RoundedCornerShape(6.dp),
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                            modifier = Modifier.height(24.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Lock,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(10.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(3.dp))
-                                            Text(
-                                                text = "300ms Boost (15 Pts/Hr)",
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
+                                Text(
+                                    text = "Auto-Click Automation Mode",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                )
+                                Spacer(modifier = Modifier.height(3.dp))
+                                if (isAutoClickAdminLocked) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = MaterialTheme.colorScheme.errorContainer
+                                    ) {
+                                        Text(
+                                            text = "Locked by Admin",
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                                fontSize = 10.sp
+                                            ),
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                } else if (isAutoClickUnlocked && getRemainingTime(FeatureIds.AUTO_CLICK) != null) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = Color(0xFF00E676).copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = getRemainingTime(FeatureIds.AUTO_CLICK)!!,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF00E676),
+                                                fontSize = 10.sp
+                                            ),
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                } else if (!isAutoClickUnlocked) {
+                                    FilledTonalButton(
+                                        onClick = { featureToUnlock = FeatureIds.AUTO_CLICK },
+                                        shape = RoundedCornerShape(6.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(25.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(10.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text(
+                                            text = "300ms Boost (15 Pts/Hr)",
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
                                     }
                                 }
+                                Spacer(modifier = Modifier.height(3.dp))
                                 Text(
                                     text = when {
                                         isAutoClickAdminLocked -> "🔒 Auto-Click locked by Admin"
@@ -1289,28 +1329,29 @@ private fun FilterCard(
                         )
                     }
 
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = if (isEnabled && effectivelyUnlocked)
+                                    MaterialTheme.colorScheme.onSurface
+                                else
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        )
+                        Spacer(modifier = Modifier.height(3.dp))
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.titleSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isEnabled && effectivelyUnlocked)
-                                        MaterialTheme.colorScheme.onSurface
-                                    else
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            )
                             if (isAdminLocked) {
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
                                     color = MaterialTheme.colorScheme.errorContainer
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                                     ) {
@@ -1322,10 +1363,12 @@ private fun FilterCard(
                                         )
                                         Text(
                                             text = "Locked by Admin",
+                                            maxLines = 1,
+                                            softWrap = false,
                                             style = MaterialTheme.typography.labelSmall.copy(
                                                 fontWeight = FontWeight.Bold,
                                                 color = MaterialTheme.colorScheme.onErrorContainer,
-                                                fontSize = 9.sp
+                                                fontSize = 10.sp
                                             )
                                         )
                                     }
@@ -1337,12 +1380,14 @@ private fun FilterCard(
                                 ) {
                                     Text(
                                         text = remainingTimeText,
+                                        maxLines = 1,
+                                        softWrap = false,
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Bold,
                                             color = Color(0xFF00E676),
-                                            fontSize = 9.sp
+                                            fontSize = 10.sp
                                         ),
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                                     )
                                 }
                             } else if (!effectivelyUnlocked) {
@@ -1350,7 +1395,7 @@ private fun FilterCard(
                                     FilledTonalButton(
                                         onClick = onUnlockClick,
                                         shape = RoundedCornerShape(6.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
                                         modifier = Modifier
                                             .height(26.dp)
                                             .testTag("${testTag}_unlock_button")
@@ -1360,11 +1405,13 @@ private fun FilterCard(
                                             contentDescription = null,
                                             modifier = Modifier.size(11.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
                                         Text(
                                             text = "Unlock ($pointsPerHour Pts/Hr)",
+                                            maxLines = 1,
+                                            softWrap = false,
                                             style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 9.sp,
+                                                fontSize = 10.sp,
                                                 fontWeight = FontWeight.Bold
                                             )
                                         )
@@ -1375,7 +1422,7 @@ private fun FilterCard(
                                         color = MaterialTheme.colorScheme.tertiaryContainer
                                     ) {
                                         Row(
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
@@ -1387,6 +1434,8 @@ private fun FilterCard(
                                             )
                                             Text(
                                                 text = "Pro Feature",
+                                                maxLines = 1,
+                                                softWrap = false,
                                                 style = MaterialTheme.typography.labelSmall.copy(
                                                     fontWeight = FontWeight.Bold,
                                                     color = MaterialTheme.colorScheme.onTertiaryContainer,
@@ -1398,6 +1447,7 @@ private fun FilterCard(
                                 }
                             }
                         }
+                        Spacer(modifier = Modifier.height(3.dp))
                         Text(
                             text = subtitle,
                             style = MaterialTheme.typography.bodySmall.copy(

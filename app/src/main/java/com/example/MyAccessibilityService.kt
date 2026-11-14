@@ -186,7 +186,7 @@ open class MyAccessibilityService : AccessibilityService() {
         serviceScope.launch {
             LicenseManager.accessStatus.collectLatest { status ->
                 val isPro = when (status) {
-                    is AccessStatus.PassActive -> status.remainingTimeMs > 0
+                    is AccessStatus.PassActive -> status.passTier.isProPass && status.remainingTimeMs > 0
                     is AccessStatus.TrialActive -> status.remainingTimeMs > 0
                     else -> false
                 }

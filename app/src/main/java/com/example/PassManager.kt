@@ -113,7 +113,7 @@ object PassManager {
         scope.launch {
             LicenseManager.accessStatus.collect { status ->
                 val active = when (status) {
-                    is AccessStatus.PassActive -> status.remainingTimeMs > 0
+                    is AccessStatus.PassActive -> status.passTier.isProPass && status.remainingTimeMs > 0
                     is AccessStatus.TrialActive -> status.remainingTimeMs > 0
                     else -> false
                 }
@@ -568,9 +568,13 @@ object PassManager {
 
             val currentTime = LicenseManager.getCurrentServerTimeMs()
             if (doc.exists()) {
+                val passTypeStr = doc.getString("activePassType") ?: doc.getString("passType")
+                val parsedTier = PassTier.fromId(passTypeStr)
+                val isProTier = parsedTier == null || parsedTier.isProPass
+
                 val paymentStatus = doc.getString("payment_status")
                     ?: doc.getString("paymentStatus")
-                    ?: if (doc.getBoolean("isPaymentVerified") == true || !doc.getString("activePassType").isNullOrBlank()) "SUCCESS" else "FAILED"
+                    ?: if (doc.getBoolean("isPaymentVerified") == true || (!passTypeStr.isNullOrBlank() && isProTier)) "SUCCESS" else "FAILED"
 
                 val passExpiryDate: Long = doc.getLong("passExpiryTimestamp")
                     ?: doc.getLong("pass_expiry_date")
@@ -581,15 +585,17 @@ object PassManager {
                     ?: 0L
 
                 val isSuccess = paymentStatus.equals("SUCCESS", ignoreCase = true) || paymentStatus.equals("VERIFIED", ignoreCase = true)
-                val isActive = currentTime < passExpiryDate && isSuccess
+                val isPaidProActive = isProTier && currentTime < passExpiryDate && isSuccess
+                val isTrialActive = (LicenseManager.accessStatus.value as? AccessStatus.TrialActive)?.let { it.remainingTimeMs > 0 } ?: false
+                val isActive = isPaidProActive || isTrialActive
 
                 withContext(Dispatchers.Main) {
                     if (isActive) {
                         setPassStatus(context, true)
-                        Log.i(TAG, "Server check: Pass is ACTIVE until $passExpiryDate for user $userId")
+                        Log.i(TAG, "Server check: Pro/Trial access is ACTIVE (paidExpiry=$passExpiryDate, tier=$passTypeStr) for user $userId")
                     } else {
                         setPassStatus(context, false)
-                        Log.w(TAG, "Server check: Pass is EXPIRED/INACTIVE (expiry=$passExpiryDate, status=$paymentStatus) for user $userId")
+                        Log.w(TAG, "Server check: Pro pass INACTIVE (expiry=$passExpiryDate, tier=$passTypeStr, status=$paymentStatus) for user $userId")
                     }
                 }
                 isActive
@@ -636,7 +642,7 @@ object PassManager {
      */
     fun getPassExpiryTimestamp(context: Context? = null): Long {
         return when (val status = LicenseManager.accessStatus.value) {
-            is AccessStatus.PassActive -> status.expiryTimestamp
+            is AccessStatus.PassActive -> if (status.passTier.isProPass) status.expiryTimestamp else 0L
             is AccessStatus.TrialActive -> status.expiryTimestamp
             else -> 0L
         }
@@ -647,7 +653,7 @@ object PassManager {
      */
     fun getFormattedTimeRemaining(context: Context? = null): String {
         return when (val status = LicenseManager.accessStatus.value) {
-            is AccessStatus.PassActive -> status.formattedRemaining
+            is AccessStatus.PassActive -> if (status.passTier.isProPass) status.formattedRemaining else "Expired"
             is AccessStatus.TrialActive -> status.formattedRemaining
             else -> "Expired"
         }
@@ -935,7 +941,7 @@ object PassManager {
 
     /**
      * Checks if ads should be removed for the current user.
-     * Returns true if REMOVE_ADS pass or monthly Pro pass is active.
+     * Returns true ONLY if an active Remove Ads Pass is held.
      */
     fun isAdsRemoved(): Boolean = LicenseManager.isAdsRemoved()
 }
