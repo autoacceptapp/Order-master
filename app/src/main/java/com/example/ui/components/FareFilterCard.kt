@@ -58,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -132,6 +133,21 @@ fun FareFilterCard(
                 textInput = coerced.roundToInt().toString()
             }
             isInputError = false
+        }
+    }
+
+    // Safety recovery: if LazyColumn scroll intercepts a drag gesture so onValueChangeFinished never fires,
+    // automatically commit and clear isDraggingSlider after 250ms of drag inactivity.
+    LaunchedEffect(isDraggingSlider, localSliderValue) {
+        if (isDraggingSlider) {
+            kotlinx.coroutines.delay(250L)
+            isDraggingSlider = false
+            val rounded = localSliderValue.roundToInt().toFloat().coerceIn(valueRange)
+            localSliderValue = rounded
+            textInput = rounded.roundToInt().toString()
+            isInputError = false
+            currentOnValueChange(rounded)
+            currentOnValueChangeFinished?.invoke()
         }
     }
 
@@ -426,6 +442,7 @@ fun FareFilterCard(
                             value = textInput,
                             enabled = effectivelyUnlocked,
                             onValueChange = { newText ->
+                                isDraggingSlider = false
                                 textInput = newText.filter { it.isDigit() }
                                 val parsed = textInput.toFloatOrNull()
                                 if (parsed != null && parsed in valueRange) {
@@ -439,6 +456,21 @@ fun FareFilterCard(
                             },
                             modifier = Modifier
                                 .weight(1f)
+                                .onFocusChanged { focusState ->
+                                    if (!focusState.isFocused) {
+                                        val parsed = textInput.toFloatOrNull()
+                                        if (parsed != null) {
+                                            val clamped = parsed.coerceIn(valueRange)
+                                            localSliderValue = clamped
+                                            textInput = clamped.roundToInt().toString()
+                                            currentOnValueChange(clamped)
+                                            currentOnValueChangeFinished?.invoke()
+                                        } else {
+                                            textInput = localSliderValue.roundToInt().toString()
+                                        }
+                                        isInputError = false
+                                    }
+                                }
                                 .testTag("${testTag}_text_input"),
                             label = { Text("Exact Amount") },
                             prefix = {
@@ -533,6 +565,7 @@ fun FareFilterCard(
                                     selected = isSelected,
                                     enabled = effectivelyUnlocked,
                                     onClick = {
+                                        isDraggingSlider = false
                                         localSliderValue = presetVal
                                         currentOnValueChange(presetVal)
                                         currentOnValueChangeFinished?.invoke()

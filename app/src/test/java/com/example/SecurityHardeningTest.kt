@@ -3,6 +3,7 @@ package com.example
 import android.content.Context
 import android.os.SystemClock
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.PaymentVerificationRepository
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -448,5 +449,54 @@ class SecurityHardeningTest {
         assertTrue(AppSettings.isAutoClickEnabled(context))
 
         AppSettings.resetBusinessStateForTest(context)
+    }
+
+    @Test
+    fun legitimateRebootDoesNotTriggerFalseClockTamperingWhilePostRebootRollbackDoes() {
+        val nowWall = System.currentTimeMillis()
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = PassTier.DAILY,
+            passExpiry = nowWall + 86_400_000L,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = false
+        )
+
+        // Prior session had higher elapsedRealtime (e.g. phone was up for 1 hour), then rebooted (elapsed reset)
+        val currentElapsed = SystemClock.elapsedRealtime()
+        LicenseManager.setLastServerSyncForTesting(
+            elapsedMs = currentElapsed + 3_600_000L,
+            wallClockMs = nowWall - 120_000L
+        )
+
+        assertFalse(
+            "Legitimate reboot where elapsedRealtime resets and wall clock stayed accurate must NOT falsely flag tampering",
+            LicenseManager.isClockTamperingDetected(context)
+        )
+
+        // If device rebooted AND user wound wall clock backwards behind lastServerTs: MUST still trigger
+        LicenseManager.setLastServerSyncForTesting(
+            elapsedMs = currentElapsed + 3_600_000L,
+            wallClockMs = nowWall + 3_600_000L
+        )
+        assertTrue(
+            "Rolling clock backwards across a reboot must still trigger tampering",
+            LicenseManager.isClockTamperingDetected(context)
+        )
+    }
+
+    @Test
+    fun strict12DigitNumericUtrValidationRejectsInvalidInputs() = runTest {
+        assertTrue(PaymentVerificationRepository.isValidUtr("123456789012"))
+        assertFalse(PaymentVerificationRepository.isValidUtr("UTR123456789"))
+        assertFalse(PaymentVerificationRepository.isValidUtr("12345678901"))
+        assertFalse(PaymentVerificationRepository.isValidUtr("1234567890123"))
+
+        val alphaRes = PassManager.verifyPaymentWithBackendDetailed(context, "UTR123456789")
+        assertTrue("Alphanumeric UTR must be rejected as Invalid", alphaRes is PassManager.VerificationResult.Invalid)
+
+        val shortRes = PassManager.verifyPaymentWithBackendDetailed(context, "12345678901")
+        assertTrue("11-digit UTR must be rejected as Invalid", shortRes is PassManager.VerificationResult.Invalid)
     }
 }

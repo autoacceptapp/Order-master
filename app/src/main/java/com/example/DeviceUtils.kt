@@ -385,8 +385,10 @@ object DeviceUtils {
     }
 
     private fun isUnitTestEnvironment(): Boolean {
-        return Build.FINGERPRINT.contains("robolectric", ignoreCase = true) ||
+        return BuildConfig.DEBUG && (
+            Build.FINGERPRINT.contains("robolectric", ignoreCase = true) ||
                 runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
+        )
     }
 
     /**

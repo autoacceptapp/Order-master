@@ -15,6 +15,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.util.Log
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import kotlin.coroutines.resume
@@ -125,7 +126,38 @@ open class MyAccessibilityService : AccessibilityService() {
     @Volatile
     private var lastCoordinateTapTime: Long = 0L
 
+    @Volatile
+    private var pendingRetainedAcceptNode: AccessibilityNodeInfo? = null
+    private var pendingAcceptRunnable: Runnable? = null
+    private var pendingRejectRunnable: Runnable? = null
+
     private var evalWakeLock: PowerManager.WakeLock? = null
+
+    private fun getScreenDimensionsPx(): Pair<Float, Float> {
+        return try {
+            val wm = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && wm != null) {
+                val bounds = wm.currentWindowMetrics.bounds
+                bounds.width().toFloat().coerceAtLeast(1f) to bounds.height().toFloat().coerceAtLeast(1f)
+            } else {
+                val dm = resources.displayMetrics
+                dm.widthPixels.toFloat().coerceAtLeast(1f) to dm.heightPixels.toFloat().coerceAtLeast(1f)
+            }
+        } catch (_: Exception) {
+            val dm = resources.displayMetrics
+            dm.widthPixels.toFloat().coerceAtLeast(1f) to dm.heightPixels.toFloat().coerceAtLeast(1f)
+        }
+    }
+
+    private fun clearPendingCallbacksAndNodes() {
+        pendingAcceptRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingAcceptRunnable = null
+        pendingRejectRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingRejectRunnable = null
+        val retained = pendingRetainedAcceptNode
+        pendingRetainedAcceptNode = null
+        recycleNode(retained)
+    }
 
     private fun acquireBriefWakeLock(timeoutMs: Long = 4000L) {
         try {
@@ -228,6 +260,8 @@ open class MyAccessibilityService : AccessibilityService() {
         if (instance === this) {
             instance = null
         }
+        isPendingExecution = false
+        clearPendingCallbacksAndNodes()
         serviceScope.cancel()
         mainHandler.removeCallbacksAndMessages(null)
         TTSManager.shutdown()
@@ -243,6 +277,7 @@ open class MyAccessibilityService : AccessibilityService() {
     override fun onInterrupt() {
         Log.w(TAG, "Accessibility Service interrupted.")
         isPendingExecution = false
+        clearPendingCallbacksAndNodes()
         mainHandler.removeCallbacksAndMessages(null)
     }
 
@@ -288,7 +323,7 @@ open class MyAccessibilityService : AccessibilityService() {
         }
 
         // 5. Event Debouncing & Throttle: minimum delay between processing events to prevent millisecond spam
-        val currentTime = System.currentTimeMillis()
+        val currentTime = SystemClock.elapsedRealtime()
         if (isPendingExecution || (currentTime - lastProcessTime < DEBOUNCE_WINDOW_MS)) {
             return
         }
@@ -299,28 +334,22 @@ open class MyAccessibilityService : AccessibilityService() {
         val rawRootWindows = getAllRootWindows()
         if (rawRootWindows.isEmpty()) return
 
-        // 1. Strict Rapido Overlay Popup Window Detection:
-        // Filter out floating overlay widget bubble background node trees (which contain stored history values)
-        val candidateWindows = rawRootWindows.filter { !isFloatingWidgetOrBubble(it) }
-        if (candidateWindows.isEmpty()) {
-            for (root in rawRootWindows) {
-                recycleNode(root)
-            }
-            return
-        }
-
-        // STRICT REQUIREMENT: If no valid "Accept", "Reject", or "Order Offer" view ID/text node is found on screen,
-        // trigger a lightweight retry loop in case the offer card layout is still rendering asynchronously.
-        if (!hasActiveRideOfferOnScreen(candidateWindows)) {
-            for (root in rawRootWindows) {
-                recycleNode(root)
-            }
-            scheduleNodeRenderRetry()
-            return
-        }
-
         var parsedOffers: List<ParsedRideOffer>? = null
         try {
+            // 1. Strict Rapido Overlay Popup Window Detection:
+            // Filter out floating overlay widget bubble background node trees (which contain stored history values)
+            val candidateWindows = rawRootWindows.filter { !isFloatingWidgetOrBubble(it) }
+            if (candidateWindows.isEmpty()) {
+                return
+            }
+
+            // STRICT REQUIREMENT: If no valid "Accept", "Reject", or "Order Offer" view ID/text node is found on screen,
+            // trigger a lightweight retry loop in case the offer card layout is still rendering asynchronously.
+            if (!hasActiveRideOfferOnScreen(candidateWindows)) {
+                scheduleNodeRenderRetry()
+                return
+            }
+
             // 1. Card-Level Layout Isolation: Extract distinct order card containers across candidate windows
             // and parse each container independently into a strictly isolated ParsedRideOffer.
             // Texts from different cards are NEVER merged.
@@ -333,7 +362,9 @@ open class MyAccessibilityService : AccessibilityService() {
             }
 
             // Deduplication Check: Check if all detected offers have already been processed in current cycle
-            val newOffers = offers.filter { !processedOfferIds.contains(it.id) }
+            val newOffers = synchronized(processedOfferIds) {
+                offers.filter { !processedOfferIds.contains(it.id) }
+            }
             if (newOffers.isEmpty()) {
                 return
             }
@@ -378,28 +409,31 @@ open class MyAccessibilityService : AccessibilityService() {
                     val rawWindows = getAllRootWindows()
                     if (rawWindows.isEmpty()) continue
 
-                    val candidate = rawWindows.filter { !isFloatingWidgetOrBubble(it) }
-                    if (candidate.isEmpty() || !hasActiveRideOfferOnScreen(candidate)) {
-                        for (w in rawWindows) recycleNode(w)
-                        continue
-                    }
-
-                    val isPro = PassManager.isAccessGranted(this@MyAccessibilityService)
                     var offers: List<ParsedRideOffer>? = null
+                    var foundNewOffer = false
                     try {
+                        val candidate = rawWindows.filter { !isFloatingWidgetOrBubble(it) }
+                        if (candidate.isEmpty() || !hasActiveRideOfferOnScreen(candidate)) {
+                            continue
+                        }
+
+                        val isPro = PassManager.isAccessGranted(this@MyAccessibilityService)
                         offers = RideOfferParser.parseCards(candidate)
                         if (offers.isNotEmpty()) {
-                            val newOffers = offers.filter { !processedOfferIds.contains(it.id) }
+                            val newOffers = synchronized(processedOfferIds) {
+                                offers.filter { !processedOfferIds.contains(it.id) }
+                            }
                             if (newOffers.isNotEmpty()) {
                                 Log.i(TAG, "Retry loop successfully detected ${offers.size} offer card(s) at attempt #$attempts")
                                 processOrderQueue(offers, candidate, isPro)
-                                break
+                                foundNewOffer = true
                             }
                         }
                     } finally {
                         offers?.forEach { it.acceptButton?.let { b -> recycleNode(b) } }
                         for (w in rawWindows) recycleNode(w)
                     }
+                    if (foundNewOffer) break
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Node render retry loop failed", e)
@@ -697,11 +731,27 @@ open class MyAccessibilityService : AccessibilityService() {
             )
             broadcastLog("Auto-clicking Accept for best offer (₹${bestOffer.totalFare?.toInt() ?: 0}) in ${acceptDelayMs}ms [$speedLabel]...")
 
-            mainHandler.postDelayed({
-                serviceScope.launch {
-                    executeCardAcceptClick(bestOffer, bestEvaluation)
+            val clonedAcceptNode = bestOffer.acceptButton?.let {
+                try {
+                    @Suppress("DEPRECATION")
+                    AccessibilityNodeInfo.obtain(it)
+                } catch (_: Exception) {
+                    null
                 }
-            }, acceptDelayMs)
+            }
+
+            clearPendingCallbacksAndNodes()
+            pendingRetainedAcceptNode = clonedAcceptNode
+            val acceptRunnable = Runnable {
+                val nodeToUse = pendingRetainedAcceptNode
+                pendingRetainedAcceptNode = null
+                pendingAcceptRunnable = null
+                serviceScope.launch {
+                    executeCardAcceptClick(bestOffer, bestEvaluation, nodeToUse)
+                }
+            }
+            pendingAcceptRunnable = acceptRunnable
+            mainHandler.postDelayed(acceptRunnable, acceptDelayMs)
         } else if (isAutoAccept && evaluatedOffers.isNotEmpty()) {
             // Smart Auto-Reject: Execute if any evaluation filter is unlocked (and Auto-Click isn't Admin locked)
             val hasAnyFilterUnlocked = !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) && (
@@ -717,11 +767,15 @@ open class MyAccessibilityService : AccessibilityService() {
                     } else {
                         kotlin.random.Random.nextLong(1000L, 2000L)
                     }
-                    mainHandler.postDelayed({
+                    pendingRejectRunnable?.let { mainHandler.removeCallbacks(it) }
+                    val rejectRunnable = Runnable {
+                        pendingRejectRunnable = null
                         serviceScope.launch {
                             executeCardRejectClick(rejectedOffer, rejectedEval)
                         }
-                    }, delayMs)
+                    }
+                    pendingRejectRunnable = rejectRunnable
+                    mainHandler.postDelayed(rejectRunnable, delayMs)
                 }
             } else {
                 Log.d(TAG, "Auto-reject skipped: filters locked, allowing offer to time out.")
@@ -759,6 +813,14 @@ open class MyAccessibilityService : AccessibilityService() {
      * located inside the spatial bounds of an invalid/rejected order card to clear the screen.
      */
     private suspend fun executeCardRejectClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
+        if (!GlobalAdminManager.canExecuteActions(this)) {
+            Log.w(TAG, "executeCardRejectClick blocked: Global kill switch active or user banned.")
+            return
+        }
+        if (!AppSettings.isAutoAcceptEnabled(this) || !AppSettings.isAutoClickEnabled(this)) {
+            Log.d(TAG, "executeCardRejectClick skipped: Auto-Accept or Auto-Click disabled.")
+            return
+        }
         // Security check: Active pass/trial OR at least one unlocked granular filter (and AUTO_CLICK not Admin-locked)
         val hasAnyFilterUnlocked = !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) && (
             LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE) ||
@@ -768,13 +830,13 @@ open class MyAccessibilityService : AccessibilityService() {
                 LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE) ||
                 LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
         )
-        if (!hasAnyFilterUnlocked) {
+        if (!hasAnyFilterUnlocked || !LicenseManager.hasAnyAutoAcceptCapability()) {
             Log.w(TAG, "executeCardRejectClick: Auto-reject blocked. No filters unlocked.")
             return
         }
 
         // Debounce / Cooldown check: respect strict COOLDOWN_MS
-        val now = System.currentTimeMillis()
+        val now = SystemClock.elapsedRealtime()
         if (now < lastProcessTime) {
             Log.d(TAG, "executeCardRejectClick: Suppressed due to active cooldown.")
             return
@@ -815,8 +877,7 @@ open class MyAccessibilityService : AccessibilityService() {
 
             // 2. Fallback coordinate tap heuristic targeting typical bottom-left area of card bounds
             if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !cardBounds.isEmpty) {
-                val screenWidth = resources.displayMetrics.widthPixels.toFloat()
-                val screenHeight = resources.displayMetrics.heightPixels.toFloat()
+                val (screenWidth, screenHeight) = getScreenDimensionsPx()
 
                 // Target the left-most 15-20% and bottom 20% of the offer card (Pass/Reject button location)
                 val rawTapX = cardBounds.left + (cardBounds.width() * 0.15f)
@@ -836,9 +897,9 @@ open class MyAccessibilityService : AccessibilityService() {
 
             // Cooldown: 2000ms cooldown upon success to ignore lingering UI elements; standard debounce on failure
             lastProcessTime = if (clicked) {
-                System.currentTimeMillis() + COOLDOWN_MS
+                SystemClock.elapsedRealtime() + COOLDOWN_MS
             } else {
-                System.currentTimeMillis()
+                SystemClock.elapsedRealtime()
             }
 
             AppSettings.addLog(
@@ -851,7 +912,7 @@ open class MyAccessibilityService : AccessibilityService() {
             broadcastLog("Auto-reject executed: $clicked (${evaluation.decisionReason})")
         } catch (e: Exception) {
             Log.e(TAG, "Error executing card reject click", e)
-            lastProcessTime = System.currentTimeMillis()
+            lastProcessTime = SystemClock.elapsedRealtime()
         }
     }
 
@@ -864,49 +925,56 @@ open class MyAccessibilityService : AccessibilityService() {
         @Suppress("DEPRECATION")
         queue.add(Pair(AccessibilityNodeInfo.obtain(root), 0))
 
-        val startTime = System.currentTimeMillis()
-
-        while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst().first)
+        val startTime = SystemClock.elapsedRealtime()
+        try {
+            while (queue.isNotEmpty()) {
+                if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                    break
                 }
-                break
-            }
 
-            val (node, depth) = queue.removeFirst()
+                val (node, depth) = queue.removeFirst()
+                var keepNode = false
+                try {
+                    val text = node.text?.toString() ?: ""
+                    val desc = node.contentDescription?.toString() ?: ""
+                    val viewId = node.viewIdResourceName ?: ""
 
-            val text = node.text?.toString() ?: ""
-            val desc = node.contentDescription?.toString() ?: ""
-            val viewId = node.viewIdResourceName ?: ""
+                    if (isRejectAction(text) || isRejectAction(desc) || isRapidoRejectId(viewId)) {
+                        val nodeBounds = Rect()
+                        node.getBoundsInScreen(nodeBounds)
 
-            if (isRejectAction(text) || isRejectAction(desc) || isRapidoRejectId(viewId)) {
-                val nodeBounds = Rect()
-                node.getBoundsInScreen(nodeBounds)
+                        // Verify that the node has valid bounds inside the card's range
+                        val isInBounds = !nodeBounds.isEmpty && (
+                            bounds.contains(nodeBounds.centerX(), nodeBounds.centerY()) ||
+                                (nodeBounds.top >= bounds.top - 20 && nodeBounds.bottom <= bounds.bottom + 20)
+                            )
 
-                // Verify that the node lies inside the card's vertical and horizontal range
-                val isInBounds = bounds.contains(nodeBounds.centerX(), nodeBounds.centerY()) ||
-                        (nodeBounds.top >= bounds.top - 20 && nodeBounds.bottom <= bounds.bottom + 20)
-
-                if (isInBounds && isActionableNodeOrChild(node)) {
-                    while (queue.isNotEmpty()) {
-                        recycleNode(queue.removeFirst().first)
+                        if ((isInBounds || nodeBounds.isEmpty) && isActionableNodeOrChild(node)) {
+                            keepNode = true
+                            return node
+                        }
                     }
-                    return node
-                }
-            }
 
-            if (depth < MAX_TRAVERSAL_DEPTH) {
-                val childCount = node.childCount
-                for (i in 0 until childCount) {
-                    if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
-                        break
+                    if (depth < MAX_TRAVERSAL_DEPTH) {
+                        val childCount = node.childCount
+                        for (i in 0 until childCount) {
+                            if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                                break
+                            }
+                            val child = node.getChild(i) ?: continue
+                            queue.add(Pair(child, depth + 1))
+                        }
                     }
-                    val child = node.getChild(i) ?: continue
-                    queue.add(Pair(child, depth + 1))
+                } finally {
+                    if (!keepNode) {
+                        recycleNode(node)
+                    }
                 }
             }
-            recycleNode(node)
+        } finally {
+            while (queue.isNotEmpty()) {
+                recycleNode(queue.removeFirst().first)
+            }
         }
         return null
     }
@@ -921,23 +989,43 @@ open class MyAccessibilityService : AccessibilityService() {
      * Implements a robust "Wait-for-Success" state machine that verifies UI transition
      * to eliminate false-positive acceptance logs and announcements.
      */
-    private suspend fun executeCardAcceptClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
+    private suspend fun executeCardAcceptClick(
+        offer: ParsedRideOffer,
+        evaluation: RideEvaluation,
+        retainedAcceptNode: AccessibilityNodeInfo? = null
+    ) {
         acquireBriefWakeLock(5000L)
         isPendingExecution = true
-        lastProcessTime = System.currentTimeMillis()
+        lastProcessTime = SystemClock.elapsedRealtime()
 
         var clicked = false
         val cardBounds = offer.bounds
 
         try {
-            // 1. If the isolated raw card already has an acceptButton reference, try clicking that first
-            val initialNode = offer.acceptButton
-            if (initialNode != null) {
+            // Re-verify Global Kill Switch, Ban status, Licensing & Auto-Click toggle after the randomized delay
+            if (!GlobalAdminManager.canExecuteActions(this)) {
+                Log.w(TAG, "executeCardAcceptClick blocked: Global kill switch active or user banned.")
+                return
+            }
+            if (!LicenseManager.hasAnyAutoAcceptCapability()) {
+                Log.w(TAG, "executeCardAcceptClick blocked: License expired or no filter/feature unlocked.")
+                return
+            }
+            if (!AppSettings.isAutoAcceptEnabled(this) || !AppSettings.isAutoClickEnabled(this)) {
+                Log.i(TAG, "executeCardAcceptClick skipped: Auto-Click disabled during delay (Voice-Only TTS mode).")
+                return
+            }
+
+            // 1. If the isolated raw card already has an acceptButton clone, try clicking that first
+            if (retainedAcceptNode != null) {
                 try {
-                    val clickableTarget = findClickableParentOrSelf(initialNode) ?: initialNode
+                    val clickableTarget = findClickableParentOrSelf(retainedAcceptNode) ?: retainedAcceptNode
                     clicked = clickableTarget.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     Log.i(TAG, "executeCardAcceptClick: direct acceptButton click success=$clicked")
-                    if (clickableTarget !== initialNode) {
+                    if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        clicked = executeAutoAcceptGesture(clickableTarget)
+                    }
+                    if (clickableTarget !== retainedAcceptNode) {
                         recycleNode(clickableTarget)
                     }
                 } catch (e: Exception) {
@@ -958,7 +1046,7 @@ open class MyAccessibilityService : AccessibilityService() {
                             if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                                 bringTargetAppToForeground()
                                 delay(250L)
-                                clicked = dispatchTapGesture(clickable)
+                                clicked = executeAutoAcceptGesture(clickable)
                                 Log.i(TAG, "executeCardAcceptClick: fallback gesture success=$clicked")
                             }
                             if (clickable !== targetNode) {
@@ -978,8 +1066,7 @@ open class MyAccessibilityService : AccessibilityService() {
 
             // 3. Fallback coordinate tap heuristic targeting bottom-right corner of card bounds
             if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && !cardBounds.isEmpty) {
-                val screenWidth = resources.displayMetrics.widthPixels.toFloat()
-                val screenHeight = resources.displayMetrics.heightPixels.toFloat()
+                val (screenWidth, screenHeight) = getScreenDimensionsPx()
 
                 // Target the right-most 15-20% and bottom 20% of the offer card
                 val rawTapX = cardBounds.right - (cardBounds.width() * 0.15f)
@@ -1004,7 +1091,7 @@ open class MyAccessibilityService : AccessibilityService() {
 
                 when (result) {
                     AcceptanceState.CONFIRMED_ACCEPTED -> {
-                        lastProcessTime = System.currentTimeMillis() + COOLDOWN_MS
+                        lastProcessTime = SystemClock.elapsedRealtime() + COOLDOWN_MS
                         val fare = offer.totalFare ?: evaluation.totalCurrency ?: 0.0
                         if (fare > 0) {
                             AppSettings.updateLastAcceptedFare(this, fare)
@@ -1019,7 +1106,7 @@ open class MyAccessibilityService : AccessibilityService() {
                         announceRideAccepted(evaluation.totalCurrency, evaluation.distanceKm)
                     }
                     AcceptanceState.REJECTED_OR_TAKEN -> {
-                        lastProcessTime = System.currentTimeMillis()
+                        lastProcessTime = SystemClock.elapsedRealtime()
                         AppSettings.addLog(
                             title = "Order Missed / Already Taken",
                             message = "Accept click was dispatched for ₹${offer.totalFare?.toInt()}, but order was taken by another captain or expired.",
@@ -1029,7 +1116,7 @@ open class MyAccessibilityService : AccessibilityService() {
                         broadcastLog("Order missed: Taken by another captain or expired.")
                     }
                     AcceptanceState.STALLED_OR_TIMED_OUT -> {
-                        lastProcessTime = System.currentTimeMillis()
+                        lastProcessTime = SystemClock.elapsedRealtime()
                         AppSettings.addLog(
                             title = "Order Acceptance Stalled",
                             message = "Accept button was clicked, but order screen did not transition within 3.5s.",
@@ -1040,7 +1127,7 @@ open class MyAccessibilityService : AccessibilityService() {
                     }
                 }
             } else {
-                lastProcessTime = System.currentTimeMillis()
+                lastProcessTime = SystemClock.elapsedRealtime()
                 AppSettings.addLog(
                     title = "Click Attempt Failed",
                     message = "Accept button could not be clicked within card boundaries.",
@@ -1051,8 +1138,9 @@ open class MyAccessibilityService : AccessibilityService() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error executing card accept click", e)
-            lastProcessTime = System.currentTimeMillis()
+            lastProcessTime = SystemClock.elapsedRealtime()
         } finally {
+            recycleNode(retainedAcceptNode)
             isPendingExecution = false
             releaseWakeLock()
         }
@@ -1094,14 +1182,15 @@ open class MyAccessibilityService : AccessibilityService() {
                     return@withContext AcceptanceState.CONFIRMED_ACCEPTED
                 }
 
-                // 3. Check if offer card is still present
+                // 3. Check if offer card is still present while target app window remains visible
+                val targetWindowVisible = rootWindows.any { it.packageName?.toString() == TARGET_PACKAGE }
                 val stillHasOffer = hasActiveRideOfferOnScreen(rootWindows)
-                if (!stillHasOffer) {
+                if (!stillHasOffer && targetWindowVisible) {
                     if (cardDisappearedAt == null) {
                         cardDisappearedAt = SystemClock.elapsedRealtime()
                     } else if (SystemClock.elapsedRealtime() - cardDisappearedAt >= 400L) {
-                        // Card has been gone for >= 400ms with no error indicators -> Order accepted!
-                        Log.i(TAG, "verifyAcceptanceTransition: offer card vanished cleanly without errors.")
+                        // Card has been gone for >= 400ms inside target app with no error indicators -> Order accepted!
+                        Log.i(TAG, "verifyAcceptanceTransition: offer card vanished cleanly inside $TARGET_PACKAGE without errors.")
                         return@withContext AcceptanceState.CONFIRMED_ACCEPTED
                     }
                 } else {
@@ -1122,7 +1211,8 @@ open class MyAccessibilityService : AccessibilityService() {
             if (hasRejectionOrMissedIndicators(finalWindows)) {
                 return@withContext AcceptanceState.REJECTED_OR_TAKEN
             }
-            if (hasActiveTripIndicators(finalWindows) || !hasActiveRideOfferOnScreen(finalWindows)) {
+            val finalTargetVisible = finalWindows.any { it.packageName?.toString() == TARGET_PACKAGE }
+            if (hasActiveTripIndicators(finalWindows) || (finalTargetVisible && !hasActiveRideOfferOnScreen(finalWindows))) {
                 return@withContext AcceptanceState.CONFIRMED_ACCEPTED
             }
         } finally {
@@ -1157,10 +1247,10 @@ open class MyAccessibilityService : AccessibilityService() {
         val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
         @Suppress("DEPRECATION")
         queue.add(Pair(AccessibilityNodeInfo.obtain(node), 0))
-        val startTime = System.currentTimeMillis()
+        val startTime = SystemClock.elapsedRealtime()
 
         while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > 40L) {
+            if (SystemClock.elapsedRealtime() - startTime > 40L) {
                 while (queue.isNotEmpty()) recycleNode(queue.removeFirst().first)
                 break
             }
@@ -1196,49 +1286,56 @@ open class MyAccessibilityService : AccessibilityService() {
         @Suppress("DEPRECATION")
         queue.add(Pair(AccessibilityNodeInfo.obtain(root), 0))
 
-        val startTime = System.currentTimeMillis()
-
-        while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst().first)
+        val startTime = SystemClock.elapsedRealtime()
+        try {
+            while (queue.isNotEmpty()) {
+                if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                    break
                 }
-                break
-            }
 
-            val (node, depth) = queue.removeFirst()
+                val (node, depth) = queue.removeFirst()
+                var keepNode = false
+                try {
+                    val text = node.text?.toString() ?: ""
+                    val desc = node.contentDescription?.toString() ?: ""
+                    val viewId = node.viewIdResourceName ?: ""
 
-            val text = node.text?.toString() ?: ""
-            val desc = node.contentDescription?.toString() ?: ""
-            val viewId = node.viewIdResourceName ?: ""
+                    if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
+                        val nodeBounds = Rect()
+                        node.getBoundsInScreen(nodeBounds)
 
-            if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
-                val nodeBounds = Rect()
-                node.getBoundsInScreen(nodeBounds)
+                        // Verify node bounds lie inside card bounds (or handle async 0,0,0,0 nodeBounds gracefully if actionable)
+                        val isInBounds = !nodeBounds.isEmpty && (
+                            bounds.contains(nodeBounds.centerX(), nodeBounds.centerY()) ||
+                                (nodeBounds.top >= bounds.top - 20 && nodeBounds.bottom <= bounds.bottom + 20)
+                            )
 
-                // Verify that the node lies inside the card's vertical and horizontal range
-                val isInBounds = bounds.contains(nodeBounds.centerX(), nodeBounds.centerY()) ||
-                        (nodeBounds.top >= bounds.top - 20 && nodeBounds.bottom <= bounds.bottom + 20)
-
-                if (isInBounds && isActionableNodeOrChild(node)) {
-                    while (queue.isNotEmpty()) {
-                        recycleNode(queue.removeFirst().first)
+                        if ((isInBounds || nodeBounds.isEmpty) && isActionableNodeOrChild(node)) {
+                            keepNode = true
+                            return node
+                        }
                     }
-                    return node
-                }
-            }
 
-            if (depth < MAX_TRAVERSAL_DEPTH) {
-                val childCount = node.childCount
-                for (i in 0 until childCount) {
-                    if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
-                        break
+                    if (depth < MAX_TRAVERSAL_DEPTH) {
+                        val childCount = node.childCount
+                        for (i in 0 until childCount) {
+                            if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                                break
+                            }
+                            val child = node.getChild(i) ?: continue
+                            queue.add(Pair(child, depth + 1))
+                        }
                     }
-                    val child = node.getChild(i) ?: continue
-                    queue.add(Pair(child, depth + 1))
+                } finally {
+                    if (!keepNode) {
+                        recycleNode(node)
+                    }
                 }
             }
-            recycleNode(node)
+        } finally {
+            while (queue.isNotEmpty()) {
+                recycleNode(queue.removeFirst().first)
+            }
         }
         return null
     }
@@ -1305,12 +1402,12 @@ open class MyAccessibilityService : AccessibilityService() {
     fun extractAllText(node: AccessibilityNodeInfo?): String {
         if (node == null) return ""
         val sb = StringBuilder()
-        val startTime = System.currentTimeMillis()
+        val startTime = SystemClock.elapsedRealtime()
         val timeoutMs = 150L
 
         fun dfs(current: AccessibilityNodeInfo?, depth: Int) {
             if (current == null || depth > 50) return
-            if (System.currentTimeMillis() - startTime > timeoutMs) {
+            if (SystemClock.elapsedRealtime() - startTime > timeoutMs) {
                 Log.w(TAG, "extractAllText: DFS traversal timeout budget reached ($timeoutMs ms).")
                 return
             }
@@ -1423,73 +1520,129 @@ open class MyAccessibilityService : AccessibilityService() {
         @Suppress("DEPRECATION")
         queue.add(Pair(AccessibilityNodeInfo.obtain(root), 0))
 
-        val startTime = System.currentTimeMillis()
-
-        while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst().first)
+        val startTime = SystemClock.elapsedRealtime()
+        try {
+            while (queue.isNotEmpty()) {
+                if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                    break
                 }
-                break
-            }
 
-            val (node, depth) = queue.removeFirst()
+                val (node, depth) = queue.removeFirst()
+                var keepNode = false
+                try {
+                    val text = node.text?.toString() ?: ""
+                    val desc = node.contentDescription?.toString() ?: ""
 
-            val text = node.text?.toString() ?: ""
-            val desc = node.contentDescription?.toString() ?: ""
-
-            val matchesLabel = targetLabels.any { label ->
-                text.equals(label, ignoreCase = true) ||
-                desc.equals(label, ignoreCase = true) ||
-                text.contains(label, ignoreCase = true) ||
-                desc.contains(label, ignoreCase = true)
-            }
-
-            if (matchesLabel && isActionableNodeOrChild(node)) {
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst().first)
-                }
-                return node
-            }
-
-            if (depth < MAX_TRAVERSAL_DEPTH) {
-                val childCount = node.childCount
-                for (i in 0 until childCount) {
-                    if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
-                        break
+                    val matchesLabel = targetLabels.any { label ->
+                        text.equals(label, ignoreCase = true) ||
+                            desc.equals(label, ignoreCase = true) ||
+                            text.contains(label, ignoreCase = true) ||
+                            desc.contains(label, ignoreCase = true)
                     }
-                    val child = node.getChild(i)
-                    if (child != null) {
-                        queue.add(Pair(child, depth + 1))
+
+                    if (matchesLabel && isActionableNodeOrChild(node)) {
+                        keepNode = true
+                        return node
+                    }
+
+                    if (depth < MAX_TRAVERSAL_DEPTH) {
+                        val childCount = node.childCount
+                        for (i in 0 until childCount) {
+                            if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                                break
+                            }
+                            val child = node.getChild(i)
+                            if (child != null) {
+                                queue.add(Pair(child, depth + 1))
+                            }
+                        }
+                    }
+                } finally {
+                    if (!keepNode) {
+                        recycleNode(node)
                     }
                 }
             }
-            recycleNode(node)
+        } finally {
+            while (queue.isNotEmpty()) {
+                recycleNode(queue.removeFirst().first)
+            }
         }
         return null
     }
 
-    suspend fun dispatchTapGesture(node: AccessibilityNodeInfo): Boolean {
+    /**
+     * Bounds-targeted gesture execution for Accept nodes.
+     * Enforces GlobalAdminManager kill-switch, LicenseManager access, Auto-Click enabled check,
+     * and gracefully handles async (0,0,0,0) node bounds before calling dispatchGesture().
+     */
+    suspend fun executeAutoAcceptGesture(node: AccessibilityNodeInfo): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
             return false
         }
+        if (!GlobalAdminManager.canExecuteActions(this)) {
+            Log.w(TAG, "executeAutoAcceptGesture blocked: Global kill switch active or user banned.")
+            return false
+        }
+        if (!LicenseManager.hasAnyAutoAcceptCapability()) {
+            Log.w(TAG, "executeAutoAcceptGesture blocked: License expired or no filter/feature unlocked.")
+            return false
+        }
+        if (!AppSettings.isAutoAcceptEnabled(this) || !AppSettings.isAutoClickEnabled(this)) {
+            Log.i(TAG, "executeAutoAcceptGesture skipped: Auto-Click disabled (Voice-Only TTS fallback).")
+            return false
+        }
+
         return try {
             val rect = Rect()
             node.getBoundsInScreen(rect)
+
+            // Handle async UI rendering where leaf node bounds may still be (0,0,0,0)
             if (rect.isEmpty || rect.width() <= 0 || rect.height() <= 0) {
+                val clickableParent = findClickableParentOrSelf(node)
+                if (clickableParent != null) {
+                    try {
+                        clickableParent.getBoundsInScreen(rect)
+                    } finally {
+                        if (clickableParent !== node) {
+                            recycleNode(clickableParent)
+                        }
+                    }
+                }
+            }
+
+            if (rect.isEmpty || rect.width() <= 0 || rect.height() <= 0) {
+                Log.w(TAG, "executeAutoAcceptGesture aborted: target node bounds still (0,0,0,0) during async render.")
                 return false
             }
-            dispatchTapAtCoordinates(rect.centerX().toFloat(), rect.centerY().toFloat())
+
+            val (screenWidth, screenHeight) = getScreenDimensionsPx()
+            val centerX = rect.centerX().toFloat().coerceIn(0f, screenWidth - 1f)
+            val centerY = rect.centerY().toFloat().coerceIn(0f, screenHeight - 1f)
+
+            dispatchTapAtCoordinates(centerX, centerY)
         } catch (e: Exception) {
-            Log.e(TAG, "Error in dispatchTapGesture", e)
+            Log.e(TAG, "Error in executeAutoAcceptGesture", e)
             false
         }
+    }
+
+    suspend fun dispatchTapGesture(node: AccessibilityNodeInfo): Boolean {
+        return executeAutoAcceptGesture(node)
     }
 
     private suspend fun dispatchTapAtCoordinates(x: Float, y: Float): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
         if (!GlobalAdminManager.canExecuteActions(this)) {
             Log.w(TAG, "dispatchTapAtCoordinates blocked: Service offline or user is banned.")
+            return false
+        }
+        if (!LicenseManager.hasAnyAutoAcceptCapability()) {
+            Log.w(TAG, "dispatchTapAtCoordinates blocked: License expired or locked.")
+            return false
+        }
+        if (!AppSettings.isAutoAcceptEnabled(this) || !AppSettings.isAutoClickEnabled(this)) {
+            Log.i(TAG, "dispatchTapAtCoordinates skipped: Auto-Click disabled.")
             return false
         }
 
@@ -1610,44 +1763,49 @@ open class MyAccessibilityService : AccessibilityService() {
         @Suppress("DEPRECATION")
         queue.add(Pair(AccessibilityNodeInfo.obtain(root), 0))
 
-        val startTime = System.currentTimeMillis()
-
-        while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst().first)
+        val startTime = SystemClock.elapsedRealtime()
+        try {
+            while (queue.isNotEmpty()) {
+                if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                    break
                 }
-                break
-            }
 
-            val (node, depth) = queue.removeFirst()
+                val (node, depth) = queue.removeFirst()
+                var keepNode = false
+                try {
+                    val text = node.text?.toString() ?: ""
+                    val desc = node.contentDescription?.toString() ?: ""
+                    val viewId = node.viewIdResourceName ?: ""
 
-            val text = node.text?.toString() ?: ""
-            val desc = node.contentDescription?.toString() ?: ""
-            val viewId = node.viewIdResourceName ?: ""
-
-            if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
-                if (isActionableNodeOrChild(node)) {
-                    while (queue.isNotEmpty()) {
-                        recycleNode(queue.removeFirst().first)
+                    if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
+                        if (isActionableNodeOrChild(node)) {
+                            keepNode = true
+                            return node
+                        }
                     }
-                    return node
+
+                    if (depth < MAX_TRAVERSAL_DEPTH) {
+                        val childCount = node.childCount
+                        for (i in 0 until childCount) {
+                            if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                                break
+                            }
+                            val child = node.getChild(i)
+                            if (child != null) {
+                                queue.add(Pair(child, depth + 1))
+                            }
+                        }
+                    }
+                } finally {
+                    if (!keepNode) {
+                        recycleNode(node)
+                    }
                 }
             }
-
-            if (depth < MAX_TRAVERSAL_DEPTH) {
-                val childCount = node.childCount
-                for (i in 0 until childCount) {
-                    if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
-                        break
-                    }
-                    val child = node.getChild(i)
-                    if (child != null) {
-                        queue.add(Pair(child, depth + 1))
-                    }
-                }
+        } finally {
+            while (queue.isNotEmpty()) {
+                recycleNode(queue.removeFirst().first)
             }
-            recycleNode(node)
         }
         return null
     }
@@ -1680,44 +1838,49 @@ open class MyAccessibilityService : AccessibilityService() {
         @Suppress("DEPRECATION")
         queue.add(Pair(AccessibilityNodeInfo.obtain(root), 0))
 
-        val startTime = System.currentTimeMillis()
-
-        while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst().first)
+        val startTime = SystemClock.elapsedRealtime()
+        try {
+            while (queue.isNotEmpty()) {
+                if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                    break
                 }
-                break
-            }
 
-            val (node, depth) = queue.removeFirst()
+                val (node, depth) = queue.removeFirst()
+                var keepNode = false
+                try {
+                    val text = node.text?.toString() ?: ""
+                    val desc = node.contentDescription?.toString() ?: ""
+                    val viewId = node.viewIdResourceName ?: ""
 
-            val text = node.text?.toString() ?: ""
-            val desc = node.contentDescription?.toString() ?: ""
-            val viewId = node.viewIdResourceName ?: ""
-
-            if (isRejectAction(text) || isRejectAction(desc) || isRapidoRejectId(viewId)) {
-                if (isActionableNodeOrChild(node)) {
-                    while (queue.isNotEmpty()) {
-                        recycleNode(queue.removeFirst().first)
+                    if (isRejectAction(text) || isRejectAction(desc) || isRapidoRejectId(viewId)) {
+                        if (isActionableNodeOrChild(node)) {
+                            keepNode = true
+                            return node
+                        }
                     }
-                    return node
+
+                    if (depth < MAX_TRAVERSAL_DEPTH) {
+                        val childCount = node.childCount
+                        for (i in 0 until childCount) {
+                            if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                                break
+                            }
+                            val child = node.getChild(i)
+                            if (child != null) {
+                                queue.add(Pair(child, depth + 1))
+                            }
+                        }
+                    }
+                } finally {
+                    if (!keepNode) {
+                        recycleNode(node)
+                    }
                 }
             }
-
-            if (depth < MAX_TRAVERSAL_DEPTH) {
-                val childCount = node.childCount
-                for (i in 0 until childCount) {
-                    if (System.currentTimeMillis() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
-                        break
-                    }
-                    val child = node.getChild(i)
-                    if (child != null) {
-                        queue.add(Pair(child, depth + 1))
-                    }
-                }
+        } finally {
+            while (queue.isNotEmpty()) {
+                recycleNode(queue.removeFirst().first)
             }
-            recycleNode(node)
         }
         return null
     }

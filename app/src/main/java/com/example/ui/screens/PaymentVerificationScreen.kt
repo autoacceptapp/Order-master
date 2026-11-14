@@ -339,7 +339,7 @@ fun PaymentVerificationScreen(
                                     } else null,
                                     colors = FilterChipDefaults.filterChipColors(
                                         selectedContainerColor = PrimaryEmerald.copy(alpha = 0.15f),
-                                        selectedLabelColor = Color(0xFF047857),
+                                        selectedLabelColor = PrimaryEmerald,
                                         selectedLeadingIconColor = PrimaryEmerald
                                     )
                                 )
@@ -443,145 +443,43 @@ fun ScannableUpiQrCode(
                 contentDescription = contentDescription,
                 modifier = Modifier.fillMaxSize()
             )
-        } else {
-            StylizedQrCodePlaceholder(
-                modifier = Modifier.fillMaxSize(),
-                centerBadgeText = "UPI"
-            )
-        }
-    }
-}
-
-/**
- * Modern QR Code Placeholder Visual Component rendered with Canvas.
- */
-@Composable
-private fun StylizedQrCodePlaceholder(
-    modifier: Modifier = Modifier,
-    centerBadgeText: String = "UPI"
-) {
-    Box(
-        modifier = modifier
-            .aspectRatio(1f)
-            .background(Color.White, RoundedCornerShape(12.dp))
-            .padding(14.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
-            val colorDark = Color(0xFF1E293B)
-            val cornerBoxSize = w * 0.24f
-            val cornerInnerSize = cornerBoxSize * 0.5f
-
-            // Top-Left Finder Pattern
-            drawRoundRect(
-                color = colorDark,
-                topLeft = Offset(0f, 0f),
-                size = Size(cornerBoxSize, cornerBoxSize),
-                cornerRadius = CornerRadius(8f, 8f)
-            )
-            drawRoundRect(
-                color = Color.White,
-                topLeft = Offset(cornerBoxSize * 0.2f, cornerBoxSize * 0.2f),
-                size = Size(cornerBoxSize * 0.6f, cornerBoxSize * 0.6f),
-                cornerRadius = CornerRadius(4f, 4f)
-            )
-            drawRoundRect(
-                color = colorDark,
-                topLeft = Offset(cornerBoxSize * 0.35f, cornerBoxSize * 0.35f),
-                size = Size(cornerInnerSize * 0.6f, cornerInnerSize * 0.6f),
-                cornerRadius = CornerRadius(2f, 2f)
-            )
-
-            // Top-Right Finder Pattern
-            drawRoundRect(
-                color = colorDark,
-                topLeft = Offset(w - cornerBoxSize, 0f),
-                size = Size(cornerBoxSize, cornerBoxSize),
-                cornerRadius = CornerRadius(8f, 8f)
-            )
-            drawRoundRect(
-                color = Color.White,
-                topLeft = Offset(w - cornerBoxSize + cornerBoxSize * 0.2f, cornerBoxSize * 0.2f),
-                size = Size(cornerBoxSize * 0.6f, cornerBoxSize * 0.6f),
-                cornerRadius = CornerRadius(4f, 4f)
-            )
-            drawRoundRect(
-                color = colorDark,
-                topLeft = Offset(w - cornerBoxSize + cornerBoxSize * 0.35f, cornerBoxSize * 0.35f),
-                size = Size(cornerInnerSize * 0.6f, cornerInnerSize * 0.6f),
-                cornerRadius = CornerRadius(2f, 2f)
-            )
-
-            // Bottom-Left Finder Pattern
-            drawRoundRect(
-                color = colorDark,
-                topLeft = Offset(0f, h - cornerBoxSize),
-                size = Size(cornerBoxSize, cornerBoxSize),
-                cornerRadius = CornerRadius(8f, 8f)
-            )
-            drawRoundRect(
-                color = Color.White,
-                topLeft = Offset(cornerBoxSize * 0.2f, h - cornerBoxSize + cornerBoxSize * 0.2f),
-                size = Size(cornerBoxSize * 0.6f, cornerBoxSize * 0.6f),
-                cornerRadius = CornerRadius(4f, 4f)
-            )
-            drawRoundRect(
-                color = colorDark,
-                topLeft = Offset(cornerBoxSize * 0.35f, h - cornerBoxSize + cornerBoxSize * 0.35f),
-                size = Size(cornerInnerSize * 0.6f, cornerInnerSize * 0.6f),
-                cornerRadius = CornerRadius(2f, 2f)
-            )
-
-            // Stylized QR Data Grid Elements
-            val step = w / 16f
-            val dotRadius = step * 0.38f
-
-            // Pseudo-random deterministic module grid
-            val patternSeeds = intArrayOf(
-                0x5A, 0x3C, 0xA5, 0xC3, 0x96, 0x69, 0x55, 0xAA,
-                0xF0, 0x0F, 0x33, 0xCC, 0x66, 0x99, 0x3A, 0x5C
-            )
-
-            for (row in 0..15) {
-                val seed = patternSeeds[row % patternSeeds.size]
-                for (col in 0..15) {
-                    // Skip finder zones
-                    val inTopLeft = row < 5 && col < 5
-                    val inTopRight = row < 5 && col > 10
-                    val inBottomLeft = row > 10 && col < 5
-                    val inCenter = row in 6..9 && col in 6..9
-
-                    if (!inTopLeft && !inTopRight && !inBottomLeft && !inCenter) {
-                        val bit = (seed shr (col % 8)) and 1
-                        if (bit == 1 || (row + col) % 3 == 0) {
-                            drawCircle(
-                                color = colorDark,
-                                radius = dotRadius,
-                                center = Offset(col * step + step / 2f, row * step + step / 2f)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // Center UPI Badge
-        Surface(
-            shape = RoundedCornerShape(8.dp),
-            color = PrimaryEmerald,
-            shadowElevation = 2.dp,
-            modifier = Modifier.size(38.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
+        } else if (upiUri.isBlank()) {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(28.dp),
+                    color = PrimaryEmerald,
+                    strokeWidth = 2.5.dp
+                )
+                Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = centerBadgeText,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color.White,
-                        fontSize = 11.sp
-                    )
+                    text = "Loading merchant UPI QR...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF475569),
+                    textAlign = TextAlign.Center
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier.fillMaxSize().padding(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.QrCode,
+                    contentDescription = null,
+                    tint = Color(0xFF475569),
+                    modifier = Modifier.size(36.dp)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "UPI QR unavailable — pay using Merchant UPI ID below",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF475569),
+                    textAlign = TextAlign.Center
                 )
             }
         }

@@ -446,6 +446,7 @@ object GitHubUpdateManager {
     }
 
     fun showDialog() {
+        if (!GlobalAdminManager.isInAppUpdateActive.value) return
         if (_updateState.value is UpdateResult.UpdateAvailable) {
             _isDialogVisible.value = true
         }

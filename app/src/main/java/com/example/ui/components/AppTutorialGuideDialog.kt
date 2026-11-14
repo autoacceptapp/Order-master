@@ -74,6 +74,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.AppSettings
+import com.example.FeatureIds
+import com.example.LicenseManager
 import com.example.PermissionUtils
 import com.example.TTSManager
 import com.example.ui.theme.DarkBackground
@@ -492,12 +494,17 @@ fun AppTutorialGuideDialog(
                         // Last Step: 1-Tap Apply Recommended Settings and Done
                         Button(
                             onClick = {
-                                applyRecommendedSettings(context)
-                                Toast.makeText(
-                                    context,
-                                    if (isHindi) "बेस्ट सेटिंग्स लागू हो गईं! अब ऑटो-एक्सेप्ट तैयार है।" else "Recommended settings applied successfully!",
-                                    Toast.LENGTH_LONG
-                                ).show()
+                                val appliedCount = applyRecommendedSettings(context)
+                                val msg = when {
+                                    appliedCount == 0 -> if (isHindi) {
+                                        "फिल्टर्स लॉक हैं। पहले Pass एक्टिवेट करें या Points से अनलॉक करें।"
+                                    } else {
+                                        "Filters are locked. Activate a Pass or unlock filters with Points first."
+                                    }
+                                    isHindi -> "अनलॉक की गई बेस्ट सेटिंग्स लागू हो गईं!"
+                                    else -> "Recommended settings applied to unlocked filters!"
+                                }
+                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                                 TTSManager.stop()
                                 onDismiss()
                             },
@@ -536,24 +543,45 @@ fun AppTutorialGuideDialog(
 /**
  * Applies ideal recommended baseline settings for Rapido captains.
  */
-fun applyRecommendedSettings(context: Context) {
-    AppSettings.setAutoAcceptEnabled(context, true)
-    AppSettings.setMinFareEnabled(context, true)
-    AppSettings.setMinFare(context, 50.0f)
+fun applyRecommendedSettings(context: Context): Int {
+    var appliedCount = 0
 
-    AppSettings.setMinPerKmRateEnabled(context, true)
-    AppSettings.setMinPerKmRate(context, 13.0f)
+    if (LicenseManager.hasAnyAutoAcceptCapability()) {
+        AppSettings.setAutoAcceptEnabled(context, true)
+        appliedCount++
+    }
+    if (LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)) {
+        AppSettings.setMinFareEnabled(context, true)
+        AppSettings.setMinFare(context, 50.0f)
+        appliedCount++
+    }
+    if (LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)) {
+        AppSettings.setMinPerKmRateEnabled(context, true)
+        AppSettings.setMinPerKmRate(context, 13.0f)
+        appliedCount++
+    }
+    if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)) {
+        AppSettings.setMaxPickupDistanceEnabled(context, true)
+        AppSettings.setMaxPickupDistance(context, 2.5f)
+        appliedCount++
+    }
+    if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)) {
+        AppSettings.setMaxDropDistanceEnabled(context, true)
+        AppSettings.setMaxDropDistance(context, 15.0f)
+        appliedCount++
+    }
+    if (LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE)) {
+        AppSettings.setVoiceAnnouncerEnabled(context, true)
+        appliedCount++
+    }
+    if (LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY) && PermissionUtils.canDrawOverlays(context)) {
+        AppSettings.setFloatingOverlayEnabled(context, true)
+        appliedCount++
+    }
 
-    AppSettings.setMaxPickupDistanceEnabled(context, true)
-    AppSettings.setMaxPickupDistance(context, 2.5f)
-
-    AppSettings.setMaxDropDistanceEnabled(context, true)
-    AppSettings.setMaxDropDistance(context, 15.0f)
-
-    AppSettings.setVoiceAnnouncerEnabled(context, true)
-    AppSettings.setFloatingOverlayEnabled(context, true)
     AppSettings.setHomeTutorialCompleted(context, true)
     AppSettings.syncOverlayService(context)
+    return appliedCount
 }
 
 /**

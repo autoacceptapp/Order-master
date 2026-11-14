@@ -67,6 +67,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -83,6 +84,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.AppSettings
 import com.example.PermissionUtils
 import com.example.LicenseManager
@@ -95,6 +99,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import com.example.ui.components.FareFilterCard
 import com.example.ui.components.AppTutorialGuideDialog
 import com.example.ui.components.AppGuideBannerCard
+import com.example.ui.theme.PrimaryEmerald
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -169,6 +174,18 @@ fun FilterSettingsScreen(
 
     var hasOverlayPermission by remember {
         mutableStateOf(PermissionUtils.canDrawOverlays(context))
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasOverlayPermission = PermissionUtils.canDrawOverlays(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
     var showPermissionDialog by remember { mutableStateOf(false) }
 
@@ -1134,8 +1151,8 @@ fun FilterSettingsScreen(
                                         color = when {
                                             isAutoClickAdminLocked -> MaterialTheme.colorScheme.error
                                             !hasAnyAutoCapability -> MaterialTheme.colorScheme.onSurfaceVariant
-                                            settingsState.isAutoClickEnabled -> Color(0xFF047857)
-                                            else -> Color(0xFFB91C1C)
+                                            settingsState.isAutoClickEnabled -> PrimaryEmerald
+                                            else -> MaterialTheme.colorScheme.error
                                         },
                                         fontWeight = FontWeight.Bold
                                     )
@@ -1457,6 +1474,8 @@ private fun FilterCard(
                         )
                     }
                 }
+
+                Spacer(modifier = Modifier.width(8.dp))
 
                 // Individual Toggle Switch
                 Switch(

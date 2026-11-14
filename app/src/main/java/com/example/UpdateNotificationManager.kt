@@ -38,6 +38,7 @@ object UpdateNotificationManager {
     // Notification IDs
     const val NOTIFICATION_ID_UPDATE_AVAILABLE = 9001
     const val NOTIFICATION_ID_DOWNLOAD_PROGRESS = 9002
+    const val NOTIFICATION_ID_DOWNLOAD_COMPLETE = 9003
 
     private const val REQ_CODE_UPDATE_CLICK = 9101
     private const val REQ_CODE_INSTALL_CLICK = 9102
@@ -123,7 +124,7 @@ object UpdateNotificationManager {
         }
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setSmallIcon(R.drawable.ic_notification_bolt)
             .setContentTitle("New Order Master Update Available!")
             .setContentText(bodyText)
             .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
@@ -176,7 +177,7 @@ object UpdateNotificationManager {
         )
 
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(R.drawable.ic_notification_bolt)
             .setContentTitle("Downloading Order Master Update")
             .setContentText(contentText)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -227,7 +228,7 @@ object UpdateNotificationManager {
         )
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setSmallIcon(R.drawable.ic_notification_bolt)
             .setContentTitle("Order Master Update Ready")
             .setContentText("Download completed. Tap to install now.")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -236,7 +237,7 @@ object UpdateNotificationManager {
             .build()
 
         try {
-            NotificationManagerCompat.from(context).notify(NOTIFICATION_ID_UPDATE_AVAILABLE, notification)
+            NotificationManagerCompat.from(context).notify(NOTIFICATION_ID_DOWNLOAD_COMPLETE, notification)
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException posting download complete notification", e)
         }
@@ -259,5 +260,6 @@ object UpdateNotificationManager {
     fun clearAllUpdateNotifications(context: Context) {
         dismissNotification(context, NOTIFICATION_ID_UPDATE_AVAILABLE)
         dismissNotification(context, NOTIFICATION_ID_DOWNLOAD_PROGRESS)
+        dismissNotification(context, NOTIFICATION_ID_DOWNLOAD_COMPLETE)
     }
 }

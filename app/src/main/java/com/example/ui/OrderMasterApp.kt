@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Settings
@@ -38,7 +40,10 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.WorkspacePremium
 import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -124,115 +129,114 @@ fun OrderMasterApp(
         LicenseManager.onUserAuthChanged(userAuthState.userEmail, userAuthState.uid)
     }
 
-    // Startup Loading Screen: Gate main dashboard while verifying initial cloud sync
-    if (accessStatus is AccessStatus.Loading) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
-                .testTag("startup_loading_screen"),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier.padding(32.dp)
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Startup Loading Screen: Gate main dashboard while verifying initial cloud sync
+        if (accessStatus is AccessStatus.Loading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.background)
+                    .testTag("startup_loading_screen"),
+                contentAlignment = Alignment.Center
             ) {
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    shadowElevation = 8.dp,
-                    modifier = Modifier.size(96.dp)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier.padding(32.dp)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Filled.DirectionsCar,
-                            contentDescription = "Order Master Logo",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(52.dp)
-                        )
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shadowElevation = 8.dp,
+                        modifier = Modifier.size(96.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Filled.DirectionsCar,
+                                contentDescription = "Order Master Logo",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(52.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    Text(
+                        text = "ORDER MASTER",
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 1.2.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+
+                    Text(
+                        text = "Captain Auto-Accept & Surge Radar",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(36.dp))
+
+                    CircularProgressIndicator(
+                        color = MaterialTheme.colorScheme.primary,
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(36.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "Connecting to Server...",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "Synchronizing licensing and captain profile",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                    )
+                }
+            }
+        } else {
+            val context = LocalContext.current
+            val navController = rememberNavController()
+            val navBackStackEntry by navController.currentBackStackEntryAsState()
+            val currentRoute = (navBackStackEntry?.destination?.route ?: Screen.Home.route).substringBefore("?")
+
+            var showRestrictedSettingsGuide by remember { mutableStateOf(false) }
+            var showGoogleSignInSheet by remember { mutableStateOf(false) }
+            var showTutorialGuide by remember { mutableStateOf(false) }
+            var showTopBarMenu by remember { mutableStateOf(false) }
+
+            // Mandatory Authentication: sheet is strictly forced whenever user is not logged in
+            val shouldShowAuthSheet = !userAuthState.isLoggedIn || showGoogleSignInSheet
+
+            // Block back press from bypassing mandatory authentication
+            BackHandler(enabled = !userAuthState.isLoggedIn) {
+                // Mandatory login active; back gestures are consumed
+            }
+
+            // Auto-navigate to Refer & Earn screen if opened via invite deep link
+            val pendingInvite by com.example.ReferralManager.pendingInviteCode.collectAsState()
+            LaunchedEffect(pendingInvite) {
+                if (!pendingInvite.isNullOrBlank() && currentRoute != Screen.ReferAndEarn.route) {
+                    navController.navigate(Screen.ReferAndEarn.route) {
+                        launchSingleTop = true
                     }
                 }
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                Text(
-                    text = "ORDER MASTER",
-                    style = MaterialTheme.typography.headlineSmall.copy(
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 1.2.sp
-                    ),
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-
-                Text(
-                    text = "Captain Auto-Accept & Surge Radar",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(modifier = Modifier.height(36.dp))
-
-                CircularProgressIndicator(
-                    color = MaterialTheme.colorScheme.primary,
-                    strokeWidth = 3.dp,
-                    modifier = Modifier.size(36.dp)
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = "Connecting to Server...",
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.SemiBold
-                    ),
-                    color = MaterialTheme.colorScheme.primary
-                )
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Text(
-                    text = "Synchronizing licensing and captain profile",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                )
             }
-        }
-        return
-    }
 
-    val context = LocalContext.current
-    val navController = rememberNavController()
-    val navBackStackEntry by navController.currentBackStackEntryAsState()
-    val currentRoute = (navBackStackEntry?.destination?.route ?: Screen.Home.route).substringBefore("?")
+            val isMainTab = currentRoute in listOf(Screen.Home.route, Screen.Filters.route, Screen.History.route)
 
-    var showRestrictedSettingsGuide by remember { mutableStateOf(false) }
-    var showGoogleSignInSheet by remember { mutableStateOf(false) }
-    var showTutorialGuide by remember { mutableStateOf(false) }
-
-    // Mandatory Authentication: sheet is strictly forced whenever user is not logged in
-    val shouldShowAuthSheet = !userAuthState.isLoggedIn || showGoogleSignInSheet
-
-    // Block back press from bypassing mandatory authentication
-    BackHandler(enabled = !userAuthState.isLoggedIn) {
-        // Mandatory login active; back gestures are consumed
-    }
-
-    // Auto-navigate to Refer & Earn screen if opened via invite deep link
-    val pendingInvite by com.example.ReferralManager.pendingInviteCode.collectAsState()
-    LaunchedEffect(pendingInvite) {
-        if (!pendingInvite.isNullOrBlank() && currentRoute != Screen.ReferAndEarn.route) {
-            navController.navigate(Screen.ReferAndEarn.route) {
-                launchSingleTop = true
-            }
-        }
-    }
-
-    val isMainTab = currentRoute in listOf(Screen.Home.route, Screen.Filters.route, Screen.History.route)
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             if (currentRoute != Screen.Subscription.route) {
@@ -303,7 +307,7 @@ fun OrderMasterApp(
                         }
                     },
                     actions = {
-                        // Pass & Store Button
+                        // Primary Action: Pass & Store Button (48dp touch target)
                         IconButton(
                             onClick = {
                                 if (currentRoute != Screen.Subscription.route) {
@@ -313,7 +317,7 @@ fun OrderMasterApp(
                                 }
                             },
                             modifier = Modifier
-                                .size(width = 42.dp, height = 48.dp)
+                                .size(48.dp)
                                 .testTag("top_bar_store_button")
                         ) {
                             Icon(
@@ -326,82 +330,110 @@ fun OrderMasterApp(
                             )
                         }
 
-                        // Remove Ads Icon Button
-                        IconButton(
-                            onClick = {
-                                navController.navigate("payment_verification?tier=remove_ads_pass") {
-                                    launchSingleTop = true
-                                }
-                            },
-                            modifier = Modifier
-                                .size(width = 42.dp, height = 48.dp)
-                                .testTag("top_bar_remove_ads_button")
-                        ) {
-                            Icon(
-                                imageVector = if (isAdsRemoved) Icons.Filled.WorkspacePremium else Icons.Outlined.WorkspacePremium,
-                                contentDescription = if (isAdsRemoved) "Ads Removed" else "Remove Ads",
-                                tint = if (isAdsRemoved) AmberAccent else Color(0xFF8B5CF6)
-                            )
-                        }
+                        // Consolidated Overflow Menu Button (keeps TopAppBar clean so title stays 1-line on 360dp phones)
+                        Box {
+                            IconButton(
+                                onClick = { showTopBarMenu = true },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("top_bar_more_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = "More Options",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
 
-                        // Profile Icon Button
-                        IconButton(
-                            onClick = {
-                                if (currentRoute != Screen.Profile.route) {
-                                    navController.navigate(Screen.Profile.route) {
-                                        launchSingleTop = true
-                                    }
-                                }
-                            },
-                            modifier = Modifier
-                                .size(width = 42.dp, height = 48.dp)
-                                .testTag("top_bar_profile_button")
-                        ) {
-                            Icon(
-                                imageVector = if (currentRoute == Screen.Profile.route) Icons.Filled.Person else Icons.Outlined.Person,
-                                contentDescription = "Profile",
-                                tint = if (currentRoute == Screen.Profile.route)
-                                    MaterialTheme.colorScheme.primary
-                                else
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        // App Guide & Filter Tutorial Help Button
-                        IconButton(
-                            onClick = { showTutorialGuide = true },
-                            modifier = Modifier
-                                .size(width = 42.dp, height = 48.dp)
-                                .testTag("top_bar_guide_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.HelpOutline,
-                                contentDescription = "App Guide & Filter Tutorial",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-
-                        // Settings Icon Button
-                        IconButton(
-                            onClick = {
-                                if (currentRoute != Screen.Settings.route) {
-                                    navController.navigate(Screen.Settings.route) {
-                                        launchSingleTop = true
-                                    }
-                                }
-                            },
-                            modifier = Modifier
-                                .size(width = 42.dp, height = 48.dp)
-                                .testTag("top_bar_settings_button")
-                        ) {
-                            Icon(
-                                imageVector = if (currentRoute == Screen.Settings.route) Icons.Filled.Settings else Icons.Outlined.Settings,
-                                contentDescription = "Settings",
-                                tint = if (currentRoute == Screen.Settings.route)
-                                    MaterialTheme.colorScheme.primary
-                                else
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            DropdownMenu(
+                                expanded = showTopBarMenu,
+                                onDismissRequest = { showTopBarMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = if (isAdsRemoved) "Remove Ads (Active)" else "Remove Ads Pass",
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = if (isAdsRemoved) Icons.Filled.WorkspacePremium else Icons.Outlined.WorkspacePremium,
+                                            contentDescription = null,
+                                            tint = if (isAdsRemoved) AmberAccent else Color(0xFF8B5CF6)
+                                        )
+                                    },
+                                    onClick = {
+                                        showTopBarMenu = false
+                                        navController.navigate("payment_verification?tier=remove_ads_pass") {
+                                            launchSingleTop = true
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("top_bar_remove_ads_button")
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Captain Profile") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = if (currentRoute == Screen.Profile.route) Icons.Filled.Person else Icons.Outlined.Person,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    },
+                                    onClick = {
+                                        showTopBarMenu = false
+                                        if (currentRoute != Screen.Profile.route) {
+                                            navController.navigate(Screen.Profile.route) {
+                                                launchSingleTop = true
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("top_bar_profile_button")
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("App Guide & Tutorial") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Outlined.HelpOutline,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                    },
+                                    onClick = {
+                                        showTopBarMenu = false
+                                        showTutorialGuide = true
+                                    },
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("top_bar_guide_button")
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Settings & Permissions") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = if (currentRoute == Screen.Settings.route) Icons.Filled.Settings else Icons.Outlined.Settings,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    onClick = {
+                                        showTopBarMenu = false
+                                        if (currentRoute != Screen.Settings.route) {
+                                            navController.navigate(Screen.Settings.route) {
+                                                launchSingleTop = true
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .heightIn(min = 48.dp)
+                                        .testTag("top_bar_settings_button")
+                                )
+                            }
                         }
                     }
                 )
@@ -409,7 +441,7 @@ fun OrderMasterApp(
         },
         bottomBar = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                if (!isAdsRemoved) {
+                if (!isAdsRemoved && currentRoute != Screen.PaymentVerification.route) {
                     BannerAdView()
                 }
                 AnimatedVisibility(
@@ -610,23 +642,24 @@ fun OrderMasterApp(
         )
     }
 
-    // Google Sign-In Mandatory Bottom Sheet Dialog
-    if (shouldShowAuthSheet) {
-        GoogleSignInBottomSheet(
-            isMandatory = !userAuthState.isLoggedIn,
-            onDismissRequest = {
-                // If user is not logged in, dismissing is strictly blocked
-                if (userAuthState.isLoggedIn) {
+        // Google Sign-In Mandatory Bottom Sheet Dialog
+        if (shouldShowAuthSheet) {
+            GoogleSignInBottomSheet(
+                isMandatory = !userAuthState.isLoggedIn,
+                onDismissRequest = {
+                    // If user is not logged in, dismissing is strictly blocked
+                    if (userAuthState.isLoggedIn) {
+                        showGoogleSignInSheet = false
+                    }
+                },
+                onSignInSuccess = {
                     showGoogleSignInSheet = false
                 }
-            },
-            onSignInSuccess = {
-                showGoogleSignInSheet = false
-            }
-        )
-    }
+            )
+        }
+        }
 
-    // Global Service Offline / User Ban Blocking Overlay (on top of all activities/screens)
-    GlobalBlockingOverlay()
-}
+        // Global Service Offline / User Ban Blocking Overlay (renders on top of ALL screens including Loading)
+        GlobalBlockingOverlay()
+    }
 }

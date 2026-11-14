@@ -47,8 +47,10 @@ fun BannerAdView(
 ) {
     val isInPreview = LocalInspectionMode.current
     val isTestEnv = remember {
-        Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
-            runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
+        BuildConfig.DEBUG && (
+            Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
+                runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
+            )
     }
 
     if (isInPreview || isTestEnv) {
@@ -97,7 +99,13 @@ fun BannerAdView(
                     .testTag("banner_ad_view"),
                 factory = { context ->
                     AdView(context).apply {
-                        setAdSize(AdSize.BANNER)
+                        val widthDp = (context.resources.displayMetrics.widthPixels / context.resources.displayMetrics.density)
+                            .toInt()
+                            .coerceAtLeast(320)
+                        val adaptiveSize = runCatching {
+                            AdSize.getCurrentOrientationAnchoredAdaptiveBannerAdSize(context, widthDp)
+                        }.getOrElse { AdSize.BANNER }
+                        setAdSize(adaptiveSize)
                         this.adUnitId = currentAdUnitId
                         adListener = object : AdListener() {
                             override fun onAdLoaded() {

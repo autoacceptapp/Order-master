@@ -186,8 +186,10 @@ object RewardedAdManager {
     }
 
     private fun isUnitTestEnvironment(): Boolean {
-        return Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
-            runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
+        return BuildConfig.DEBUG && (
+            Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
+                runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
+        )
     }
 
     /**

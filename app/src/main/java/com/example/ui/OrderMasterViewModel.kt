@@ -1,7 +1,6 @@
 package com.example.ui
 
 import android.app.Application
-import android.speech.tts.TextToSpeech
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ActivityLogEntry
@@ -33,7 +32,6 @@ enum class HistoryFilter {
 
 class OrderMasterViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = OrderRepository.getInstance(application)
-    private var tts: TextToSpeech? = null
     private val _ttsStatus = MutableStateFlow("TTS Ready")
     val ttsStatus: StateFlow<String> = _ttsStatus.asStateFlow()
 
@@ -83,24 +81,8 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
 
     init {
         AppSettings.init(application)
-        OrderRepository.seedInitialDataIfEmpty(application)
-        initTts(application)
-    }
-
-    private fun initTts(app: Application) {
-        try {
-            tts = TextToSpeech(app) { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    val lang = if (settingsState.value.voiceLanguage == "hi") Locale("hi", "IN") else Locale.US
-                    tts?.language = lang
-                    _ttsStatus.value = "TTS Active (${settingsState.value.voiceLanguage.uppercase()})"
-                } else {
-                    _ttsStatus.value = "TTS Unavailable"
-                }
-            }
-        } catch (_: Exception) {
-            _ttsStatus.value = "TTS Idle"
-        }
+        TTSManager.init(application)
+        _ttsStatus.value = "TTS Active (${settingsState.value.voiceLanguage.uppercase(Locale.ROOT)})"
     }
 
     // --- Master Toggle ---
@@ -204,8 +186,7 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
     fun setVoiceLanguage(lang: String) {
         val app = getApplication<Application>()
         AppSettings.setVoiceLanguage(app, lang)
-        val targetLocale = TTSManager.parseLocale(lang)
-        tts?.language = targetLocale
+        TTSManager.applySettings(app)
         _ttsStatus.value = "TTS Active (${lang.uppercase(Locale.ROOT)})"
     }
 
@@ -321,7 +302,5 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
 
     override fun onCleared() {
         super.onCleared()
-        tts?.stop()
-        tts?.shutdown()
     }
 }

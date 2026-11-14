@@ -15,6 +15,7 @@ const PASS_TIERS = {
     priceInInr: 9,
     pointsCost: 100,
     durationMs: 24 * 60 * 60 * 1000, // 24 hours
+    isProPass: true,
   },
   weekly_pass: {
     id: "weekly_pass",
@@ -22,6 +23,7 @@ const PASS_TIERS = {
     priceInInr: 49,
     pointsCost: 500,
     durationMs: 7 * 24 * 60 * 60 * 1000, // 7 days
+    isProPass: true,
   },
   monthly_pass: {
     id: "monthly_pass",
@@ -29,42 +31,66 @@ const PASS_TIERS = {
     priceInInr: 179,
     pointsCost: 1500,
     durationMs: 28 * 24 * 60 * 60 * 1000, // 28 days
+    isProPass: true,
+  },
+  remove_ads_pass: {
+    id: "remove_ads_pass",
+    title: "Remove Ads Pass",
+    priceInInr: 199,
+    pointsCost: 1600,
+    durationMs: 28 * 24 * 60 * 60 * 1000, // 28 days
+    isProPass: false,
   },
 };
 
 const TRIAL_DURATION_MS = 48 * 60 * 60 * 1000; // 48 Hours
 
-// Pay-Per-Use Feature Pricing (Points per Hour)
+// Pay-Per-Use Feature Pricing (Points per Hour) — 9 granular feature keys
 const FEATURE_PRICING = {
-  auto_click: {
-    id: "auto_click",
-    title: "Auto Click Speed",
+  min_fare: {
+    id: "min_fare",
+    title: "Minimum Fare Filter",
+    pointsPerHour: 10,
+  },
+  max_fare: {
+    id: "max_fare",
+    title: "Maximum Fare Filter",
+    pointsPerHour: 10,
+  },
+  max_pickup_distance: {
+    id: "max_pickup_distance",
+    title: "Max Pickup Distance Filter",
+    pointsPerHour: 10,
+  },
+  max_drop_distance: {
+    id: "max_drop_distance",
+    title: "Max Drop Distance Filter",
+    pointsPerHour: 10,
+  },
+  min_per_km_rate: {
+    id: "min_per_km_rate",
+    title: "Minimum Rate Per-Km Filter",
     pointsPerHour: 15,
   },
-  fare_filters: {
-    id: "fare_filters",
-    title: "Fare Filters",
-    pointsPerHour: 10,
-  },
-  distance_filters: {
-    id: "distance_filters",
-    title: "Distance Filters",
-    pointsPerHour: 10,
+  destination_blacklist: {
+    id: "destination_blacklist",
+    title: "Destination Blacklist Filter",
+    pointsPerHour: 5,
   },
   tts_voice: {
     id: "tts_voice",
-    title: "Voice Announcements",
+    title: "Voice Announcements (TTS)",
     pointsPerHour: 10,
   },
   floating_overlay: {
     id: "floating_overlay",
-    title: "HUD Window",
-    pointsPerHour: 5,
+    title: "Floating Window Overlay",
+    pointsPerHour: 10,
   },
-  destination_blacklist: {
-    id: "destination_blacklist",
-    title: "Destination Blacklist",
-    pointsPerHour: 5,
+  auto_click: {
+    id: "auto_click",
+    title: "Auto Click Speed (300ms Boost)",
+    pointsPerHour: 15,
   },
 };
 
@@ -171,47 +197,15 @@ exports.claimHardwareTrial = onCall({ enforceAppCheck: false }, async (request) 
 
 /**
  * 2. addPoints
- * Secure server-side points credit (e.g. from referrals or wallet top-ups).
+ * Disabled for direct client calls to enforce Zero-Trust security.
+ * Points may only be granted via verified server/admin flows (e.g. claimReferralCode, Admin SDK).
  */
 exports.addPoints = onCall({ enforceAppCheck: false }, async (request) => {
   assertCallerSecurity(request);
-
-  const uid = request.auth.uid;
-  const amount = parseInt(request.data.amount, 10);
-  const reason = request.data.reason || "Wallet Top-up";
-
-  if (isNaN(amount) || amount <= 0 || amount > 10000) {
-    throw new HttpsError("invalid-argument", "Amount must be a positive number up to 10,000.");
-  }
-
-  const userDocRef = db.collection("users_licensing").document(uid);
-
-  return db.runTransaction(async (transaction) => {
-    const userSnap = await transaction.get(userDocRef);
-    const currentPoints = userSnap.exists ? (userSnap.data().pointsBalance || 0) : 0;
-    const newPoints = currentPoints + amount;
-
-    transaction.set(
-      userDocRef,
-      {
-        userId: uid,
-        pointsBalance: newPoints,
-        lastPointsCredit: {
-          amount,
-          reason,
-          creditedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
-
-    return {
-      success: true,
-      addedPoints: amount,
-      newPointsBalance: newPoints,
-    };
-  });
+  throw new HttpsError(
+    "permission-denied",
+    "Client-side point grants are disabled. Points can only be credited via verified referrals, ad claims, or Admin."
+  );
 });
 
 /**
@@ -229,7 +223,7 @@ exports.purchasePassWithPoints = onCall({ enforceAppCheck: false }, async (reque
     throw new HttpsError("invalid-argument", `Unknown pass tier: ${passTierId}`);
   }
 
-  const userDocRef = db.collection("users_licensing").document(uid);
+  const userDocRef = db.collection("users").document(uid);
 
   return db.runTransaction(async (transaction) => {
     const userSnap = await transaction.get(userDocRef);
@@ -248,10 +242,40 @@ exports.purchasePassWithPoints = onCall({ enforceAppCheck: false }, async (reque
     }
 
     const serverNow = Date.now();
+    const newPoints = currentPoints - tier.pointsCost;
+
+    if (!tier.isProPass) {
+      // Remove Ads Pass ONLY removes ads and must NEVER grant Pro access
+      const currentAdsExpiry = userData.removeAdsExpiryTimestamp || 0;
+      const adsBaseTime = currentAdsExpiry > serverNow ? currentAdsExpiry : serverNow;
+      const newAdsExpiry = adsBaseTime + tier.durationMs;
+
+      transaction.set(
+        userDocRef,
+        {
+          pointsBalance: newPoints,
+          removeAdsExpiryTimestamp: newAdsExpiry,
+          lastPurchasedTier: tier.id,
+          lastPaymentMethod: "POINTS",
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedServerTimeMs: serverNow,
+        },
+        { merge: true }
+      );
+
+      return {
+        success: true,
+        activePassType: userData.activePassType || null,
+        passExpiryTimestamp: userData.passExpiryTimestamp || 0,
+        removeAdsExpiryTimestamp: newAdsExpiry,
+        newPointsBalance: newPoints,
+        serverTimeMs: serverNow,
+      };
+    }
+
     const currentExpiry = userData.passExpiryTimestamp || 0;
     const baseTime = currentExpiry > serverNow ? currentExpiry : serverNow;
     const newExpiry = baseTime + tier.durationMs;
-    const newPoints = currentPoints - tier.pointsCost;
 
     transaction.set(
       userDocRef,
@@ -271,6 +295,7 @@ exports.purchasePassWithPoints = onCall({ enforceAppCheck: false }, async (reque
       success: true,
       activePassType: tier.id,
       passExpiryTimestamp: newExpiry,
+      removeAdsExpiryTimestamp: userData.removeAdsExpiryTimestamp || 0,
       newPointsBalance: newPoints,
       serverTimeMs: serverNow,
     };
@@ -287,29 +312,37 @@ exports.verifyUtrAndActivatePass = onCall({ enforceAppCheck: false }, async (req
   const uid = request.auth.uid;
   const utr = (request.data.utr || "").trim();
   const passTierId = request.data.passTier || request.data.passTierId || "daily_pass";
-  const tier = PASS_TIERS[passTierId] || PASS_TIERS.daily_pass;
+  const tier = PASS_TIERS[passTierId];
+
+  if (!tier) {
+    throw new HttpsError("invalid-argument", `Unknown pass tier: ${passTierId}`);
+  }
 
   if (!/^\d{12}$/.test(utr)) {
     throw new HttpsError("invalid-argument", "Invalid 12-digit numeric UTR.");
   }
 
   const paymentDocRef = db.collection("received_payments").document(utr);
-  const userDocRef = db.collection("users_licensing").document(uid);
+  const userDocRef = db.collection("users").document(uid);
 
   return db.runTransaction(async (transaction) => {
     const paymentSnap = await transaction.get(paymentDocRef);
 
     if (!paymentSnap.exists) {
-      // Record pending verification for admin review
+      // Record pending verification matching firestore.rules schema for admin review
       const pendingRef = db.collection("pending_verifications").document(utr);
       transaction.set(
         pendingRef,
         {
           utr,
           userId: uid,
-          passTierId: tier.id,
-          requestedAt: admin.firestore.FieldValue.serverTimestamp(),
-          status: "PENDING_MATCH",
+          firebaseUid: uid,
+          passTier: tier.id,
+          passName: tier.title,
+          amount: tier.priceInInr,
+          isUsed: false,
+          status: "PENDING",
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
@@ -332,9 +365,6 @@ exports.verifyUtrAndActivatePass = onCall({ enforceAppCheck: false }, async (req
     const serverNow = Date.now();
     const userSnap = await transaction.get(userDocRef);
     const userData = userSnap.exists ? userSnap.data() : {};
-    const currentExpiry = userData.passExpiryTimestamp || 0;
-    const baseTime = currentExpiry > serverNow ? currentExpiry : serverNow;
-    const newExpiry = baseTime + tier.durationMs;
 
     // Mark payment as claimed and used
     transaction.update(paymentDocRef, {
@@ -342,11 +372,45 @@ exports.verifyUtrAndActivatePass = onCall({ enforceAppCheck: false }, async (req
       isClaimed: true,
       claimedBy: uid,
       claimedByUid: uid,
+      claimedByUserId: uid,
       claimedAt: admin.firestore.FieldValue.serverTimestamp(),
-      passTierId: tier.id,
+      passTier: tier.id,
     });
 
-    // Update user's licensing
+    if (!tier.isProPass) {
+      // Remove Ads Pass strictly removes banner ads only
+      const currentAdsExpiry = userData.removeAdsExpiryTimestamp || 0;
+      const adsBaseTime = currentAdsExpiry > serverNow ? currentAdsExpiry : serverNow;
+      const newAdsExpiry = adsBaseTime + tier.durationMs;
+
+      transaction.set(
+        userDocRef,
+        {
+          userId: uid,
+          removeAdsExpiryTimestamp: newAdsExpiry,
+          lastPurchasedTier: tier.id,
+          lastPaymentMethod: "UPI_UTR",
+          lastTransactionId: utr,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedServerTimeMs: serverNow,
+        },
+        { merge: true }
+      );
+
+      return {
+        success: true,
+        activePassType: userData.activePassType || null,
+        passExpiryTimestamp: userData.passExpiryTimestamp || 0,
+        removeAdsExpiryTimestamp: newAdsExpiry,
+        serverTimeMs: serverNow,
+      };
+    }
+
+    const currentExpiry = userData.passExpiryTimestamp || 0;
+    const baseTime = currentExpiry > serverNow ? currentExpiry : serverNow;
+    const newExpiry = baseTime + tier.durationMs;
+
+    // Update user's Pro pass licensing
     transaction.set(
       userDocRef,
       {
@@ -366,6 +430,7 @@ exports.verifyUtrAndActivatePass = onCall({ enforceAppCheck: false }, async (req
       success: true,
       activePassType: tier.id,
       passExpiryTimestamp: newExpiry,
+      removeAdsExpiryTimestamp: userData.removeAdsExpiryTimestamp || 0,
       serverTimeMs: serverNow,
     };
   });
@@ -383,14 +448,14 @@ exports.getServerTime = onCall({ enforceAppCheck: false }, async (request) => {
 
 /**
  * 6. initializeUserLicensing
- * Creates or ensures user licensing record in users_licensing with unique referral code.
+ * Creates or ensures user licensing record in users with unique referral code.
  */
 exports.initializeUserLicensing = onCall({ enforceAppCheck: false }, async (request) => {
   assertCallerSecurity(request);
 
   const uid = request.auth.uid;
   const userEmail = request.auth.token.email || "";
-  const userDocRef = db.collection("users_licensing").document(uid);
+  const userDocRef = db.collection("users").document(uid);
 
   return db.runTransaction(async (transaction) => {
     const userSnap = await transaction.get(userDocRef);
@@ -469,7 +534,7 @@ exports.claimReferralCode = onCall({ enforceAppCheck: false }, async (request) =
   }
 
   // Pre-query referrer
-  const querySnap = await db.collection("users_licensing")
+  const querySnap = await db.collection("users")
     .where("referralCode", "==", submittedCode)
     .limit(1)
     .get();
@@ -485,8 +550,8 @@ exports.claimReferralCode = onCall({ enforceAppCheck: false }, async (request) =
     throw new HttpsError("invalid-argument", "Cannot use your own referral code.");
   }
 
-  const userDocRef = db.collection("users_licensing").document(uid);
-  const referrerDocRef = db.collection("users_licensing").document(referrerUid);
+  const userDocRef = db.collection("users").document(uid);
+  const referrerDocRef = db.collection("users").document(referrerUid);
 
   return db.runTransaction(async (transaction) => {
     const userSnap = await transaction.get(userDocRef);
@@ -563,7 +628,7 @@ exports.unlockFeatureWithPoints = onCall({ enforceAppCheck: false }, async (requ
   }
 
   const totalCost = pricing.pointsPerHour * hours;
-  const userDocRef = db.collection("users_licensing").document(uid);
+  const userDocRef = db.collection("users").document(uid);
 
   return db.runTransaction(async (transaction) => {
     const userSnap = await transaction.get(userDocRef);

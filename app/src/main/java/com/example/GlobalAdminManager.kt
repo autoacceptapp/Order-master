@@ -295,12 +295,16 @@ object GlobalAdminManager {
         return true
     }
 
+    private val dateTimeFormat = ThreadLocal.withInitial {
+        SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
+    }
+
     /**
      * Formats an epoch timestamp into a friendly date/time string, e.g. "02 Nov 2026, 05:30 PM".
      */
     fun formatDateTime(timestampMs: Long): String {
         return try {
-            val sdf = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
+            val sdf = dateTimeFormat.get() ?: SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
             sdf.format(Date(timestampMs))
         } catch (_: Exception) {
             Date(timestampMs).toString()

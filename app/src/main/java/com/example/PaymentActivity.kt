@@ -858,7 +858,7 @@ private fun UtrVerificationSection(
             OutlinedTextField(
                 value = utrInput,
                 onValueChange = { input ->
-                    val clean = input.filter { it.isLetterOrDigit() }.take(16).uppercase()
+                    val clean = input.filter { it.isDigit() }.take(12)
                     onUtrChange(clean)
                 },
                 modifier = Modifier
@@ -874,10 +874,11 @@ private fun UtrVerificationSection(
                     IconButton(
                         onClick = {
                             val clipText = clipboardManager.getText()?.text ?: ""
-                            val clean = clipText.filter { it.isLetterOrDigit() }.take(16).uppercase()
-                            if (clean.isNotEmpty()) {
-                                onUtrChange(clean)
-                                Toast.makeText(context, context.getString(R.string.payment_toast_pasted, clean), Toast.LENGTH_SHORT).show()
+                            val extracted = Regex("\\b\\d{12}\\b").find(clipText)?.value
+                                ?: clipText.filter { it.isDigit() }.take(12)
+                            if (extracted.isNotEmpty()) {
+                                onUtrChange(extracted)
+                                Toast.makeText(context, context.getString(R.string.payment_toast_pasted, extracted), Toast.LENGTH_SHORT).show()
                             } else {
                                 Toast.makeText(context, context.getString(R.string.payment_toast_no_clip), Toast.LENGTH_SHORT).show()
                             }
@@ -893,7 +894,7 @@ private fun UtrVerificationSection(
                 },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Text,
+                    keyboardType = KeyboardType.Number,
                     imeAction = ImeAction.Done
                 ),
                 keyboardActions = KeyboardActions(
@@ -905,12 +906,12 @@ private fun UtrVerificationSection(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = if (utrInput.isNotEmpty() && utrInput.length < 9) {
-                                stringResource(R.string.payment_utr_need_more, 9 - utrInput.length)
+                            text = if (utrInput.isNotEmpty() && utrInput.length < 12) {
+                                stringResource(R.string.payment_utr_need_more, 12 - utrInput.length)
                             } else {
                                 stringResource(R.string.payment_utr_hint)
                             },
-                            color = if (utrInput.isNotEmpty() && utrInput.length < 9) {
+                            color = if (utrInput.isNotEmpty() && utrInput.length < 12) {
                                 MaterialTheme.colorScheme.error
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
@@ -922,7 +923,7 @@ private fun UtrVerificationSection(
                         )
                     }
                 },
-                isError = utrInput.isNotEmpty() && utrInput.length < 9,
+                isError = utrInput.isNotEmpty() && utrInput.length < 12,
                 shape = RoundedCornerShape(12.dp)
             )
 
@@ -933,7 +934,7 @@ private fun UtrVerificationSection(
                     .fillMaxWidth()
                     .height(56.dp)
                     .testTag("verify_payment_button"),
-                enabled = utrInput.length in 9..16 && uiState != VerificationUiState.VERIFYING,
+                enabled = utrInput.length == 12 && uiState != VerificationUiState.VERIFYING,
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary,

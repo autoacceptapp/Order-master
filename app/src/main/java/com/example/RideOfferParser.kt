@@ -696,7 +696,18 @@ object RideOfferParser {
     }
 
     private fun recycleNode(node: AccessibilityNodeInfo?) {
-        // No-op: AccessibilityNodeInfo.recycle() is deprecated since API 30 and destroys
-        // node trees and shadows in Robolectric tests and active UI traversals.
+        if (node == null) return
+        val isRobolectricTest = BuildConfig.DEBUG && (
+            android.os.Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
+                runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
+        )
+        if (isRobolectricTest || android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            return
+        }
+        try {
+            @Suppress("DEPRECATION")
+            node.recycle()
+        } catch (_: IllegalStateException) {
+        }
     }
 }

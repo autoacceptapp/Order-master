@@ -641,7 +641,7 @@ private fun WalletHeaderCard(
                             text = "Cloud Synced",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF047857)
+                                color = PrimaryEmerald
                             ),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                         )
@@ -1088,7 +1088,7 @@ private fun PassCard(
                                 fontWeight = FontWeight.Bold,
                                 color = when {
                                     isWeekly -> Color(0xFFB45309)
-                                    isMonthly -> Color(0xFF047857)
+                                    isMonthly -> PrimaryEmerald
                                     else -> MaterialTheme.colorScheme.onSurfaceVariant
                                 }
                             ),
@@ -1561,7 +1561,9 @@ fun EarnFreePointsCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = "Watch Ad for +5 Points",
+                        text = "Watch Ad",
+                        maxLines = 1,
+                        softWrap = false,
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.Bold
                         )

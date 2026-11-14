@@ -17,7 +17,7 @@ import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -158,9 +158,12 @@ class PaymentVerificationRepository(
             }
             val doc = firestore.collection(COLL_USERS).document(userId).get().await()
             if (doc.exists()) {
+                val passTypeStr = doc.getString("activePassType") ?: doc.getString("passType")
+                val parsedTier = PassTier.fromId(passTypeStr)
+                val isProTier = parsedTier?.isProPass == true
                 val paymentStatus = doc.getString("payment_status")
                     ?: doc.getString("paymentStatus")
-                    ?: if (doc.getBoolean("isPaymentVerified") == true || !doc.getString("activePassType").isNullOrBlank()) "SUCCESS" else "FAILED"
+                    ?: if (doc.getBoolean("isPaymentVerified") == true || (!passTypeStr.isNullOrBlank() && isProTier)) "SUCCESS" else "FAILED"
 
                 val passExpiryDate = doc.getLong("passExpiryTimestamp")
                     ?: doc.getLong("pass_expiry_date")
@@ -203,7 +206,7 @@ class PaymentVerificationRepository(
 
     private var realtimeListener: ListenerRegistration? = null
     private var activeListeningUtr: String? = null
-    private val repoScope = CoroutineScope(Dispatchers.IO + Job())
+    private val repoScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     /**
      * Resolves the primary unique identifier for the user:
@@ -310,6 +313,7 @@ class PaymentVerificationRepository(
                     val pendingPayload = hashMapOf<String, Any>(
                         "status" to "PENDING",
                         "passName" to tier.title,
+                        "passTier" to tier.id,
                         "amount" to tier.priceInInr,
                         "isUsed" to false,
                         "utr" to utr,

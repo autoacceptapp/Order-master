@@ -11,6 +11,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -246,15 +247,16 @@ private fun MasterToggleCard(
     onToggle: () -> Unit,
     onFixService: () -> Unit
 ) {
+    val isDark = isSystemInDarkTheme()
     val activeColor = Color(0xFF10B981) // Emerald Green
     val pausedColor = Color(0xFFF59E0B) // Amber
     val disabledColor = Color(0xFFEF4444) // Coral Red
 
     val cardBgColor by animateColorAsState(
         targetValue = when {
-            !isServiceRunningInSystem -> Color(0xFFFEF2F2)
-            isAutoAcceptEnabled -> Color(0xFFECFDF5)
-            else -> Color(0xFFFFFBEB)
+            !isServiceRunningInSystem -> if (isDark) Color(0xFF2B181A) else Color(0xFFFEF2F2)
+            isAutoAcceptEnabled -> if (isDark) Color(0xFF102A22) else Color(0xFFECFDF5)
+            else -> if (isDark) Color(0xFF2B2212) else Color(0xFFFFFBEB)
         },
         label = "cardBgColor"
     )
@@ -347,7 +349,7 @@ private fun MasterToggleCard(
                         checkedThumbColor = Color.White,
                         checkedTrackColor = activeColor,
                         uncheckedThumbColor = Color.White,
-                        uncheckedTrackColor = Color(0xFFD1D5DB)
+                        uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
                     )
                 )
             }
@@ -943,7 +945,7 @@ private fun GoogleAuthStatusCard(
                         text = "Synced",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF047857)
+                            color = PrimaryEmerald
                         ),
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                     )

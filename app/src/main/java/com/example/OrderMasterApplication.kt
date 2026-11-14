@@ -205,8 +205,10 @@ class OrderMasterApplication : Application() {
     }
 
     private fun isUnitTestEnvironment(): Boolean {
-        return android.os.Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
+        return BuildConfig.DEBUG && (
+            android.os.Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
                 runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
+        )
     }
 
     companion object {

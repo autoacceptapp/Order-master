@@ -303,9 +303,9 @@ object PassManager {
         utr: String,
         preferredTier: PassTier? = null
     ): VerificationResult = withContext(Dispatchers.IO) {
-        val cleanUtr = utr.trim().filter { it.isLetterOrDigit() }.uppercase()
-        if (cleanUtr.length !in 9..16) {
-            return@withContext VerificationResult.Invalid("Please enter a valid 9 to 16-character UTR / UPI reference number.")
+        val cleanUtr = utr.trim()
+        if (!PaymentVerificationRepository.isValidUtr(cleanUtr)) {
+            return@withContext VerificationResult.Invalid("Please enter a valid 12-digit numeric UTR / UPI reference number.")
         }
 
         // Local client-side rate limit: Max 3 verification attempts per minute to prevent UTR spamming
@@ -570,7 +570,7 @@ object PassManager {
             if (doc.exists()) {
                 val passTypeStr = doc.getString("activePassType") ?: doc.getString("passType")
                 val parsedTier = PassTier.fromId(passTypeStr)
-                val isProTier = parsedTier == null || parsedTier.isProPass
+                val isProTier = parsedTier?.isProPass == true
 
                 val paymentStatus = doc.getString("payment_status")
                     ?: doc.getString("paymentStatus")

@@ -259,139 +259,139 @@ class MainActivity : ComponentActivity() {
                 } else {
                     val updateState by GitHubUpdateManager.updateState.collectAsState()
                     val isUpdateDialogVisible by GitHubUpdateManager.isDialogVisible.collectAsState()
-
-                    // Optional Auto Update Dialog (when a new optional GitHub release is available)
-                    if (isUpdateDialogVisible && updateState is UpdateResult.UpdateAvailable) {
-                        val updateInfo = updateState as UpdateResult.UpdateAvailable
-                        UpdateDialog(
-                            updateInfo = updateInfo,
-                            onDismissRequest = {
-                                GitHubUpdateManager.dismissDialog()
-                            },
-                            onLater = {
-                                GitHubUpdateManager.dismissDialog()
-                            },
-                            onIgnore = { versionTag ->
-                                GitHubUpdateManager.ignoreVersion(applicationContext, versionTag)
-                            }
-                        )
-                    }
-
-                    // In-App Global / User Message Dialog (Popup)
                     val activeMessage by InAppMessageManager.activeMessage.collectAsState()
-                    if (activeMessage != null) {
-                        val message = activeMessage!!
-                        AlertDialog(
-                            onDismissRequest = {
-                                InAppMessageManager.dismissMessage(message.id)
-                            },
-                            properties = DialogProperties(
-                                dismissOnBackPress = true,
-                                dismissOnClickOutside = true,
-                                usePlatformDefaultWidth = false
-                            ),
-                            icon = {
-                                Icon(
-                                    imageVector = Icons.Default.Campaign,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            },
-                            title = {
-                                Text(
-                                    text = message.title,
-                                    style = MaterialTheme.typography.titleLarge.copy(
-                                        fontWeight = FontWeight.Bold
-                                    ),
-                                    modifier = Modifier.testTag("in_app_message_title")
-                                )
-                            },
-                            text = {
-                                Text(
-                                    text = message.message,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("in_app_message_body")
-                                )
-                            },
-                            confirmButton = {
-                                Button(
-                                    onClick = {
-                                        InAppMessageManager.dismissMessage(message.id)
-                                    },
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.primary
-                                    ),
-                                    modifier = Modifier.testTag("in_app_message_dismiss_btn")
-                                ) {
-                                    Text("Got it / Dismiss", fontWeight = FontWeight.Bold)
-                                }
-                            },
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.testTag("in_app_message_dialog")
-                        )
-                    }
-
-                    // System Notification Warning Dialog (Android 13+)
                     val areNotificationsEnabled by isNotificationPermissionGranted.collectAsState()
                     var isNotificationWarningDismissed by remember { mutableStateOf(false) }
-                    if (!areNotificationsEnabled && !isNotificationWarningDismissed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        AlertDialog(
-                            onDismissRequest = { isNotificationWarningDismissed = true },
-                            icon = {
-                                Icon(
-                                    imageVector = Icons.Default.NotificationsActive,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.error
-                                )
-                            },
-                            title = {
-                                Text(
-                                    text = "Notifications Disabled",
-                                    style = MaterialTheme.typography.titleLarge.copy(
-                                        fontWeight = FontWeight.Bold
-                                    ),
-                                    modifier = Modifier.testTag("notification_warning_title")
-                                )
-                            },
-                            text = {
-                                Text(
-                                    text = "Foreground service alerts, ride acceptance banners, and critical update alerts cannot run reliably in the background without notification permissions on Android 13+. Please enable notification access in App Settings.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .testTag("notification_warning_body")
-                                )
-                            },
-                            confirmButton = {
-                                Button(
-                                    onClick = {
-                                        PermissionUtils.openNotificationSettings(this@MainActivity)
-                                    },
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.primary
-                                    ),
-                                    modifier = Modifier.testTag("notification_warning_enable_btn")
-                                ) {
-                                    Text("Enable in Settings", fontWeight = FontWeight.Bold)
+
+                    // Prioritized single-dialog gate so modal popups never stack on cold launch
+                    when {
+                        activeMessage != null -> {
+                            val message = activeMessage!!
+                            AlertDialog(
+                                onDismissRequest = {
+                                    InAppMessageManager.dismissMessage(message.id)
+                                },
+                                properties = DialogProperties(
+                                    dismissOnBackPress = true,
+                                    dismissOnClickOutside = true,
+                                    usePlatformDefaultWidth = false
+                                ),
+                                icon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Campaign,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                },
+                                title = {
+                                    Text(
+                                        text = message.title,
+                                        style = MaterialTheme.typography.titleLarge.copy(
+                                            fontWeight = FontWeight.Bold
+                                        ),
+                                        modifier = Modifier.testTag("in_app_message_title")
+                                    )
+                                },
+                                text = {
+                                    Text(
+                                        text = message.message,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("in_app_message_body")
+                                    )
+                                },
+                                confirmButton = {
+                                    Button(
+                                        onClick = {
+                                            InAppMessageManager.dismissMessage(message.id)
+                                        },
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.primary
+                                        ),
+                                        modifier = Modifier.testTag("in_app_message_dismiss_btn")
+                                    ) {
+                                        Text("Got it / Dismiss", fontWeight = FontWeight.Bold)
+                                    }
+                                },
+                                shape = RoundedCornerShape(20.dp),
+                                modifier = Modifier.testTag("in_app_message_dialog")
+                            )
+                        }
+
+                        isUpdateDialogVisible && updateState is UpdateResult.UpdateAvailable -> {
+                            val updateInfo = updateState as UpdateResult.UpdateAvailable
+                            UpdateDialog(
+                                updateInfo = updateInfo,
+                                onDismissRequest = {
+                                    GitHubUpdateManager.dismissDialog()
+                                },
+                                onLater = {
+                                    GitHubUpdateManager.dismissDialog()
+                                },
+                                onIgnore = { versionTag ->
+                                    GitHubUpdateManager.ignoreVersion(applicationContext, versionTag)
                                 }
-                            },
-                            dismissButton = {
-                                TextButton(
-                                    onClick = { isNotificationWarningDismissed = true },
-                                    modifier = Modifier.testTag("notification_warning_dismiss_btn")
-                                ) {
-                                    Text("Dismiss")
-                                }
-                            },
-                            shape = RoundedCornerShape(20.dp),
-                            modifier = Modifier.testTag("notification_warning_dialog")
-                        )
+                            )
+                        }
+
+                        !areNotificationsEnabled && !isNotificationWarningDismissed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
+                            AlertDialog(
+                                onDismissRequest = { isNotificationWarningDismissed = true },
+                                icon = {
+                                    Icon(
+                                        imageVector = Icons.Default.NotificationsActive,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                },
+                                title = {
+                                    Text(
+                                        text = "Notifications Disabled",
+                                        style = MaterialTheme.typography.titleLarge.copy(
+                                            fontWeight = FontWeight.Bold
+                                        ),
+                                        modifier = Modifier.testTag("notification_warning_title")
+                                    )
+                                },
+                                text = {
+                                    Text(
+                                        text = "Foreground service alerts, ride acceptance banners, and critical update alerts cannot run reliably in the background without notification permissions on Android 13+. Please enable notification access in App Settings.",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .testTag("notification_warning_body")
+                                    )
+                                },
+                                confirmButton = {
+                                    Button(
+                                        onClick = {
+                                            PermissionUtils.openNotificationSettings(this@MainActivity)
+                                        },
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.primary
+                                        ),
+                                        modifier = Modifier.testTag("notification_warning_enable_btn")
+                                    ) {
+                                        Text("Enable in Settings", fontWeight = FontWeight.Bold)
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(
+                                        onClick = { isNotificationWarningDismissed = true },
+                                        modifier = Modifier.testTag("notification_warning_dismiss_btn")
+                                    ) {
+                                        Text("Dismiss")
+                                    }
+                                },
+                                shape = RoundedCornerShape(20.dp),
+                                modifier = Modifier.testTag("notification_warning_dialog")
+                            )
+                        }
                     }
 
                     com.example.ui.OrderMasterApp()
@@ -485,7 +485,7 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         val filter = IntentFilter(AppSettings.ACTION_ACCESSIBILITY_LOG)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(logReceiver, filter, RECEIVER_EXPORTED)
+            registerReceiver(logReceiver, filter, RECEIVER_NOT_EXPORTED)
         } else {
             registerReceiver(logReceiver, filter)
         }

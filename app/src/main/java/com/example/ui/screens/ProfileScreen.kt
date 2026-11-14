@@ -105,11 +105,15 @@ fun ProfileScreen(
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
     val totalOrders by viewModel.totalOrdersCount.collectAsState()
     val acceptedOrders by viewModel.acceptedOrdersCount.collectAsState()
-    val acceptanceRate = if (totalOrders > 0) {
-        ((acceptedOrders.toFloat() / totalOrders.toFloat()) * 100).toInt()
+    val acceptanceRateDisplay = if (totalOrders > 0) {
+        "${((acceptedOrders.toFloat() / totalOrders.toFloat()) * 100).toInt()}%"
     } else {
-        100
+        "--"
     }
+    val customProfileId = remember(userAuthState.isLoggedIn) {
+        LicenseManager.resolveUserKey(context)
+    }
+    val isProOrTrial = accessStatus is AccessStatus.PassActive || accessStatus is AccessStatus.TrialActive
 
     LazyColumn(
         modifier = modifier
@@ -191,7 +195,7 @@ fun ProfileScreen(
                             text = if (userAuthState.isLoggedIn && !userAuthState.userName.isNullOrBlank()) {
                                 userAuthState.userName!!
                             } else {
-                                "Captain Rajesh K."
+                                "Order Master Captain"
                             },
                             style = MaterialTheme.typography.titleLarge.copy(
                                 fontWeight = FontWeight.ExtraBold,
@@ -220,7 +224,7 @@ fun ProfileScreen(
                                 color = MaterialTheme.colorScheme.primaryContainer
                             ) {
                                 Text(
-                                    text = "CAPTAIN ID: #OM-89241",
+                                    text = "CAPTAIN ID: ${customProfileId.take(12).uppercase()}",
                                     style = MaterialTheme.typography.labelMedium.copy(
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -231,24 +235,24 @@ fun ProfileScreen(
 
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
-                                color = AmberAccent.copy(alpha = 0.2f)
+                                color = if (isProOrTrial) PrimaryEmerald.copy(alpha = 0.16f) else AmberAccent.copy(alpha = 0.2f)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Star,
+                                        imageVector = if (isProOrTrial) Icons.Default.Verified else Icons.Default.Badge,
                                         contentDescription = null,
-                                        tint = Color(0xFFD97706),
+                                        tint = if (isProOrTrial) PrimaryEmerald else Color(0xFFD97706),
                                         modifier = Modifier.size(12.dp)
                                     )
                                     Spacer(modifier = Modifier.width(3.dp))
                                     Text(
-                                        text = "4.96",
+                                        text = if (isProOrTrial) "PRO" else "FREE",
                                         style = MaterialTheme.typography.labelMedium.copy(
                                             fontWeight = FontWeight.Bold,
-                                            color = Color(0xFFB45309)
+                                            color = if (isProOrTrial) PrimaryEmerald else Color(0xFFB45309)
                                         )
                                     )
                                 }
@@ -262,13 +266,18 @@ fun ProfileScreen(
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.LocationOn,
+                                imageVector = Icons.Default.Security,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(14.dp)
                             )
                             Text(
-                                text = "West Zone Fleet • Operational",
+                                text = when (val status = accessStatus) {
+                                    is AccessStatus.PassActive -> "${status.passTier.title} • Active"
+                                    is AccessStatus.TrialActive -> "Free Trial • Active"
+                                    is AccessStatus.Expired -> "Free Mode • Standard"
+                                    AccessStatus.Loading -> "Syncing License..."
+                                },
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -358,7 +367,7 @@ fun ProfileScreen(
                                         text = "Active",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Bold,
-                                            color = Color(0xFF047857)
+                                            color = PrimaryEmerald
                                         )
                                     )
                                 }
@@ -366,7 +375,6 @@ fun ProfileScreen(
                         }
                     }
 
-                    val customProfileId = LicenseManager.resolveUserKey(context)
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -747,7 +755,7 @@ fun ProfileScreen(
                         )
                         StatTile(
                             title = "Accept Ratio",
-                            value = "$acceptanceRate%",
+                            value = acceptanceRateDisplay,
                             subtitle = "Efficiency",
                             modifier = Modifier.weight(1f),
                             color = AmberAccent

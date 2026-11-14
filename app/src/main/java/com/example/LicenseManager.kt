@@ -605,10 +605,19 @@ object LicenseManager {
             return true
         }
 
-        // 2. Monotonic clock moved backwards (kernel/hooking tampering)
-        if (deltaElapsed < -5_000L) {
-            Log.w(TAG, "Clock tampering detected: Monotonic elapsedRealtime moved backwards (${deltaElapsed}ms)")
-            return true
+        // 2. Device reboot detection: elapsedRealtime resets near 0 after a device reboot.
+        val hasRebooted = deltaElapsed < -5_000L
+        if (hasRebooted) {
+            if (lastServerTs > 0L && currentWall < lastServerTs - MAX_ALLOWED_CLOCK_DRIFT_MS) {
+                Log.w(TAG, "Clock tampering detected after reboot: wall=$currentWall < lastServerTs=$lastServerTs")
+                return true
+            }
+            if (deltaWall > OFFLINE_GRACE_PERIOD_MS) {
+                Log.w(TAG, "Post-reboot offline wall delta exceeds grace period: ${deltaWall}ms")
+                return true
+            }
+            // Wall clock stayed consistent and within offline grace across reboot; skip elapsed delta drift check
+            return false
         }
 
         // 3. Cross-check against persisted authoritative UTC server timestamp across restarts
@@ -745,8 +754,10 @@ object LicenseManager {
     }
 
     private fun isUnitTestEnvironment(): Boolean {
-        return Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
-            runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
+        return BuildConfig.DEBUG && (
+            Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
+                runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
+        )
     }
 
     /**
@@ -2006,6 +2017,15 @@ object LicenseManager {
 
         _currentFolder.value = computeCurrentFolder(tier, passExpiry, trialClaimed, trialExpiry, now)
 
+        val trialInfoObj = TrialInfo(
+            firstClaimedTimestamp = trialClaimed,
+            trialExpiryTimestamp = trialExpiry,
+            isUsed = trialUsed,
+            isExpired = now >= trialExpiry,
+            remainingMs = (trialExpiry - now).coerceAtLeast(0L)
+        )
+        _trialInfo.value = trialInfoObj
+
         // 1. Check Paid Pro Pass First (Daily/Weekly/Monthly ONLY)
         if (tier != null && passExpiry > now) {
             val timeLeft = passExpiry - now
@@ -2028,14 +2048,6 @@ object LicenseManager {
         _activePassInfo.value = null
 
         // 2. Check 2-Day Free Trial
-        val trialInfoObj = TrialInfo(
-            firstClaimedTimestamp = trialClaimed,
-            trialExpiryTimestamp = trialExpiry,
-            isUsed = trialUsed,
-            isExpired = now >= trialExpiry,
-            remainingMs = (trialExpiry - now).coerceAtLeast(0L)
-        )
-        _trialInfo.value = trialInfoObj
 
         if (trialClaimed > 0L && trialExpiry > now) {
             if (ctx == null || DeviceUtils.isFreeTrialAllowed(ctx)) {

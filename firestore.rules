@@ -138,8 +138,8 @@ service cloud.firestore {
 
     // Global Announcements & In-App Popups
     match /global_messages/{messageId} {
-      allow get: if isValidId(messageId);
-      allow list: if true;
+      allow get: if isSignedIn() && isValidId(messageId);
+      allow list: if isSignedIn();
       allow create, update, delete: if isAdmin();
     }
 

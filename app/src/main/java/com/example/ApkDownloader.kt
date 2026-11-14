@@ -58,10 +58,13 @@ object ApkDownloader {
     private val _downloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
     val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
 
+    @Volatile
     private var activeDownloadId: Long = -1L
     private var activeFileName: String = "app-debug.apk"
     private var progressPollingJob: Job? = null
     private var downloadCompleteReceiver: BroadcastReceiver? = null
+    private val completionLock = Any()
+    private val completedDownloadIds = mutableSetOf<Long>()
 
     /**
      * Checks if the app has permission to install unknown packages (Android 8.0+ / API 26+).
@@ -161,6 +164,9 @@ object ApkDownloader {
 
         // Cancel previous download or polling job
         cancelDownload(appContext)
+        synchronized(completionLock) {
+            completedDownloadIds.clear()
+        }
 
         val downloadManager = appContext.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
         if (downloadManager == null) {
@@ -294,6 +300,11 @@ object ApkDownloader {
         if (downloadId != activeDownloadId && downloadId != savedId && activeDownloadId != -1L) {
             return
         }
+        synchronized(completionLock) {
+            if (!completedDownloadIds.add(downloadId)) {
+                return
+            }
+        }
 
         progressPollingJob?.cancel()
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager ?: return
@@ -410,6 +421,9 @@ object ApkDownloader {
         }
 
         activeDownloadId = -1L
+        synchronized(completionLock) {
+            completedDownloadIds.clear()
+        }
         _downloadState.value = DownloadState.Idle
     }
 

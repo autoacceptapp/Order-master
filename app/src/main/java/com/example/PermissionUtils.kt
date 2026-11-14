@@ -150,7 +150,6 @@ object PermissionUtils {
         val isOverlay = canDrawOverlays(context)
         val isBattery = isIgnoringBatteryOptimizations(context)
         val isNotif = areNotificationsEnabled(context)
-        val isAlarm = canScheduleExactAlarms(context)
         val isInstaller = canRequestPackageInstalls(context)
 
         return listOf(
@@ -201,14 +200,6 @@ object PermissionUtils {
                 isCritical = false,
                 isGranted = false, // Cannot be read directly on Android, user-verified
                 category = PermissionCategory.BACKGROUND_POWER
-            ),
-            AppPermissionItem(
-                id = "exact_alarm",
-                title = "Exact Alarms & Timers",
-                description = "Ensures exact reaction delays and shift countdowns execute with zero drift.",
-                isCritical = false,
-                isGranted = isAlarm,
-                category = PermissionCategory.SYSTEM
             )
         )
     }

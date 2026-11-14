@@ -19,23 +19,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
-    <!-- 6. Exact Alarms for precise periodic evaluation / safety timers -->
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
-
-    <!-- 7. Haptic feedback on accepted orders -->
+    <!-- 6. Haptic feedback on accepted orders -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- 8. Network access for In-App Auto Updates from GitHub Releases API -->
+    <!-- 7. Network access for In-App Auto Updates from GitHub Releases API -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- 9. Package installer permission for downloading and prompting APK update installation (API 26+) -->
+    <!-- 8. Package installer permission for downloading and prompting APK update installation (API 26+) -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-
-    <!-- 10. Legacy storage permissions for DownloadManager on older devices (no runtime prompt on Android 12+) -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
     <!-- 11. AdServices / Privacy Sandbox permissions for Google Mobile Ads SDK (API 33+) -->
     <uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION" />
@@ -163,9 +155,10 @@
             android:label="Payment Verification"
             android:windowSoftInputMode="adjustResize" />
 
-        <!-- Primary Accessibility Service: MyAccessibilityService -->
+        <!-- Legacy service aliases disabled to prevent duplicate entries in Accessibility Settings -->
         <service
             android:name=".MyAccessibilityService"
+            android:enabled="false"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true"
             android:label="@string/accessibility_service_name">
@@ -177,9 +170,9 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- Backward compatible service alias -->
         <service
             android:name=".SmartTextService"
+            android:enabled="false"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true"
             android:label="@string/accessibility_service_name">

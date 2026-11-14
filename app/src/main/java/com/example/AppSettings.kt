@@ -332,7 +332,9 @@ object AppSettings {
     val speechPitch: Float get() = _settingsState.value.speechPitch
     val selectedLanguage: String get() = _settingsState.value.voiceLanguage
 
-    private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    private val timeFormat = ThreadLocal.withInitial {
+        SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    }
 
     // Reactive StateFlow for UI & Accessibility Service consumption (RAM-only for business rules)
     private val _settingsState = MutableStateFlow(
@@ -371,7 +373,7 @@ object AppSettings {
     private val _logsFlow = MutableStateFlow<List<ActivityLogEntry>>(
         listOf(
             ActivityLogEntry(
-                timeFormatted = timeFormat.format(Date()),
+                timeFormatted = (timeFormat.get() ?: SimpleDateFormat("HH:mm:ss", Locale.getDefault())).format(Date()),
                 title = "Engine Initialized",
                 message = "Zero-Trust RAM configuration active. Awaiting Firebase user rules.",
                 severity = LogSeverity.INFO
@@ -1587,7 +1589,7 @@ object AppSettings {
         evaluation: RideEvaluation? = null
     ) {
         val entry = ActivityLogEntry(
-            timeFormatted = timeFormat.format(Date()),
+            timeFormatted = (timeFormat.get() ?: SimpleDateFormat("HH:mm:ss", Locale.getDefault())).format(Date()),
             title = title,
             message = message,
             severity = severity,

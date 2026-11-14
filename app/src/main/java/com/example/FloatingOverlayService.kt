@@ -114,10 +114,15 @@ class FloatingOverlayService : Service() {
             }
         }
 
+        @Volatile
+        var isServiceRunning: Boolean = false
+            private set
+
         /**
          * Communicates a newly accepted fare to update the center badge dynamically.
          */
         fun updateFare(context: Context, fare: Double) {
+            if (!isServiceRunning) return
             val intent = Intent(context, FloatingOverlayService::class.java).apply {
                 action = ACTION_UPDATE_FARE
                 putExtra(EXTRA_FARE, fare)
@@ -161,8 +166,21 @@ class FloatingOverlayService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun getScreenDimensionsPx(): Pair<Int, Int> {
+        val wm = windowManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && wm != null) {
+            val bounds = wm.currentWindowMetrics.bounds
+            if (bounds.width() > 0 && bounds.height() > 0) {
+                return bounds.width() to bounds.height()
+            }
+        }
+        val dm = resources.displayMetrics
+        return dm.widthPixels to dm.heightPixels
+    }
+
     override fun onCreate() {
         super.onCreate()
+        isServiceRunning = true
         windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
         createNotificationChannel()
         startAsForeground()
@@ -183,10 +201,10 @@ class FloatingOverlayService : Service() {
             return
         }
 
-        val displayMetrics = resources.displayMetrics
+        val (screenW, screenH) = getScreenDimensionsPx()
         val sizePx = dpToPx(70f)
-        val maxX = (displayMetrics.widthPixels - sizePx).coerceAtLeast(0)
-        val maxY = (displayMetrics.heightPixels - sizePx).coerceAtLeast(0)
+        val maxX = (screenW - sizePx).coerceAtLeast(0)
+        val maxY = (screenH - sizePx).coerceAtLeast(0)
 
         params.x = params.x.coerceIn(0, maxX)
         params.y = params.y.coerceIn(0, maxY)
@@ -296,12 +314,10 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        val displayMetrics = resources.displayMetrics
-        val screenWidth = displayMetrics.widthPixels
-        val screenHeight = displayMetrics.heightPixels
+        val (screenWidth, screenHeight) = getScreenDimensionsPx()
 
         // Position: right edge, ~30% from the top
-        val initialX = screenWidth - sizePx - dpToPx(16f)
+        val initialX = (screenWidth - sizePx - dpToPx(16f)).coerceAtLeast(0)
         val initialY = (screenHeight * 0.32f).roundToInt()
 
         windowLayoutParams = WindowManager.LayoutParams(
@@ -315,7 +331,8 @@ class FloatingOverlayService : Service() {
                     WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
+            @Suppress("RtlHardcoded")
+            gravity = Gravity.TOP or Gravity.LEFT
             x = initialX
             y = initialY
         }
@@ -380,9 +397,9 @@ class FloatingOverlayService : Service() {
                     }
 
                     if (isDragging) {
-                        val displayMetrics = resources.displayMetrics
-                        val maxX = displayMetrics.widthPixels - buttonSizePx
-                        val maxY = displayMetrics.heightPixels - buttonSizePx
+                        val (screenW, screenH) = getScreenDimensionsPx()
+                        val maxX = (screenW - buttonSizePx).coerceAtLeast(0)
+                        val maxY = (screenH - buttonSizePx).coerceAtLeast(dpToPx(24f))
 
                         val newX = (initialX + dx).coerceIn(0, maxX)
                         val newY = (initialY + dy).coerceIn(dpToPx(24f), maxY)
@@ -733,6 +750,9 @@ class FloatingOverlayService : Service() {
 
     private fun startAsForeground() {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+            ?: Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
@@ -743,7 +763,7 @@ class FloatingOverlayService : Service() {
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Order Master Overlay Active")
             .setContentText("Floating control button is active. Tap to open app.")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_notification_bolt)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -834,6 +854,7 @@ class FloatingOverlayService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        isServiceRunning = false
         try {
             serviceScope.cancel()
         } catch (_: Throwable) {}
