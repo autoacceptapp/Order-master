@@ -199,7 +199,7 @@ fun FilterRulesScreen(
                 featureId = FeatureIds.MIN_FARE,
                 onUnlockClick = { if (!isMinFareAdminLocked) featureToUnlock = FeatureIds.MIN_FARE },
                 remainingTimeText = getRemainingTime(FeatureIds.MIN_FARE),
-                pointsPerHour = FeatureIds.getPricing(FeatureIds.MIN_FARE)?.pointsPerHour ?: 5
+                pointsPerHour = FeatureIds.getPricing(FeatureIds.MIN_FARE)?.pointsPerHour ?: 10
             )
         }
 
@@ -227,7 +227,7 @@ fun FilterRulesScreen(
                 featureId = FeatureIds.MAX_FARE,
                 onUnlockClick = { if (!isMaxFareAdminLocked) featureToUnlock = FeatureIds.MAX_FARE },
                 remainingTimeText = getRemainingTime(FeatureIds.MAX_FARE),
-                pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_FARE)?.pointsPerHour ?: 5
+                pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_FARE)?.pointsPerHour ?: 10
             )
         }
 
@@ -300,7 +300,7 @@ fun FilterRulesScreen(
                                 Text(
                                     text = when {
                                         isPickupAdminLocked -> "Locked by Admin"
-                                        !effectivelyUnlocked -> "Unlock for ${FeatureIds.getPricing(FeatureIds.MAX_PICKUP_DISTANCE)?.pointsPerHour ?: 5} Pts/Hr or Pro Pass"
+                                        !effectivelyUnlocked -> "Unlock for ${FeatureIds.getPricing(FeatureIds.MAX_PICKUP_DISTANCE)?.pointsPerHour ?: 10} Pts/Hr or Pro Pass"
                                         else -> "Strict limit to reach customer (0.0 - 3.0 km)"
                                     },
                                     style = MaterialTheme.typography.bodySmall.copy(
@@ -322,7 +322,7 @@ fun FilterRulesScreen(
                                         )
                                         Spacer(modifier = Modifier.padding(2.dp))
                                         Text(
-                                            text = "Unlock (${FeatureIds.getPricing(FeatureIds.MAX_PICKUP_DISTANCE)?.pointsPerHour ?: 5} Pts/Hr)",
+                                            text = "Unlock (${FeatureIds.getPricing(FeatureIds.MAX_PICKUP_DISTANCE)?.pointsPerHour ?: 10} Pts/Hr)",
                                             maxLines = 1,
                                             softWrap = false,
                                             fontSize = 10.sp,

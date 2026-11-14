@@ -478,7 +478,7 @@ fun AppSettingsScreen(
                                         text = if (isProMode)
                                             "All automation filters active. Orders are evaluated in 300-700ms with smart auto-reject."
                                         else
-                                            "Blind auto-accept with 1-2s delay. Configure filters and unlock rules in the Filter Rules tab or upgrade to Pro Pass.",
+                                            "All filters are locked in Free Mode. Buy filters with Points in Filter Rules or activate a Daily / Weekly / Monthly Pass.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

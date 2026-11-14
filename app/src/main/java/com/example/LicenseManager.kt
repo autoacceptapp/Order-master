@@ -193,31 +193,31 @@ object FeatureIds {
         FeatureUnlockPricing(
             id = MIN_FARE,
             title = "Minimum Fare Filter",
-            pointsPerHour = 5,
+            pointsPerHour = 10,
             description = "Set your own minimum ride fare threshold (₹)."
         ),
         FeatureUnlockPricing(
             id = MAX_FARE,
             title = "Maximum Fare Filter",
-            pointsPerHour = 5,
+            pointsPerHour = 10,
             description = "Set your own maximum fare ceiling (₹)."
         ),
         FeatureUnlockPricing(
             id = MAX_PICKUP_DISTANCE,
             title = "Maximum Pickup Distance",
-            pointsPerHour = 5,
+            pointsPerHour = 10,
             description = "Filter rides beyond your chosen pickup km limit."
         ),
         FeatureUnlockPricing(
             id = MAX_DROP_DISTANCE,
             title = "Maximum Drop Distance",
-            pointsPerHour = 5,
+            pointsPerHour = 10,
             description = "Filter long trips beyond your drop km limit."
         ),
         FeatureUnlockPricing(
             id = MIN_PER_KM_RATE,
             title = "Minimum Rate Per-KM",
-            pointsPerHour = 5,
+            pointsPerHour = 15,
             description = "Reject rides paying below your target ₹/km rate."
         ),
         FeatureUnlockPricing(
@@ -235,7 +235,7 @@ object FeatureIds {
         FeatureUnlockPricing(
             id = FLOATING_OVERLAY,
             title = "Floating HUD Overlay",
-            pointsPerHour = 5,
+            pointsPerHour = 10,
             description = "On-screen floating widget showing quick status and controls."
         ),
         FeatureUnlockPricing(
@@ -250,13 +250,13 @@ object FeatureIds {
         FARE_FILTERS to FeatureUnlockPricing(
             id = FARE_FILTERS,
             title = "All Fare & Rate Filters",
-            pointsPerHour = 10,
+            pointsPerHour = 35,
             description = "Min Fare, Max Fare, and Minimum Rate Per-KM evaluation."
         ),
         DISTANCE_FILTERS to FeatureUnlockPricing(
             id = DISTANCE_FILTERS,
             title = "All Distance Filters",
-            pointsPerHour = 10,
+            pointsPerHour = 20,
             description = "Maximum pickup and drop-off distance threshold evaluation."
         )
     )

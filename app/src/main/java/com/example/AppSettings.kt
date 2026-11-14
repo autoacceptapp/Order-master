@@ -640,8 +640,13 @@ object AppSettings {
                                 _isPassActiveFlow.value = status.remainingTimeMs > 0
                             }
                         }
+                        is AccessStatus.Expired -> {
+                            _isPassActiveFlow.value = false
+                            if (_passExpiryTimestampFlow.value <= LicenseManager.getCurrentServerTimeMs()) {
+                                _passExpiryTimestampFlow.value = 0L
+                            }
+                        }
                         else -> {
-                            // Preserve Firestore snapshot pass values if synced via users/{uid}
                             if (!_isFirestoreSyncedFlow.value) {
                                 _passExpiryTimestampFlow.value = 0L
                                 _isPassActiveFlow.value = false
@@ -655,6 +660,9 @@ object AppSettings {
                         autoAcceptEnabled
                     if (_settingsState.value.isAutoAcceptEnabled != effectiveEnabled) {
                         _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = effectiveEnabled)
+                    }
+                    mainHandler.post {
+                        syncOverlayService(appCtx)
                     }
                 }
             }
@@ -1385,12 +1393,18 @@ object AppSettings {
     }
 
     fun isAutoClickEnabled(context: Context): Boolean =
-        _settingsState.value.isAutoClickEnabled && !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)
+        _settingsState.value.isAutoClickEnabled && LicenseManager.hasAnyAutoAcceptCapability()
 
     fun setAutoClickEnabled(context: Context, enabled: Boolean) {
-        if (enabled && LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) {
-            showToast(context, "Auto-Click is locked by Admin")
-            return
+        if (enabled) {
+            if (LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) {
+                showToast(context, "Auto-Click is locked by Admin")
+                return
+            }
+            if (!LicenseManager.hasAnyAutoAcceptCapability()) {
+                showToast(context, "Unlock filters with Points or buy Daily/Weekly/Monthly Pass")
+                return
+            }
         }
         _settingsState.value = _settingsState.value.copy(isAutoClickEnabled = enabled)
         persistUserFilterPref(context, FKEY_AUTO_CLICK_ENABLED) { putBoolean(FKEY_AUTO_CLICK_ENABLED, enabled) }

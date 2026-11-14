@@ -280,12 +280,16 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
             minFare = state.minFare,
             maxFare = state.maxFare,
             maxPickupDistance = state.maxPickupDistance,
-            isAutoAcceptEnabled = state.isAutoAcceptEnabled,
-            isMinFareEnabled = state.isMinFareEnabled,
-            isMaxFareEnabled = state.isMaxFareEnabled,
-            isMaxPickupDistanceEnabled = state.isMaxPickupDistanceEnabled,
-            isMaxDropDistanceEnabled = state.isMaxDropDistanceEnabled,
-            maxDropDistance = state.maxDropDistance
+            isAutoAcceptEnabled = AppSettings.isAutoAcceptEnabled(app),
+            isMinFareEnabled = AppSettings.isMinFareEnabled(app),
+            isMaxFareEnabled = AppSettings.isMaxFareEnabled(app),
+            isMaxPickupDistanceEnabled = AppSettings.isMaxPickupDistanceEnabled(app),
+            isMaxDropDistanceEnabled = AppSettings.isMaxDropDistanceEnabled(app),
+            maxDropDistance = state.maxDropDistance,
+            minPerKmRate = state.minPerKmRate,
+            isMinPerKmRateEnabled = AppSettings.isMinPerKmRateEnabled(app),
+            blockedLocations = state.blockedLocations,
+            isDestinationBlacklistEnabled = AppSettings.isDestinationBlacklistEnabled(app)
         )
 
         val logSeverity = if (evaluation.isAccepted) LogSeverity.MATCH_ACCEPTED else LogSeverity.REJECTED
@@ -304,8 +308,8 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
             AppSettings.updateLastAcceptedFare(app, fare)
         }
 
-        // Voice announcement for all 5 fields
-        if (state.isVoiceAnnouncerEnabled) {
+        // Voice announcement for all 5 fields (only when TTS Voice is unlocked & enabled)
+        if (AppSettings.isVoiceAnnouncerEnabled(app)) {
             val announcement = if (evaluation.isAccepted) {
                 TTSManager.formatCleanVoiceAnnouncement(parsedOffer.targetOffer!!, state.voiceLanguage)
             } else {

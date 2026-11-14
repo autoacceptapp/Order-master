@@ -339,4 +339,114 @@ class SecurityHardeningTest {
         LicenseManager.refreshAccessStatus(context)
         assertFalse("Tampered cache must never remove ads", LicenseManager.isAdsRemoved())
     }
+
+    @Test
+    fun featurePricingMatchesUpdatedHourlyRates() {
+        val expectedRates = mapOf(
+            FeatureIds.MIN_FARE to 10,
+            FeatureIds.MAX_FARE to 10,
+            FeatureIds.MAX_PICKUP_DISTANCE to 10,
+            FeatureIds.MAX_DROP_DISTANCE to 10,
+            FeatureIds.MIN_PER_KM_RATE to 15,
+            FeatureIds.DESTINATION_BLACKLIST to 5,
+            FeatureIds.TTS_VOICE to 10,
+            FeatureIds.FLOATING_OVERLAY to 10,
+            FeatureIds.AUTO_CLICK to 15
+        )
+        assertEquals(expectedRates.size, FeatureIds.ALL_FEATURES.size)
+        expectedRates.forEach { (featureId, expectedPts) ->
+            assertEquals(
+                "Pricing mismatch for $featureId",
+                expectedPts,
+                FeatureIds.getPricing(featureId)?.pointsPerHour
+            )
+        }
+    }
+
+    @Test
+    fun freeModeLocksAllFiltersEvenIfPreviouslyEnabledUnlessPurchasedOrProPassActive() {
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+        LicenseManager.forceReleaseLoadingState()
+
+        // Simulate a logged-in user whose Firestore/RAM has all toggles true from an earlier Trial/Pass,
+        // now expired into Free Mode (no active pass, no trial, empty unlocked_features)
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "autoAcceptEnabled" to true,
+                "isMinFareEnabled" to true,
+                "minFare" to 80.0,
+                "isMaxFareEnabled" to true,
+                "maxFare" to 500.0,
+                "isMaxPickupDistanceEnabled" to true,
+                "maxPickupDistance" to 2.0,
+                "isMaxDropDistanceEnabled" to true,
+                "maxDropDistance" to 12.0,
+                "isMinPerKmRateEnabled" to true,
+                "minPerKmRate" to 15.0,
+                "isDestinationBlacklistEnabled" to true,
+                "isVoiceAnnouncerEnabled" to true,
+                "isFloatingOverlayEnabled" to true,
+                "isAutoClickEnabled" to true
+            )
+        )
+
+        // Free Mode with 0 purchased features: ALL filters & automation MUST stay locked
+        assertFalse(LicenseManager.isAccessGranted())
+        assertFalse(LicenseManager.hasAnyAutoAcceptCapability())
+        assertFalse(AppSettings.isMinFareEnabled(context))
+        assertFalse(AppSettings.isMaxFareEnabled(context))
+        assertFalse(AppSettings.isMaxPickupDistanceEnabled(context))
+        assertFalse(AppSettings.isMaxDropDistanceEnabled(context))
+        assertFalse(AppSettings.isMinPerKmRateEnabled(context))
+        assertFalse(AppSettings.isDestinationBlacklistEnabled(context))
+        assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertFalse(AppSettings.isFloatingOverlayEnabled(context))
+        assertFalse(AppSettings.isAutoClickEnabled(context))
+
+        // Attempting to toggle locked filters ON in Free Mode must also remain blocked
+        AppSettings.setMinFareEnabled(context, true)
+        assertFalse(AppSettings.isMinFareEnabled(context))
+
+        // Purchasing MIN_PER_KM_RATE (15 Pts/Hr) unlocks ONLY MIN_PER_KM_RATE
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(FeatureIds.MIN_PER_KM_RATE to futureExpiry)
+        )
+        assertTrue(AppSettings.isMinPerKmRateEnabled(context))
+        assertFalse(AppSettings.isMinFareEnabled(context))
+        assertFalse(AppSettings.isMaxFareEnabled(context))
+        assertFalse(AppSettings.isMaxPickupDistanceEnabled(context))
+        assertFalse(AppSettings.isMaxDropDistanceEnabled(context))
+        assertFalse(AppSettings.isDestinationBlacklistEnabled(context))
+        assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertFalse(AppSettings.isFloatingOverlayEnabled(context))
+        assertTrue(LicenseManager.hasAnyAutoAcceptCapability())
+        assertTrue(AppSettings.isAutoClickEnabled(context))
+
+        // Activating Daily/Weekly/Monthly Pass unlocks all filters
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = PassTier.WEEKLY,
+            passExpiry = futureExpiry,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = true
+        )
+        LicenseManager.refreshAccessStatus(context)
+        assertTrue(LicenseManager.isAccessGranted())
+        assertTrue(AppSettings.isMinFareEnabled(context))
+        assertTrue(AppSettings.isMaxFareEnabled(context))
+        assertTrue(AppSettings.isMaxPickupDistanceEnabled(context))
+        assertTrue(AppSettings.isMaxDropDistanceEnabled(context))
+        assertTrue(AppSettings.isMinPerKmRateEnabled(context))
+        assertTrue(AppSettings.isDestinationBlacklistEnabled(context))
+        assertTrue(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertTrue(AppSettings.isFloatingOverlayEnabled(context))
+        assertTrue(AppSettings.isAutoClickEnabled(context))
+
+        AppSettings.resetBusinessStateForTest(context)
+    }
 }

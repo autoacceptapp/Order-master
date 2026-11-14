@@ -375,7 +375,7 @@ fun FilterSettingsScreen(
                                 text = if (isProMode)
                                     "All unlocked filter rules active. Ultra-fast auto-acceptance (300-700ms) with smart auto-reject."
                                 else
-                                    "Unlock any 1 or multiple filter rules with Points, or upgrade to Pro Pass in the Captain Store.",
+                                    "All filters are locked in Free Mode. Buy any 1 or multiple filters with Points, or activate a Daily / Weekly / Monthly Pass.",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 11.sp
@@ -438,7 +438,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.MIN_FARE,
                     onUnlockClick = { if (!isMinFareAdminLocked) featureToUnlock = FeatureIds.MIN_FARE },
                     remainingTimeText = getRemainingTime(FeatureIds.MIN_FARE),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MIN_FARE)?.pointsPerHour ?: 5
+                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MIN_FARE)?.pointsPerHour ?: 10
                 )
             }
 
@@ -470,7 +470,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.MAX_FARE,
                     onUnlockClick = { if (!isMaxFareAdminLocked) featureToUnlock = FeatureIds.MAX_FARE },
                     remainingTimeText = getRemainingTime(FeatureIds.MAX_FARE),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_FARE)?.pointsPerHour ?: 5
+                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_FARE)?.pointsPerHour ?: 10
                 )
             }
 
@@ -491,7 +491,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.MAX_PICKUP_DISTANCE,
                     onUnlockClick = { if (!isPickupAdminLocked) featureToUnlock = FeatureIds.MAX_PICKUP_DISTANCE },
                     remainingTimeText = getRemainingTime(FeatureIds.MAX_PICKUP_DISTANCE),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_PICKUP_DISTANCE)?.pointsPerHour ?: 5
+                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_PICKUP_DISTANCE)?.pointsPerHour ?: 10
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -578,7 +578,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.MAX_DROP_DISTANCE,
                     onUnlockClick = { if (!isDropAdminLocked) featureToUnlock = FeatureIds.MAX_DROP_DISTANCE },
                     remainingTimeText = getRemainingTime(FeatureIds.MAX_DROP_DISTANCE),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_DROP_DISTANCE)?.pointsPerHour ?: 5
+                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_DROP_DISTANCE)?.pointsPerHour ?: 10
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -665,7 +665,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.MIN_PER_KM_RATE,
                     onUnlockClick = { if (!isMinRateAdminLocked) featureToUnlock = FeatureIds.MIN_PER_KM_RATE },
                     remainingTimeText = getRemainingTime(FeatureIds.MIN_PER_KM_RATE),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MIN_PER_KM_RATE)?.pointsPerHour ?: 5
+                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MIN_PER_KM_RATE)?.pointsPerHour ?: 15
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -947,7 +947,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.FLOATING_OVERLAY,
                     onUnlockClick = { if (!isOverlayAdminLocked) featureToUnlock = FeatureIds.FLOATING_OVERLAY },
                     remainingTimeText = getRemainingTime(FeatureIds.FLOATING_OVERLAY),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.FLOATING_OVERLAY)?.pointsPerHour ?: 5
+                    pointsPerHour = FeatureIds.getPricing(FeatureIds.FLOATING_OVERLAY)?.pointsPerHour ?: 10
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         // Permission Alert Banner if missing
@@ -1191,13 +1191,13 @@ fun FilterSettingsScreen(
                                         modifier = Modifier
                                             .size(24.dp)
                                             .background(
-                                                if (settingsState.isAutoClickEnabled) Color(0xFF10B981) else Color(0xFFEF4444),
+                                                if (settingsState.isAutoClickEnabled && !isAutoClickAdminLocked && hasAnyAutoCapability) Color(0xFF10B981) else Color(0xFFEF4444),
                                                 CircleShape
                                             ),
                                         contentAlignment = Alignment.Center
                                     ) {
                                         Text(
-                                            text = if (settingsState.isAutoClickEnabled) "A" else "V",
+                                            text = if (settingsState.isAutoClickEnabled && !isAutoClickAdminLocked && hasAnyAutoCapability) "A" else "V",
                                             color = Color.White,
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold
