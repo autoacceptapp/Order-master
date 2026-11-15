@@ -189,12 +189,12 @@ fun AppTutorialGuideDialog(
                         }
                         Column {
                             Text(
-                                text = if (isHindi) "ऐप गाइड और फिल्टर ट्रेनिंग" else "App & Filter Setup Guide",
+                                text = if (isHindi) "\u0910\u092A \u0917\u093E\u0907\u0921 \u0914\u0930 \u092B\u093F\u0932\u094D\u091F\u0930 \u091F\u094D\u0930\u0947\u0928\u093F\u0902\u0917" else "App & Filter Setup Guide",
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                 color = TextPrimary
                             )
                             Text(
-                                text = if (isHindi) "7 आसान स्टेप्स में पूरा सेटअप सीखें" else "Learn full setup in 7 easy steps",
+                                text = if (isHindi) "7 \u0906\u0938\u093E\u0928 \u0938\u094D\u091F\u0947\u092A\u094D\u0938 \u092E\u0947\u0902 \u092A\u0942\u0930\u093E \u0938\u0947\u091F\u0905\u092A \u0938\u0940\u0916\u0947\u0902" else "Learn full setup in 7 easy steps",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = TextSecondary
                             )
@@ -398,7 +398,7 @@ fun AppTutorialGuideDialog(
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Text(
-                                        text = if (isHindi) "डिटेल समझें (How it Works)" else "How it Works in Detail",
+                                        text = if (isHindi) "\u0921\u093F\u091F\u0947\u0932 \u0938\u092E\u091D\u0947\u0902 (How it Works)" else "How it Works in Detail",
                                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                                         color = TextPrimary
                                     )
@@ -465,7 +465,7 @@ fun AppTutorialGuideDialog(
                                 .weight(1f)
                                 .height(48.dp)
                         ) {
-                            Text(if (isHindi) "पीछे" else "Previous")
+                            Text(if (isHindi) "\u092A\u0940\u091B\u0947" else "Previous")
                         }
                     }
 
@@ -486,7 +486,7 @@ fun AppTutorialGuideDialog(
                                 .testTag("tutorial_next_step_btn")
                         ) {
                             Text(
-                                text = if (isHindi) "अगला स्टेप (Next)" else "Next Step",
+                                text = if (isHindi) "\u0905\u0917\u0932\u093E \u0938\u094D\u091F\u0947\u092A (Next)" else "Next Step",
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -497,11 +497,11 @@ fun AppTutorialGuideDialog(
                                 val appliedCount = applyRecommendedSettings(context)
                                 val msg = when {
                                     appliedCount == 0 -> if (isHindi) {
-                                        "फिल्टर्स लॉक हैं। पहले Pass एक्टिवेट करें या Points से अनलॉक करें।"
+                                        "\u092B\u093F\u0932\u094D\u091F\u0930\u094D\u0938 \u0932\u0949\u0915 \u0939\u0948\u0902\u0964 \u092A\u0939\u0932\u0947 Pass \u090F\u0915\u094D\u091F\u093F\u0935\u0947\u091F \u0915\u0930\u0947\u0902 \u092F\u093E Points \u0938\u0947 \u0905\u0928\u0932\u0949\u0915 \u0915\u0930\u0947\u0902\u0964"
                                     } else {
                                         "Filters are locked. Activate a Pass or unlock filters with Points first."
                                     }
-                                    isHindi -> "अनलॉक की गई बेस्ट सेटिंग्स लागू हो गईं!"
+                                    isHindi -> "\u0905\u0928\u0932\u0949\u0915 \u0915\u0940 \u0917\u0908 \u092C\u0947\u0938\u094D\u091F \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938 \u0932\u093E\u0917\u0942 \u0939\u094B \u0917\u0908\u0902!"
                                     else -> "Recommended settings applied to unlocked filters!"
                                 }
                                 Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
@@ -528,7 +528,7 @@ fun AppTutorialGuideDialog(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Text(
-                                    text = if (isHindi) "बेस्ट सेटिंग्स सेट करें & शुरू करें" else "Apply Best Settings & Start",
+                                    text = if (isHindi) "\u092C\u0947\u0938\u094D\u091F \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938 \u0938\u0947\u091F \u0915\u0930\u0947\u0902 & \u0936\u0941\u0930\u0942 \u0915\u0930\u0947\u0902" else "Apply Best Settings & Start",
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -648,7 +648,7 @@ fun AppGuideBannerCard(
                             color = PrimaryEmerald.copy(alpha = 0.2f)
                         ) {
                             Text(
-                                text = if (isHindi) "नया यूजर गाइड" else "NEW USER GUIDE",
+                                text = if (isHindi) "\u0928\u092F\u093E \u092F\u0942\u091C\u0930 \u0917\u093E\u0907\u0921" else "NEW USER GUIDE",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.ExtraBold
@@ -662,7 +662,7 @@ fun AppGuideBannerCard(
                     Spacer(modifier = Modifier.height(2.dp))
 
                     Text(
-                        text = if (isHindi) "ऐप चलाना और फिल्टर्स सेट करना सीखें" else "Learn How to Use & Set Filters",
+                        text = if (isHindi) "\u0910\u092A \u091A\u0932\u093E\u0928\u093E \u0914\u0930 \u092B\u093F\u0932\u094D\u091F\u0930\u094D\u0938 \u0938\u0947\u091F \u0915\u0930\u0928\u093E \u0938\u0940\u0916\u0947\u0902" else "Learn How to Use & Set Filters",
                         style = MaterialTheme.typography.titleSmall.copy(
                             fontWeight = FontWeight.Bold
                         ),
@@ -671,9 +671,9 @@ fun AppGuideBannerCard(
 
                     Text(
                         text = if (isHindi)
-                            "300ms ऑटो-एक्सेप्ट, ₹/KM और बेस्ट कमाई सेटिंग्स की पूरी गाइड"
+                            "300ms \u0911\u091F\u094B-\u090F\u0915\u094D\u0938\u0947\u092A\u094D\u091F, \u20B9/KM \u0914\u0930 \u092C\u0947\u0938\u094D\u091F \u0915\u092E\u093E\u0908 \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938 \u0915\u0940 \u092A\u0942\u0930\u0940 \u0917\u093E\u0907\u0921"
                         else
-                            "Step-by-step tutorial on 300ms auto-accept, ₹/KM rate and best filter settings",
+                            "Step-by-step tutorial on 300ms auto-accept, \u20B9/KM rate and best filter settings",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary,
                         fontSize = 11.sp
@@ -702,32 +702,33 @@ fun AppGuideBannerCard(
 /**
  * Returns comprehensive tutorial steps tailored for Indian captains.
  */
-private fun getTutorialSteps(context: Context, isHindi: Boolean): List<TutorialGuideStep> {
+@androidx.annotation.VisibleForTesting
+internal fun getTutorialSteps(context: Context, isHindi: Boolean): List<TutorialGuideStep> {
     return listOf(
         // STEP 1: How Order Master Works
         TutorialGuideStep(
             stepNumber = 1,
             icon = Icons.Default.ElectricBolt,
-            badge = if (isHindi) "⚡ 300MS ऑटो-एक्सेप्ट" else "⚡ 300MS AUTO-ACCEPT",
-            title = if (isHindi) "ऑर्डर मास्टर कैसे काम करता है?" else "How Order Master Works",
+            badge = if (isHindi) "\u26A1 300MS \u0911\u091F\u094B-\u090F\u0915\u094D\u0938\u0947\u092A\u094D\u091F" else "\u26A1 300MS AUTO-ACCEPT",
+            title = if (isHindi) "\u0911\u0930\u094D\u0921\u0930 \u092E\u093E\u0938\u094D\u091F\u0930 \u0915\u0948\u0938\u0947 \u0915\u093E\u092E \u0915\u0930\u0924\u093E \u0939\u0948?" else "How Order Master Works",
             shortDesc = if (isHindi)
-                "Rapido में नया ऑर्डर आते ही 300 मिलीसेकंड में खुद एक्सेप्ट करता है।"
+                "Rapido \u092E\u0947\u0902 \u0928\u092F\u093E \u0911\u0930\u094D\u0921\u0930 \u0906\u0924\u0947 \u0939\u0940 300 \u092E\u093F\u0932\u0940\u0938\u0947\u0915\u0902\u0921 \u092E\u0947\u0902 \u0916\u0941\u0926 \u090F\u0915\u094D\u0938\u0947\u092A\u094D\u091F \u0915\u0930\u0924\u093E \u0939\u0948\u0964"
             else
                 "Automatically reads incoming Rapido ride offers and accepts in 300ms without touching phone.",
             detailExplainer = if (isHindi)
-                "1. आप अपनी Rapido Captain ऐप को सामान्य रूप से चालू रखें।\n" +
-                        "2. जैसे ही स्क्रीन पर कोई नई राइड ऑफर आएगी, ऑर्डर मास्टर बैकग्राउंड में उसका किराया (Fare) और दूरी (Distance) चेक करेगा।\n" +
-                        "3. अगर राइड आपके सेट किए गए नियमों के अनुसार सही है, तो यह केवल 300ms में ऑटोमैटिक एक्सेप्ट कर लेगा!"
+                "1. \u0906\u092A \u0905\u092A\u0928\u0940 Rapido Captain \u0910\u092A \u0915\u094B \u0938\u093E\u092E\u093E\u0928\u094D\u092F \u0930\u0942\u092A \u0938\u0947 \u091A\u093E\u0932\u0942 \u0930\u0916\u0947\u0902\u0964\n" +
+                        "2. \u091C\u0948\u0938\u0947 \u0939\u0940 \u0938\u094D\u0915\u094D\u0930\u0940\u0928 \u092A\u0930 \u0915\u094B\u0908 \u0928\u0908 \u0930\u093E\u0907\u0921 \u0911\u092B\u0930 \u0906\u090F\u0917\u0940, \u0911\u0930\u094D\u0921\u0930 \u092E\u093E\u0938\u094D\u091F\u0930 \u092C\u0948\u0915\u0917\u094D\u0930\u093E\u0909\u0902\u0921 \u092E\u0947\u0902 \u0909\u0938\u0915\u093E \u0915\u093F\u0930\u093E\u092F\u093E (Fare) \u0914\u0930 \u0926\u0942\u0930\u0940 (Distance) \u091A\u0947\u0915 \u0915\u0930\u0947\u0917\u093E\u0964\n" +
+                        "3. \u0905\u0917\u0930 \u0930\u093E\u0907\u0921 \u0906\u092A\u0915\u0947 \u0938\u0947\u091F \u0915\u093F\u090F \u0917\u090F \u0928\u093F\u092F\u092E\u094B\u0902 \u0915\u0947 \u0905\u0928\u0941\u0938\u093E\u0930 \u0938\u0939\u0940 \u0939\u0948, \u0924\u094B \u092F\u0939 \u0915\u0947\u0935\u0932 300ms \u092E\u0947\u0902 \u0911\u091F\u094B\u092E\u0948\u091F\u093F\u0915 \u090F\u0915\u094D\u0938\u0947\u092A\u094D\u091F \u0915\u0930 \u0932\u0947\u0917\u093E!"
             else
                 "1. Keep your Rapido Captain app running as usual.\n" +
                         "2. Whenever a new ride popup appears, Order Master parses fare and distance in background.\n" +
                         "3. If ride matches your filter rules, it taps accept in 300 milliseconds automatically!",
             recommendedSetting = if (isHindi)
-                "टिप: स्क्रीन पर ऑर्डर आते ही फोन छूने की जरूरत नहीं, ऐप अपने आप काम करेगा।"
+                "\u091F\u093F\u092A: \u0938\u094D\u0915\u094D\u0930\u0940\u0928 \u092A\u0930 \u0911\u0930\u094D\u0921\u0930 \u0906\u0924\u0947 \u0939\u0940 \u092B\u094B\u0928 \u091B\u0942\u0928\u0947 \u0915\u0940 \u091C\u0930\u0942\u0930\u0924 \u0928\u0939\u0940\u0902, \u0910\u092A \u0905\u092A\u0928\u0947 \u0906\u092A \u0915\u093E\u092E \u0915\u0930\u0947\u0917\u093E\u0964"
             else
                 "Tip: No need to touch your phone; app grabs high-demand rides instantly.",
             speechText = if (isHindi)
-                "ऑर्डर मास्टर कैसे काम करता है? जब आप रैपिडो ऐप चला रहे होते हैं, तो स्क्रीन पर नया ऑर्डर आते ही ऐप तीन सौ मिलीसेकंड में खुद एक्सेप्ट कर लेता है।"
+                "\u0911\u0930\u094D\u0921\u0930 \u092E\u093E\u0938\u094D\u091F\u0930 \u0915\u0948\u0938\u0947 \u0915\u093E\u092E \u0915\u0930\u0924\u093E \u0939\u0948? \u091C\u092C \u0906\u092A \u0930\u0948\u092A\u093F\u0921\u094B \u0910\u092A \u091A\u0932\u093E \u0930\u0939\u0947 \u0939\u094B\u0924\u0947 \u0939\u0948\u0902, \u0924\u094B \u0938\u094D\u0915\u094D\u0930\u0940\u0928 \u092A\u0930 \u0928\u092F\u093E \u0911\u0930\u094D\u0921\u0930 \u0906\u0924\u0947 \u0939\u0940 \u0910\u092A \u0924\u0940\u0928 \u0938\u094C \u092E\u093F\u0932\u0940\u0938\u0947\u0915\u0902\u0921 \u092E\u0947\u0902 \u0916\u0941\u0926 \u090F\u0915\u094D\u0938\u0947\u092A\u094D\u091F \u0915\u0930 \u0932\u0947\u0924\u093E \u0939\u0948\u0964"
             else
                 "How Order Master works. As soon as a ride appears on your driver app, Order Master checks your filters and accepts it in 300 milliseconds.",
             accentColor = PrimaryEmerald,
@@ -740,26 +741,26 @@ private fun getTutorialSteps(context: Context, isHindi: Boolean): List<TutorialG
         TutorialGuideStep(
             stepNumber = 2,
             icon = Icons.Default.Security,
-            badge = if (isHindi) "🔑 जरूरी परमिशन" else "🔑 REQUIRED PERMISSION",
-            title = if (isHindi) "Accessibility सर्विस ऑन करें" else "Enable Accessibility Service",
+            badge = if (isHindi) "\uD83D\uDD11 \u091C\u0930\u0942\u0930\u0940 \u092A\u0930\u092E\u093F\u0936\u0928" else "\uD83D\uDD11 REQUIRED PERMISSION",
+            title = if (isHindi) "Accessibility \u0938\u0930\u094D\u0935\u093F\u0938 \u0911\u0928 \u0915\u0930\u0947\u0902" else "Enable Accessibility Service",
             shortDesc = if (isHindi)
-                "बिना इस परमिशन के ऐप स्क्रीन पर राइड्स नहीं पढ़ सकता।"
+                "\u092C\u093F\u0928\u093E \u0907\u0938 \u092A\u0930\u092E\u093F\u0936\u0928 \u0915\u0947 \u0910\u092A \u0938\u094D\u0915\u094D\u0930\u0940\u0928 \u092A\u0930 \u0930\u093E\u0907\u0921\u094D\u0938 \u0928\u0939\u0940\u0902 \u092A\u0922\u093C \u0938\u0915\u0924\u093E\u0964"
             else
                 "Required for Order Master to detect ride popups and auto-accept.",
             detailExplainer = if (isHindi)
-                "स्टेप 1: नीचे दिए गए बटन पर टैप करके Accessibility सेटिंग्स खोलें।\n" +
-                        "स्टेप 2: 'Downloaded Apps' या 'इंस्टॉल किए गए ऐप्स' में जाएं।\n" +
-                        "स्टेप 3: 'Order Master' पर क्लिक करके स्विच को ON करें और Allow पर टैप करें।"
+                "\u0938\u094D\u091F\u0947\u092A 1: \u0928\u0940\u091A\u0947 \u0926\u093F\u090F \u0917\u090F \u092C\u091F\u0928 \u092A\u0930 \u091F\u0948\u092A \u0915\u0930\u0915\u0947 Accessibility \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938 \u0916\u094B\u0932\u0947\u0902\u0964\n" +
+                        "\u0938\u094D\u091F\u0947\u092A 2: 'Downloaded Apps' \u092F\u093E '\u0907\u0902\u0938\u094D\u091F\u0949\u0932 \u0915\u093F\u090F \u0917\u090F \u0910\u092A\u094D\u0938' \u092E\u0947\u0902 \u091C\u093E\u090F\u0902\u0964\n" +
+                        "\u0938\u094D\u091F\u0947\u092A 3: 'Order Master' \u092A\u0930 \u0915\u094D\u0932\u093F\u0915 \u0915\u0930\u0915\u0947 \u0938\u094D\u0935\u093F\u091A \u0915\u094B ON \u0915\u0930\u0947\u0902 \u0914\u0930 Allow \u092A\u0930 \u091F\u0948\u092A \u0915\u0930\u0947\u0902\u0964"
             else
                 "Step 1: Tap the button below to open Accessibility Settings.\n" +
                         "Step 2: Go to 'Downloaded Apps' or 'Installed Services'.\n" +
                         "Step 3: Tap 'Order Master' and toggle the switch to ON.",
             recommendedSetting = if (isHindi)
-                "MIUI/Vivo/Oppo यूज़र्स: ऐप को Recents में लॉक करें और AutoStart ऑन रखें।"
+                "MIUI/Vivo/Oppo \u092F\u0942\u095B\u0930\u094D\u0938: \u0910\u092A \u0915\u094B Recents \u092E\u0947\u0902 \u0932\u0949\u0915 \u0915\u0930\u0947\u0902 \u0914\u0930 AutoStart \u0911\u0928 \u0930\u0916\u0947\u0902\u0964"
             else
                 "Xiaomi/Vivo/Oppo users: Lock Order Master in Recents and enable AutoStart.",
             speechText = if (isHindi)
-                "एक्सेसिबिलिटी सर्विस चालू करें। फोन सेटिंग्स में जाएं, डाउनलोडेड ऐप्स में ऑर्डर मास्टर को चुनें और स्विच ऑन करें।"
+                "\u090F\u0915\u094D\u0938\u0947\u0938\u093F\u092C\u093F\u0932\u093F\u091F\u0940 \u0938\u0930\u094D\u0935\u093F\u0938 \u091A\u093E\u0932\u0942 \u0915\u0930\u0947\u0902\u0964 \u092B\u094B\u0928 \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938 \u092E\u0947\u0902 \u091C\u093E\u090F\u0902, \u0921\u093E\u0909\u0928\u0932\u094B\u0921\u0947\u0921 \u0910\u092A\u094D\u0938 \u092E\u0947\u0902 \u0911\u0930\u094D\u0921\u0930 \u092E\u093E\u0938\u094D\u091F\u0930 \u0915\u094B \u091A\u0941\u0928\u0947\u0902 \u0914\u0930 \u0938\u094D\u0935\u093F\u091A \u0911\u0928 \u0915\u0930\u0947\u0902\u0964"
             else
                 "Enable Accessibility Service in phone settings to allow Order Master to read ride popups.",
             accentColor = Color(0xFFF59E0B),
@@ -772,24 +773,24 @@ private fun getTutorialSteps(context: Context, isHindi: Boolean): List<TutorialG
         TutorialGuideStep(
             stepNumber = 3,
             icon = Icons.Default.CurrencyRupee,
-            badge = if (isHindi) "💰 न्यूनतम किराया (MIN FARE)" else "💰 MINIMUM FARE FILTER",
-            title = if (isHindi) "छोटे और घाटे वाले ऑर्डर्स रोकें" else "Filter Low-Paying Rides",
+            badge = if (isHindi) "\uD83D\uDCB0 \u0928\u094D\u092F\u0942\u0928\u0924\u092E \u0915\u093F\u0930\u093E\u092F\u093E (MIN FARE)" else "\uD83D\uDCB0 MINIMUM FARE FILTER",
+            title = if (isHindi) "\u091B\u094B\u091F\u0947 \u0914\u0930 \u0918\u093E\u091F\u0947 \u0935\u093E\u0932\u0947 \u0911\u0930\u094D\u0921\u0930\u094D\u0938 \u0930\u094B\u0915\u0947\u0902" else "Filter Low-Paying Rides",
             shortDesc = if (isHindi)
-                "अगर आप ₹50 सेट करेंगे तो ₹30-₹40 के सस्ते ऑर्डर्स खुद छूट जाएंगे।"
+                "\u0905\u0917\u0930 \u0906\u092A \u20B950 \u0938\u0947\u091F \u0915\u0930\u0947\u0902\u0917\u0947 \u0924\u094B \u20B930-\u20B940 \u0915\u0947 \u0938\u0938\u094D\u0924\u0947 \u0911\u0930\u094D\u0921\u0930\u094D\u0938 \u0916\u0941\u0926 \u091B\u0942\u091F \u091C\u093E\u090F\u0902\u0917\u0947\u0964"
             else
                 "Ignore orders below this threshold to maximize your trip earnings.",
             detailExplainer = if (isHindi)
-                "अक्सर ₹25 या ₹35 के छोटे ऑर्डर्स उठाने पर टाइम और पेट्रोल दोनों खराब होते हैं।\n" +
-                        "जब आप 'Minimum Fare Filter' चालू करके ₹50 या ₹60 सेट करते हैं, तो ऐप सिर्फ ₹50 से ऊपर वाले बड़े ऑर्डर्स ही लेगा। छोटे ऑर्डर्स को ऑटोमैटिक छोड़ देगा!"
+                "\u0905\u0915\u094D\u0938\u0930 \u20B925 \u092F\u093E \u20B935 \u0915\u0947 \u091B\u094B\u091F\u0947 \u0911\u0930\u094D\u0921\u0930\u094D\u0938 \u0909\u0920\u093E\u0928\u0947 \u092A\u0930 \u091F\u093E\u0907\u092E \u0914\u0930 \u092A\u0947\u091F\u094D\u0930\u094B\u0932 \u0926\u094B\u0928\u094B\u0902 \u0916\u0930\u093E\u092C \u0939\u094B\u0924\u0947 \u0939\u0948\u0902\u0964\n" +
+                        "\u091C\u092C \u0906\u092A 'Minimum Fare Filter' \u091A\u093E\u0932\u0942 \u0915\u0930\u0915\u0947 \u20B950 \u092F\u093E \u20B960 \u0938\u0947\u091F \u0915\u0930\u0924\u0947 \u0939\u0948\u0902, \u0924\u094B \u0910\u092A \u0938\u093F\u0930\u094D\u092B \u20B950 \u0938\u0947 \u090A\u092A\u0930 \u0935\u093E\u0932\u0947 \u092C\u0921\u093C\u0947 \u0911\u0930\u094D\u0921\u0930\u094D\u0938 \u0939\u0940 \u0932\u0947\u0917\u093E\u0964 \u091B\u094B\u091F\u0947 \u0911\u0930\u094D\u0921\u0930\u094D\u0938 \u0915\u094B \u0911\u091F\u094B\u092E\u0948\u091F\u093F\u0915 \u091B\u094B\u0921\u093C \u0926\u0947\u0917\u093E!"
             else
-                "Short ₹25 or ₹35 rides waste valuable peak-hour time and fuel.\n" +
-                        "Setting Minimum Fare to ₹50 or ₹60 ensures you only get assigned profitable rides.",
+                "Short \u20B925 or \u20B935 rides waste valuable peak-hour time and fuel.\n" +
+                        "Setting Minimum Fare to \u20B950 or \u20B960 ensures you only get assigned profitable rides.",
             recommendedSetting = if (isHindi)
-                "बेस्ट सेटिंग: ₹50 से ₹70 के बीच रखें।"
+                "\u092C\u0947\u0938\u094D\u091F \u0938\u0947\u091F\u093F\u0902\u0917: \u20B950 \u0938\u0947 \u20B970 \u0915\u0947 \u092C\u0940\u091A \u0930\u0916\u0947\u0902\u0964"
             else
-                "Recommended Setting: Set between ₹50 and ₹70.",
+                "Recommended Setting: Set between \u20B950 and \u20B970.",
             speechText = if (isHindi)
-                "न्यूनतम किराया फिल्टर। अगर आप पचास रुपये सेट करेंगे, तो कम पैसे वाले छोटे ऑर्डर अपने आप छूट जाएंगे और सिर्फ अच्छी कमाई वाले ऑर्डर आएंगे।"
+                "\u0928\u094D\u092F\u0942\u0928\u0924\u092E \u0915\u093F\u0930\u093E\u092F\u093E \u092B\u093F\u0932\u094D\u091F\u0930\u0964 \u0905\u0917\u0930 \u0906\u092A \u092A\u091A\u093E\u0938 \u0930\u0941\u092A\u092F\u0947 \u0938\u0947\u091F \u0915\u0930\u0947\u0902\u0917\u0947, \u0924\u094B \u0915\u092E \u092A\u0948\u0938\u0947 \u0935\u093E\u0932\u0947 \u091B\u094B\u091F\u0947 \u0911\u0930\u094D\u0921\u0930 \u0905\u092A\u0928\u0947 \u0906\u092A \u091B\u0942\u091F \u091C\u093E\u090F\u0902\u0917\u0947 \u0914\u0930 \u0938\u093F\u0930\u094D\u092B \u0905\u091A\u094D\u091B\u0940 \u0915\u092E\u093E\u0908 \u0935\u093E\u0932\u0947 \u0911\u0930\u094D\u0921\u0930 \u0906\u090F\u0902\u0917\u0947\u0964"
             else
                 "Minimum fare filter. Set minimum fare to fifty rupees or more to avoid low paying rides.",
             accentColor = Color(0xFF10B981),
@@ -798,34 +799,34 @@ private fun getTutorialSteps(context: Context, isHindi: Boolean): List<TutorialG
             }
         ),
 
-        // STEP 4: Price Per Kilometer (₹/KM Rate)
+        // STEP 4: Price Per Kilometer (\u20B9/KM Rate)
         TutorialGuideStep(
             stepNumber = 4,
             icon = Icons.Default.TrendingUp,
-            badge = if (isHindi) "📈 रेट प्रति किमी (₹/KM)" else "📈 RATE PER KM (₹/KM)",
-            title = if (isHindi) "हर किलोमीटर पर फिक्स मुनाफा कमाएं" else "Guaranteed Profit per Kilometer",
+            badge = if (isHindi) "\uD83D\uDCC8 \u0930\u0947\u091F \u092A\u094D\u0930\u0924\u093F \u0915\u093F\u092E\u0940 (\u20B9/KM)" else "\uD83D\uDCC8 RATE PER KM (\u20B9/KM)",
+            title = if (isHindi) "\u0939\u0930 \u0915\u093F\u0932\u094B\u092E\u0940\u091F\u0930 \u092A\u0930 \u092B\u093F\u0915\u094D\u0938 \u092E\u0941\u0928\u093E\u092B\u093E \u0915\u092E\u093E\u090F\u0902" else "Guaranteed Profit per Kilometer",
             shortDesc = if (isHindi)
-                "लंबी दूरी पर कम किराया देने वाली घाटे की राइड्स से बचें।"
+                "\u0932\u0902\u092C\u0940 \u0926\u0942\u0930\u0940 \u092A\u0930 \u0915\u092E \u0915\u093F\u0930\u093E\u092F\u093E \u0926\u0947\u0928\u0947 \u0935\u093E\u0932\u0940 \u0918\u093E\u091F\u0947 \u0915\u0940 \u0930\u093E\u0907\u0921\u094D\u0938 \u0938\u0947 \u092C\u091A\u0947\u0902\u0964"
             else
                 "Ensures every ride pays enough to cover fuel and driver profit.",
             detailExplainer = if (isHindi)
-                "फॉर्मूला: कुल किराया ÷ कुल दूरी = ₹/KM रेट।\n" +
-                        "उदाहरण:\n" +
-                        "❌ ₹60 की राइड 10 किलोमीटर के लिए = सिर्फ ₹6/KM (पेट्रोल में घाटा!)\n" +
-                        "✅ ₹120 की राइड 8 किलोमीटर के लिए = ₹15/KM (बंपर मुनाफा! 🚀)\n" +
-                        "जब आप ₹13/KM सेट करते हैं, तो ऐप सिर्फ वही ऑर्डर लेगा जिसमें हर किमी पर ₹13 या उससे ज्यादा कमाई हो।"
+                "\u092B\u0949\u0930\u094D\u092E\u0942\u0932\u093E: \u0915\u0941\u0932 \u0915\u093F\u0930\u093E\u092F\u093E \u00F7 \u0915\u0941\u0932 \u0926\u0942\u0930\u0940 = \u20B9/KM \u0930\u0947\u091F\u0964\n" +
+                        "\u0909\u0926\u093E\u0939\u0930\u0923:\n" +
+                        "\u274C \u20B960 \u0915\u0940 \u0930\u093E\u0907\u0921 10 \u0915\u093F\u0932\u094B\u092E\u0940\u091F\u0930 \u0915\u0947 \u0932\u093F\u090F = \u0938\u093F\u0930\u094D\u092B \u20B96/KM (\u092A\u0947\u091F\u094D\u0930\u094B\u0932 \u092E\u0947\u0902 \u0918\u093E\u091F\u093E!)\n" +
+                        "\u2705 \u20B9120 \u0915\u0940 \u0930\u093E\u0907\u0921 8 \u0915\u093F\u0932\u094B\u092E\u0940\u091F\u0930 \u0915\u0947 \u0932\u093F\u090F = \u20B915/KM (\u092C\u0902\u092A\u0930 \u092E\u0941\u0928\u093E\u092B\u093E! \uD83D\uDE80)\n" +
+                        "\u091C\u092C \u0906\u092A \u20B913/KM \u0938\u0947\u091F \u0915\u0930\u0924\u0947 \u0939\u0948\u0902, \u0924\u094B \u0910\u092A \u0938\u093F\u0930\u094D\u092B \u0935\u0939\u0940 \u0911\u0930\u094D\u0921\u0930 \u0932\u0947\u0917\u093E \u091C\u093F\u0938\u092E\u0947\u0902 \u0939\u0930 \u0915\u093F\u092E\u0940 \u092A\u0930 \u20B913 \u092F\u093E \u0909\u0938\u0938\u0947 \u091C\u094D\u092F\u093E\u0926\u093E \u0915\u092E\u093E\u0908 \u0939\u094B\u0964"
             else
-                "Formula: Total Fare ÷ Total Distance = Rate per KM.\n" +
+                "Formula: Total Fare \u00F7 Total Distance = Rate per KM.\n" +
                         "Example:\n" +
-                        "❌ ₹60 for 10 KM = ₹6/KM (Fuel Loss!)\n" +
-                        "✅ ₹120 for 8 KM = ₹15/KM (High Profit!)\n" +
-                        "Setting ₹13/KM ensures Order Master only accepts rides that pay well per kilometer.",
+                        "\u274C \u20B960 for 10 KM = \u20B96/KM (Fuel Loss!)\n" +
+                        "\u2705 \u20B9120 for 8 KM = \u20B915/KM (High Profit!)\n" +
+                        "Setting \u20B913/KM ensures Order Master only accepts rides that pay well per kilometer.",
             recommendedSetting = if (isHindi)
-                "बेस्ट सेटिंग: बाइक के लिए ₹12-₹14/KM और ऑटो के लिए ₹15-₹18/KM रखें।"
+                "\u092C\u0947\u0938\u094D\u091F \u0938\u0947\u091F\u093F\u0902\u0917: \u092C\u093E\u0907\u0915 \u0915\u0947 \u0932\u093F\u090F \u20B912-\u20B914/KM \u0914\u0930 \u0911\u091F\u094B \u0915\u0947 \u0932\u093F\u090F \u20B915-\u20B918/KM \u0930\u0916\u0947\u0902\u0964"
             else
-                "Recommended Setting: ₹12-₹14/KM for Bikes, ₹15-₹18/KM for Auto Rickshaws.",
+                "Recommended Setting: \u20B912-\u20B914/KM for Bikes, \u20B915-\u20B918/KM for Auto Rickshaws.",
             speechText = if (isHindi)
-                "रेट प्रति किलोमीटर फिल्टर। सिर्फ कुल किराया मत देखिए। यह फिल्टर सुनिश्चित करता है कि हर किलोमीटर पर आपको कम से कम बारह या पंद्रह रुपये की कमाई हो।"
+                "\u0930\u0947\u091F \u092A\u094D\u0930\u0924\u093F \u0915\u093F\u0932\u094B\u092E\u0940\u091F\u0930 \u092B\u093F\u0932\u094D\u091F\u0930\u0964 \u0938\u093F\u0930\u094D\u092B \u0915\u0941\u0932 \u0915\u093F\u0930\u093E\u092F\u093E \u092E\u0924 \u0926\u0947\u0916\u093F\u090F\u0964 \u092F\u0939 \u092B\u093F\u0932\u094D\u091F\u0930 \u0938\u0941\u0928\u093F\u0936\u094D\u091A\u093F\u0924 \u0915\u0930\u0924\u093E \u0939\u0948 \u0915\u093F \u0939\u0930 \u0915\u093F\u0932\u094B\u092E\u0940\u091F\u0930 \u092A\u0930 \u0906\u092A\u0915\u094B \u0915\u092E \u0938\u0947 \u0915\u092E \u092C\u093E\u0930\u0939 \u092F\u093E \u092A\u0902\u0926\u094D\u0930\u0939 \u0930\u0941\u092A\u092F\u0947 \u0915\u0940 \u0915\u092E\u093E\u0908 \u0939\u094B\u0964"
             else
                 "Rate per kilometer filter ensures every kilometer driven generates solid profit after fuel costs.",
             accentColor = Color(0xFF38BDF8),
@@ -838,24 +839,24 @@ private fun getTutorialSteps(context: Context, isHindi: Boolean): List<TutorialG
         TutorialGuideStep(
             stepNumber = 5,
             icon = Icons.Default.NearMe,
-            badge = if (isHindi) "📍 पिकअप और दूरी फिल्टर्स" else "📍 PICKUP & DISTANCE LIMITS",
-            title = if (isHindi) "दूर का पिकअप और लंबा सफर रोकें" else "Limit Pickup and Drop Distance",
+            badge = if (isHindi) "\uD83D\uDCCD \u092A\u093F\u0915\u0905\u092A \u0914\u0930 \u0926\u0942\u0930\u0940 \u092B\u093F\u0932\u094D\u091F\u0930\u094D\u0938" else "\uD83D\uDCCD PICKUP & DISTANCE LIMITS",
+            title = if (isHindi) "\u0926\u0942\u0930 \u0915\u093E \u092A\u093F\u0915\u0905\u092A \u0914\u0930 \u0932\u0902\u092C\u093E \u0938\u092B\u0930 \u0930\u094B\u0915\u0947\u0902" else "Limit Pickup and Drop Distance",
             shortDesc = if (isHindi)
-                "2.5 KM से ज्यादा दूर का पिकअप न लें ताकि पेट्रोल और टाइम बचे।"
+                "2.5 KM \u0938\u0947 \u091C\u094D\u092F\u093E\u0926\u093E \u0926\u0942\u0930 \u0915\u093E \u092A\u093F\u0915\u0905\u092A \u0928 \u0932\u0947\u0902 \u0924\u093E\u0915\u093F \u092A\u0947\u091F\u094D\u0930\u094B\u0932 \u0914\u0930 \u091F\u093E\u0907\u092E \u092C\u091A\u0947\u0964"
             else
                 "Avoid wasting fuel on long pickups and keep drop destinations within city limits.",
             detailExplainer = if (isHindi)
-                "1. मैक्सिमम पिकअप दूरी: अगर राइडर 4-5 KM दूर है तो वहां तक खाली गाड़ी चलाने में पेट्रोल खर्च होता है। इसे 2.0 से 2.5 KM पर रखें।\n" +
-                        "2. अधिकतम ड्रॉप दूरी: अगर आप शहर के बाहर नहीं जाना चाहते, तो इसे 12 से 15 KM पर सेट करें ताकि लंबी और अनचाही यात्राओं से बचा जा सके।"
+                "1. \u092E\u0948\u0915\u094D\u0938\u093F\u092E\u092E \u092A\u093F\u0915\u0905\u092A \u0926\u0942\u0930\u0940: \u0905\u0917\u0930 \u0930\u093E\u0907\u0921\u0930 4-5 KM \u0926\u0942\u0930 \u0939\u0948 \u0924\u094B \u0935\u0939\u093E\u0902 \u0924\u0915 \u0916\u093E\u0932\u0940 \u0917\u093E\u0921\u093C\u0940 \u091A\u0932\u093E\u0928\u0947 \u092E\u0947\u0902 \u092A\u0947\u091F\u094D\u0930\u094B\u0932 \u0916\u0930\u094D\u091A \u0939\u094B\u0924\u093E \u0939\u0948\u0964 \u0907\u0938\u0947 2.0 \u0938\u0947 2.5 KM \u092A\u0930 \u0930\u0916\u0947\u0902\u0964\n" +
+                        "2. \u0905\u0927\u093F\u0915\u0924\u092E \u0921\u094D\u0930\u0949\u092A \u0926\u0942\u0930\u0940: \u0905\u0917\u0930 \u0906\u092A \u0936\u0939\u0930 \u0915\u0947 \u092C\u093E\u0939\u0930 \u0928\u0939\u0940\u0902 \u091C\u093E\u0928\u093E \u091A\u093E\u0939\u0924\u0947, \u0924\u094B \u0907\u0938\u0947 12 \u0938\u0947 15 KM \u092A\u0930 \u0938\u0947\u091F \u0915\u0930\u0947\u0902 \u0924\u093E\u0915\u093F \u0932\u0902\u092C\u0940 \u0914\u0930 \u0905\u0928\u091A\u093E\u0939\u0940 \u092F\u093E\u0924\u094D\u0930\u093E\u0913\u0902 \u0938\u0947 \u092C\u091A\u093E \u091C\u093E \u0938\u0915\u0947\u0964"
             else
                 "1. Max Pickup Distance: Don't drive 4-5 KM empty just to pick up a passenger. Keep it at 2.0 to 2.5 KM.\n" +
                         "2. Max Drop Distance: If you prefer staying within the city, cap total distance at 12 to 15 KM.",
             recommendedSetting = if (isHindi)
-                "बेस्ट सेटिंग: पिकअप 2.0 - 2.5 KM, कुल दूरी 12 - 15 KM।"
+                "\u092C\u0947\u0938\u094D\u091F \u0938\u0947\u091F\u093F\u0902\u0917: \u092A\u093F\u0915\u0905\u092A 2.0 - 2.5 KM, \u0915\u0941\u0932 \u0926\u0942\u0930\u0940 12 - 15 KM\u0964"
             else
                 "Recommended: Pickup 2.0 - 2.5 KM, Max Distance 12 - 15 KM.",
             speechText = if (isHindi)
-                "पिकअप और दूरी फिल्टर्स। पैसेंजर अगर बहुत दूर है तो वहां तक खाली जाने में नुकसान होता है। पिकअप दूरी को दो या ढाई किलोमीटर पर रखें।"
+                "\u092A\u093F\u0915\u0905\u092A \u0914\u0930 \u0926\u0942\u0930\u0940 \u092B\u093F\u0932\u094D\u091F\u0930\u094D\u0938\u0964 \u092A\u0948\u0938\u0947\u0902\u091C\u0930 \u0905\u0917\u0930 \u092C\u0939\u0941\u0924 \u0926\u0942\u0930 \u0939\u0948 \u0924\u094B \u0935\u0939\u093E\u0902 \u0924\u0915 \u0916\u093E\u0932\u0940 \u091C\u093E\u0928\u0947 \u092E\u0947\u0902 \u0928\u0941\u0915\u0938\u093E\u0928 \u0939\u094B\u0924\u093E \u0939\u0948\u0964 \u092A\u093F\u0915\u0905\u092A \u0926\u0942\u0930\u0940 \u0915\u094B \u0926\u094B \u092F\u093E \u0922\u093E\u0908 \u0915\u093F\u0932\u094B\u092E\u0940\u091F\u0930 \u092A\u0930 \u0930\u0916\u0947\u0902\u0964"
             else
                 "Pickup distance filter prevents long empty runs. Set pickup distance to 2.5 KM max.",
             accentColor = Color(0xFFA855F7),
@@ -868,32 +869,32 @@ private fun getTutorialSteps(context: Context, isHindi: Boolean): List<TutorialG
         TutorialGuideStep(
             stepNumber = 6,
             icon = Icons.Default.VolumeUp,
-            badge = if (isHindi) "🔊 आवाज़ उद्घोषक (VOICE ANNOUNCER)" else "🔊 VOICE ANNOUNCER",
-            title = if (isHindi) "बिना स्क्रीन देखे ऑर्डर की पूरी डिटेल सुनें" else "Eyes-Free Voice Announcements",
+            badge = if (isHindi) "\uD83D\uDD0A \u0906\u0935\u093E\u091C\u093C \u0909\u0926\u094D\u0918\u094B\u0937\u0915 (VOICE ANNOUNCER)" else "\uD83D\uDD0A VOICE ANNOUNCER",
+            title = if (isHindi) "\u092C\u093F\u0928\u093E \u0938\u094D\u0915\u094D\u0930\u0940\u0928 \u0926\u0947\u0916\u0947 \u0911\u0930\u094D\u0921\u0930 \u0915\u0940 \u092A\u0942\u0930\u0940 \u0921\u093F\u091F\u0947\u0932 \u0938\u0941\u0928\u0947\u0902" else "Eyes-Free Voice Announcements",
             shortDesc = if (isHindi)
-                "किराया, पिकअप दूरी व स्थान, और ड्रॉप दूरी व स्थान साफ बोलकर बताता है।"
+                "\u0915\u093F\u0930\u093E\u092F\u093E, \u092A\u093F\u0915\u0905\u092A \u0926\u0942\u0930\u0940 \u0935 \u0938\u094D\u0925\u093E\u0928, \u0914\u0930 \u0921\u094D\u0930\u0949\u092A \u0926\u0942\u0930\u0940 \u0935 \u0938\u094D\u0925\u093E\u0928 \u0938\u093E\u092B \u092C\u094B\u0932\u0915\u0930 \u092C\u0924\u093E\u0924\u093E \u0939\u0948\u0964"
             else
                 "Automatically speaks Fare, Pickup distance/location, and Drop distance/location.",
             detailExplainer = if (isHindi)
-                "1. गाड़ी चलाते समय बार-बार मोबाइल स्क्रीन देखना खतरनाक होता है।\n" +
-                        "2. नया ऑर्डर आते ही ऐप आपकी चुनी हुई भाषा (हिन्दी, ગુજરાતી, English) में साफ आवाज़ में बोलता है:\n" +
-                        "  • किराया: ₹45\n" +
-                        "  • पिकअप दूरी: 0.6 km City Centre\n" +
-                        "  • ड्रॉप दूरी: 2.4 km Rajkot railway station\n" +
-                        "3. इससे आप बिना स्क्रीन देखे तुरंत समझ सकते हैं कि ऑर्डर कितना फायदेमंद है।"
+                "1. \u0917\u093E\u0921\u093C\u0940 \u091A\u0932\u093E\u0924\u0947 \u0938\u092E\u092F \u092C\u093E\u0930-\u092C\u093E\u0930 \u092E\u094B\u092C\u093E\u0907\u0932 \u0938\u094D\u0915\u094D\u0930\u0940\u0928 \u0926\u0947\u0916\u0928\u093E \u0916\u0924\u0930\u0928\u093E\u0915 \u0939\u094B\u0924\u093E \u0939\u0948\u0964\n" +
+                        "2. \u0928\u092F\u093E \u0911\u0930\u094D\u0921\u0930 \u0906\u0924\u0947 \u0939\u0940 \u0910\u092A \u0906\u092A\u0915\u0940 \u091A\u0941\u0928\u0940 \u0939\u0941\u0908 \u092D\u093E\u0937\u093E (\u0939\u093F\u0928\u094D\u0926\u0940, \u0A97\u0AC1\u0A9C\u0AB0\u0ABE\u0AA4\u0AC0, English) \u092E\u0947\u0902 \u0938\u093E\u092B \u0906\u0935\u093E\u091C\u093C \u092E\u0947\u0902 \u092C\u094B\u0932\u0924\u093E \u0939\u0948:\n" +
+                        "  \u2022 \u0915\u093F\u0930\u093E\u092F\u093E: \u20B945\n" +
+                        "  \u2022 \u092A\u093F\u0915\u0905\u092A \u0926\u0942\u0930\u0940: 0.6 km City Centre\n" +
+                        "  \u2022 \u0921\u094D\u0930\u0949\u092A \u0926\u0942\u0930\u0940: 2.4 km Rajkot railway station\n" +
+                        "3. \u0907\u0938\u0938\u0947 \u0906\u092A \u092C\u093F\u0928\u093E \u0938\u094D\u0915\u094D\u0930\u0940\u0928 \u0926\u0947\u0916\u0947 \u0924\u0941\u0930\u0902\u0924 \u0938\u092E\u091D \u0938\u0915\u0924\u0947 \u0939\u0948\u0902 \u0915\u093F \u0911\u0930\u094D\u0921\u0930 \u0915\u093F\u0924\u0928\u093E \u092B\u093E\u092F\u0926\u0947\u092E\u0902\u0926 \u0939\u0948\u0964"
             else
                 "1. Looking at your phone while driving is dangerous.\n" +
                         "2. Order Master clearly announces all 5 vital details:\n" +
-                        "  • Fare: ₹45\n" +
-                        "  • Pickup: 0.6 km City Centre\n" +
-                        "  • Drop: 2.4 km Rajkot railway station\n" +
+                        "  \u2022 Fare: \u20B945\n" +
+                        "  \u2022 Pickup: 0.6 km City Centre\n" +
+                        "  \u2022 Drop: 2.4 km Rajkot railway station\n" +
                         "3. Supports Hindi, Gujarati, English and regional Indian languages.",
             recommendedSetting = if (isHindi)
-                "टिप: सेटिंग्स में अपनी पसंदीदा भाषा (हिन्दी/गुजराती/English) चुनें और वॉयस उद्घोषक ऑन रखें।"
+                "\u091F\u093F\u092A: \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938 \u092E\u0947\u0902 \u0905\u092A\u0928\u0940 \u092A\u0938\u0902\u0926\u0940\u0926\u093E \u092D\u093E\u0937\u093E (\u0939\u093F\u0928\u094D\u0926\u0940/\u0917\u0941\u091C\u0930\u093E\u0924\u0940/English) \u091A\u0941\u0928\u0947\u0902 \u0914\u0930 \u0935\u0949\u092F\u0938 \u0909\u0926\u094D\u0918\u094B\u0937\u0915 \u0911\u0928 \u0930\u0916\u0947\u0902\u0964"
             else
                 "Tip: Keep Voice Announcer enabled with your preferred regional language.",
             speechText = if (isHindi)
-                "आवाज़ उद्घोषक फीचर। स्क्रीन पर नया ऑर्डर आते ही ऐप किराया, पिकअप दूरी और ड्रॉप लोकेशन बोलकर सुनाता है, ताकि गाड़ी चलाते समय आपको फोन की स्क्रीन न देखनी पड़े।"
+                "\u0906\u0935\u093E\u091C\u093C \u0909\u0926\u094D\u0918\u094B\u0937\u0915 \u092B\u0940\u091A\u0930\u0964 \u0938\u094D\u0915\u094D\u0930\u0940\u0928 \u092A\u0930 \u0928\u092F\u093E \u0911\u0930\u094D\u0921\u0930 \u0906\u0924\u0947 \u0939\u0940 \u0910\u092A \u0915\u093F\u0930\u093E\u092F\u093E, \u092A\u093F\u0915\u0905\u092A \u0926\u0942\u0930\u0940 \u0914\u0930 \u0921\u094D\u0930\u0949\u092A \u0932\u094B\u0915\u0947\u0936\u0928 \u092C\u094B\u0932\u0915\u0930 \u0938\u0941\u0928\u093E\u0924\u093E \u0939\u0948, \u0924\u093E\u0915\u093F \u0917\u093E\u0921\u093C\u0940 \u091A\u0932\u093E\u0924\u0947 \u0938\u092E\u092F \u0906\u092A\u0915\u094B \u092B\u094B\u0928 \u0915\u0940 \u0938\u094D\u0915\u094D\u0930\u0940\u0928 \u0928 \u0926\u0947\u0916\u0928\u0940 \u092A\u0921\u093C\u0947\u0964"
             else
                 "Voice announcer feature. Whenever a ride appears, Order Master speaks the fare, pickup distance, and drop destination aloud so you don't need to look at your phone.",
             accentColor = Color(0xFFF59E0B),
@@ -906,26 +907,26 @@ private fun getTutorialSteps(context: Context, isHindi: Boolean): List<TutorialG
         TutorialGuideStep(
             stepNumber = 7,
             icon = Icons.Default.Layers,
-            badge = if (isHindi) "🚀 फ्लोटिंग बटन & 1-टैप रेडी" else "🚀 FLOATING WIDGET & READY",
-            title = if (isHindi) "फ्लोटिंग बटन, OEM बैकग्राउंड लॉक & 1-क्लिक बेस्ट सेटिंग्स" else "Floating Widget, OEM Lock & 1-Tap Setup",
+            badge = if (isHindi) "\uD83D\uDE80 \u092B\u094D\u0932\u094B\u091F\u093F\u0902\u0917 \u092C\u091F\u0928 & 1-\u091F\u0948\u092A \u0930\u0947\u0921\u0940" else "\uD83D\uDE80 FLOATING WIDGET & READY",
+            title = if (isHindi) "\u092B\u094D\u0932\u094B\u091F\u093F\u0902\u0917 \u092C\u091F\u0928, OEM \u092C\u0948\u0915\u0917\u094D\u0930\u093E\u0909\u0902\u0921 \u0932\u0949\u0915 & 1-\u0915\u094D\u0932\u093F\u0915 \u092C\u0947\u0938\u094D\u091F \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938" else "Floating Widget, OEM Lock & 1-Tap Setup",
             shortDesc = if (isHindi)
-                "Xiaomi, Vivo, Oppo में ऐप को Recents में लॉक करें और 1-क्लिक बेस्ट सेटिंग्स लागू करें।"
+                "Xiaomi, Vivo, Oppo \u092E\u0947\u0902 \u0910\u092A \u0915\u094B Recents \u092E\u0947\u0902 \u0932\u0949\u0915 \u0915\u0930\u0947\u0902 \u0914\u0930 1-\u0915\u094D\u0932\u093F\u0915 \u092C\u0947\u0938\u094D\u091F \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938 \u0932\u093E\u0917\u0942 \u0915\u0930\u0947\u0902\u0964"
             else
                 "Lock in Recents, enable AutoStart, and apply best driver settings in 1-tap.",
             detailExplainer = if (isHindi)
-                "1. फ्लोटिंग बबल: Rapido चलाते समय स्क्रीन पर ऊपर तैरता रहता है। एक टैप से ऑटो-एक्सेप्ट चालू या बंद करें।\n" +
-                        "2. Xiaomi/Vivo/Oppo/Realme सेटिंग्स: ऐप को रीसेंट्स (Recents) में ताला (Lock) लगाएं और AutoStart ऑन करें ताकि बैकग्राउंड में सर्विस बंद न हो।\n" +
-                        "3. 1-क्लिक बेस्ट सेटिंग्स: नीचे दिए गए हरे बटन पर टैप करते ही सबसे अच्छी सेटिंग्स अपने आप लागू हो जाएंगी!"
+                "1. \u092B\u094D\u0932\u094B\u091F\u093F\u0902\u0917 \u092C\u092C\u0932: Rapido \u091A\u0932\u093E\u0924\u0947 \u0938\u092E\u092F \u0938\u094D\u0915\u094D\u0930\u0940\u0928 \u092A\u0930 \u090A\u092A\u0930 \u0924\u0948\u0930\u0924\u093E \u0930\u0939\u0924\u093E \u0939\u0948\u0964 \u090F\u0915 \u091F\u0948\u092A \u0938\u0947 \u0911\u091F\u094B-\u090F\u0915\u094D\u0938\u0947\u092A\u094D\u091F \u091A\u093E\u0932\u0942 \u092F\u093E \u092C\u0902\u0926 \u0915\u0930\u0947\u0902\u0964\n" +
+                        "2. Xiaomi/Vivo/Oppo/Realme \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938: \u0910\u092A \u0915\u094B \u0930\u0940\u0938\u0947\u0902\u091F\u094D\u0938 (Recents) \u092E\u0947\u0902 \u0924\u093E\u0932\u093E (Lock) \u0932\u0917\u093E\u090F\u0902 \u0914\u0930 AutoStart \u0911\u0928 \u0915\u0930\u0947\u0902 \u0924\u093E\u0915\u093F \u092C\u0948\u0915\u0917\u094D\u0930\u093E\u0909\u0902\u0921 \u092E\u0947\u0902 \u0938\u0930\u094D\u0935\u093F\u0938 \u092C\u0902\u0926 \u0928 \u0939\u094B\u0964\n" +
+                        "3. 1-\u0915\u094D\u0932\u093F\u0915 \u092C\u0947\u0938\u094D\u091F \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938: \u0928\u0940\u091A\u0947 \u0926\u093F\u090F \u0917\u090F \u0939\u0930\u0947 \u092C\u091F\u0928 \u092A\u0930 \u091F\u0948\u092A \u0915\u0930\u0924\u0947 \u0939\u0940 \u0938\u092C\u0938\u0947 \u0905\u091A\u094D\u091B\u0940 \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938 \u0905\u092A\u0928\u0947 \u0906\u092A \u0932\u093E\u0917\u0942 \u0939\u094B \u091C\u093E\u090F\u0902\u0917\u0940!"
             else
                 "1. Floating Bubble: Hovers above your driver app for instant pause/play.\n" +
                         "2. OEM Battery Setup: Lock Order Master in Recents and enable AutoStart on Xiaomi/Vivo/Oppo.\n" +
                         "3. 1-Click Best Setup: Tap the green button below to automatically apply ideal filters and start earning!",
             recommendedSetting = if (isHindi)
-                "सब तैयार है! नीचे 'बेस्ट सेटिंग्स लागू करें' पर टैप करके तुरंत कमाई शुरू करें।"
+                "\u0938\u092C \u0924\u0948\u092F\u093E\u0930 \u0939\u0948! \u0928\u0940\u091A\u0947 '\u092C\u0947\u0938\u094D\u091F \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938 \u0932\u093E\u0917\u0942 \u0915\u0930\u0947\u0902' \u092A\u0930 \u091F\u0948\u092A \u0915\u0930\u0915\u0947 \u0924\u0941\u0930\u0902\u0924 \u0915\u092E\u093E\u0908 \u0936\u0941\u0930\u0942 \u0915\u0930\u0947\u0902\u0964"
             else
                 "All ready! Tap 'Apply Best Settings' below to get started immediately.",
             speechText = if (isHindi)
-                "सब तैयार है। फ्लोटिंग बटन से ऐप को कंट्रोल करें, और अगर आपका फोन शाओमी, विवो या ओप्पो है तो इसे रीसेंट्स में लॉक रखें। नीचे दिए गए बटन से बेस्ट सेटिंग्स लागू करें और कमाई शुरू करें।"
+                "\u0938\u092C \u0924\u0948\u092F\u093E\u0930 \u0939\u0948\u0964 \u092B\u094D\u0932\u094B\u091F\u093F\u0902\u0917 \u092C\u091F\u0928 \u0938\u0947 \u0910\u092A \u0915\u094B \u0915\u0902\u091F\u094D\u0930\u094B\u0932 \u0915\u0930\u0947\u0902, \u0914\u0930 \u0905\u0917\u0930 \u0906\u092A\u0915\u093E \u092B\u094B\u0928 \u0936\u093E\u0913\u092E\u0940, \u0935\u093F\u0935\u094B \u092F\u093E \u0913\u092A\u094D\u092A\u094B \u0939\u0948 \u0924\u094B \u0907\u0938\u0947 \u0930\u0940\u0938\u0947\u0902\u091F\u094D\u0938 \u092E\u0947\u0902 \u0932\u0949\u0915 \u0930\u0916\u0947\u0902\u0964 \u0928\u0940\u091A\u0947 \u0926\u093F\u090F \u0917\u090F \u092C\u091F\u0928 \u0938\u0947 \u092C\u0947\u0938\u094D\u091F \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938 \u0932\u093E\u0917\u0942 \u0915\u0930\u0947\u0902 \u0914\u0930 \u0915\u092E\u093E\u0908 \u0936\u0941\u0930\u0942 \u0915\u0930\u0947\u0902\u0964"
             else
                 "You are ready. Use the floating overlay to control auto accept, lock the app in recents, and tap below to apply recommended settings.",
             accentColor = PrimaryEmerald,
@@ -934,6 +935,27 @@ private fun getTutorialSteps(context: Context, isHindi: Boolean): List<TutorialG
             }
         )
     )
+}
+
+@androidx.annotation.VisibleForTesting
+internal fun getVoiceDemoFieldLabels(isHindi: Boolean): List<String> {
+    return if (isHindi) {
+        listOf(
+            "1. \u0915\u093F\u0930\u093E\u092F\u093E (Fare):",
+            "2. \u092A\u093F\u0915\u0905\u092A \u0926\u0942\u0930\u0940:",
+            "3. \u092A\u093F\u0915\u0905\u092A \u0938\u094D\u0925\u093E\u0928:",
+            "4. \u0921\u094D\u0930\u0949\u092A \u0926\u0942\u0930\u0940:",
+            "5. \u0921\u094D\u0930\u0949\u092A \u0938\u094D\u0925\u093E\u0928:"
+        )
+    } else {
+        listOf(
+            "1. Fare:",
+            "2. Pickup Distance:",
+            "3. Pickup Location:",
+            "4. Drop Distance:",
+            "5. Drop Location:"
+        )
+    }
 }
 
 // =================================================================================================
@@ -976,7 +998,7 @@ private fun MockRideOfferDemoCard(isHindi: Boolean) {
                     color = EmeraldContainer
                 ) {
                     Text(
-                        text = "⭐ 4.8 Rating",
+                        text = "\u2B50 4.8 Rating",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                         color = OnEmeraldContainer,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -993,14 +1015,14 @@ private fun MockRideOfferDemoCard(isHindi: Boolean) {
             ) {
                 Column {
                     Text(
-                        text = "₹95.00",
+                        text = "\u20B995.00",
                         style = MaterialTheme.typography.headlineMedium.copy(
                             fontWeight = FontWeight.Black
                         ),
                         color = PrimaryEmerald
                     )
                     Text(
-                        text = "5.4 KM • Pickup: 0.8 KM",
+                        text = "5.4 KM \u2022 Pickup: 0.8 KM",
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextPrimary
                     )
@@ -1023,7 +1045,7 @@ private fun MockRideOfferDemoCard(isHindi: Boolean) {
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = if (isHindi) "300ms में ऑटो-एक्सेप्ट" else "300ms Accepted",
+                            text = if (isHindi) "300ms \u092E\u0947\u0902 \u0911\u091F\u094B-\u090F\u0915\u094D\u0938\u0947\u092A\u094D\u091F" else "300ms Accepted",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Black,
                                 color = Color.Black
@@ -1049,7 +1071,7 @@ private fun MockPermissionFlowCard(context: Context, isHindi: Boolean) {
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = if (isHindi) "सर्विस चालू करने के 3 आसान कदम:" else "3 Easy Steps to Enable Service:",
+                text = if (isHindi) "\u0938\u0930\u094D\u0935\u093F\u0938 \u091A\u093E\u0932\u0942 \u0915\u0930\u0928\u0947 \u0915\u0947 3 \u0906\u0938\u093E\u0928 \u0915\u0926\u092E:" else "3 Easy Steps to Enable Service:",
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                 color = Color(0xFFF59E0B)
             )
@@ -1068,7 +1090,7 @@ private fun MockPermissionFlowCard(context: Context, isHindi: Boolean) {
                     }
                 }
                 Text(
-                    text = if (isHindi) "Settings ➡️ Accessibility (पहुंच योग्यता)" else "Open Settings ➡️ Accessibility",
+                    text = if (isHindi) "Settings \u27A1\uFE0F Accessibility (\u092A\u0939\u0941\u0902\u091A \u092F\u094B\u0917\u094D\u092F\u0924\u093E)" else "Open Settings \u27A1\uFE0F Accessibility",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextPrimary
                 )
@@ -1088,7 +1110,7 @@ private fun MockPermissionFlowCard(context: Context, isHindi: Boolean) {
                     }
                 }
                 Text(
-                    text = if (isHindi) "Downloaded Apps ➡️ 'Order Master' चुनें" else "Downloaded Apps ➡️ Tap 'Order Master'",
+                    text = if (isHindi) "Downloaded Apps \u27A1\uFE0F 'Order Master' \u091A\u0941\u0928\u0947\u0902" else "Downloaded Apps \u27A1\uFE0F Tap 'Order Master'",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextPrimary
                 )
@@ -1108,7 +1130,7 @@ private fun MockPermissionFlowCard(context: Context, isHindi: Boolean) {
                     }
                 }
                 Text(
-                    text = if (isHindi) "'Use Order Master' को ON करें और Allow दबाएं" else "Turn ON 'Use Order Master' & Allow",
+                    text = if (isHindi) "'Use Order Master' \u0915\u094B ON \u0915\u0930\u0947\u0902 \u0914\u0930 Allow \u0926\u092C\u093E\u090F\u0902" else "Turn ON 'Use Order Master' & Allow",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextPrimary
                 )
@@ -1128,7 +1150,7 @@ private fun MockPermissionFlowCard(context: Context, isHindi: Boolean) {
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = if (isHindi) "अभी Accessibility सेटिंग्स खोलें" else "Open Accessibility Settings Now",
+                    text = if (isHindi) "\u0905\u092D\u0940 Accessibility \u0938\u0947\u091F\u093F\u0902\u0917\u094D\u0938 \u0916\u094B\u0932\u0947\u0902" else "Open Accessibility Settings Now",
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -1149,7 +1171,7 @@ private fun MockFareComparisonCard(isHindi: Boolean) {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = if (isHindi) "किराया तुलना (Example):" else "Fare Comparison (Example):",
+                text = if (isHindi) "\u0915\u093F\u0930\u093E\u092F\u093E \u0924\u0941\u0932\u0928\u093E (Example):" else "Fare Comparison (Example):",
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                 color = TextPrimary
             )
@@ -1167,9 +1189,9 @@ private fun MockFareComparisonCard(isHindi: Boolean) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("₹35.00 (3.2 KM)", fontWeight = FontWeight.Bold, color = TextPrimary)
+                        Text("\u20B935.00 (3.2 KM)", fontWeight = FontWeight.Bold, color = TextPrimary)
                         Text(
-                            text = if (isHindi) "कम किराया (घाटा)" else "Low Fare (Loss)",
+                            text = if (isHindi) "\u0915\u092E \u0915\u093F\u0930\u093E\u092F\u093E (\u0918\u093E\u091F\u093E)" else "Low Fare (Loss)",
                             style = MaterialTheme.typography.bodySmall,
                             color = Color(0xFFEF4444)
                         )
@@ -1179,7 +1201,7 @@ private fun MockFareComparisonCard(isHindi: Boolean) {
                         color = Color(0xFFEF4444).copy(alpha = 0.25f)
                     ) {
                         Text(
-                            text = if (isHindi) "❌ छोड़ दिया (Skipped)" else "❌ Skipped",
+                            text = if (isHindi) "\u274C \u091B\u094B\u0921\u093C \u0926\u093F\u092F\u093E (Skipped)" else "\u274C Skipped",
                             color = Color(0xFFEF4444),
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -1201,9 +1223,9 @@ private fun MockFareComparisonCard(isHindi: Boolean) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("₹85.00 (5.0 KM)", fontWeight = FontWeight.Bold, color = TextPrimary)
+                        Text("\u20B985.00 (5.0 KM)", fontWeight = FontWeight.Bold, color = TextPrimary)
                         Text(
-                            text = if (isHindi) "अच्छा किराया (भरपूर कमाई)" else "High Fare (Profitable)",
+                            text = if (isHindi) "\u0905\u091A\u094D\u091B\u093E \u0915\u093F\u0930\u093E\u092F\u093E (\u092D\u0930\u092A\u0942\u0930 \u0915\u092E\u093E\u0908)" else "High Fare (Profitable)",
                             style = MaterialTheme.typography.bodySmall,
                             color = PrimaryEmerald
                         )
@@ -1213,7 +1235,7 @@ private fun MockFareComparisonCard(isHindi: Boolean) {
                         color = PrimaryEmerald
                     ) {
                         Text(
-                            text = if (isHindi) "✅ एक्सेप्ट (Accepted)" else "✅ Accepted",
+                            text = if (isHindi) "\u2705 \u090F\u0915\u094D\u0938\u0947\u092A\u094D\u091F (Accepted)" else "\u2705 Accepted",
                             color = Color.Black,
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -1238,7 +1260,7 @@ private fun MockRatePerKmCard(isHindi: Boolean) {
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = if (isHindi) "₹/KM रेट कैलकुलेशन (मुनाफा चेक):" else "₹/KM Calculation Example:",
+                text = if (isHindi) "\u20B9/KM \u0930\u0947\u091F \u0915\u0948\u0932\u0915\u0941\u0932\u0947\u0936\u0928 (\u092E\u0941\u0928\u093E\u092B\u093E \u091A\u0947\u0915):" else "\u20B9/KM Calculation Example:",
                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                 color = Color(0xFF38BDF8)
             )
@@ -1255,10 +1277,10 @@ private fun MockRatePerKmCard(isHindi: Boolean) {
                     modifier = Modifier.weight(1f)
                 ) {
                     Column(modifier = Modifier.padding(10.dp)) {
-                        Text("₹60 ÷ 10 KM", fontWeight = FontWeight.Bold, color = TextPrimary)
-                        Text("= ₹6.0 / KM", color = Color(0xFFEF4444), fontWeight = FontWeight.ExtraBold)
+                        Text("\u20B960 \u00F7 10 KM", fontWeight = FontWeight.Bold, color = TextPrimary)
+                        Text("= \u20B96.0 / KM", color = Color(0xFFEF4444), fontWeight = FontWeight.ExtraBold)
                         Text(
-                            text = if (isHindi) "घाटे का सौदा ⚠️" else "Fuel Loss ⚠️",
+                            text = if (isHindi) "\u0918\u093E\u091F\u0947 \u0915\u093E \u0938\u094C\u0926\u093E \u26A0\uFE0F" else "Fuel Loss \u26A0\uFE0F",
                             fontSize = 11.sp,
                             color = TextSecondary
                         )
@@ -1275,10 +1297,10 @@ private fun MockRatePerKmCard(isHindi: Boolean) {
                     modifier = Modifier.weight(1f)
                 ) {
                     Column(modifier = Modifier.padding(10.dp)) {
-                        Text("₹120 ÷ 8 KM", fontWeight = FontWeight.Bold, color = TextPrimary)
-                        Text("= ₹15.0 / KM", color = PrimaryEmerald, fontWeight = FontWeight.ExtraBold)
+                        Text("\u20B9120 \u00F7 8 KM", fontWeight = FontWeight.Bold, color = TextPrimary)
+                        Text("= \u20B915.0 / KM", color = PrimaryEmerald, fontWeight = FontWeight.ExtraBold)
                         Text(
-                            text = if (isHindi) "बंपर मुनाफा 🚀" else "High Profit 🚀",
+                            text = if (isHindi) "\u092C\u0902\u092A\u0930 \u092E\u0941\u0928\u093E\u092B\u093E \uD83D\uDE80" else "High Profit \uD83D\uDE80",
                             fontSize = 11.sp,
                             color = OnEmeraldContainer
                         )
@@ -1321,12 +1343,12 @@ private fun MockDistanceTipsCard(isHindi: Boolean) {
                 }
                 Column {
                     Text(
-                        text = if (isHindi) "मैक्सिमम पिकअप दूरी: 2.5 KM" else "Max Pickup: 2.5 KM",
+                        text = if (isHindi) "\u092E\u0948\u0915\u094D\u0938\u093F\u092E\u092E \u092A\u093F\u0915\u0905\u092A \u0926\u0942\u0930\u0940: 2.5 KM" else "Max Pickup: 2.5 KM",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = TextPrimary
                     )
                     Text(
-                        text = if (isHindi) "पैसेंजर तक पहुंचने में पेट्रोल और समय न गंवाएं" else "Save fuel by avoiding long empty pickups",
+                        text = if (isHindi) "\u092A\u0948\u0938\u0947\u0902\u091C\u0930 \u0924\u0915 \u092A\u0939\u0941\u0902\u091A\u0928\u0947 \u092E\u0947\u0902 \u092A\u0947\u091F\u094D\u0930\u094B\u0932 \u0914\u0930 \u0938\u092E\u092F \u0928 \u0917\u0902\u0935\u093E\u090F\u0902" else "Save fuel by avoiding long empty pickups",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
@@ -1353,12 +1375,12 @@ private fun MockDistanceTipsCard(isHindi: Boolean) {
                 }
                 Column {
                     Text(
-                        text = if (isHindi) "अधिकतम कुल दूरी: 15.0 KM" else "Max Distance: 15.0 KM",
+                        text = if (isHindi) "\u0905\u0927\u093F\u0915\u0924\u092E \u0915\u0941\u0932 \u0926\u0942\u0930\u0940: 15.0 KM" else "Max Distance: 15.0 KM",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = TextPrimary
                     )
                     Text(
-                        text = if (isHindi) "शहर से बाहर अनचाहे लंबे रूट्स पर जाने से बचें" else "Keep trips within convenient city perimeter",
+                        text = if (isHindi) "\u0936\u0939\u0930 \u0938\u0947 \u092C\u093E\u0939\u0930 \u0905\u0928\u091A\u093E\u0939\u0947 \u0932\u0902\u092C\u0947 \u0930\u0942\u091F\u094D\u0938 \u092A\u0930 \u091C\u093E\u0928\u0947 \u0938\u0947 \u092C\u091A\u0947\u0902" else "Keep trips within convenient city perimeter",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
@@ -1371,8 +1393,9 @@ private fun MockDistanceTipsCard(isHindi: Boolean) {
 @Composable
 private fun MockVoiceAnnouncementDemoCard(isHindi: Boolean) {
     val context = LocalContext.current
+    val fieldLabels = remember(isHindi) { getVoiceDemoFieldLabels(isHindi) }
     val sampleAnnouncement = if (isHindi) {
-        "Kiraya 45 rupaye. Pickup 0.6 kilometer City Centre. Drop 2.4 kilometer Rajkot railway station."
+        "\u0915\u093F\u0930\u093E\u092F\u093E 45 \u0930\u0941\u092A\u092F\u0947\u0964 \u092A\u093F\u0915\u0905\u092A 0.6 \u0915\u093F\u0932\u094B\u092E\u0940\u091F\u0930 City Centre\u0964 \u0921\u094D\u0930\u0949\u092A 2.4 \u0915\u093F\u0932\u094B\u092E\u0940\u091F\u0930 Rajkot railway station\u0964"
     } else {
         "Fare 45 rupees. Pickup 0.6 km City Centre. Drop 2.4 km Rajkot railway station."
     }
@@ -1404,7 +1427,7 @@ private fun MockVoiceAnnouncementDemoCard(isHindi: Boolean) {
                             .background(Color(0xFFF59E0B))
                     )
                     Text(
-                        text = if (isHindi) "5 मुख्य फील्ड्स का वॉइस डेमो" else "5-Field Voice Demo",
+                        text = if (isHindi) "5 \u092E\u0941\u0916\u094D\u092F \u092B\u0940\u0932\u094D\u0921\u094D\u0938 \u0915\u093E \u0935\u0949\u0907\u0938 \u0921\u0947\u092E\u094B" else "5-Field Voice Demo",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                         color = Color(0xFFF59E0B)
                     )
@@ -1415,7 +1438,7 @@ private fun MockVoiceAnnouncementDemoCard(isHindi: Boolean) {
                     color = Color(0xFFF59E0B).copy(alpha = 0.2f)
                 ) {
                     Text(
-                        text = if (isHindi) "🔊 लाइव टेस्ट" else "🔊 Live Test",
+                        text = if (isHindi) "\uD83D\uDD0A \u0932\u093E\u0907\u0935 \u091F\u0947\u0938\u094D\u091F" else "\uD83D\uDD0A Live Test",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                         color = Color(0xFFF59E0B),
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -1438,11 +1461,11 @@ private fun MockVoiceAnnouncementDemoCard(isHindi: Boolean) {
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "1. किराया (Fare):",
+                            text = fieldLabels[0],
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
                         Text(
-                            text = "₹45 (Auto Boost)",
+                            text = "\u20B945 (Auto Boost)",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontWeight = FontWeight.Black,
                                 color = PrimaryEmerald
@@ -1455,7 +1478,7 @@ private fun MockVoiceAnnouncementDemoCard(isHindi: Boolean) {
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "2. पिकअप दूरी:",
+                            text = fieldLabels[1],
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
                         Text(
@@ -1469,7 +1492,7 @@ private fun MockVoiceAnnouncementDemoCard(isHindi: Boolean) {
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "3. पिकअप स्थान:",
+                            text = fieldLabels[2],
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
                         Text(
@@ -1483,7 +1506,7 @@ private fun MockVoiceAnnouncementDemoCard(isHindi: Boolean) {
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "4. ड्रॉप दूरी:",
+                            text = fieldLabels[3],
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
                         Text(
@@ -1497,7 +1520,7 @@ private fun MockVoiceAnnouncementDemoCard(isHindi: Boolean) {
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = "5. ड्रॉप स्थान:",
+                            text = fieldLabels[4],
                             style = MaterialTheme.typography.bodySmall.copy(color = TextSecondary)
                         )
                         Text(
@@ -1541,7 +1564,7 @@ private fun MockVoiceAnnouncementDemoCard(isHindi: Boolean) {
             FilledTonalButton(
                 onClick = {
                     TTSManager.speak(context, sampleAnnouncement, flush = true)
-                    Toast.makeText(context, "🔊 $sampleAnnouncement", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "\uD83D\uDD0A $sampleAnnouncement", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.filledTonalButtonColors(
@@ -1557,7 +1580,7 @@ private fun MockVoiceAnnouncementDemoCard(isHindi: Boolean) {
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = if (isHindi) "अभी आवाज़ में सुनकर देखें" else "Listen Audio Announcement",
+                    text = if (isHindi) "\u0905\u092D\u0940 \u0906\u0935\u093E\u091C\u093C \u092E\u0947\u0902 \u0938\u0941\u0928\u0915\u0930 \u0926\u0947\u0916\u0947\u0902" else "Listen Audio Announcement",
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -1598,12 +1621,12 @@ private fun MockFloatingWidgetDemoCard(isHindi: Boolean) {
                 }
                 Column {
                     Text(
-                        text = if (isHindi) "फ्लोटिंग बटन (Screen Overlay)" else "Floating Screen Bubble",
+                        text = if (isHindi) "\u092B\u094D\u0932\u094B\u091F\u093F\u0902\u0917 \u092C\u091F\u0928 (Screen Overlay)" else "Floating Screen Bubble",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = TextPrimary
                     )
                     Text(
-                        text = if (isHindi) "Rapido ऐप के ऊपर हमेशा तैरता रहता है" else "Hovers directly above your Rapido app",
+                        text = if (isHindi) "Rapido \u0910\u092A \u0915\u0947 \u090A\u092A\u0930 \u0939\u092E\u0947\u0936\u093E \u0924\u0948\u0930\u0924\u093E \u0930\u0939\u0924\u093E \u0939\u0948" else "Hovers directly above your Rapido app",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
@@ -1621,12 +1644,12 @@ private fun MockFloatingWidgetDemoCard(isHindi: Boolean) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = if (isHindi) "🟢 ऑटो-एक्सेप्ट सक्रिय (Active)" else "🟢 Auto-Accept Active",
+                        text = if (isHindi) "\uD83D\uDFE2 \u0911\u091F\u094B-\u090F\u0915\u094D\u0938\u0947\u092A\u094D\u091F \u0938\u0915\u094D\u0930\u093F\u092F (Active)" else "\uD83D\uDFE2 Auto-Accept Active",
                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
                         color = PrimaryEmerald
                     )
                     Text(
-                        text = if (isHindi) "1-टैप में पॉज करें" else "1-Tap to Pause",
+                        text = if (isHindi) "1-\u091F\u0948\u092A \u092E\u0947\u0902 \u092A\u0949\u091C \u0915\u0930\u0947\u0902" else "1-Tap to Pause",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextSecondary
                     )

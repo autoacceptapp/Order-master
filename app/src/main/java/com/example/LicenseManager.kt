@@ -18,9 +18,15 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import java.net.URL
+import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.SecureRandom
+import javax.crypto.KeyGenerator
 import javax.crypto.Mac
+import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 import javax.net.ssl.HttpsURLConnection
 import kotlinx.coroutines.CoroutineScope
@@ -797,8 +803,49 @@ object LicenseManager {
         )
     }
 
+    private const val KEYSTORE_HMAC_ALIAS = "order_master_license_cache_hmac_key"
+    private val hmacKeyLock = Any()
+
+    @Volatile
+    private var unitTestFallbackHmacKey: SecretKey? = null
+
+    private fun getOrCreateLicenseCacheHmacKey(): SecretKey? {
+        synchronized(hmacKeyLock) {
+            try {
+                val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+                val existing = keyStore.getKey(KEYSTORE_HMAC_ALIAS, null) as? SecretKey
+                if (existing != null) return existing
+
+                val keyGenerator = KeyGenerator.getInstance(
+                    KeyProperties.KEY_ALGORITHM_HMAC_SHA256,
+                    "AndroidKeyStore"
+                )
+                val spec = KeyGenParameterSpec.Builder(
+                    KEYSTORE_HMAC_ALIAS,
+                    KeyProperties.PURPOSE_SIGN
+                )
+                    .setKeySize(256)
+                    .build()
+                keyGenerator.init(spec)
+                return keyGenerator.generateKey()
+            } catch (e: Exception) {
+                if (isUnitTestEnvironment()) {
+                    return unitTestFallbackHmacKey ?: ByteArray(32).also {
+                        SecureRandom().nextBytes(it)
+                    }.let { randomBytes ->
+                        SecretKeySpec(randomBytes, "HmacSHA256").also {
+                            unitTestFallbackHmacKey = it
+                        }
+                    }
+                }
+                Log.w(TAG, "AndroidKeyStore HMAC key unavailable: ${e.message}")
+                return null
+            }
+        }
+    }
+
     /**
-     * Computes hardware/package-bound HMAC-SHA256 signature over cached licensing fields so
+     * Computes AndroidKeyStore hardware/package-bound HMAC-SHA256 signature over cached licensing fields so
      * root users editing LICENSE_CACHE_PREFS.xml cannot forge active passes or timestamps.
      */
     private fun computeLicenseCacheHmac(
@@ -814,12 +861,11 @@ object LicenseManager {
         removeAdsExpiry: Long = 0L
     ): String {
         return try {
+            val hmacKey = getOrCreateLicenseCacheHmacKey() ?: return ""
             val hwId = DeviceUtils.getDeviceHardwareId(context)
-            val keyMaterial = "OM_ZT_CACHE_V2|$hwId|${context.packageName}".toByteArray(Charsets.UTF_8)
-            val digestKey = MessageDigest.getInstance("SHA-256").digest(keyMaterial)
             val mac = Mac.getInstance("HmacSHA256")
-            mac.init(SecretKeySpec(digestKey, "HmacSHA256"))
-            val payload = "$passTierId|$passExpiry|$trialClaimed|$trialExpiry|$trialUsed|$syncWall|$syncElapsed|$serverTimestamp|$removeAdsExpiry"
+            mac.init(hmacKey)
+            val payload = "$hwId|${context.packageName}|$passTierId|$passExpiry|$trialClaimed|$trialExpiry|$trialUsed|$syncWall|$syncElapsed|$serverTimestamp|$removeAdsExpiry"
             mac.doFinal(payload.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
         } catch (e: Exception) {
             Log.w(TAG, "Failed computing cache HMAC: ${e.message}")
@@ -1375,9 +1421,22 @@ object LicenseManager {
         )
     }
 
+    @VisibleForTesting
+    internal fun buildPurchasePassPayload(passTier: PassTier): Map<String, Any> {
+        return mapOf("passTier" to passTier.id)
+    }
+
+    @VisibleForTesting
+    internal fun buildActivatePassPaymentPayload(passTier: PassTier, cleanUtr: String): Map<String, Any> {
+        return mapOf(
+            "passTier" to passTier.id,
+            "utr" to cleanUtr
+        )
+    }
+
     /**
      * Purchases a Pass using the user's Points balance via Zero-Trust Action Queue.
-     * Enqueues PURCHASE_PASS request to `pending_actions` and awaits server completion.
+     * Enqueues PURCHASE_PASS request to `pending_actions` with only `passTier` and awaits server completion.
      */
     suspend fun purchasePassWithPoints(passTier: PassTier): Result<Unit> = withContext(Dispatchers.IO) {
         val currentBalance = _pointsBalance.value
@@ -1390,12 +1449,7 @@ object LicenseManager {
 
         val result = executeActionQueueRequest(
             actionType = "PURCHASE_PASS",
-            payload = mapOf(
-                "passTier" to passTier.id,
-                "pointsCost" to passTier.pointsCost,
-                "durationDays" to passTier.durationDays,
-                "durationMs" to passTier.durationMs
-            )
+            payload = buildPurchasePassPayload(passTier)
         )
 
         result.fold(
@@ -1412,7 +1466,7 @@ object LicenseManager {
 
     /**
      * Activates a Pass via payment reference via Zero-Trust Action Queue.
-     * Enqueues ACTIVATE_PASS_PAYMENT request to `pending_actions` and awaits server completion.
+     * Enqueues ACTIVATE_PASS_PAYMENT request to `pending_actions` with only `passTier` and `utr` and awaits server completion.
      */
     suspend fun activatePassViaPayment(
         passTier: PassTier,
@@ -1427,14 +1481,7 @@ object LicenseManager {
 
         val result = executeActionQueueRequest(
             actionType = "ACTIVATE_PASS_PAYMENT",
-            payload = mapOf(
-                "passTier" to passTier.id,
-                "utr" to cleanUtr,
-                "transactionId" to cleanUtr,
-                "amount" to passTier.priceInInr,
-                "durationDays" to passTier.durationDays,
-                "durationMs" to passTier.durationMs
-            )
+            payload = buildActivatePassPaymentPayload(passTier, cleanUtr)
         )
 
         result.fold(

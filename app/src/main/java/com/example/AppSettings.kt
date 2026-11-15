@@ -224,6 +224,14 @@ object AppSettings {
     const val MAX_FARE_RANGE_END = 2000.0f
     const val DEFAULT_MAX_FARE = 500.0f
 
+    val FARE_RANGE_PRESETS: List<Triple<String, Float, Float>> = listOf(
+        Triple("\u20B940 - \u20B9200", 40f, 200f),
+        Triple("\u20B960 - \u20B9500", 60f, 500f),
+        Triple("\u20B980 - \u20B91000", 80f, 1000f),
+        Triple("\u20B9100 - \u20B91500", 100f, 1500f),
+        Triple("\u20B950 - \u20B92000", 50f, MAX_FARE_RANGE_END)
+    )
+
     // Strict Safe Restricted Defaults (RAM defaults until Firestore provisions user rules)
     const val RESTRICTED_AUTO_ACCEPT_ENABLED = false
     const val RESTRICTED_MIN_FARE = 0.0f

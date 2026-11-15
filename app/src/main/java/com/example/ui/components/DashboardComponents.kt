@@ -424,17 +424,17 @@ fun DecisionThresholdsCard(
             ) {
                 Column {
                     Text(
-                        text = "Price Range Filter (₹)",
+                        text = "Price Range Filter (\u20B9)",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
                     Text(
-                        text = "Filter: Min Price ≤ Fare ≤ Max Price",
+                        text = "Filter: Min Price \u2264 Fare \u2264 Max Price",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Text(
-                    text = "₹${settings.minFare.roundToInt()} - ₹${settings.maxFare.roundToInt()}",
+                    text = "\u20B9${settings.minFare.roundToInt()} - \u20B9${settings.maxFare.roundToInt()}",
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.ExtraBold,
                         color = PrimaryEmerald
@@ -454,12 +454,14 @@ fun DecisionThresholdsCard(
                     onValueChange = { input ->
                         minPriceInput = input.filter { it.isDigit() }
                         minPriceInput.toFloatOrNull()?.let { newVal ->
-                            if (newVal <= settings.maxFare) {
+                            if (newVal in AppSettings.MIN_FARE_RANGE_START..AppSettings.MIN_FARE_RANGE_END &&
+                                newVal <= settings.maxFare
+                            ) {
                                 onMinFareChanged(newVal)
                             }
                         }
                     },
-                    label = { Text("Min Price (₹)", fontSize = 12.sp) },
+                    label = { Text("Min Price (\u20B9)", fontSize = 12.sp) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Number,
@@ -467,8 +469,9 @@ fun DecisionThresholdsCard(
                     ),
                     keyboardActions = KeyboardActions(
                         onDone = {
+                            val maxAllowedMin = minOf(AppSettings.MIN_FARE_RANGE_END, settings.maxFare)
                             val clamped = (minPriceInput.toFloatOrNull() ?: settings.minFare)
-                                .coerceIn(0f, settings.maxFare)
+                                .coerceIn(AppSettings.MIN_FARE_RANGE_START, maxAllowedMin)
                             minPriceInput = clamped.roundToInt().toString()
                             onMinFareChanged(clamped)
                             focusManager.clearFocus()
@@ -483,7 +486,11 @@ fun DecisionThresholdsCard(
                         .onFocusChanged { focusState ->
                             if (!focusState.isFocused) {
                                 val parsed = minPriceInput.toFloatOrNull()
-                                if (parsed == null || parsed < 0f || parsed > settings.maxFare) {
+                                if (parsed == null ||
+                                    parsed < AppSettings.MIN_FARE_RANGE_START ||
+                                    parsed > AppSettings.MIN_FARE_RANGE_END ||
+                                    parsed > settings.maxFare
+                                ) {
                                     minPriceInput = settings.minFare.roundToInt().toString()
                                 }
                             }
@@ -496,12 +503,14 @@ fun DecisionThresholdsCard(
                     onValueChange = { input ->
                         maxPriceInput = input.filter { it.isDigit() }
                         maxPriceInput.toFloatOrNull()?.let { newVal ->
-                            if (newVal >= settings.minFare) {
+                            if (newVal in AppSettings.MAX_FARE_RANGE_START..AppSettings.MAX_FARE_RANGE_END &&
+                                newVal >= settings.minFare
+                            ) {
                                 onMaxFareChanged(newVal)
                             }
                         }
                     },
-                    label = { Text("Max Price (₹)", fontSize = 12.sp) },
+                    label = { Text("Max Price (\u20B9)", fontSize = 12.sp) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Number,
@@ -509,9 +518,9 @@ fun DecisionThresholdsCard(
                     ),
                     keyboardActions = KeyboardActions(
                         onDone = {
+                            val minAllowedMax = maxOf(AppSettings.MAX_FARE_RANGE_START, settings.minFare)
                             val clamped = (maxPriceInput.toFloatOrNull() ?: settings.maxFare)
-                                .coerceAtLeast(settings.minFare)
-                                .coerceAtMost(2000f)
+                                .coerceIn(minAllowedMax, AppSettings.MAX_FARE_RANGE_END)
                             maxPriceInput = clamped.roundToInt().toString()
                             onMaxFareChanged(clamped)
                             focusManager.clearFocus()
@@ -526,7 +535,11 @@ fun DecisionThresholdsCard(
                         .onFocusChanged { focusState ->
                             if (!focusState.isFocused) {
                                 val parsed = maxPriceInput.toFloatOrNull()
-                                if (parsed == null || parsed < settings.minFare) {
+                                if (parsed == null ||
+                                    parsed < AppSettings.MAX_FARE_RANGE_START ||
+                                    parsed > AppSettings.MAX_FARE_RANGE_END ||
+                                    parsed < settings.minFare
+                                ) {
                                     maxPriceInput = settings.maxFare.roundToInt().toString()
                                 }
                             }
@@ -537,18 +550,33 @@ fun DecisionThresholdsCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Compose RangeSlider for visual dual-bound control
-            val currentRange = (settings.minFare.coerceIn(0f, 1000f))..(settings.maxFare.coerceIn(0f, 1000f))
+            // Compose RangeSlider aligned strictly to AppSettings bounds (MIN_FARE_RANGE_START..MAX_FARE_RANGE_END)
+            val sliderStart = AppSettings.MIN_FARE_RANGE_START
+            val sliderEnd = AppSettings.MAX_FARE_RANGE_END
+            val clampedSliderMin = settings.minFare.coerceIn(sliderStart, AppSettings.MIN_FARE_RANGE_END.coerceAtMost(sliderEnd))
+            val clampedSliderMax = settings.maxFare.coerceIn(clampedSliderMin.coerceAtLeast(AppSettings.MAX_FARE_RANGE_START), sliderEnd)
+            val currentRange = clampedSliderMin..clampedSliderMax
             RangeSlider(
                 value = currentRange,
                 onValueChange = { range ->
-                    val newMin = range.start.roundToInt().toFloat()
-                    val newMax = range.endInclusive.roundToInt().toFloat()
-                    onMinFareChanged(newMin)
-                    onMaxFareChanged(newMax)
+                    val newMin = range.start.roundToInt().toFloat().coerceIn(
+                        AppSettings.MIN_FARE_RANGE_START,
+                        AppSettings.MIN_FARE_RANGE_END
+                    )
+                    val newMax = range.endInclusive.roundToInt().toFloat().coerceIn(
+                        maxOf(AppSettings.MAX_FARE_RANGE_START, newMin),
+                        AppSettings.MAX_FARE_RANGE_END
+                    )
+                    if (newMin > settings.maxFare) {
+                        onMaxFareChanged(newMax)
+                        onMinFareChanged(newMin)
+                    } else {
+                        onMinFareChanged(newMin)
+                        onMaxFareChanged(newMax)
+                    }
                 },
-                valueRange = 0f..1000f,
-                steps = 99,
+                valueRange = sliderStart..sliderEnd,
+                steps = 0,
                 colors = SliderDefaults.colors(
                     thumbColor = PrimaryEmerald,
                     activeTrackColor = PrimaryEmerald,
@@ -560,7 +588,7 @@ fun DecisionThresholdsCard(
                     .testTag("price_range_slider")
             )
 
-            // Quick Preset Chips for Min & Max Price Ranges
+            // Quick Preset Chips for Min & Max Price Ranges (aligned strictly within MIN_FARE_RANGE_START..MAX_FARE_RANGE_END)
             Text(
                 text = "Quick Presets:",
                 style = MaterialTheme.typography.labelSmall,
@@ -572,27 +600,28 @@ fun DecisionThresholdsCard(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                val presets = listOf(
-                    Triple("₹40 - ₹200", 40f, 200f),
-                    Triple("₹60 - ₹500", 60f, 500f),
-                    Triple("₹80 - ₹1000", 80f, 1000f),
-                    Triple("₹100 - ₹5000", 100f, 5000f),
-                    Triple("₹50+ (No Max)", 50f, 10000f)
-                )
-                presets.forEach { (label, minVal, maxVal) ->
-                    val isSelected = (settings.minFare.roundToInt() == minVal.toInt() && settings.maxFare.roundToInt() == maxVal.toInt())
+                AppSettings.FARE_RANGE_PRESETS.forEach { (label, minVal, maxVal) ->
+                    val clampedMin = AppSettings.validateMinFare(minVal, maxVal)
+                    val clampedMax = AppSettings.validateMaxFare(maxVal, clampedMin)
+                    val isSelected = (settings.minFare.roundToInt() == clampedMin.roundToInt() &&
+                        settings.maxFare.roundToInt() == clampedMax.roundToInt())
                     FilterChip(
                         selected = isSelected,
                         onClick = {
-                            onMinFareChanged(minVal)
-                            onMaxFareChanged(maxVal)
+                            if (clampedMin > settings.maxFare) {
+                                onMaxFareChanged(clampedMax)
+                                onMinFareChanged(clampedMin)
+                            } else {
+                                onMinFareChanged(clampedMin)
+                                onMaxFareChanged(clampedMax)
+                            }
                         },
                         label = { Text(label, fontSize = 11.sp) },
                         colors = FilterChipDefaults.filterChipColors(
                             selectedContainerColor = PrimaryEmerald,
                             selectedLabelColor = Color.Black
                         ),
-                        modifier = Modifier.testTag("price_preset_${minVal.toInt()}_${maxVal.toInt()}")
+                        modifier = Modifier.testTag("price_preset_${clampedMin.toInt()}_${clampedMax.toInt()}")
                     )
                 }
             }
@@ -830,7 +859,7 @@ fun VoiceAnnouncerCard(
                     FilterChip(
                         selected = selectedLanguage.equals("hi", ignoreCase = true),
                         onClick = { onSelectLanguage("hi") },
-                        label = { Text("Hindi (हिंदी)", fontSize = 12.sp) },
+                        label = { Text("Hindi (\u0939\u093F\u0928\u094D\u0926\u0940)", fontSize = 12.sp) },
                         leadingIcon = if (selectedLanguage.equals("hi", ignoreCase = true)) {
                             { Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         } else null,
@@ -860,7 +889,7 @@ fun VoiceAnnouncerCard(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = if (selectedLanguage.equals("hi", ignoreCase = true)) {
-                            "Test Speech (परीक्षण आवाज़ सुनें)"
+                            "Test Speech (\u092A\u0930\u0940\u0915\u094D\u0937\u0923 \u0906\u0935\u093E\u091C\u093C \u0938\u0941\u0928\u0947\u0902)"
                         } else {
                             "Test Voice Announcement"
                         },
@@ -880,7 +909,7 @@ fun RideSimulatorCard(
     onSimulateAccept: (String) -> Unit
 ) {
     var offerInput by remember {
-        mutableStateOf("Rapido Ride: ₹65 + ₹15 • Pickup: 1.2 km • Drop: 5.8 km [Accept]")
+        mutableStateOf("Rapido Ride: \u20B965 + \u20B915 \u2022 Pickup: 1.2 km \u2022 Drop: 5.8 km [Accept]")
     }
 
     val parsedOffer = remember(offerInput) {
@@ -944,11 +973,11 @@ fun RideSimulatorCard(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 val presets = listOf(
-                    "Standard (₹80)" to "Rapido Ride: ₹65 + ₹15 • Pickup: 1.2 km • Drop: 5.8 km [Accept]",
-                    "High Fare (₹118)" to "Captain Offer: ₹95 + ₹23 • Pickup 2.1 km • Drop 8.0 km [Accept]",
-                    "Low Fare (₹35)" to "Order Offer: ₹35 • Pickup 0.8 km • Drop 2.0 km [Accept]",
-                    "Exceeds Max (₹650)" to "Luxury Trip: ₹650 • Pickup 1.5 km • Drop 22.0 km [Accept]",
-                    "Far Pickup (6.5km)" to "Offer: ₹120 • Pickup 6.5 km • Drop 14.0 km [Accept]"
+                    "Standard (\u20B980)" to "Rapido Ride: \u20B965 + \u20B915 \u2022 Pickup: 1.2 km \u2022 Drop: 5.8 km [Accept]",
+                    "High Fare (\u20B9118)" to "Captain Offer: \u20B995 + \u20B923 \u2022 Pickup 2.1 km \u2022 Drop 8.0 km [Accept]",
+                    "Low Fare (\u20B935)" to "Order Offer: \u20B935 \u2022 Pickup 0.8 km \u2022 Drop 2.0 km [Accept]",
+                    "Exceeds Max (\u20B9650)" to "Luxury Trip: \u20B9650 \u2022 Pickup 1.5 km \u2022 Drop 22.0 km [Accept]",
+                    "Far Pickup (6.5km)" to "Offer: \u20B9120 \u2022 Pickup 6.5 km \u2022 Drop 14.0 km [Accept]"
                 )
 
                 presets.forEach { (label, text) ->
@@ -996,7 +1025,7 @@ fun RideSimulatorCard(
                     Column {
                         Text("Parsed Fare", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(
-                            text = parsedOffer.totalFare?.let { "₹${it.toInt()}" } ?: "Not Found",
+                            text = parsedOffer.totalFare?.let { "\u20B9${it.toInt()}" } ?: "Not Found",
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp,
                             color = if (parsedOffer.totalFare != null) PrimaryEmerald else MaterialTheme.colorScheme.error

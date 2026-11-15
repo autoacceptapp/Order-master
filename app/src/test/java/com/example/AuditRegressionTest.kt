@@ -151,4 +151,109 @@ class AuditRegressionTest {
         assertFalse(requested.contains("android.permission.ACCESS_ADSERVICES_AD_ID"))
         assertFalse(requested.contains("android.permission.ACCESS_ADSERVICES_TOPICS"))
     }
+
+    @Test
+    fun `tutorial steps and voice demo labels are complete in Hindi and English with intact UTF-8 text`() {
+        val hindiSteps = com.example.ui.components.getTutorialSteps(context, isHindi = true)
+        val englishSteps = com.example.ui.components.getTutorialSteps(context, isHindi = false)
+
+        assertEquals(7, hindiSteps.size)
+        assertEquals(7, englishSteps.size)
+
+        val devanagariRegex = Regex("[\\u0900-\\u097F]+")
+        hindiSteps.forEachIndexed { index, step ->
+            assertTrue("Hindi step ${index + 1} badge blank", step.badge.isNotBlank())
+            assertTrue("Hindi step ${index + 1} title blank", step.title.isNotBlank())
+            assertTrue("Hindi step ${index + 1} shortDesc blank", step.shortDesc.isNotBlank())
+            assertTrue("Hindi step ${index + 1} detailExplainer blank", step.detailExplainer.isNotBlank())
+            assertTrue("Hindi step ${index + 1} recommendedSetting blank", step.recommendedSetting.isNotBlank())
+            assertTrue("Hindi step ${index + 1} speechText blank", step.speechText.isNotBlank())
+            assertTrue(
+                "Hindi step ${index + 1} title missing Devanagari text: ${step.title}",
+                devanagariRegex.containsMatchIn(step.title)
+            )
+            assertFalse("Replacement char found in Hindi step ${index + 1}", step.detailExplainer.contains('\uFFFD'))
+            assertFalse("Question-mark placeholder found in Hindi step ${index + 1}", step.detailExplainer.contains("??"))
+        }
+
+        assertTrue("Hindi step 3 must contain Rupee symbol", hindiSteps[2].detailExplainer.contains('\u20B9'))
+        assertTrue("Hindi step 4 must contain Rupee symbol", hindiSteps[3].detailExplainer.contains('\u20B9'))
+
+        englishSteps.forEachIndexed { index, step ->
+            assertTrue("English step ${index + 1} title blank", step.title.isNotBlank())
+            assertTrue("English step ${index + 1} detailExplainer blank", step.detailExplainer.isNotBlank())
+            assertTrue("English step ${index + 1} speechText blank", step.speechText.isNotBlank())
+            assertFalse("Replacement char found in English step ${index + 1}", step.detailExplainer.contains('\uFFFD'))
+        }
+
+        val hindiVoiceLabels = com.example.ui.components.getVoiceDemoFieldLabels(isHindi = true)
+        val englishVoiceLabels = com.example.ui.components.getVoiceDemoFieldLabels(isHindi = false)
+        assertEquals(5, hindiVoiceLabels.size)
+        assertEquals(5, englishVoiceLabels.size)
+        assertEquals("1. \u0915\u093F\u0930\u093E\u092F\u093E (Fare):", hindiVoiceLabels[0])
+        assertEquals("1. Fare:", englishVoiceLabels[0])
+        hindiVoiceLabels.forEach { label ->
+            assertTrue(label.isNotBlank())
+            assertTrue("Hindi voice label missing Devanagari: $label", devanagariRegex.containsMatchIn(label))
+        }
+    }
+
+    @Test
+    fun `fare range presets stay within slider bounds and match clamped settings state`() {
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.MAX_FARE to futureExpiry
+            )
+        )
+        AppSettings.setMinFareEnabled(context, true)
+        AppSettings.setMaxFareEnabled(context, true)
+
+        assertTrue(AppSettings.FARE_RANGE_PRESETS.isNotEmpty())
+        AppSettings.FARE_RANGE_PRESETS.forEach { (label, rawMin, rawMax) ->
+            assertTrue("Preset label must contain Rupee symbol: $label", label.contains('\u20B9'))
+            assertTrue(
+                "Preset min $rawMin outside MIN_FARE range",
+                rawMin in AppSettings.MIN_FARE_RANGE_START..AppSettings.MIN_FARE_RANGE_END
+            )
+            assertTrue(
+                "Preset max $rawMax outside MAX_FARE range",
+                rawMax in AppSettings.MAX_FARE_RANGE_START..AppSettings.MAX_FARE_RANGE_END
+            )
+            assertTrue("Preset min $rawMin must be <= max $rawMax", rawMin <= rawMax)
+
+            if (rawMin > AppSettings.settingsState.value.maxFare) {
+                AppSettings.setMaxFare(context, rawMax)
+                AppSettings.setMinFare(context, rawMin)
+            } else {
+                AppSettings.setMinFare(context, rawMin)
+                AppSettings.setMaxFare(context, rawMax)
+            }
+
+            val updated = AppSettings.settingsState.value
+            assertEquals("Min fare mismatch for preset $label", rawMin, updated.minFare, 0.01f)
+            assertEquals("Max fare mismatch for preset $label", rawMax, updated.maxFare, 0.01f)
+        }
+    }
+
+    @Test
+    fun `action queue pass payloads omit client-forged prices or durations`() {
+        val purchasePayload = LicenseManager.buildPurchasePassPayload(PassTier.WEEKLY)
+        assertEquals(setOf("passTier"), purchasePayload.keys)
+        assertEquals(PassTier.WEEKLY.id, purchasePayload["passTier"])
+        assertFalse(purchasePayload.containsKey("pointsCost"))
+        assertFalse(purchasePayload.containsKey("durationDays"))
+        assertFalse(purchasePayload.containsKey("durationMs"))
+
+        val paymentPayload = LicenseManager.buildActivatePassPaymentPayload(PassTier.MONTHLY, "123456789012")
+        assertEquals(setOf("passTier", "utr"), paymentPayload.keys)
+        assertEquals(PassTier.MONTHLY.id, paymentPayload["passTier"])
+        assertEquals("123456789012", paymentPayload["utr"])
+        assertFalse(paymentPayload.containsKey("amount"))
+        assertFalse(paymentPayload.containsKey("durationDays"))
+        assertFalse(paymentPayload.containsKey("durationMs"))
+        assertFalse(paymentPayload.containsKey("transactionId"))
+    }
 }
+
