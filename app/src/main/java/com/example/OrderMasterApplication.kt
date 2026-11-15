@@ -3,8 +3,8 @@ package com.example
 import android.app.Application
 import android.util.Log
 import com.google.firebase.FirebaseApp
+import com.google.firebase.appcheck.AppCheckProviderFactory
 import com.google.firebase.appcheck.FirebaseAppCheck
-import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
@@ -51,10 +51,12 @@ class OrderMasterApplication : Application() {
         // 2. Initialize Google Mobile Ads SDK explicitly immediately after Firebase
         try {
             if (!isUnitTestEnvironment()) {
-                val requestConfig = com.google.android.gms.ads.RequestConfiguration.Builder()
-                    .setTestDeviceIds(listOf(com.google.android.gms.ads.AdRequest.DEVICE_ID_EMULATOR))
-                    .build()
-                MobileAds.setRequestConfiguration(requestConfig)
+                if (BuildConfig.DEBUG) {
+                    val requestConfig = com.google.android.gms.ads.RequestConfiguration.Builder()
+                        .setTestDeviceIds(listOf(com.google.android.gms.ads.AdRequest.DEVICE_ID_EMULATOR))
+                        .build()
+                    MobileAds.setRequestConfiguration(requestConfig)
+                }
                 MobileAds.initialize(this) { initializationStatus: InitializationStatus ->
                     Log.i("OrderMasterApp", "AdMob SDK Initialized: $initializationStatus")
                 }
@@ -134,9 +136,15 @@ class OrderMasterApplication : Application() {
 
             if (BuildConfig.DEBUG) {
                 Log.d(TAG, "Configuring Firebase App Check with DebugAppCheckProviderFactory (DEBUG build)")
-                firebaseAppCheck.installAppCheckProviderFactory(
-                    DebugAppCheckProviderFactory.getInstance()
-                )
+                val debugFactory = try {
+                    Class.forName("com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory")
+                        .getMethod("getInstance")
+                        .invoke(null) as AppCheckProviderFactory
+                } catch (t: Throwable) {
+                    Log.w(TAG, "DebugAppCheckProviderFactory unavailable (${t.message}); falling back to Play Integrity")
+                    PlayIntegrityAppCheckProviderFactory.getInstance()
+                }
+                firebaseAppCheck.installAppCheckProviderFactory(debugFactory)
             } else {
                 Log.d(TAG, "Configuring Firebase App Check with PlayIntegrityAppCheckProviderFactory (RELEASE build)")
                 firebaseAppCheck.installAppCheckProviderFactory(

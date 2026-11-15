@@ -579,15 +579,28 @@ open class MyAccessibilityService : AccessibilityService() {
      * speaks announcements in order (QUEUE_ADD), and executes ACTION_CLICK strictly within the bounds of the best offer.
      */
     private fun processOrderQueue(offers: List<ParsedRideOffer>, rootWindows: List<AccessibilityNodeInfo>, isProMode: Boolean) {
+        val unprocessedOffers = synchronized(processedOfferIds) {
+            offers.filter { !processedOfferIds.contains(it.id) }
+        }
+        if (unprocessedOffers.isEmpty()) {
+            offers.forEach { recycleNode(it.acceptButton) }
+            return
+        }
+        offers.forEach { offer ->
+            if (unprocessedOffers.none { it.id == offer.id }) {
+                recycleNode(offer.acceptButton)
+            }
+        }
+
         val isAutoAccept = AppSettings.isAutoAcceptEnabled(this)
 
-        // UI Logging Requirement: Log total distinct order cards detected
+        // UI Logging Requirement: Log total distinct unprocessed order cards detected
         AppSettings.addLog(
             title = "Orders Detected",
-            message = "Detected ${offers.size} distinct order card${if (offers.size > 1) "s" else ""} on screen (${if (isProMode) "Pro Mode" else "Free Mode"}).",
+            message = "Detected ${unprocessedOffers.size} distinct order card${if (unprocessedOffers.size > 1) "s" else ""} on screen (${if (isProMode) "Pro Mode" else "Free Mode"}).",
             severity = LogSeverity.INFO
         )
-        broadcastLog("Detected ${offers.size} distinct order card${if (offers.size > 1) "s" else ""} [${if (isProMode) "Pro" else "Free"}]")
+        broadcastLog("Detected ${unprocessedOffers.size} distinct order card${if (unprocessedOffers.size > 1) "s" else ""} [${if (isProMode) "Pro" else "Free"}]")
 
         // Granular Pay-Per-Use & Admin Lock/Unlock Feature Checks:
         val isMinFareUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)
@@ -618,7 +631,7 @@ open class MyAccessibilityService : AccessibilityService() {
         val evaluatedOffers = mutableListOf<Pair<ParsedRideOffer, RideEvaluation>>()
 
         // Sequential Queue Evaluation: Always evaluate offers via TextAnalysisEngine with effective filter settings
-        offers.forEachIndexed { index, offer ->
+        unprocessedOffers.forEachIndexed { index, offer ->
             // Record in deduplication set
             synchronized(processedOfferIds) {
                 if (processedOfferIds.size >= maxProcessedHistory) {
@@ -685,6 +698,7 @@ open class MyAccessibilityService : AccessibilityService() {
         if (matchingOffers.isNotEmpty() && isAutoAccept) {
             val hasActiveAccess = LicenseManager.hasAnyAutoAcceptCapability()
             if (!hasActiveAccess) {
+                unprocessedOffers.forEach { recycleNode(it.acceptButton) }
                 val topOffer = matchingOffers.first().first
                 AppSettings.addLog(
                     title = "Unlock Required",
@@ -698,6 +712,7 @@ open class MyAccessibilityService : AccessibilityService() {
 
             val isAutoClick = AppSettings.isAutoClickEnabled(this)
             if (!isAutoClick) {
+                unprocessedOffers.forEach { recycleNode(it.acceptButton) }
                 // Voice-Only Mode (Auto Click Disabled / TTS Voice Announcement Only)
                 val topOffer = matchingOffers.first().first
                 AppSettings.addLog(
@@ -715,14 +730,15 @@ open class MyAccessibilityService : AccessibilityService() {
             val bestEvaluation = bestCandidate.second
 
             isPendingExecution = true
-            // Acceptance Speed: If AUTO_CLICK is unlocked, use fast delay (300-700ms), else slow delay (1000-2000ms)
+            // Acceptance Speed: Honor user-configured delay, clamped cleanly (min 300ms with Boost, min 1000ms standard)
+            val configuredDelayMs = AppSettings.getClickDelayMs(this)
             val acceptDelayMs = if (isAutoClickSpeedUnlocked) {
-                kotlin.random.Random.nextLong(300L, 700L)
+                configuredDelayMs.coerceIn(300L, 5000L)
             } else {
-                kotlin.random.Random.nextLong(1000L, 2000L)
+                configuredDelayMs.coerceIn(1000L, 5000L)
             }
 
-            val speedLabel = if (isAutoClickSpeedUnlocked) "Fast (300-700ms)" else "Standard (1000-2000ms)"
+            val speedLabel = if (isAutoClickSpeedUnlocked) "Boost (${acceptDelayMs}ms)" else "Standard (${acceptDelayMs}ms)"
             AppSettings.addLog(
                 title = "Auto-Accept Scheduled",
                 message = "Selected best offer: ₹${bestOffer.totalFare?.toInt() ?: 0}, ${bestOffer.pickupDistanceKm ?: 0.0}km. Auto-clicking Accept in ${acceptDelayMs}ms ($speedLabel)...",
@@ -739,6 +755,7 @@ open class MyAccessibilityService : AccessibilityService() {
                     null
                 }
             }
+            unprocessedOffers.forEach { recycleNode(it.acceptButton) }
 
             clearPendingCallbacksAndNodes()
             pendingRetainedAcceptNode = clonedAcceptNode
@@ -753,6 +770,7 @@ open class MyAccessibilityService : AccessibilityService() {
             pendingAcceptRunnable = acceptRunnable
             mainHandler.postDelayed(acceptRunnable, acceptDelayMs)
         } else if (isAutoAccept && evaluatedOffers.isNotEmpty()) {
+            unprocessedOffers.forEach { recycleNode(it.acceptButton) }
             // Smart Auto-Reject: Execute if any evaluation filter is unlocked (and Auto-Click isn't Admin locked)
             val hasAnyFilterUnlocked = !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) && (
                 isMinFareUnlocked || isMaxFareUnlocked || isMinPerKmRateUnlocked ||
@@ -762,12 +780,14 @@ open class MyAccessibilityService : AccessibilityService() {
                 val isAutoClick = AppSettings.isAutoClickEnabled(this)
                 if (isAutoClick) {
                     val (rejectedOffer, rejectedEval) = evaluatedOffers.first()
+                    val configuredDelayMs = AppSettings.getClickDelayMs(this)
                     val delayMs = if (isAutoClickSpeedUnlocked) {
-                        kotlin.random.Random.nextLong(300L, 700L)
+                        configuredDelayMs.coerceIn(300L, 5000L)
                     } else {
-                        kotlin.random.Random.nextLong(1000L, 2000L)
+                        configuredDelayMs.coerceIn(1000L, 5000L)
                     }
                     pendingRejectRunnable?.let { mainHandler.removeCallbacks(it) }
+                    isPendingExecution = true
                     val rejectRunnable = Runnable {
                         pendingRejectRunnable = null
                         serviceScope.launch {
@@ -780,6 +800,8 @@ open class MyAccessibilityService : AccessibilityService() {
             } else {
                 Log.d(TAG, "Auto-reject skipped: filters locked, allowing offer to time out.")
             }
+        } else {
+            unprocessedOffers.forEach { recycleNode(it.acceptButton) }
         }
     }
 
@@ -813,39 +835,40 @@ open class MyAccessibilityService : AccessibilityService() {
      * located inside the spatial bounds of an invalid/rejected order card to clear the screen.
      */
     private suspend fun executeCardRejectClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
-        if (!GlobalAdminManager.canExecuteActions(this)) {
-            Log.w(TAG, "executeCardRejectClick blocked: Global kill switch active or user banned.")
-            return
-        }
-        if (!AppSettings.isAutoAcceptEnabled(this) || !AppSettings.isAutoClickEnabled(this)) {
-            Log.d(TAG, "executeCardRejectClick skipped: Auto-Accept or Auto-Click disabled.")
-            return
-        }
-        // Security check: Active pass/trial OR at least one unlocked granular filter (and AUTO_CLICK not Admin-locked)
-        val hasAnyFilterUnlocked = !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) && (
-            LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE) ||
-                LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE) ||
-                LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE) ||
-                LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE) ||
-                LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE) ||
-                LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
-        )
-        if (!hasAnyFilterUnlocked || !LicenseManager.hasAnyAutoAcceptCapability()) {
-            Log.w(TAG, "executeCardRejectClick: Auto-reject blocked. No filters unlocked.")
-            return
-        }
-
-        // Debounce / Cooldown check: respect strict COOLDOWN_MS
-        val now = SystemClock.elapsedRealtime()
-        if (now < lastProcessTime) {
-            Log.d(TAG, "executeCardRejectClick: Suppressed due to active cooldown.")
-            return
-        }
-
-        var clicked = false
-        val cardBounds = offer.bounds
-
+        acquireBriefWakeLock(4000L)
         try {
+            if (!GlobalAdminManager.canExecuteActions(this)) {
+                Log.w(TAG, "executeCardRejectClick blocked: Global kill switch active or user banned.")
+                return
+            }
+            if (!AppSettings.isAutoAcceptEnabled(this) || !AppSettings.isAutoClickEnabled(this)) {
+                Log.d(TAG, "executeCardRejectClick skipped: Auto-Accept or Auto-Click disabled.")
+                return
+            }
+            // Security check: Active pass/trial OR at least one unlocked granular filter (and AUTO_CLICK not Admin-locked)
+            val hasAnyFilterUnlocked = !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) && (
+                LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE) ||
+                    LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE) ||
+                    LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE) ||
+                    LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE) ||
+                    LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE) ||
+                    LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
+            )
+            if (!hasAnyFilterUnlocked || !LicenseManager.hasAnyAutoAcceptCapability()) {
+                Log.w(TAG, "executeCardRejectClick: Auto-reject blocked. No filters unlocked.")
+                return
+            }
+
+            // Debounce / Cooldown check: respect strict COOLDOWN_MS
+            val now = SystemClock.elapsedRealtime()
+            if (now < lastProcessTime) {
+                Log.d(TAG, "executeCardRejectClick: Suppressed due to active cooldown.")
+                return
+            }
+
+            var clicked = false
+            val cardBounds = offer.bounds
+
             // 1. Search strictly within card bounds across active windows
             val rootWindows = getAllRootWindows()
             try {
@@ -913,6 +936,9 @@ open class MyAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.e(TAG, "Error executing card reject click", e)
             lastProcessTime = SystemClock.elapsedRealtime()
+        } finally {
+            isPendingExecution = false
+            releaseWakeLock()
         }
     }
 

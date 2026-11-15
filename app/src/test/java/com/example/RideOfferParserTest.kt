@@ -313,5 +313,43 @@ class RideOfferParserTest {
             assertTrue("Expected CHAT_OR_NOTIFICATION_REGEX to match '$msg'", MyAccessibilityService.CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(msg))
         }
     }
+
+    @Test
+    fun `test boosted primary fare overrides strikethrough old fare inside card`() {
+        @Suppress("DEPRECATION")
+        val card = AccessibilityNodeInfo.obtain()
+        card.className = "androidx.cardview.widget.CardView"
+        card.viewIdResourceName = "com.rapido.rider:id/order_card"
+        card.setBoundsInScreen(Rect(50, 100, 1030, 600))
+
+        @Suppress("DEPRECATION")
+        val oldFareNode = AccessibilityNodeInfo.obtain()
+        oldFareNode.text = "₹45"
+        oldFareNode.viewIdResourceName = "com.rapido.rider:id/tv_old_strike_fare"
+
+        @Suppress("DEPRECATION")
+        val boostedFareNode = AccessibilityNodeInfo.obtain()
+        boostedFareNode.text = "₹ 57 AUTO"
+        boostedFareNode.viewIdResourceName = "com.rapido.rider:id/tv_fare"
+
+        @Suppress("DEPRECATION")
+        val pickupNode = AccessibilityNodeInfo.obtain()
+        pickupNode.text = "Pickup 1.1 km"
+
+        @Suppress("DEPRECATION")
+        val acceptBtn = AccessibilityNodeInfo.obtain()
+        acceptBtn.text = "Accept"
+        acceptBtn.isClickable = true
+        acceptBtn.isEnabled = true
+
+        org.robolectric.Shadows.shadowOf(card).addChild(oldFareNode)
+        org.robolectric.Shadows.shadowOf(card).addChild(boostedFareNode)
+        org.robolectric.Shadows.shadowOf(card).addChild(pickupNode)
+        org.robolectric.Shadows.shadowOf(card).addChild(acceptBtn)
+
+        val parsedOffer = RideOfferParser.parseCardContainer(card)
+        assertNotNull(parsedOffer)
+        assertEquals(57.0, parsedOffer?.totalFare ?: 0.0, 0.01)
+    }
 }
 

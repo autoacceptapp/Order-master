@@ -118,19 +118,19 @@ class FloatingOverlayService : Service() {
         var isServiceRunning: Boolean = false
             private set
 
+        @Volatile
+        private var activeInstance: FloatingOverlayService? = null
+
         /**
-         * Communicates a newly accepted fare to update the center badge dynamically.
+         * Communicates a newly accepted fare to update the center badge in-process without startService.
          */
         fun updateFare(context: Context, fare: Double) {
             if (!isServiceRunning) return
-            val intent = Intent(context, FloatingOverlayService::class.java).apply {
-                action = ACTION_UPDATE_FARE
-                putExtra(EXTRA_FARE, fare)
-            }
-            try {
-                context.startService(intent)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to update overlay fare", e)
+            val instance = activeInstance ?: return
+            instance.mainHandler.post {
+                if (isServiceRunning) {
+                    instance.updateFareText(fare)
+                }
             }
         }
     }
@@ -181,6 +181,7 @@ class FloatingOverlayService : Service() {
     override fun onCreate() {
         super.onCreate()
         isServiceRunning = true
+        activeInstance = this
         windowManager = getSystemService(Context.WINDOW_SERVICE) as? WindowManager
         createNotificationChannel()
         startAsForeground()
@@ -855,6 +856,9 @@ class FloatingOverlayService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isServiceRunning = false
+        if (activeInstance === this) {
+            activeInstance = null
+        }
         try {
             serviceScope.cancel()
         } catch (_: Throwable) {}

@@ -1,12 +1,19 @@
 package com.example.data
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
  * Room entity representing an evaluated ride offer order history record.
  */
-@Entity(tableName = "order_history")
+@Entity(
+    tableName = "order_history",
+    indices = [
+        Index(value = ["timestamp"]),
+        Index(value = ["isAccepted"])
+    ]
+)
 data class OrderEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0L,

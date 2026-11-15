@@ -59,6 +59,17 @@ object PassManager {
     const val MAX_UTR_ATTEMPTS_PER_MINUTE = 3
     const val UTR_RATE_LIMIT_WINDOW_MS = 60_000L
 
+    private val _pendingOpenStore = MutableStateFlow(false)
+    val pendingOpenStore: StateFlow<Boolean> = _pendingOpenStore.asStateFlow()
+
+    fun requestOpenStore() {
+        _pendingOpenStore.value = true
+    }
+
+    fun consumeOpenStoreRequest() {
+        _pendingOpenStore.value = false
+    }
+
     /**
      * Local client-side rate limit checking: allows a maximum of 3 verification attempts per minute.
      * Prevents spamming UTR verification calls to the backend.
@@ -253,17 +264,6 @@ object PassManager {
                         message = "${tier.title} activated via UTR $cleanUtr. Valid for ${tier.durationDays} day(s).",
                         severity = LogSeverity.MATCH_ACCEPTED
                     )
-                }
-
-                // Automatic database cleanup: delete pending verification document after 60 seconds delay
-                scope.launch(Dispatchers.IO) {
-                    try {
-                        kotlinx.coroutines.delay(60_000L)
-                        firestore.collection("pending_verifications").document(cleanUtr).delete().await()
-                        Log.d(TAG, "Delayed cleanup: Deleted pending_verifications/$cleanUtr after 60s")
-                    } catch (cleanupEx: Exception) {
-                        Log.w(TAG, "Notice: pending_verifications cleanup suppressed for $cleanUtr: ${cleanupEx.message}")
-                    }
                 }
 
                 VerificationResult.Success(tier, finalExpiryTimestamp)
@@ -930,12 +930,14 @@ object PassManager {
      */
     fun openStore(context: Context) {
         try {
-            val intent = Intent(context, CaptainStoreActivity::class.java).apply {
+            requestOpenStore()
+            val intent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(MainActivity.EXTRA_OPEN_STORE, true)
             }
             context.startActivity(intent)
         } catch (e: Exception) {
-            Log.e(TAG, "Could not open CaptainStoreActivity: ${e.message}")
+            Log.e(TAG, "Could not open store in MainActivity: ${e.message}")
         }
     }
 

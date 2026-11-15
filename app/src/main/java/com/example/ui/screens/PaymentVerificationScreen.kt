@@ -162,7 +162,7 @@ fun PaymentVerificationScreen(
     }
 
     LaunchedEffect(Unit) {
-        val (upi, name) = com.example.PaymentActivity.fetchPaymentConfig()
+        val (upi, name) = com.example.data.PaymentVerificationRepository.fetchPaymentConfig(context)
         merchantVpa = upi
         if (name.isNotBlank()) {
             merchantName = name

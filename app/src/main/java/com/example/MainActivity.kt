@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
         const val TAG = "MainActivity"
         const val EXTRA_SHOW_UPDATE_DIALOG = "extra_show_update_dialog"
         const val EXTRA_LATEST_VERSION = "extra_latest_version"
+        const val EXTRA_OPEN_STORE = "extra_open_store"
     }
 
     // Reactive state flow to reflect accessibility service state dynamically
@@ -434,6 +435,9 @@ class MainActivity : ComponentActivity() {
     private fun handleUpdateIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(EXTRA_SHOW_UPDATE_DIALOG, false) == true) {
             GitHubUpdateManager.showDialog()
+        }
+        if (intent?.getBooleanExtra(EXTRA_OPEN_STORE, false) == true) {
+            PassManager.requestOpenStore()
         }
     }
 

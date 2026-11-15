@@ -318,7 +318,7 @@ fun AppSettingsScreen(
                                 )
                                 if (!referralCode.isNullOrBlank()) {
                                     Text(
-                                        text = "Unique Profile ID: $referralCode",
+                                        text = "Referral Code: $referralCode",
                                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                                         color = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.padding(top = 2.dp)
@@ -332,7 +332,7 @@ fun AppSettingsScreen(
                                     modifier = Modifier.padding(top = 2.dp)
                                 ) {
                                     Text(
-                                        text = "Profile ID: $customUserId",
+                                        text = "Account UID: $customUserId",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontSize = 10.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -346,9 +346,9 @@ fun AppSettingsScreen(
                                     IconButton(
                                         onClick = {
                                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                            val clip = ClipData.newPlainText("Profile ID", customUserId)
+                                            val clip = ClipData.newPlainText("Account UID", customUserId)
                                             clipboard.setPrimaryClip(clip)
-                                            Toast.makeText(context, "Profile ID Copied", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "Account UID Copied", Toast.LENGTH_SHORT).show()
                                         },
                                         modifier = Modifier
                                             .size(20.dp)
@@ -617,8 +617,7 @@ fun AppSettingsScreen(
             onDismiss = { showRestrictedSettingsDialog = false },
             onOpenAppInfo = {
                 PermissionUtils.openAppInfoSettings(context)
-            },
-            onNavigateToPaymentVerification = onNavigateToPaymentVerification
+            }
         )
     }
 }

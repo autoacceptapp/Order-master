@@ -83,33 +83,41 @@ object RideOfferParser {
     fun findCardContainers(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
         val containers = mutableListOf<AccessibilityNodeInfo>()
         val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
+        @Suppress("DEPRECATION")
+        queue.add(AccessibilityNodeInfo.obtain(root))
 
         val startTime = System.currentTimeMillis()
         val timeoutMs = 200L
 
-        while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > timeoutMs) {
-                break
-            }
-
-            val current = queue.removeFirst()
-
-            // Check if current node is an isolated order card container
-            if (isOrderCardContainer(current)) {
-                containers.add(current)
-                // CRITICAL LAYOUT ISOLATION: Do not descend into children of this container
-                // to prevent sub-layouts from being falsely treated as separate cards.
-                continue
-            }
-
-            // Descend into children
-            val childCount = current.childCount
-            for (i in 0 until childCount) {
-                val child = current.getChild(i)
-                if (child != null) {
-                    queue.add(child)
+        try {
+            while (queue.isNotEmpty()) {
+                if (System.currentTimeMillis() - startTime > timeoutMs) {
+                    break
                 }
+
+                val current = queue.removeFirst()
+
+                // Check if current node is an isolated order card container
+                if (isOrderCardContainer(current)) {
+                    containers.add(current)
+                    // CRITICAL LAYOUT ISOLATION: Do not descend into children of this container
+                    // to prevent sub-layouts from being falsely treated as separate cards.
+                    continue
+                }
+
+                // Descend into children
+                val childCount = current.childCount
+                for (i in 0 until childCount) {
+                    val child = current.getChild(i)
+                    if (child != null) {
+                        queue.add(child)
+                    }
+                }
+                recycleNode(current)
+            }
+        } finally {
+            while (queue.isNotEmpty()) {
+                recycleNode(queue.removeFirst())
             }
         }
 
@@ -119,8 +127,15 @@ object RideOfferParser {
             if (acceptCount == 1) {
                 val acceptNode = findAcceptNodeInSubtree(root)
                 val hasFare = containsFareInSubtree(root)
-                if (acceptNode != null && hasFare) {
-                    containers.add(root)
+                try {
+                    if (acceptNode != null && hasFare) {
+                        @Suppress("DEPRECATION")
+                        containers.add(AccessibilityNodeInfo.obtain(root))
+                    }
+                } finally {
+                    if (acceptNode != null) {
+                        recycleNode(acceptNode)
+                    }
                 }
             }
         }
@@ -133,34 +148,45 @@ object RideOfferParser {
      */
     fun countAcceptNodesInSubtree(root: AccessibilityNodeInfo, maxCount: Int = 2): Int {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
+        @Suppress("DEPRECATION")
+        queue.add(AccessibilityNodeInfo.obtain(root))
 
         var count = 0
         val startTime = System.currentTimeMillis()
         val timeoutMs = 45L
 
-        while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > timeoutMs) {
-                break
-            }
-            val node = queue.removeFirst()
-            val text = node.text?.toString() ?: ""
-            val desc = node.contentDescription?.toString() ?: ""
-            val viewId = node.viewIdResourceName ?: ""
+        try {
+            while (queue.isNotEmpty()) {
+                if (System.currentTimeMillis() - startTime > timeoutMs) {
+                    break
+                }
+                val node = queue.removeFirst()
+                try {
+                    val text = node.text?.toString() ?: ""
+                    val desc = node.contentDescription?.toString() ?: ""
+                    val viewId = node.viewIdResourceName ?: ""
 
-            if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
-                count++
-                if (count >= maxCount) {
-                    return count
+                    if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
+                        count++
+                        if (count >= maxCount) {
+                            return count
+                        }
+                    }
+
+                    val childCount = node.childCount
+                    for (i in 0 until childCount) {
+                        val child = node.getChild(i)
+                        if (child != null) {
+                            queue.add(child)
+                        }
+                    }
+                } finally {
+                    recycleNode(node)
                 }
             }
-
-            val childCount = node.childCount
-            for (i in 0 until childCount) {
-                val child = node.getChild(i)
-                if (child != null) {
-                    queue.add(child)
-                }
+        } finally {
+            while (queue.isNotEmpty()) {
+                recycleNode(queue.removeFirst())
             }
         }
         return count
@@ -277,96 +303,127 @@ object RideOfferParser {
 
         // Collect all distinct text nodes strictly inside this card container
         val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(container)
+        @Suppress("DEPRECATION")
+        queue.add(AccessibilityNodeInfo.obtain(container))
+        var isRootNode = true
 
         val candidateDistanceTexts = mutableListOf<String>()
         val allNodeTexts = mutableListOf<String>()
 
         val startTime = System.currentTimeMillis()
         val timeoutMs = 150L
+        var fareFromStrikethroughView = false
 
-        while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > timeoutMs) {
-                break
-            }
+        try {
+            while (queue.isNotEmpty()) {
+                if (System.currentTimeMillis() - startTime > timeoutMs) {
+                    break
+                }
 
-            val node = queue.removeFirst()
+                val node = queue.removeFirst()
+                val currentIsRoot = isRootNode
+                isRootNode = false
 
-            // Strict layout boundary isolation: Never traverse into another distinct child card container
-            if (node !== container && isOrderCardContainer(node)) {
-                continue
-            }
+                try {
+                    // Strict layout boundary isolation: Never traverse into another distinct child card container
+                    if (!currentIsRoot && isOrderCardContainer(node)) {
+                        continue
+                    }
 
-            val text = (node.text?.toString() ?: "").trim()
-            val desc = (node.contentDescription?.toString() ?: "").trim()
-            val viewId = (node.viewIdResourceName ?: "").lowercase(Locale.ROOT)
-            val effectiveText = if (text.isNotEmpty()) text else desc
+                    val text = (node.text?.toString() ?: "").trim()
+                    val desc = (node.contentDescription?.toString() ?: "").trim()
+                    val viewId = (node.viewIdResourceName ?: "").lowercase(Locale.ROOT)
+                    val effectiveText = if (text.isNotEmpty()) text else desc
 
-            if (effectiveText.isNotEmpty()) {
-                allNodeTexts.add(effectiveText)
-            }
+                    if (effectiveText.isNotEmpty()) {
+                        allNodeTexts.add(effectiveText)
+                    }
 
-            // 1. Locate Accept Button inside this card
-            if (acceptButtonNode == null) {
-                if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
-                    if (node.isClickable && node.isEnabled) {
-                        @Suppress("DEPRECATION")
-                        acceptButtonNode = AccessibilityNodeInfo.obtain(node)
-                    } else {
-                        val clickableParent = findClickableParent(node)
-                        if (clickableParent != null) {
-                            acceptButtonNode = clickableParent
-                        } else {
-                            @Suppress("DEPRECATION")
-                            acceptButtonNode = AccessibilityNodeInfo.obtain(node)
+                    // 1. Locate Accept Button inside this card
+                    if (acceptButtonNode == null) {
+                        if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
+                            if (node.isClickable && node.isEnabled) {
+                                @Suppress("DEPRECATION")
+                                acceptButtonNode = AccessibilityNodeInfo.obtain(node)
+                            } else {
+                                val clickableParent = findClickableParent(node)
+                                if (clickableParent != null) {
+                                    acceptButtonNode = clickableParent
+                                } else {
+                                    @Suppress("DEPRECATION")
+                                    acceptButtonNode = AccessibilityNodeInfo.obtain(node)
+                                }
+                            }
                         }
                     }
+
+                    // 2. Extract Fare Node (Currency symbol or fare pattern)
+                    if (isFareNode(effectiveText, viewId)) {
+                        val isLikelyOldOrStrike = viewId.contains("strike") ||
+                            viewId.contains("old") ||
+                            viewId.contains("original")
+                        val isExplicitPrimaryFare = viewId.contains("boost") ||
+                            viewId.contains("final") ||
+                            viewId.contains("total") ||
+                            effectiveText.contains("AUTO", ignoreCase = true) ||
+                            effectiveText.contains("BIKE", ignoreCase = true) ||
+                            effectiveText.contains("CAB", ignoreCase = true)
+
+                        if (fareText.isEmpty() || !CURRENCY_SYMBOL_PATTERN.matcher(fareText).find()) {
+                            fareText = effectiveText
+                            fareFromStrikethroughView = isLikelyOldOrStrike
+                        } else if (effectiveText.startsWith("+") && !fareText.contains(effectiveText)) {
+                            // Complementary bonus/tip within the same card boundary (e.g., "₹56 + ₹13")
+                            fareText = "$fareText $effectiveText"
+                        } else if (!fareText.startsWith("+") && !isLikelyOldOrStrike &&
+                            (fareFromStrikethroughView || isExplicitPrimaryFare) &&
+                            CURRENCY_SYMBOL_PATTERN.matcher(effectiveText).find()
+                        ) {
+                            fareText = effectiveText
+                            fareFromStrikethroughView = false
+                        }
+                    }
+
+                    // 3. Extract Pickup Node
+                    if (isPickupNode(effectiveText, viewId)) {
+                        pickupText = effectiveText
+                    }
+
+                    // 4. Extract Drop Node
+                    if (isDropNode(effectiveText, viewId)) {
+                        dropText = effectiveText
+                    }
+
+                    // 5. Track standalone distance strings for positional assignment
+                    if (DISTANCE_PATTERN.matcher(effectiveText).find() && !isFareNode(effectiveText, viewId)) {
+                        if (!candidateDistanceTexts.contains(effectiveText)) {
+                            candidateDistanceTexts.add(effectiveText)
+                        }
+                    }
+
+                    // 6. Extract Location Labels
+                    if (isPickupLocationNode(effectiveText, viewId) && pickupLocationText.isEmpty()) {
+                        pickupLocationText = cleanLocation(effectiveText)
+                    }
+                    if (isDropLocationNode(effectiveText, viewId) && dropLocationText.isEmpty()) {
+                        dropLocationText = cleanLocation(effectiveText)
+                    }
+
+                    val childCount = node.childCount
+                    for (i in 0 until childCount) {
+                        val child = node.getChild(i)
+                        if (child != null) {
+                            queue.add(child)
+                        }
+                    }
+                } finally {
+                    recycleNode(node)
                 }
             }
-
-            // 2. Extract Fare Node (Currency symbol or fare pattern)
-            if (isFareNode(effectiveText, viewId)) {
-                if (fareText.isEmpty() || !CURRENCY_SYMBOL_PATTERN.matcher(fareText).find()) {
-                    fareText = effectiveText
-                } else if (effectiveText.startsWith("+") && !fareText.contains(effectiveText)) {
-                    // Complementary bonus/tip within the same card boundary (e.g., "₹56 + ₹13")
-                    fareText = "$fareText $effectiveText"
-                }
+        } finally {
+            while (queue.isNotEmpty()) {
+                recycleNode(queue.removeFirst())
             }
-
-            // 3. Extract Pickup Node
-            if (isPickupNode(effectiveText, viewId)) {
-                pickupText = effectiveText
-            }
-
-            // 4. Extract Drop Node
-            if (isDropNode(effectiveText, viewId)) {
-                dropText = effectiveText
-            }
-
-            // 5. Track standalone distance strings for positional assignment
-            if (DISTANCE_PATTERN.matcher(effectiveText).find() && !isFareNode(effectiveText, viewId)) {
-                if (!candidateDistanceTexts.contains(effectiveText)) {
-                    candidateDistanceTexts.add(effectiveText)
-                }
-            }
-
-            // 6. Extract Location Labels
-            if (isPickupLocationNode(effectiveText, viewId) && pickupLocationText.isEmpty()) {
-                pickupLocationText = cleanLocation(effectiveText)
-            }
-            if (isDropLocationNode(effectiveText, viewId) && dropLocationText.isEmpty()) {
-                dropLocationText = cleanLocation(effectiveText)
-            }
-
-            val childCount = node.childCount
-            for (i in 0 until childCount) {
-                val child = node.getChild(i)
-                if (child != null) {
-                    queue.add(child)
-                }
-            }
-            recycleNode(node)
         }
 
         // Positional fallback for distance if not explicitly labeled with "Pickup" or "Drop"

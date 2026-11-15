@@ -1,5 +1,6 @@
 package com.example
 
+import android.app.ActivityManager
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -238,6 +239,8 @@ object ApkDownloader {
         progressPollingJob?.cancel()
         progressPollingJob = coroutineScope.launch {
             var isFinished = false
+            var lastNotifiedPercent = -1
+            var lastNotifyTimeMs = 0L
             while (!isFinished && isActive) {
                 try {
                     val query = DownloadManager.Query().setFilterById(downloadId)
@@ -264,6 +267,22 @@ object ApkDownloader {
                                         downloadedBytes = downloadedBytes,
                                         totalBytes = totalBytes
                                     )
+                                    val nowMs = System.currentTimeMillis()
+                                    val percentDelta = if (percent >= 0 && lastNotifiedPercent >= 0) {
+                                        kotlin.math.abs(percent - lastNotifiedPercent)
+                                    } else {
+                                        5
+                                    }
+                                    if (lastNotifiedPercent == -1 || percentDelta >= 5 || nowMs - lastNotifyTimeMs >= 1000L) {
+                                        lastNotifiedPercent = percent
+                                        lastNotifyTimeMs = nowMs
+                                        UpdateNotificationManager.showDownloadProgressNotification(
+                                            context = context,
+                                            progressPercent = percent,
+                                            downloadedBytes = downloadedBytes,
+                                            totalBytes = totalBytes
+                                        )
+                                    }
                                 }
                                 DownloadManager.STATUS_SUCCESSFUL -> {
                                     isFinished = true
@@ -325,9 +344,13 @@ object ApkDownloader {
                             Log.i(TAG, "Download finished successfully: ${apkFile.absolutePath} (${apkFile.length()} bytes)")
                             _downloadState.value = DownloadState.ReadyToInstall(apkFile)
 
-                            // Post notification and prompt installer
+                            // Post notification and prompt installer only when app is in foreground
                             UpdateNotificationManager.showDownloadCompleteNotification(context, apkFile)
-                            promptInstall(context, apkFile)
+                            if (isAppInForeground(context)) {
+                                promptInstall(context, apkFile)
+                            } else {
+                                Log.i(TAG, "App is in background; install prompt deferred to notification tap.")
+                            }
                         } else {
                             Log.w(TAG, "STATUS_SUCCESSFUL received, but file at ${apkFile.absolutePath} is missing or 0 bytes.")
                             _downloadState.value = DownloadState.Error("Downloaded APK file could not be verified.")
@@ -347,6 +370,19 @@ object ApkDownloader {
         } finally {
             // Cleanly unregister receiver when download reaches a terminal state to prevent leaks
             unregisterReceiver(context)
+        }
+    }
+
+    private fun isAppInForeground(context: Context): Boolean {
+        return try {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return false
+            val myPid = android.os.Process.myPid()
+            am.runningAppProcesses?.any { proc ->
+                proc.pid == myPid &&
+                    proc.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+            } == true
+        } catch (_: Exception) {
+            false
         }
     }
 

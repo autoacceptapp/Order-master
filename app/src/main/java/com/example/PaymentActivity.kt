@@ -121,46 +121,8 @@ class PaymentActivity : ComponentActivity() {
          * Fetches dynamic payment config (Admin UPI ID and Payee Name) from Firestore:
          * collection: `admin_settings`, document: `payment_config`
          */
-        suspend fun fetchPaymentConfig(context: Context? = null): Pair<String, String> {
-            return try {
-                withTimeoutOrNull(3500L) {
-                    val isInitialized = if (context != null) {
-                        FirebaseApp.getApps(context).isNotEmpty()
-                    } else {
-                        try {
-                            FirebaseApp.getInstance() != null
-                        } catch (_: Exception) {
-                            false
-                        }
-                    }
-                    if (!isInitialized) {
-                        Log.w(TAG, "FirebaseApp is not initialized; cannot fetch payment config.")
-                        return@withTimeoutOrNull Pair("", "")
-                    }
-                    val firestore = FirebaseFirestore.getInstance()
-                    val docSnapshot = firestore.collection(FIRESTORE_COLLECTION_ADMIN_SETTINGS)
-                        .document(FIRESTORE_DOC_PAYMENT_CONFIG)
-                        .get()
-                        .await()
-
-                    if (docSnapshot.exists()) {
-                        val upi = docSnapshot.getString("adminUpiId")?.trim().orEmpty()
-                        val payee = docSnapshot.getString("adminPayeeName")?.trim().orEmpty()
-                        Log.d(TAG, "Successfully fetched payment config: upi=$upi, payee=$payee")
-                        Pair(upi, payee)
-                    } else {
-                        Log.w(TAG, "Document admin_settings/payment_config does not exist.")
-                        Pair("", "")
-                    }
-                } ?: run {
-                    Log.w(TAG, "Fetching payment config timed out.")
-                    Pair("", "")
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to fetch remote payment config from Firestore (${e.message}).")
-                Pair("", "")
-            }
-        }
+        suspend fun fetchPaymentConfig(context: Context? = null): Pair<String, String> =
+            com.example.data.PaymentVerificationRepository.fetchPaymentConfig(context)
     }
 
     private var currentSelectedTier: PassTier? = null

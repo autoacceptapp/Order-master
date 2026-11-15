@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -61,8 +62,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -374,6 +377,7 @@ fun DecisionThresholdsCard(
     onMaxDistanceChanged: (Float) -> Unit,
     onDelayChanged: (Long) -> Unit
 ) {
+    val focusManager = LocalFocusManager.current
     var minPriceInput by remember(settings.minFare) {
         mutableStateOf(settings.minFare.roundToInt().toString())
     }
@@ -457,13 +461,33 @@ fun DecisionThresholdsCard(
                     },
                     label = { Text("Min Price (₹)", fontSize = 12.sp) },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            val clamped = (minPriceInput.toFloatOrNull() ?: settings.minFare)
+                                .coerceIn(0f, settings.maxFare)
+                            minPriceInput = clamped.roundToInt().toString()
+                            onMinFareChanged(clamped)
+                            focusManager.clearFocus()
+                        }
+                    ),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = PrimaryEmerald,
                         cursorColor = PrimaryEmerald
                     ),
                     modifier = Modifier
                         .weight(1f)
+                        .onFocusChanged { focusState ->
+                            if (!focusState.isFocused) {
+                                val parsed = minPriceInput.toFloatOrNull()
+                                if (parsed == null || parsed < 0f || parsed > settings.maxFare) {
+                                    minPriceInput = settings.minFare.roundToInt().toString()
+                                }
+                            }
+                        }
                         .testTag("min_price_input")
                 )
 
@@ -479,13 +503,34 @@ fun DecisionThresholdsCard(
                     },
                     label = { Text("Max Price (₹)", fontSize = 12.sp) },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Done
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = {
+                            val clamped = (maxPriceInput.toFloatOrNull() ?: settings.maxFare)
+                                .coerceAtLeast(settings.minFare)
+                                .coerceAtMost(2000f)
+                            maxPriceInput = clamped.roundToInt().toString()
+                            onMaxFareChanged(clamped)
+                            focusManager.clearFocus()
+                        }
+                    ),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = PrimaryEmerald,
                         cursorColor = PrimaryEmerald
                     ),
                     modifier = Modifier
                         .weight(1f)
+                        .onFocusChanged { focusState ->
+                            if (!focusState.isFocused) {
+                                val parsed = maxPriceInput.toFloatOrNull()
+                                if (parsed == null || parsed < settings.minFare) {
+                                    maxPriceInput = settings.maxFare.roundToInt().toString()
+                                }
+                            }
+                        }
                         .testTag("max_price_input")
                 )
             }

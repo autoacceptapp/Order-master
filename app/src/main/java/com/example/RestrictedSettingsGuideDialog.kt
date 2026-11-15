@@ -80,8 +80,7 @@ import com.example.ui.theme.PrimaryEmerald
 fun RestrictedSettingsGuideDialog(
     onDismiss: () -> Unit,
     onOpenAppInfo: (() -> Unit)? = null,
-    onOpenAccessibility: (() -> Unit)? = null,
-    onNavigateToPaymentVerification: (() -> Unit)? = null
+    onOpenAccessibility: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -222,7 +221,7 @@ fun RestrictedSettingsGuideDialog(
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
-                            text = "If Android displays \"Restricted setting: For your security, this setting is currently unavailable\", follow the 4 steps below to unlock it for Captain Auto-Accept:",
+                            text = "If Android displays \"Restricted setting: For your security, this setting is currently unavailable\", follow the 4 steps below to unlock it for Order Master:",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 18.sp
@@ -239,7 +238,7 @@ fun RestrictedSettingsGuideDialog(
                     StepInstructionItem(
                         stepNumber = 1,
                         title = "Open Phone Settings -> Apps",
-                        description = "Go to Phone Settings -> Apps -> All Apps -> Select Captain Auto-Accept.",
+                        description = "Go to Phone Settings -> Apps -> All Apps -> Select Order Master.",
                         icon = Icons.Default.Settings,
                         actionLabel = "Open App Info Directly",
                         onActionClick = handleOpenAppInfo,
@@ -268,7 +267,7 @@ fun RestrictedSettingsGuideDialog(
                     StepInstructionItem(
                         stepNumber = 4,
                         title = "Toggle ON in Accessibility settings",
-                        description = "Return to Android Accessibility settings, select 'Smart Text Notification & Analysis Service', and switch it to ON.",
+                        description = "Return to Android Accessibility settings, select '${context.getString(R.string.accessibility_service_name)}', and switch it to ON.",
                         icon = Icons.Default.AccessibilityNew,
                         actionLabel = "Open Accessibility Settings",
                         onActionClick = handleOpenAccessibility,

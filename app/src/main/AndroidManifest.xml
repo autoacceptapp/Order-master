@@ -63,6 +63,7 @@
         <package android:name="com.jupiter.money" />
         <package android:name="com.fi.money" />
         <package android:name="com.paytmmall" />
+        <package android:name="com.rapido.rider" />
     </queries>
 
     <application
@@ -74,7 +75,7 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.MyApplication">
+        android:theme="@style/Theme.OrderMaster">
 
         <!-- Disable Firebase InstanceID, Messaging, and Analytics auto-initialization -->
         <meta-data
@@ -144,45 +145,10 @@
         </activity>
 
         <activity
-            android:name=".CaptainStoreActivity"
-            android:exported="false"
-            android:label="Captain Store"
-            android:windowSoftInputMode="adjustResize" />
-
-        <activity
             android:name=".PaymentActivity"
             android:exported="false"
             android:label="Payment Verification"
             android:windowSoftInputMode="adjustResize" />
-
-        <!-- Legacy service aliases disabled to prevent duplicate entries in Accessibility Settings -->
-        <service
-            android:name=".MyAccessibilityService"
-            android:enabled="false"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true"
-            android:label="@string/accessibility_service_name">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
-        </service>
-
-        <service
-            android:name=".SmartTextService"
-            android:enabled="false"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="true"
-            android:label="@string/accessibility_service_name">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
-        </service>
 
         <!-- Dedicated RapidoAccessibilityService -->
         <service

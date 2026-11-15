@@ -166,7 +166,7 @@ dependencies {
   // Direct Firebase Firestore SDK implementation
   implementation(libs.firebase.auth.ktx)
   implementation(libs.firebase.appcheck.playintegrity)
-  implementation(libs.firebase.appcheck.debug)
+  debugImplementation(libs.firebase.appcheck.debug)
 
   // Google Credential Manager & Identity
   implementation(libs.androidx.credentials)

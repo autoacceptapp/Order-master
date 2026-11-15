@@ -121,7 +121,7 @@ import com.example.ui.theme.PrimaryEmerald
 fun SubscriptionScreen(
     onNavigateBack: () -> Unit,
     onTriggerGoogleSignIn: () -> Unit,
-    onNavigateToPaymentVerification: () -> Unit = {},
+    onNavigateToPaymentVerification: (PassTier?) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -330,7 +330,7 @@ fun SubscriptionScreen(
                     ElevatedCard(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onNavigateToPaymentVerification() }
+                            .clickable { onNavigateToPaymentVerification(null) }
                             .testTag("verify_utr_entry_card"),
                         shape = RoundedCornerShape(18.dp),
                         colors = CardDefaults.elevatedCardColors(
@@ -373,7 +373,7 @@ fun SubscriptionScreen(
                         }
 
                         Button(
-                            onClick = onNavigateToPaymentVerification,
+                            onClick = { onNavigateToPaymentVerification(null) },
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = PrimaryEmerald),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
@@ -495,7 +495,7 @@ fun SubscriptionScreen(
         )
     }
 
-    // Direct UPI Payment Dialog
+    // Direct UPI Payment Dialog -> routes uniformly to Compose PaymentVerificationScreen with selected tier
     selectedPassForUpiPayment?.let { tier ->
         UpiPaymentDialog(
             passTier = tier,
@@ -503,22 +503,15 @@ fun SubscriptionScreen(
             onDismiss = { if (!isProcessing) selectedPassForUpiPayment = null },
             onNavigateToPaymentVerification = {
                 selectedPassForUpiPayment = null
-                onNavigateToPaymentVerification()
+                onNavigateToPaymentVerification(tier)
             },
             onLaunchUpi = {
                 selectedPassForUpiPayment = null
-                val intent = android.content.Intent(context, com.example.PaymentActivity::class.java).apply {
-                    putExtra(com.example.PaymentActivity.EXTRA_PASS_TIER_ID, tier.id)
-                }
-                context.startActivity(intent)
+                onNavigateToPaymentVerification(tier)
             },
             onSimulateSuccess = {
-                // Removed simulation: Redirect directly to PaymentActivity for real UTR verification
                 selectedPassForUpiPayment = null
-                val intent = android.content.Intent(context, com.example.PaymentActivity::class.java).apply {
-                    putExtra(com.example.PaymentActivity.EXTRA_PASS_TIER_ID, tier.id)
-                }
-                context.startActivity(intent)
+                onNavigateToPaymentVerification(tier)
             }
         )
     }

@@ -233,13 +233,29 @@ fun OrderMasterApp(
                 }
             }
 
+            // Auto-navigate to Store when requested via PassManager.openStore()
+            val pendingOpenStore by com.example.PassManager.pendingOpenStore.collectAsState()
+            LaunchedEffect(pendingOpenStore) {
+                if (pendingOpenStore) {
+                    com.example.PassManager.consumeOpenStoreRequest()
+                    if (currentRoute != Screen.Subscription.route) {
+                        navController.navigate(Screen.Subscription.route) {
+                            launchSingleTop = true
+                        }
+                    }
+                }
+            }
+
             val isMainTab = currentRoute in listOf(Screen.Home.route, Screen.Filters.route, Screen.History.route)
 
             Scaffold(
                 modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            if (currentRoute != Screen.Subscription.route) {
+            if (currentRoute != Screen.Subscription.route &&
+                currentRoute != Screen.Settings.route &&
+                !currentRoute.startsWith(Screen.PaymentVerification.route)
+            ) {
                 TopAppBar(
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.surface,
@@ -293,6 +309,7 @@ fun OrderMasterApp(
                                     Screen.Settings.route -> "Settings & Permissions"
                                     Screen.ReferAndEarn.route -> "Refer & Earn"
                                     Screen.Subscription.route -> "Captain Store"
+                                    Screen.PaymentVerification.route -> "Verify UPI Payment"
                                     else -> "Order Master"
                                 },
                                 maxLines = 1,
@@ -573,8 +590,15 @@ fun OrderMasterApp(
                 SubscriptionScreen(
                     onNavigateBack = { navController.popBackStack() },
                     onTriggerGoogleSignIn = { showGoogleSignInSheet = true },
-                    onNavigateToPaymentVerification = {
-                        navController.navigate(Screen.PaymentVerification.route)
+                    onNavigateToPaymentVerification = { selectedTier ->
+                        val route = if (selectedTier != null) {
+                            "${Screen.PaymentVerification.route}?tier=${selectedTier.id}"
+                        } else {
+                            Screen.PaymentVerification.route
+                        }
+                        navController.navigate(route) {
+                            launchSingleTop = true
+                        }
                     }
                 )
             }
@@ -627,11 +651,7 @@ fun OrderMasterApp(
     // Android 13/14+ Restricted Settings Educational Guide Dialog
     if (showRestrictedSettingsGuide) {
         RestrictedSettingsGuideDialog(
-            onDismiss = { showRestrictedSettingsGuide = false },
-            onNavigateToPaymentVerification = {
-                showRestrictedSettingsGuide = false
-                navController.navigate(Screen.PaymentVerification.route)
-            }
+            onDismiss = { showRestrictedSettingsGuide = false }
         )
     }
 

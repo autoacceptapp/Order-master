@@ -47,6 +47,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -136,18 +137,10 @@ fun FareFilterCard(
         }
     }
 
-    // Safety recovery: if LazyColumn scroll intercepts a drag gesture so onValueChangeFinished never fires,
-    // automatically commit and clear isDraggingSlider after 250ms of drag inactivity.
-    LaunchedEffect(isDraggingSlider, localSliderValue) {
-        if (isDraggingSlider) {
-            kotlinx.coroutines.delay(250L)
+    // Clear drag state if this card leaves composition mid-gesture
+    DisposableEffect(Unit) {
+        onDispose {
             isDraggingSlider = false
-            val rounded = localSliderValue.roundToInt().toFloat().coerceIn(valueRange)
-            localSliderValue = rounded
-            textInput = rounded.roundToInt().toString()
-            isInputError = false
-            currentOnValueChange(rounded)
-            currentOnValueChangeFinished?.invoke()
         }
     }
 
@@ -523,8 +516,10 @@ fun FareFilterCard(
                             },
                             onValueChangeFinished = {
                                 isDraggingSlider = false
-                                val rounded = localSliderValue.roundToInt().toFloat()
+                                val rounded = localSliderValue.roundToInt().toFloat().coerceIn(valueRange)
                                 localSliderValue = rounded
+                                textInput = rounded.roundToInt().toString()
+                                isInputError = false
                                 currentOnValueChange(rounded)
                                 currentOnValueChangeFinished?.invoke()
                             },

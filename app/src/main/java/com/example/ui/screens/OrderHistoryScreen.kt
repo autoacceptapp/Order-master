@@ -974,7 +974,7 @@ private fun EmptyHistoryView(
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
 
-            if (searchQuery.isBlank()) {
+            if (searchQuery.isBlank() && com.example.BuildConfig.DEBUG) {
                 Spacer(modifier = Modifier.height(4.dp))
                 FilledTonalButton(onClick = onSimulate) {
                     Icon(

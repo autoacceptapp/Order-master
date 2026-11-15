@@ -54,7 +54,7 @@ service cloud.firestore {
                'passName', 'passTier', 'amount', 'deviceHardwareId',
                'timestamp', 'createdAt'
              ]) &&
-             data.utr is string && data.utr.size() >= 9 && data.utr.size() <= 16 && data.utr == utrParam &&
+             data.utr is string && data.utr.matches('^[0-9]{12}$') && data.utr == utrParam &&
              data.status == 'PENDING' &&
              data.isUsed == false &&
              data.userId is string && data.userId == request.auth.uid &&
@@ -73,7 +73,7 @@ service cloud.firestore {
                'userId', 'firebaseUid', 'userEmail', 'linkedHardwareId', 'legacyCustomUserId',
                'actionType', 'status', 'createdAt',
                'referralCode', 'passTier', 'pointsCost', 'durationDays', 'durationMs',
-               'utr', 'transactionId', 'amount', 'featureId', 'hours',
+               'utr', 'transactionId', 'amount', 'featureId', 'featureIds', 'hours',
                'oldDocumentId', 'oldHardwareId', 'newHardwareId', 'condition',
                'current_folder', 'deviceIntegrityOk', 'appSignatureSha256'
              ]) &&
@@ -88,7 +88,8 @@ service cloud.firestore {
                'REWARD_AD_WATCHED',
                'PURCHASE_PASS',
                'ACTIVATE_PASS_PAYMENT',
-               'UNLOCK_FEATURE'
+               'UNLOCK_FEATURE',
+               'UNLOCK_MULTIPLE_FEATURES'
              ] &&
              // Never allow client to supply arbitrary points amounts or REWARD_AD_WATCHED amounts
              (!('amount' in data) || (data.actionType == 'ACTIVATE_PASS_PAYMENT' && data.amount is number && data.amount >= 0 && data.amount <= 100000)) &&
@@ -103,6 +104,7 @@ service cloud.firestore {
              isOptString(data, 'utr', 32) &&
              isOptString(data, 'transactionId', 64) &&
              isOptString(data, 'featureId', 64) &&
+             (!('featureIds' in data) || (data.featureIds is list && data.featureIds.size() >= 1 && data.featureIds.size() <= 10)) &&
              isOptNumber(data, 'hours', 1, 720) &&
              isOptString(data, 'oldDocumentId', 128) &&
              isOptString(data, 'oldHardwareId', 128) &&
@@ -192,7 +194,8 @@ service cloud.firestore {
       allow delete: if isAdmin() || (
         isSignedIn() &&
         isValidId(docId) &&
-        existing().firebaseUid == request.auth.uid
+        existing().firebaseUid == request.auth.uid &&
+        existing().status in ['COMPLETED', 'FAILED']
       );
     }
 
@@ -216,7 +219,8 @@ service cloud.firestore {
       allow delete: if isAdmin() || (
         isSignedIn() &&
         isValidId(utr) &&
-        (existing().userId == request.auth.uid || existing().firebaseUid == request.auth.uid)
+        (existing().userId == request.auth.uid || existing().firebaseUid == request.auth.uid) &&
+        existing().status == 'PENDING'
       );
     }
 

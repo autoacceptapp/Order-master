@@ -8,17 +8,20 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface OrderDao {
-    @Query("SELECT * FROM order_history ORDER BY timestamp DESC")
+    @Query("SELECT * FROM order_history ORDER BY timestamp DESC LIMIT 500")
     fun getAllOrders(): Flow<List<OrderEntity>>
 
-    @Query("SELECT * FROM order_history WHERE isAccepted = :accepted ORDER BY timestamp DESC")
+    @Query("SELECT * FROM order_history WHERE isAccepted = :accepted ORDER BY timestamp DESC LIMIT 500")
     fun getOrdersByStatus(accepted: Boolean): Flow<List<OrderEntity>>
 
-    @Query("SELECT * FROM order_history WHERE pickupLocation LIKE '%' || :query || '%' OR dropLocation LIKE '%' || :query || '%' OR decisionReason LIKE '%' || :query || '%' ORDER BY timestamp DESC")
+    @Query("SELECT * FROM order_history WHERE pickupLocation LIKE '%' || :query || '%' OR dropLocation LIKE '%' || :query || '%' OR decisionReason LIKE '%' || :query || '%' ORDER BY timestamp DESC LIMIT 500")
     fun searchOrders(query: String): Flow<List<OrderEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertOrder(order: OrderEntity): Long
+
+    @Query("DELETE FROM order_history WHERE id NOT IN (SELECT id FROM order_history ORDER BY timestamp DESC LIMIT :keepCount)")
+    suspend fun pruneOldOrders(keepCount: Int = 500)
 
     @Query("DELETE FROM order_history")
     suspend fun clearAll()

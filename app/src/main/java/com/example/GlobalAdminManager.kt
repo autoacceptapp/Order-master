@@ -282,6 +282,10 @@ object GlobalAdminManager {
             Log.d(TAG, "Action blocked: isServiceActive is false.")
             return false
         }
+        if (LicenseManager.isClockTamperingDetected(context)) {
+            Log.d(TAG, "Action blocked: Clock tampering detected.")
+            return false
+        }
         val currentBan = _banState.value
         if (currentBan is UserBanState.Banned) {
             if (LicenseManager.getCurrentServerTimeMs() < currentBan.banUntilTimestamp) {

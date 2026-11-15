@@ -412,6 +412,7 @@ object AppSettings {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val evaluationMutex = Mutex()
     private val listenerLock = Any()
+    private val logsLock = Any()
 
     private val _recentEvaluationsFlow = MutableStateFlow<List<RideEvaluation>>(emptyList())
     val recentEvaluationsFlow: StateFlow<List<RideEvaluation>> = _recentEvaluationsFlow.asStateFlow()
@@ -810,7 +811,7 @@ object AppSettings {
             if (rawMinFare > 0f) rawMinFare.coerceIn(MIN_FARE_RANGE_START, MIN_FARE_RANGE_END) else RESTRICTED_MIN_FARE
         } else _minFareFlow.value
         val finalMinFareEnabled = if (!isUserCustomized(context, FKEY_MIN_FARE_ENABLED)) {
-            (data["isMinFareEnabled"] as? Boolean) ?: if (rawMinFare != null && rawMinFare > 0f) true else current.isMinFareEnabled
+            (data["isMinFareEnabled"] as? Boolean) ?: current.isMinFareEnabled
         } else current.isMinFareEnabled
 
         val rawMaxFare = (data["maxFare"] as? Number)?.toFloat()
@@ -826,7 +827,7 @@ object AppSettings {
             rawMaxPickup.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM)
         } else _maxPickupDistanceFlow.value
         val finalMaxPickupEnabled = if (!isUserCustomized(context, FKEY_MAX_PICKUP_ENABLED)) {
-            (data["isMaxPickupDistanceEnabled"] as? Boolean) ?: if (rawMaxPickup != null && rawMaxPickup > 0f) true else current.isMaxPickupDistanceEnabled
+            (data["isMaxPickupDistanceEnabled"] as? Boolean) ?: current.isMaxPickupDistanceEnabled
         } else current.isMaxPickupDistanceEnabled
 
         val rawMaxDrop = (data["maxDropDistance"] as? Number)?.toFloat()
@@ -1595,16 +1596,20 @@ object AppSettings {
             severity = severity,
             evaluation = evaluation
         )
-        val current = _logsFlow.value.toMutableList()
-        current.add(0, entry)
-        if (current.size > 100) {
-            current.removeAt(current.lastIndex)
+        synchronized(logsLock) {
+            val current = _logsFlow.value.toMutableList()
+            current.add(0, entry)
+            if (current.size > 100) {
+                current.removeAt(current.lastIndex)
+            }
+            _logsFlow.value = current
         }
-        _logsFlow.value = current
     }
 
     fun clearLogs() {
-        _logsFlow.value = emptyList()
+        synchronized(logsLock) {
+            _logsFlow.value = emptyList()
+        }
     }
 
     /**
@@ -1661,10 +1666,8 @@ object AppSettings {
         }
 
         val expectedService1 = "${context.packageName}/${MyAccessibilityService::class.java.canonicalName}"
-        val expectedService2 = "${context.packageName}/${SmartTextService::class.java.canonicalName}"
         val expectedService3 = "${context.packageName}/${RapidoAccessibilityService::class.java.canonicalName}"
         val expectedShort1 = "${context.packageName}/.MyAccessibilityService"
-        val expectedShort2 = "${context.packageName}/.SmartTextService"
         val expectedShort3 = "${context.packageName}/.RapidoAccessibilityService"
 
         try {
@@ -1679,10 +1682,8 @@ object AppSettings {
             while (colonSplitter.hasNext()) {
                 val service = colonSplitter.next()
                 if (service.equals(expectedService1, ignoreCase = true) ||
-                    service.equals(expectedService2, ignoreCase = true) ||
                     service.equals(expectedService3, ignoreCase = true) ||
                     service.equals(expectedShort1, ignoreCase = true) ||
-                    service.equals(expectedShort2, ignoreCase = true) ||
                     service.equals(expectedShort3, ignoreCase = true)
                 ) {
                     return true

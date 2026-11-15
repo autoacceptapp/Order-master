@@ -21,7 +21,9 @@ class OrderRepository(context: Context) {
     }
 
     suspend fun insertOrder(order: OrderEntity): Long {
-        return orderDao.insertOrder(order)
+        val insertedId = orderDao.insertOrder(order)
+        orderDao.pruneOldOrders(500)
+        return insertedId
     }
 
     suspend fun clearHistory() {

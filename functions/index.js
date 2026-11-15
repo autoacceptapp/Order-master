@@ -1,4 +1,5 @@
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
 
 if (!admin.apps.length) {
@@ -115,6 +116,74 @@ function assertCallerSecurity(request) {
   }
 }
 
+function parseBanUntilMs(userData) {
+  if (!userData || userData.banUntil == null) return 0;
+  const raw = userData.banUntil;
+  if (typeof raw === "number") return raw;
+  if (typeof raw.toMillis === "function") return raw.toMillis();
+  if (raw instanceof Date) return raw.getTime();
+  return 0;
+}
+
+function isFeatureLockedByAdmin(userData, featureId) {
+  if (!userData || !featureId) return false;
+  const target = String(featureId).trim().toLowerCase();
+  const rawLocked = userData.locked_features || userData.lockedFeatures;
+  const checkKey = (key) => {
+    if (Array.isArray(rawLocked)) {
+      return rawLocked.some((item) => String(item).trim().toLowerCase() === key);
+    }
+    if (rawLocked && typeof rawLocked === "object") {
+      return Object.entries(rawLocked).some(
+        ([k, v]) => v === true && String(k).trim().toLowerCase() === key
+      );
+    }
+    return false;
+  };
+  if (checkKey(target)) return true;
+  if (["min_fare", "max_fare", "min_per_km_rate"].includes(target) && checkKey("fare_filters")) {
+    return true;
+  }
+  if (["max_pickup_distance", "max_drop_distance"].includes(target) && checkKey("distance_filters")) {
+    return true;
+  }
+  return false;
+}
+
+async function assertGlobalServiceActiveAndNotBanned(uid) {
+  const globalSnap = await db.collection("app_settings").document("global").get();
+  if (globalSnap.exists) {
+    const g = globalSnap.data() || {};
+    if (g.isServiceActive === false) {
+      throw new HttpsError(
+        "unavailable",
+        g.offlineMessage || g.message || "Service is currently offline for maintenance."
+      );
+    }
+  }
+  if (uid) {
+    const userSnap = await db.collection("users").document(uid).get();
+    if (userSnap.exists) {
+      const banMs = parseBanUntilMs(userSnap.data());
+      if (banMs > Date.now()) {
+        throw new HttpsError(
+          "permission-denied",
+          "Account is temporarily suspended. Please contact support."
+        );
+      }
+    }
+  }
+}
+
+function generateReferralCode() {
+  const allowedChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let randomSuffix = "";
+  for (let i = 0; i < 6; i++) {
+    randomSuffix += allowedChars.charAt(Math.floor(Math.random() * allowedChars.length));
+  }
+  return `OM${randomSuffix}`;
+}
+
 /**
  * 1. claimHardwareTrial
  * Grants a hardware-locked 48-hour trial using authoritative server time.
@@ -124,6 +193,7 @@ exports.claimHardwareTrial = onCall({ enforceAppCheck: false }, async (request) 
   assertCallerSecurity(request);
 
   const uid = request.auth.uid;
+  await assertGlobalServiceActiveAndNotBanned(uid);
   const userEmail = request.auth.token.email || "";
   const hardwareId = (request.data.hardwareId || "").trim();
   const deviceSpecs = request.data.deviceSpecs || {};
@@ -216,6 +286,7 @@ exports.purchasePassWithPoints = onCall({ enforceAppCheck: false }, async (reque
   assertCallerSecurity(request);
 
   const uid = request.auth.uid;
+  await assertGlobalServiceActiveAndNotBanned(uid);
   const passTierId = request.data.passTier || request.data.passTierId;
   const tier = PASS_TIERS[passTierId];
 
@@ -310,6 +381,7 @@ exports.verifyUtrAndActivatePass = onCall({ enforceAppCheck: false }, async (req
   assertCallerSecurity(request);
 
   const uid = request.auth.uid;
+  await assertGlobalServiceActiveAndNotBanned(uid);
   const utr = (request.data.utr || "").trim();
   const passTierId = request.data.passTier || request.data.passTierId || "daily_pass";
   const tier = PASS_TIERS[passTierId];
@@ -362,8 +434,21 @@ exports.verifyUtrAndActivatePass = onCall({ enforceAppCheck: false }, async (req
       throw new HttpsError("failed-precondition", "Payment has not been verified yet.");
     }
 
+    const paidAmount = Number(paymentData.amount || 0);
+    const explicitTier = paymentData.passTier || paymentData.tier;
+    if (paidAmount < tier.priceInInr && explicitTier !== tier.id) {
+      throw new HttpsError(
+        "failed-precondition",
+        `Paid amount (₹${paidAmount}) is below required ₹${tier.priceInInr} for ${tier.title}.`
+      );
+    }
+
     const serverNow = Date.now();
-    const userSnap = await transaction.get(userDocRef);
+    const pendingRef = db.collection("pending_verifications").document(utr);
+    const [userSnap, pendingSnap] = await Promise.all([
+      transaction.get(userDocRef),
+      transaction.get(pendingRef),
+    ]);
     const userData = userSnap.exists ? userSnap.data() : {};
 
     // Mark payment as claimed and used
@@ -376,6 +461,14 @@ exports.verifyUtrAndActivatePass = onCall({ enforceAppCheck: false }, async (req
       claimedAt: admin.firestore.FieldValue.serverTimestamp(),
       passTier: tier.id,
     });
+
+    if (pendingSnap.exists) {
+      transaction.update(pendingRef, {
+        status: "Verified",
+        isUsed: true,
+        verifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
 
     if (!tier.isProPass) {
       // Remove Ads Pass strictly removes banner ads only
@@ -527,6 +620,7 @@ exports.claimReferralCode = onCall({ enforceAppCheck: false }, async (request) =
   assertCallerSecurity(request);
 
   const uid = request.auth.uid;
+  await assertGlobalServiceActiveAndNotBanned(uid);
   const submittedCode = (request.data.submittedCode || request.data.inviteCode || "").trim().toUpperCase();
 
   if (!submittedCode || submittedCode.length !== 8) {
@@ -615,7 +709,8 @@ exports.unlockFeatureWithPoints = onCall({ enforceAppCheck: false }, async (requ
   assertCallerSecurity(request);
 
   const uid = request.auth.uid;
-  const featureId = (request.data.featureId || "").trim();
+  await assertGlobalServiceActiveAndNotBanned(uid);
+  const featureId = (request.data.featureId || "").trim().toLowerCase();
   const hours = parseInt(request.data.hours, 10) || 1;
 
   if (isNaN(hours) || hours <= 0 || hours > 720) {
@@ -637,6 +732,9 @@ exports.unlockFeatureWithPoints = onCall({ enforceAppCheck: false }, async (requ
     }
 
     const userData = userSnap.data();
+    if (isFeatureLockedByAdmin(userData, featureId)) {
+      throw new HttpsError("permission-denied", `${pricing.title} is locked by Admin.`);
+    }
     const currentPoints = userData.pointsBalance || 0;
 
     if (currentPoints < totalCost) {
@@ -685,5 +783,465 @@ exports.unlockFeatureWithPoints = onCall({ enforceAppCheck: false }, async (requ
       message: `Unlocked ${pricing.title} for ${hours} hour(s) until ${new Date(newExpiry).toISOString()}`,
     };
   });
+});
+
+/**
+ * 9. processPendingAction
+ * Zero-Trust Action Queue processor handling client-initiated PENDING requests
+ * atomically with strict server-side pricing, Admin lock checks, and cooldowns.
+ */
+exports.processPendingAction = onDocumentCreated("pending_actions/{docId}", async (event) => {
+  const snap = event.data;
+  if (!snap) return;
+
+  const data = snap.data() || {};
+  if (data.status !== "PENDING") return;
+
+  const actionRef = snap.ref;
+  const uid = String(data.firebaseUid || data.userId || "").trim();
+  if (!uid) {
+    await actionRef.update({
+      status: "FAILED",
+      errorMessage: "Missing authenticated user ID.",
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return;
+  }
+
+  try {
+    await assertGlobalServiceActiveAndNotBanned(uid);
+    const userDocRef = db.collection("users").document(uid);
+    let completionPayload = {};
+
+    switch (data.actionType) {
+      case "INIT_PROFILE":
+      case "UPDATE_PROFILE":
+      case "MIGRATE_PROFILE": {
+        completionPayload = await db.runTransaction(async (transaction) => {
+          const userSnap = await transaction.get(userDocRef);
+          const serverNow = Date.now();
+          if (userSnap.exists) {
+            const existing = userSnap.data() || {};
+            const code = existing.referralCode || generateReferralCode();
+            const updates = {
+              userId: uid,
+              firebaseUid: uid,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedServerTimeMs: serverNow,
+            };
+            if (data.userEmail) updates.userEmail = String(data.userEmail).slice(0, 256);
+            if (data.linkedHardwareId) updates.linkedHardwareId = String(data.linkedHardwareId).slice(0, 128);
+            if (!existing.referralCode) updates.referralCode = code;
+            transaction.set(userDocRef, updates, { merge: true });
+            return {
+              referralCode: code,
+              pointsBalance: existing.pointsBalance || 0,
+              newPointsBalance: existing.pointsBalance || 0,
+              serverTimeMs: serverNow,
+            };
+          } else {
+            const code = generateReferralCode();
+            const newProfile = {
+              userId: uid,
+              firebaseUid: uid,
+              userEmail: String(data.userEmail || "").slice(0, 256),
+              linkedHardwareId: String(data.linkedHardwareId || "").slice(0, 128),
+              pointsBalance: 0,
+              referralCode: code,
+              hasClaimedReferral: false,
+              referralCount: 0,
+              activePassType: null,
+              passExpiryTimestamp: 0,
+              removeAdsExpiryTimestamp: 0,
+              unlocked_features: {},
+              locked_features: [],
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedServerTimeMs: serverNow,
+            };
+            transaction.set(userDocRef, newProfile);
+            return {
+              referralCode: code,
+              pointsBalance: 0,
+              newPointsBalance: 0,
+              serverTimeMs: serverNow,
+            };
+          }
+        });
+        break;
+      }
+
+      case "CLAIM_REFERRAL": {
+        const submittedCode = String(data.referralCode || "").trim().toUpperCase();
+        if (!submittedCode || submittedCode.length !== 8) {
+          throw new Error("Referral code must be exactly 8 characters.");
+        }
+        const querySnap = await db.collection("users")
+          .where("referralCode", "==", submittedCode)
+          .limit(1)
+          .get();
+        if (querySnap.empty) {
+          throw new Error("Invalid referral code.");
+        }
+        const referrerUid = querySnap.docs[0].id;
+        if (referrerUid === uid) {
+          throw new Error("Cannot use your own referral code.");
+        }
+        const referrerDocRef = db.collection("users").document(referrerUid);
+        completionPayload = await db.runTransaction(async (transaction) => {
+          const [userSnap, refSnap] = await Promise.all([
+            transaction.get(userDocRef),
+            transaction.get(referrerDocRef),
+          ]);
+          if (!refSnap.exists) throw new Error("Referrer account not found.");
+          const userData = userSnap.exists ? userSnap.data() : {};
+          if (userData.hasClaimedReferral) throw new Error("Bonus Already Claimed.");
+          const serverNow = Date.now();
+          const newCallerPoints = (userData.pointsBalance || 0) + 50;
+          const newReferrerPoints = (refSnap.data().pointsBalance || 0) + 20;
+          transaction.set(
+            referrerDocRef,
+            {
+              pointsBalance: newReferrerPoints,
+              referralCount: (refSnap.data().referralCount || 0) + 1,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedServerTimeMs: serverNow,
+            },
+            { merge: true }
+          );
+          transaction.set(
+            userDocRef,
+            {
+              userId: uid,
+              firebaseUid: uid,
+              pointsBalance: newCallerPoints,
+              hasClaimedReferral: true,
+              claimedFromCode: submittedCode,
+              claimedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedServerTimeMs: serverNow,
+            },
+            { merge: true }
+          );
+          return { newPointsBalance: newCallerPoints, serverTimeMs: serverNow };
+        });
+        break;
+      }
+
+      case "REWARD_AD_WATCHED": {
+        completionPayload = await db.runTransaction(async (transaction) => {
+          const userSnap = await transaction.get(userDocRef);
+          const userData = userSnap.exists ? userSnap.data() : {};
+          const serverNow = Date.now();
+          const lastRewardMs = Number(userData.lastAdRewardAtMs || 0);
+          if (lastRewardMs > 0 && serverNow - lastRewardMs < 30000) {
+            throw new Error("Please wait 30 seconds before claiming another ad reward.");
+          }
+          const utcDay = new Date(serverNow).toISOString().slice(0, 10);
+          const prevDay = userData.dailyAdRewardDate || "";
+          const dayCount = prevDay === utcDay ? Number(userData.dailyAdRewardCount || 0) : 0;
+          if (dayCount >= 20) {
+            throw new Error("Daily rewarded ad limit reached. Please try again tomorrow.");
+          }
+          const reward = 5;
+          const newPoints = (userData.pointsBalance || 0) + reward;
+          transaction.set(
+            userDocRef,
+            {
+              userId: uid,
+              firebaseUid: uid,
+              pointsBalance: newPoints,
+              lastAdRewardAtMs: serverNow,
+              dailyAdRewardDate: utcDay,
+              dailyAdRewardCount: dayCount + 1,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedServerTimeMs: serverNow,
+            },
+            { merge: true }
+          );
+          return { rewardAmount: reward, newPointsBalance: newPoints, serverTimeMs: serverNow };
+        });
+        break;
+      }
+
+      case "PURCHASE_PASS": {
+        const tier = PASS_TIERS[String(data.passTier || "").trim()];
+        if (!tier) throw new Error(`Unknown pass tier: ${data.passTier}`);
+        completionPayload = await db.runTransaction(async (transaction) => {
+          const userSnap = await transaction.get(userDocRef);
+          if (!userSnap.exists) throw new Error("User licensing document not found.");
+          const userData = userSnap.data() || {};
+          const currentPoints = userData.pointsBalance || 0;
+          if (currentPoints < tier.pointsCost) {
+            throw new Error(`Insufficient points. Need ${tier.pointsCost}, balance is ${currentPoints}.`);
+          }
+          const serverNow = Date.now();
+          const newPoints = currentPoints - tier.pointsCost;
+          if (!tier.isProPass) {
+            const curAds = userData.removeAdsExpiryTimestamp || 0;
+            const newAdsExpiry = (curAds > serverNow ? curAds : serverNow) + tier.durationMs;
+            transaction.set(
+              userDocRef,
+              {
+                pointsBalance: newPoints,
+                removeAdsExpiryTimestamp: newAdsExpiry,
+                lastPurchasedTier: tier.id,
+                lastPaymentMethod: "POINTS",
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                updatedServerTimeMs: serverNow,
+              },
+              { merge: true }
+            );
+            return {
+              activePassType: userData.activePassType || null,
+              passExpiryTimestamp: userData.passExpiryTimestamp || 0,
+              removeAdsExpiryTimestamp: newAdsExpiry,
+              newPointsBalance: newPoints,
+              serverTimeMs: serverNow,
+            };
+          } else {
+            const curPass = userData.passExpiryTimestamp || 0;
+            const newExpiry = (curPass > serverNow ? curPass : serverNow) + tier.durationMs;
+            transaction.set(
+              userDocRef,
+              {
+                pointsBalance: newPoints,
+                activePassType: tier.id,
+                passExpiryTimestamp: newExpiry,
+                lastPurchasedTier: tier.id,
+                lastPaymentMethod: "POINTS",
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                updatedServerTimeMs: serverNow,
+              },
+              { merge: true }
+            );
+            return {
+              activePassType: tier.id,
+              passExpiryTimestamp: newExpiry,
+              removeAdsExpiryTimestamp: userData.removeAdsExpiryTimestamp || 0,
+              newPointsBalance: newPoints,
+              serverTimeMs: serverNow,
+            };
+          }
+        });
+        break;
+      }
+
+      case "ACTIVATE_PASS_PAYMENT": {
+        const utr = String(data.utr || data.transactionId || "").trim();
+        const tier = PASS_TIERS[String(data.passTier || "daily_pass").trim()];
+        if (!tier) throw new Error(`Unknown pass tier: ${data.passTier}`);
+        if (!/^\d{12}$/.test(utr)) throw new Error("Invalid 12-digit numeric UTR.");
+
+        const paymentDocRef = db.collection("received_payments").document(utr);
+        const pendingRef = db.collection("pending_verifications").document(utr);
+        completionPayload = await db.runTransaction(async (transaction) => {
+          const [paymentSnap, userSnap, pendingSnap] = await Promise.all([
+            transaction.get(paymentDocRef),
+            transaction.get(userDocRef),
+            transaction.get(pendingRef),
+          ]);
+          if (!paymentSnap.exists) {
+            throw new Error("Payment not verified yet. Please wait for bank SMS confirmation.");
+          }
+          const paymentData = paymentSnap.data() || {};
+          if (paymentData.isClaimed || paymentData.claimedByUid || paymentData.isUsed) {
+            throw new Error("This UTR has already been claimed on another account.");
+          }
+          if (paymentData.status && paymentData.status !== "Verified" && paymentData.status !== "VERIFIED") {
+            throw new Error("Payment has not been verified yet.");
+          }
+          const paidAmount = Number(paymentData.amount || 0);
+          const explicitTier = paymentData.passTier || paymentData.tier;
+          if (paidAmount < tier.priceInInr && explicitTier !== tier.id) {
+            throw new Error(`Paid amount (₹${paidAmount}) is less than ₹${tier.priceInInr} required for ${tier.title}.`);
+          }
+          const serverNow = Date.now();
+          const userData = userSnap.exists ? userSnap.data() : {};
+          transaction.update(paymentDocRef, {
+            isUsed: true,
+            isClaimed: true,
+            claimedBy: uid,
+            claimedByUid: uid,
+            claimedByUserId: uid,
+            claimedAt: admin.firestore.FieldValue.serverTimestamp(),
+            passTier: tier.id,
+          });
+          if (pendingSnap.exists) {
+            transaction.update(pendingRef, {
+              status: "Verified",
+              isUsed: true,
+              verifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+          }
+          if (!tier.isProPass) {
+            const curAds = userData.removeAdsExpiryTimestamp || 0;
+            const newAdsExpiry = (curAds > serverNow ? curAds : serverNow) + tier.durationMs;
+            transaction.set(
+              userDocRef,
+              {
+                userId: uid,
+                firebaseUid: uid,
+                removeAdsExpiryTimestamp: newAdsExpiry,
+                lastPurchasedTier: tier.id,
+                lastPaymentMethod: "UPI_UTR",
+                lastTransactionId: utr,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                updatedServerTimeMs: serverNow,
+              },
+              { merge: true }
+            );
+            return {
+              activePassType: userData.activePassType || null,
+              passExpiryTimestamp: userData.passExpiryTimestamp || 0,
+              removeAdsExpiryTimestamp: newAdsExpiry,
+              serverTimeMs: serverNow,
+            };
+          } else {
+            const curPass = userData.passExpiryTimestamp || 0;
+            const newExpiry = (curPass > serverNow ? curPass : serverNow) + tier.durationMs;
+            transaction.set(
+              userDocRef,
+              {
+                userId: uid,
+                firebaseUid: uid,
+                activePassType: tier.id,
+                passExpiryTimestamp: newExpiry,
+                lastPurchasedTier: tier.id,
+                lastPaymentMethod: "UPI_UTR",
+                lastTransactionId: utr,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                updatedServerTimeMs: serverNow,
+              },
+              { merge: true }
+            );
+            return {
+              activePassType: tier.id,
+              passExpiryTimestamp: newExpiry,
+              removeAdsExpiryTimestamp: userData.removeAdsExpiryTimestamp || 0,
+              serverTimeMs: serverNow,
+            };
+          }
+        });
+        break;
+      }
+
+      case "UNLOCK_FEATURE": {
+        const featureId = String(data.featureId || "").trim().toLowerCase();
+        const hours = parseInt(data.hours, 10) || 1;
+        if (hours <= 0 || hours > 720) throw new Error("Hours must be between 1 and 720.");
+        const pricing = FEATURE_PRICING[featureId];
+        if (!pricing) throw new Error(`Unknown feature ID: ${featureId}`);
+        const totalCost = pricing.pointsPerHour * hours;
+        completionPayload = await db.runTransaction(async (transaction) => {
+          const userSnap = await transaction.get(userDocRef);
+          if (!userSnap.exists) throw new Error("User licensing document not found.");
+          const userData = userSnap.data() || {};
+          if (isFeatureLockedByAdmin(userData, featureId)) {
+            throw new Error(`${pricing.title} is locked by Admin.`);
+          }
+          const currentPoints = userData.pointsBalance || 0;
+          if (currentPoints < totalCost) {
+            throw new Error(`Insufficient points. Balance: ${currentPoints}, Required: ${totalCost}`);
+          }
+          const serverNow = Date.now();
+          const unlocked = { ...(userData.unlocked_features || {}) };
+          const curExp = Number(unlocked[featureId] || 0);
+          const newExpiry = (curExp > serverNow ? curExp : serverNow) + hours * 3600000;
+          unlocked[featureId] = newExpiry;
+          const newPoints = currentPoints - totalCost;
+          transaction.set(
+            userDocRef,
+            {
+              pointsBalance: newPoints,
+              unlocked_features: unlocked,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedServerTimeMs: serverNow,
+            },
+            { merge: true }
+          );
+          return {
+            featureId,
+            expiryTimestamp: newExpiry,
+            newPointsBalance: newPoints,
+            serverTimeMs: serverNow,
+          };
+        });
+        break;
+      }
+
+      case "UNLOCK_MULTIPLE_FEATURES": {
+        const rawIds = Array.isArray(data.featureIds) ? data.featureIds : [];
+        const featureIds = [...new Set(rawIds.map((x) => String(x || "").trim().toLowerCase()).filter(Boolean))];
+        const hours = parseInt(data.hours, 10) || 1;
+        if (featureIds.length === 0 || featureIds.length > 10) {
+          throw new Error("Select between 1 and 10 features.");
+        }
+        if (hours <= 0 || hours > 720) throw new Error("Hours must be between 1 and 720.");
+        const pricings = featureIds.map((fid) => {
+          const p = FEATURE_PRICING[fid];
+          if (!p) throw new Error(`Unknown feature ID: ${fid}`);
+          return p;
+        });
+        const totalCost = pricings.reduce((sum, p) => sum + p.pointsPerHour * hours, 0);
+        completionPayload = await db.runTransaction(async (transaction) => {
+          const userSnap = await transaction.get(userDocRef);
+          if (!userSnap.exists) throw new Error("User licensing document not found.");
+          const userData = userSnap.data() || {};
+          for (const p of pricings) {
+            if (isFeatureLockedByAdmin(userData, p.id)) {
+              throw new Error(`${p.title} is locked by Admin.`);
+            }
+          }
+          const currentPoints = userData.pointsBalance || 0;
+          if (currentPoints < totalCost) {
+            throw new Error(`Insufficient points. Balance: ${currentPoints}, Required: ${totalCost}`);
+          }
+          const serverNow = Date.now();
+          const unlocked = { ...(userData.unlocked_features || {}) };
+          const unlockedExpiries = {};
+          for (const p of pricings) {
+            const curExp = Number(unlocked[p.id] || 0);
+            const newExpiry = (curExp > serverNow ? curExp : serverNow) + hours * 3600000;
+            unlocked[p.id] = newExpiry;
+            unlockedExpiries[p.id] = newExpiry;
+          }
+          const newPoints = currentPoints - totalCost;
+          transaction.set(
+            userDocRef,
+            {
+              pointsBalance: newPoints,
+              unlocked_features: unlocked,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedServerTimeMs: serverNow,
+            },
+            { merge: true }
+          );
+          return {
+            unlockedExpiries,
+            totalPointsDeducted: totalCost,
+            newPointsBalance: newPoints,
+            serverTimeMs: serverNow,
+          };
+        });
+        break;
+      }
+
+      default:
+        throw new Error(`Unsupported actionType: ${data.actionType}`);
+    }
+
+    await actionRef.update({
+      status: "COMPLETED",
+      ...completionPayload,
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    await actionRef.update({
+      status: "FAILED",
+      errorMessage: err.message || "Action processing failed.",
+      processedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
 });
 

@@ -278,4 +278,41 @@ describe("Order Master Zero-Trust Firestore Security Rules", () => {
       setDoc(doc(adminDb, "app_settings", "global"), { isServiceActive: false })
     );
   });
+
+  it("enforces 12-digit UTR format, UNLOCK_MULTIPLE_FEATURES limits, and terminal delete constraints", async () => {
+    const aliceDb = testEnv.authenticatedContext(USER_ALICE).firestore();
+
+    // Rejects non-12-digit UTR
+    await assertFails(
+      setDoc(doc(aliceDb, "pending_verifications", "12345"), {
+        utr: "12345",
+        status: "PENDING",
+        isUsed: false,
+        userId: USER_ALICE,
+      })
+    );
+
+    // Accepts atomic UNLOCK_MULTIPLE_FEATURES action within limits
+    const actionRef = await assertSucceeds(
+      addDoc(collection(aliceDb, "pending_actions"), {
+        userId: USER_ALICE,
+        firebaseUid: USER_ALICE,
+        actionType: "UNLOCK_MULTIPLE_FEATURES",
+        status: "PENDING",
+        featureIds: ["min_fare", "max_fare"],
+        hours: 2,
+      })
+    );
+
+    // Cannot delete PENDING action prematurely
+    await assertFails(deleteDoc(actionRef));
+
+    // Once marked COMPLETED by server/admin, client cleanup succeeds
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await updateDoc(doc(ctx.firestore(), "pending_actions", actionRef.id), {
+        status: "COMPLETED",
+      });
+    });
+    await assertSucceeds(deleteDoc(actionRef));
+  });
 });

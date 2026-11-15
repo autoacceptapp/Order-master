@@ -608,6 +608,10 @@ object LicenseManager {
         // 2. Device reboot detection: elapsedRealtime resets near 0 after a device reboot.
         val hasRebooted = deltaElapsed < -5_000L
         if (hasRebooted) {
+            if (currentWall < syncWall - MAX_ALLOWED_CLOCK_DRIFT_MS) {
+                Log.w(TAG, "Clock tampering detected after reboot: wall=$currentWall < syncWall=$syncWall")
+                return true
+            }
             if (lastServerTs > 0L && currentWall < lastServerTs - MAX_ALLOWED_CLOCK_DRIFT_MS) {
                 Log.w(TAG, "Clock tampering detected after reboot: wall=$currentWall < lastServerTs=$lastServerTs")
                 return true
@@ -2383,17 +2387,39 @@ object LicenseManager {
             )
         }
 
-        val unlockedResults = mutableMapOf<String, Long>()
-        for (pricing in pricings) {
-            val res = unlockFeature(pricing.id, hours)
-            if (res.isFailure) {
-                return@withContext Result.failure(
-                    res.exceptionOrNull() ?: IllegalStateException("Failed unlocking ${pricing.title}")
-                )
+        val result = executeActionQueueRequest(
+            actionType = "UNLOCK_MULTIPLE_FEATURES",
+            payload = mapOf(
+                "featureIds" to distinctIds,
+                "hours" to hours,
+                "pointsCost" to totalCost,
+                "durationMs" to (hours * 3600L * 1000L)
+            )
+        )
+
+        result.fold(
+            onSuccess = { snap ->
+                val rawExpiries = snap.get("unlockedExpiries") as? Map<*, *>
+                val fallbackExpiry = getCurrentServerTimeMs() + (hours * 3600L * 1000L)
+                val unlockedResults = mutableMapOf<String, Long>()
+                val updatedMap = _unlockedFeatures.value.toMutableMap()
+                for (pricing in pricings) {
+                    val serverExp = (rawExpiries?.get(pricing.id) as? Number)?.toLong() ?: fallbackExpiry
+                    updatedMap[pricing.id] = serverExp
+                    unlockedResults[pricing.id] = serverExp
+                }
+                _unlockedFeatures.value = updatedMap
+                (snap.getLong("newPointsBalance"))?.let { newBal ->
+                    _pointsBalance.value = newBal.toInt()
+                }
+                Log.i(TAG, "UNLOCK_MULTIPLE_FEATURES completed atomically for ${pricings.size} feature(s).")
+                Result.success(unlockedResults)
+            },
+            onFailure = { err ->
+                Log.e(TAG, "UNLOCK_MULTIPLE_FEATURES action failed: ${err.message}", err)
+                Result.failure(err)
             }
-            unlockedResults[pricing.id] = res.getOrDefault(0L)
-        }
-        Result.success(unlockedResults)
+        )
     }
 
     @VisibleForTesting
