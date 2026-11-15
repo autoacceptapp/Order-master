@@ -145,11 +145,14 @@ class OrderMasterApplication : Application() {
                     PlayIntegrityAppCheckProviderFactory.getInstance()
                 }
                 firebaseAppCheck.installAppCheckProviderFactory(debugFactory)
-            } else {
-                Log.d(TAG, "Configuring Firebase App Check with PlayIntegrityAppCheckProviderFactory (RELEASE build)")
+            } else if (isInstalledFromPlayStore()) {
+                Log.d(TAG, "Configuring Firebase App Check with PlayIntegrityAppCheckProviderFactory (Play Store RELEASE build)")
                 firebaseAppCheck.installAppCheckProviderFactory(
                     PlayIntegrityAppCheckProviderFactory.getInstance()
                 )
+            } else {
+                Log.i(TAG, "Sideloaded/GitHub APK detected; skipping PlayIntegrityAppCheckProviderFactory.")
+                return
             }
 
             // Enable automatic App Check token refresh for continuous background monitoring
@@ -157,6 +160,21 @@ class OrderMasterApplication : Application() {
             Log.d(TAG, "Firebase App Check token auto-refresh enabled.")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize Firebase App Check: ${e.message}", e)
+        }
+    }
+
+    private fun isInstalledFromPlayStore(): Boolean {
+        return try {
+            val installer = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                packageManager.getInstallSourceInfo(packageName).installingPackageName
+            } else {
+                @Suppress("DEPRECATION")
+                packageManager.getInstallerPackageName(packageName)
+            }
+            installer == "com.android.vending"
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not inspect installer package: ${e.message}")
+            false
         }
     }
 

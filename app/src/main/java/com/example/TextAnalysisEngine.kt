@@ -959,7 +959,7 @@ object TextAnalysisEngine {
                 text.contains("Accept Order", ignoreCase = true) ||
                 text.contains("Accept Ride", ignoreCase = true) ||
                 text.contains("Swipe to Accept", ignoreCase = true) ||
-                text.contains("Go", ignoreCase = false) ||
+                Regex("""\bGo\b""").containsMatchIn(text) ||
                 text.contains("Take Ride", ignoreCase = true) ||
                 text.contains("Confirm Order", ignoreCase = true) ||
                 text.contains("Confirm Ride", ignoreCase = true) ||
@@ -1082,8 +1082,8 @@ object TextAnalysisEngine {
             true
         }
 
-        val passesDrop = if (isMaxDropDistanceEnabled && dropDist != null) {
-            dropDist <= maxDropDistance
+        val passesDrop = if (isMaxDropDistanceEnabled) {
+            dropDist != null && dropDist <= maxDropDistance
         } else {
             true
         }
@@ -1149,6 +1149,9 @@ object TextAnalysisEngine {
             }
             isMaxPickupDistanceEnabled && pickupDist != null && pickupDist > effectiveMaxPickup -> {
                 "REJECTED: Pickup distance (${String.format(Locale.US, "%.1f", pickupDist)} km) exceeds limit (${String.format(Locale.US, "%.1f", effectiveMaxPickup)} km)"
+            }
+            isMaxDropDistanceEnabled && dropDist == null -> {
+                "REJECTED: Drop distance could not be determined"
             }
             isMaxDropDistanceEnabled && dropDist != null && dropDist > maxDropDistance -> {
                 "REJECTED: Drop distance (${String.format(Locale.US, "%.1f", dropDist)} km) exceeds limit (${String.format(Locale.US, "%.1f", maxDropDistance)} km)"

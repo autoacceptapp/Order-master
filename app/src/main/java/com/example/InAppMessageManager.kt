@@ -56,6 +56,8 @@ object InAppMessageManager {
 
     private var globalListener: ListenerRegistration? = null
     private var userMessageListener: ListenerRegistration? = null
+    private var activeMessageUid: String? = null
+    private val listenerLock = Any()
 
     // Cache of dismissed message IDs
     private val dismissedIds = mutableSetOf<String>()
@@ -89,12 +91,7 @@ object InAppMessageManager {
         if (isInitialized.compareAndSet(false, true)) {
             loadDismissedIds(ctx)
 
-            // Start global message listener if Firebase is ready, or retry gracefully
-            if (isFirebaseReady(ctx)) {
-                startGlobalMessageListener(ctx)
-            }
-
-            // Observe auth state to attach/detach user-targeted message listener
+            // Observe auth state strictly so Firestore listeners only attach after sign-in
             scope.launch {
                 GoogleAuthManager.userAuthState.collect { authState ->
                     val uid = authState.uid ?: try {
@@ -106,13 +103,11 @@ object InAppMessageManager {
                         null
                     }
 
-                    if (isFirebaseReady(ctx)) {
+                    if (authState.isLoggedIn && !uid.isNullOrBlank() && isFirebaseReady(ctx)) {
                         startGlobalMessageListener(ctx)
-                    }
-
-                    if (authState.isLoggedIn && !uid.isNullOrBlank()) {
                         startUserMessageListener(ctx, uid)
                     } else {
+                        stopGlobalMessageListener()
                         stopUserMessageListener()
                     }
                 }
@@ -202,42 +197,50 @@ object InAppMessageManager {
      */
     private fun startGlobalMessageListener(context: Context) {
         if (!isFirebaseReady(context)) return
+        val currentUser = try {
+            FirebaseAuth.getInstance().currentUser
+        } catch (_: Exception) {
+            null
+        }
+        if (currentUser == null || currentUser.uid.isBlank()) return
 
-        try {
-            val db = FirebaseFirestore.getInstance()
-            globalListener?.remove()
-            globalListener = db.collection(COLL_GLOBAL_MESSAGES)
-                .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(10)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        Log.w(TAG, "Global messages listener error: ${error.message}")
-                        return@addSnapshotListener
-                    }
+        synchronized(listenerLock) {
+            if (globalListener != null) return
+            try {
+                val db = FirebaseFirestore.getInstance()
+                globalListener = db.collection(COLL_GLOBAL_MESSAGES)
+                    .orderBy("timestamp", Query.Direction.DESCENDING)
+                    .limit(10)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            Log.w(TAG, "Global messages listener error: ${error.message}")
+                            return@addSnapshotListener
+                        }
 
-                    snapshot?.documents?.forEach { doc ->
-                        val id = doc.id
-                        val title = doc.getString("title") ?: "Announcement"
-                        val message = doc.getString("message") ?: ""
-                        val targetUid = doc.getString("targetUid")
-                        val timestamp = doc.getTimestamp("timestamp")?.toDate()?.time
-                            ?: doc.getLong("timestamp")
-                            ?: 0L
+                        snapshot?.documents?.forEach { doc ->
+                            val id = doc.id
+                            val title = doc.getString("title") ?: "Announcement"
+                            val message = doc.getString("message") ?: ""
+                            val targetUid = doc.getString("targetUid")
+                            val timestamp = doc.getTimestamp("timestamp")?.toDate()?.time
+                                ?: doc.getLong("timestamp")
+                                ?: 0L
 
-                        if (message.isNotBlank()) {
-                            val inAppMsg = InAppMessage(
-                                id = id,
-                                title = title,
-                                message = message,
-                                targetUid = targetUid,
-                                timestamp = timestamp
-                            )
-                            enqueueMessage(inAppMsg)
+                            if (message.isNotBlank()) {
+                                val inAppMsg = InAppMessage(
+                                    id = id,
+                                    title = title,
+                                    message = message,
+                                    targetUid = targetUid,
+                                    timestamp = timestamp
+                                )
+                                enqueueMessage(inAppMsg)
+                            }
                         }
                     }
-                }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start global message listener: ${e.message}", e)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start global message listener: ${e.message}", e)
+            }
         }
     }
 
@@ -247,10 +250,13 @@ object InAppMessageManager {
     private fun startUserMessageListener(context: Context, uid: String) {
         if (!isFirebaseReady(context) || uid.isBlank()) return
 
-        try {
-            val db = FirebaseFirestore.getInstance()
-            userMessageListener?.remove()
-            userMessageListener = db.collection(COLL_USERS)
+        synchronized(listenerLock) {
+            if (activeMessageUid == uid && userMessageListener != null) return
+            try {
+                val db = FirebaseFirestore.getInstance()
+                userMessageListener?.remove()
+                activeMessageUid = uid
+                userMessageListener = db.collection(COLL_USERS)
                 .document(uid)
                 .collection(COLL_USER_MESSAGES)
                 .orderBy("timestamp", Query.Direction.DESCENDING)
@@ -282,13 +288,24 @@ object InAppMessageManager {
                         }
                     }
                 }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start user message listener: ${e.message}", e)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start user message listener: ${e.message}", e)
+            }
+        }
+    }
+
+    private fun stopGlobalMessageListener() {
+        synchronized(listenerLock) {
+            globalListener?.remove()
+            globalListener = null
         }
     }
 
     private fun stopUserMessageListener() {
-        userMessageListener?.remove()
-        userMessageListener = null
+        synchronized(listenerLock) {
+            userMessageListener?.remove()
+            userMessageListener = null
+            activeMessageUid = null
+        }
     }
 }

@@ -29,10 +29,16 @@
     <!-- 8. Package installer permission for downloading and prompting APK update installation (API 26+) -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
-    <!-- 11. AdServices / Privacy Sandbox permissions for Google Mobile Ads SDK (API 33+) -->
-    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION" />
-    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID" />
-    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_TOPICS" />
+    <!-- 11. Strip Privacy Sandbox AdServices permissions injected by ads SDKs to prevent MEASUREMENT_SERVICE onNullBinding errors -->
+    <uses-permission
+        android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.ACCESS_ADSERVICES_AD_ID"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.ACCESS_ADSERVICES_TOPICS"
+        tools:node="remove" />
 
 
 
@@ -108,11 +114,10 @@
             android:name="com.google.android.gms.ads.DELAY_APP_MEASUREMENT_INIT"
             android:value="true" />
 
-        <!-- Configure AdServices for Google Mobile Ads SDK (AdMob) with tools:replace -->
+        <!-- Strip AdServices config merged from play-services-ads so GMA SDK does not bind disabled MEASUREMENT_SERVICE -->
         <property
             android:name="android.adservices.AD_SERVICES_CONFIG"
-            android:resource="@xml/gma_ad_services_config"
-            tools:replace="android:resource" />
+            tools:node="remove" />
 
 
         <activity

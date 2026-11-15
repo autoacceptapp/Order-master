@@ -61,7 +61,7 @@ object ApkDownloader {
 
     @Volatile
     private var activeDownloadId: Long = -1L
-    private var activeFileName: String = "app-debug.apk"
+    private var activeFileName: String = GitHubUpdateManager.resolveFallbackApkFileName()
     private var progressPollingJob: Job? = null
     private var downloadCompleteReceiver: BroadcastReceiver? = null
     private val completionLock = Any()
@@ -157,7 +157,7 @@ object ApkDownloader {
     fun startDownload(
         context: Context,
         downloadUrl: String,
-        fileName: String = "app-debug.apk",
+        fileName: String = GitHubUpdateManager.resolveFallbackApkFileName(),
         coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.IO)
     ) {
         val appContext = context.applicationContext
@@ -298,8 +298,9 @@ object ApkDownloader {
                                 }
                             }
                         } else {
-                            // Download record removed
+                            // Download record removed from DownloadManager
                             isFinished = true
+                            handleDownloadRemoved(context)
                         }
                     }
                 } catch (e: Exception) {
@@ -309,6 +310,13 @@ object ApkDownloader {
                 delay(500)
             }
         }
+    }
+
+    internal fun handleDownloadRemoved(context: Context) {
+        activeDownloadId = -1L
+        clearSavedDownload(context)
+        unregisterReceiver(context)
+        _downloadState.value = DownloadState.Error("Download cancelled or removed.")
     }
 
     /**
@@ -511,8 +519,9 @@ object ApkDownloader {
     }
 
     private fun getSavedFileName(context: Context): String {
+        val fallback = GitHubUpdateManager.resolveFallbackApkFileName()
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_DOWNLOAD_FILE_NAME, "app-debug.apk") ?: "app-debug.apk"
+            .getString(KEY_DOWNLOAD_FILE_NAME, fallback) ?: fallback
     }
 
     private fun clearSavedDownload(context: Context) {

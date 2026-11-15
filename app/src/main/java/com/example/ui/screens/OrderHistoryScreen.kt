@@ -90,6 +90,7 @@ fun OrderHistoryScreen(
     modifier: Modifier = Modifier
 ) {
     val orders by viewModel.orderHistory.collectAsState()
+    val totalOrdersCount by viewModel.totalOrdersCount.collectAsState()
     val searchQuery by viewModel.historySearchQuery.collectAsState()
     val statusFilter by viewModel.historyStatusFilter.collectAsState()
     var showClearConfirmDialog by remember { mutableStateOf(false) }
@@ -214,7 +215,7 @@ fun OrderHistoryScreen(
             FilterChip(
                 selected = statusFilter == HistoryFilter.ALL,
                 onClick = { viewModel.setHistoryStatusFilter(HistoryFilter.ALL) },
-                label = { Text("All (${orders.size})") },
+                label = { Text("All ($totalOrdersCount)") },
                 shape = RoundedCornerShape(10.dp)
             )
             FilterChip(
@@ -551,7 +552,7 @@ private fun OrderHistoryCard(
                     IconButton(
                         onClick = handleAnnounce,
                         modifier = Modifier
-                            .size(36.dp)
+                            .size(48.dp)
                             .background(
                                 MaterialTheme.colorScheme.surfaceVariant,
                                 CircleShape
@@ -568,7 +569,7 @@ private fun OrderHistoryCard(
                     // Delete button
                     IconButton(
                         onClick = onDelete,
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Delete,
@@ -835,7 +836,7 @@ private fun OrderHistoryCard(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            text = "🟢 Pickup: ${order.pickupDistanceKm ?: 0.0} km",
+                            text = "🟢 Pickup: ${order.pickupDistanceKm?.let { "$it km" } ?: "N/A"}",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFF047857)
@@ -865,7 +866,7 @@ private fun OrderHistoryCard(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            text = "🔴 Drop: ${order.dropDistanceKm ?: 0.0} km",
+                            text = "🔴 Drop: ${order.dropDistanceKm?.let { "$it km" } ?: "N/A"}",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFFB91C1C)

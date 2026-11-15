@@ -1173,17 +1173,24 @@ object LicenseManager {
         scope.launch {
             val ctx = appContext ?: return@launch
             val customUserId = resolveUserKey(ctx)
-            synchronized(authLock) {
-                currentUserKey = customUserId
-                activeUserDocUid = null
-                docInitAttempted.set(false)
-                hasLoadedLicensing = false
-                serverRemoveAdsExpiry = 0L
-                _removeAdsExpiryMs.value = 0L
-                _unlockedFeatures.value = emptyMap()
-                _accessStatus.value = AccessStatus.Loading
+            val alreadyAttached = synchronized(authLock) {
+                if (activeUserDocUid == customUserId && userDocListener != null && currentUserKey == customUserId) {
+                    true
+                } else {
+                    currentUserKey = customUserId
+                    activeUserDocUid = null
+                    docInitAttempted.set(false)
+                    hasLoadedLicensing = false
+                    serverRemoveAdsExpiry = 0L
+                    _removeAdsExpiryMs.value = 0L
+                    _unlockedFeatures.value = emptyMap()
+                    _accessStatus.value = AccessStatus.Loading
+                    false
+                }
             }
-            profileUpdateDispatchedHash = null
+            if (!alreadyAttached) {
+                profileUpdateDispatchedHash = null
+            }
             syncHardwareTrialAndLicensing()
         }
     }
@@ -1328,7 +1335,8 @@ object LicenseManager {
         )
         result.fold(
             onSuccess = { snap ->
-                val newBalance = snap.getLong("newBalance")?.toInt()
+                val newBalance = snap.getLong("newPointsBalance")?.toInt()
+                    ?: snap.getLong("newBalance")?.toInt()
                     ?: snap.getLong("pointsBalance")?.toInt()
                     ?: (_pointsBalance.value + WELCOME_BONUS_POINTS)
                 notifyReferralClaimed(newBalance)
@@ -1352,7 +1360,8 @@ object LicenseManager {
 
         result.fold(
             onSuccess = { snap ->
-                val newBalance = snap.getLong("newBalance")?.toInt()
+                val newBalance = snap.getLong("newPointsBalance")?.toInt()
+                    ?: snap.getLong("newBalance")?.toInt()
                     ?: snap.getLong("pointsBalance")?.toInt()
                     ?: (_pointsBalance.value + 5)
                 _pointsBalance.value = newBalance
@@ -2388,9 +2397,13 @@ object LicenseManager {
 
         result.fold(
             onSuccess = { snap ->
-                val newExpiry = snap.getLong("featureExpiry")
+                val newExpiry = snap.getLong("expiryTimestamp")
+                    ?: snap.getLong("featureExpiry")
                     ?: snap.getLong("newExpiry")
                     ?: (getCurrentServerTimeMs() + (hours * 3600L * 1000L))
+                snap.getLong("newPointsBalance")?.toInt()?.let { updatedBal ->
+                    _pointsBalance.value = updatedBal
+                }
                 val updatedMap = _unlockedFeatures.value.toMutableMap()
                 updatedMap[pricing.id] = newExpiry
                 _unlockedFeatures.value = updatedMap

@@ -124,7 +124,7 @@ fun ReferAndEarnScreen(
     // Auto-fill invite code if arrived from deep link
     LaunchedEffect(pendingInvite) {
         if (pendingInvite.isNotBlank() && inputCode.isBlank() && !hasClaimedReferral) {
-            inputCode = pendingInvite
+            inputCode = pendingInvite.filter { it.isLetterOrDigit() }.take(8).uppercase()
         }
     }
 
@@ -196,7 +196,7 @@ fun ReferAndEarnScreen(
                     hasClaimedReferral = hasClaimedReferral,
                     inputCode = inputCode,
                     onCodeChange = {
-                        inputCode = it.uppercase()
+                        inputCode = it.filter { ch -> ch.isLetterOrDigit() }.take(8).uppercase()
                         if (errorMessage != null) errorMessage = null
                         if (successMessage != null) successMessage = null
                     },
@@ -243,7 +243,6 @@ fun ReferAndEarnScreen(
                                 successMessage = "Referral applied! +50 Points added to your account."
                                 inputCode = ""
                                 ReferralManager.pendingInviteCode.value = ""
-                                LicenseManager.notifyReferralClaimed()
                                 Toast.makeText(context, "Claimed! +50 Points Added", Toast.LENGTH_LONG).show()
                             }.onFailure { err ->
                                 val msg = err.message ?: "Failed to claim referral code."

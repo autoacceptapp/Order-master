@@ -106,7 +106,7 @@ fun GoogleSignInBottomSheet(
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
         dragHandle = null,
         properties = ModalBottomSheetDefaults.properties(
-            shouldDismissOnBackPress = false
+            shouldDismissOnBackPress = !isMandatory
         ),
         modifier = modifier.testTag("google_sign_in_bottom_sheet")
     ) {

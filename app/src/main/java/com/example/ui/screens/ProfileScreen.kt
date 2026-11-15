@@ -113,7 +113,8 @@ fun ProfileScreen(
     val customProfileId = remember(userAuthState.isLoggedIn) {
         LicenseManager.resolveUserKey(context)
     }
-    val isProOrTrial = accessStatus is AccessStatus.PassActive || accessStatus is AccessStatus.TrialActive
+    val isProOrTrial = (accessStatus as? AccessStatus.PassActive)?.passTier?.isProPass == true ||
+        accessStatus is AccessStatus.TrialActive
 
     LazyColumn(
         modifier = modifier
@@ -421,7 +422,7 @@ fun ProfileScreen(
                                     Toast.makeText(context, "Profile ID Copied", Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier
-                                    .size(38.dp)
+                                    .size(48.dp)
                                     .testTag("copy_uid_button")
                             ) {
                                 Icon(

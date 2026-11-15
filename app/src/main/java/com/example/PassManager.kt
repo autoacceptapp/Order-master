@@ -187,8 +187,10 @@ object PassManager {
     ) {
         verifyPaymentWithBackend(context, paymentId, preferredTier) { isSuccess ->
             if (isSuccess) {
-                setPassStatus(context, true)
-                Toast.makeText(context, "Pass Activated!", Toast.LENGTH_SHORT).show()
+                val isPro = preferredTier?.isProPass != false
+                setPassStatus(context, isPro)
+                val toastText = if (isPro) "Pass Activated!" else "Ad-Free Pass Activated!"
+                Toast.makeText(context, toastText, Toast.LENGTH_SHORT).show()
                 onComplete?.invoke(true)
             } else {
                 setPassStatus(context, false)
@@ -258,7 +260,9 @@ object PassManager {
                 val finalExpiryTimestamp = if (currentExpiry > now) currentExpiry else (now + tier.durationMs)
 
                 withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
-                    setPassStatus(context, true)
+                    if (tier.isProPass) {
+                        setPassStatus(context, true)
+                    }
                     AppSettings.addLog(
                         title = "Pass Activated",
                         message = "${tier.title} activated via UTR $cleanUtr. Valid for ${tier.durationDays} day(s).",
@@ -432,6 +436,25 @@ object PassManager {
                                     continuation.resume(
                                         RealtimeWaitOutcome.EarlyResult(
                                             VerificationResult.AlreadyUsed("This UTR has already been claimed on another account.")
+                                        )
+                                    )
+                                }
+                                return
+                            }
+
+                            // Fail fast if payment was explicitly rejected or failed
+                            if (currentStatus.equals("REJECTED", ignoreCase = true) ||
+                                currentStatus.equals("FAILED", ignoreCase = true) ||
+                                currentStatus.equals("INVALID", ignoreCase = true)
+                            ) {
+                                if (isResumed.compareAndSet(false, true)) {
+                                    removeListeners()
+                                    val errReason = docSnap.getString("errorMessage")
+                                        ?: docSnap.getString("reason")
+                                        ?: "Payment verification was rejected. Please check your UTR."
+                                    continuation.resume(
+                                        RealtimeWaitOutcome.EarlyResult(
+                                            VerificationResult.Error(errReason)
                                         )
                                     )
                                 }

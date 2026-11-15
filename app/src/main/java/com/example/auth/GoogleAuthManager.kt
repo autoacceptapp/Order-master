@@ -13,6 +13,7 @@ import androidx.credentials.exceptions.NoCredentialException
 import com.example.AppSettings
 import com.example.UserAuthState
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.FirebaseException
 import com.google.firebase.FirebaseNetworkException
@@ -147,10 +148,22 @@ object GoogleAuthManager {
                 .addCredentialOption(googleIdOption)
                 .build()
 
-            val response = credentialManager.getCredential(
-                request = request,
-                context = context
-            )
+            val response = try {
+                credentialManager.getCredential(
+                    request = request,
+                    context = context
+                )
+            } catch (noCred: NoCredentialException) {
+                Log.w(TAG, "GetGoogleIdOption returned NoCredentialException; retrying with GetSignInWithGoogleOption chooser: ${noCred.message}")
+                val signInWithGoogleOption = GetSignInWithGoogleOption.Builder(resolvedClientId).build()
+                val fallbackRequest = GetCredentialRequest.Builder()
+                    .addCredentialOption(signInWithGoogleOption)
+                    .build()
+                credentialManager.getCredential(
+                    request = fallbackRequest,
+                    context = context
+                )
+            }
 
             val credential = response.credential
             if (credential is CustomCredential &&

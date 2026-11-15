@@ -225,7 +225,7 @@ class PaymentVerificationRepository(
                 val currentTime = LicenseManager.getCurrentServerTimeMs()
                 val isPaymentSuccessful = paymentStatus.equals("SUCCESS", ignoreCase = true) ||
                     paymentStatus.equals("VERIFIED", ignoreCase = true)
-                val isActive = isPaymentSuccessful && passExpiryDate > currentTime
+                val isActive = isProTier && isPaymentSuccessful && passExpiryDate > currentTime
 
                 PassManager.setPassStatus(context, isActive)
                 Log.d(TAG, "checkIsPaymentVerified for user $userId: isActive=$isActive (status=$paymentStatus, expiry=$passExpiryDate)")
@@ -434,6 +434,19 @@ class PaymentVerificationRepository(
                             preferredTier = preferredTier
                         )
                     }
+                } else if (status.equals("REJECTED", ignoreCase = true) ||
+                    status.equals("FAILED", ignoreCase = true) ||
+                    status.equals("INVALID", ignoreCase = true)
+                ) {
+                    val errReason = snapshot.getString("errorMessage")
+                        ?: snapshot.getString("reason")
+                        ?: "Payment verification for UTR $utr was rejected."
+                    _verificationState.value = PaymentVerificationState.Error(
+                        message = errReason,
+                        canRetry = true,
+                        utr = utr
+                    )
+                    cancelPendingListener()
                 } else if (isUsed) {
                     _verificationState.value = PaymentVerificationState.Error(
                         message = "This transaction ($utr) was claimed by another request.",
@@ -477,7 +490,9 @@ class PaymentVerificationRepository(
             val newExpiryDate = Date(newExpiryTimestamp)
 
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
-                PassManager.setPassStatus(context, true)
+                if (passTier.isProPass) {
+                    PassManager.setPassStatus(context, true)
+                }
                 AppSettings.addLog(
                     title = "Payment Verified & Unlocked",
                     message = "UTR: $utr (₹$amount). Activated ${passTier.title} until $newExpiryDate.",

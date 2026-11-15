@@ -176,7 +176,6 @@ private fun LanguageSelectionView(
                     isSelected = isSelected,
                     onSelect = {
                         selectedLanguageCode = lang.code
-                        onLanguageSelected(lang.code)
                     }
                 )
             }

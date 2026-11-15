@@ -890,10 +890,7 @@ fun RideSimulatorCard(
     val evaluation = remember(parsedOffer, settings) {
         TextAnalysisEngine.evaluateRideOffer(
             offer = parsedOffer,
-            minFare = settings.minFare,
-            maxFare = settings.maxFare,
-            maxPickupDistance = settings.maxPickupDistance,
-            isAutoAcceptEnabled = settings.isAutoAcceptEnabled
+            settings = settings
         )
     }
 
@@ -1145,7 +1142,7 @@ fun ActivityLogsSection(
                 if (logs.isNotEmpty()) {
                     IconButton(
                         onClick = onClearLogs,
-                        modifier = Modifier.size(32.dp).testTag("clear_logs_button")
+                        modifier = Modifier.size(48.dp).testTag("clear_logs_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.DeleteSweep,

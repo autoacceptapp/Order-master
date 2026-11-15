@@ -143,7 +143,6 @@ class MainActivity : ComponentActivity() {
                         withContext(Dispatchers.Main) {
                             AppSettings.signOut(applicationContext)
                             PassManager.setPassStatus(applicationContext, false)
-                            AppSettings.setPassExpiryTimestamp(applicationContext, 0L)
                             Toast.makeText(
                                 applicationContext,
                                 "Session Expired or Account Deleted. Logged out.",

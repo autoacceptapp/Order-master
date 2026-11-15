@@ -351,14 +351,14 @@ fun AppSettingsScreen(
                                             Toast.makeText(context, "Account UID Copied", Toast.LENGTH_SHORT).show()
                                         },
                                         modifier = Modifier
-                                            .size(20.dp)
+                                            .size(48.dp)
                                             .testTag("settings_copy_uid_button")
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.ContentCopy,
                                             contentDescription = "Copy Profile ID",
                                             tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(12.dp)
+                                            modifier = Modifier.size(18.dp)
                                         )
                                     }
                                 }

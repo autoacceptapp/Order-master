@@ -278,7 +278,6 @@ open class MyAccessibilityService : AccessibilityService() {
         Log.w(TAG, "Accessibility Service interrupted.")
         isPendingExecution = false
         clearPendingCallbacksAndNodes()
-        mainHandler.removeCallbacksAndMessages(null)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -583,13 +582,7 @@ open class MyAccessibilityService : AccessibilityService() {
             offers.filter { !processedOfferIds.contains(it.id) }
         }
         if (unprocessedOffers.isEmpty()) {
-            offers.forEach { recycleNode(it.acceptButton) }
             return
-        }
-        offers.forEach { offer ->
-            if (unprocessedOffers.none { it.id == offer.id }) {
-                recycleNode(offer.acceptButton)
-            }
         }
 
         val isAutoAccept = AppSettings.isAutoAcceptEnabled(this)
@@ -698,7 +691,6 @@ open class MyAccessibilityService : AccessibilityService() {
         if (matchingOffers.isNotEmpty() && isAutoAccept) {
             val hasActiveAccess = LicenseManager.hasAnyAutoAcceptCapability()
             if (!hasActiveAccess) {
-                unprocessedOffers.forEach { recycleNode(it.acceptButton) }
                 val topOffer = matchingOffers.first().first
                 AppSettings.addLog(
                     title = "Unlock Required",
@@ -712,7 +704,6 @@ open class MyAccessibilityService : AccessibilityService() {
 
             val isAutoClick = AppSettings.isAutoClickEnabled(this)
             if (!isAutoClick) {
-                unprocessedOffers.forEach { recycleNode(it.acceptButton) }
                 // Voice-Only Mode (Auto Click Disabled / TTS Voice Announcement Only)
                 val topOffer = matchingOffers.first().first
                 AppSettings.addLog(
@@ -755,7 +746,6 @@ open class MyAccessibilityService : AccessibilityService() {
                     null
                 }
             }
-            unprocessedOffers.forEach { recycleNode(it.acceptButton) }
 
             clearPendingCallbacksAndNodes()
             pendingRetainedAcceptNode = clonedAcceptNode
@@ -770,7 +760,6 @@ open class MyAccessibilityService : AccessibilityService() {
             pendingAcceptRunnable = acceptRunnable
             mainHandler.postDelayed(acceptRunnable, acceptDelayMs)
         } else if (isAutoAccept && evaluatedOffers.isNotEmpty()) {
-            unprocessedOffers.forEach { recycleNode(it.acceptButton) }
             // Smart Auto-Reject: Execute if any evaluation filter is unlocked (and Auto-Click isn't Admin locked)
             val hasAnyFilterUnlocked = !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) && (
                 isMinFareUnlocked || isMaxFareUnlocked || isMinPerKmRateUnlocked ||
@@ -800,8 +789,6 @@ open class MyAccessibilityService : AccessibilityService() {
             } else {
                 Log.d(TAG, "Auto-reject skipped: filters locked, allowing offer to time out.")
             }
-        } else {
-            unprocessedOffers.forEach { recycleNode(it.acceptButton) }
         }
     }
 

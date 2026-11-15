@@ -26,8 +26,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ClearAll
@@ -133,7 +135,9 @@ fun HomeScreen(
 
     // 3. Server-Side / Expiry Date Check on opening HomeScreen
     LaunchedEffect(Unit) {
-        PassManager.verifyServerPassStatus(context)
+        if (!LicenseManager.hasLoadedLicensing) {
+            PassManager.verifyServerPassStatus(context)
+        }
     }
 
     val handleOpenAccessibilityService: () -> Unit = {
@@ -163,6 +167,7 @@ fun HomeScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -230,7 +235,9 @@ fun HomeScreen(
             pulseScale = pulseScale,
             onClearLogs = { viewModel.clearLiveFeed() },
             onSimulateOffer = { viewModel.simulateRideOffer() },
-            modifier = Modifier.weight(1f)
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(380.dp)
         )
     }
 }
@@ -526,7 +533,7 @@ private fun LiveFeedSection(
                     if (logs.isNotEmpty()) {
                         IconButton(
                             onClick = onClearLogs,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(48.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.ClearAll,

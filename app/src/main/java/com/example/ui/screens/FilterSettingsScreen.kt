@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -1597,7 +1598,7 @@ private fun PresetChip(
         enabled = enabled,
         shape = RoundedCornerShape(10.dp),
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-        modifier = modifier.height(32.dp)
+        modifier = modifier.heightIn(min = 48.dp)
     ) {
         Text(
             text = name,

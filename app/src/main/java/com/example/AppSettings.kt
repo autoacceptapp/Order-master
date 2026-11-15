@@ -548,6 +548,7 @@ object AppSettings {
      * Initializes local UI preferences & user filter preferences from SharedPreferences, and attaches
      * the real-time FirebaseAuth + Firestore `users/{uid}` snapshot listener for Lock/Unlock & Pass state.
      */
+    @Synchronized
     fun init(context: Context) {
         val appCtx = context.applicationContext ?: context
         appContextRef = appCtx

@@ -611,7 +611,7 @@ private fun MerchantPaymentQrCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = merchantVpa,
+                            text = merchantVpa.ifBlank { "Fetching Merchant UPI ID..." },
                             style = MaterialTheme.typography.bodyMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 fontFamily = FontFamily.Monospace
@@ -621,6 +621,7 @@ private fun MerchantPaymentQrCard(
 
                     OutlinedButton(
                         onClick = onCopyVpa,
+                        enabled = merchantVpa.isNotBlank(),
                         shape = RoundedCornerShape(8.dp),
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
@@ -639,6 +640,7 @@ private fun MerchantPaymentQrCard(
             // Direct Open UPI App Button
             Button(
                 onClick = onOpenUpi,
+                enabled = merchantVpa.isNotBlank(),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = PrimaryEmerald),
                 modifier = Modifier
