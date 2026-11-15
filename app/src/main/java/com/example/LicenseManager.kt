@@ -194,13 +194,13 @@ object FeatureIds {
             id = MIN_FARE,
             title = "Minimum Fare Filter",
             pointsPerHour = 10,
-            description = "Set your own minimum ride fare threshold (₹)."
+            description = "Set your own minimum ride fare threshold (\u20B9)."
         ),
         FeatureUnlockPricing(
             id = MAX_FARE,
             title = "Maximum Fare Filter",
             pointsPerHour = 10,
-            description = "Set your own maximum fare ceiling (₹)."
+            description = "Set your own maximum fare ceiling (\u20B9)."
         ),
         FeatureUnlockPricing(
             id = MAX_PICKUP_DISTANCE,
@@ -218,7 +218,7 @@ object FeatureIds {
             id = MIN_PER_KM_RATE,
             title = "Minimum Rate Per-KM",
             pointsPerHour = 15,
-            description = "Reject rides paying below your target ₹/km rate."
+            description = "Reject rides paying below your target \u20B9/km rate."
         ),
         FeatureUnlockPricing(
             id = DESTINATION_BLACKLIST,
@@ -1161,13 +1161,13 @@ object LicenseManager {
         payload: Map<String, Any>
     ): Result<DocumentSnapshot> = withContext(Dispatchers.IO) {
         val ctx = appContext ?: return@withContext Result.failure(IllegalStateException("LicenseManager not initialized"))
+        if (FirebaseApp.getApps(ctx).isEmpty()) {
+            return@withContext Result.failure(IllegalStateException("Firebase service is not initialized."))
+        }
+
         val currentUser = FirebaseAuth.getInstance().currentUser
         if (currentUser == null || currentUser.uid.isBlank()) {
             return@withContext Result.failure(IllegalStateException("Please sign in with Google to perform this action."))
-        }
-
-        if (FirebaseApp.getApps(ctx).isEmpty()) {
-            return@withContext Result.failure(IllegalStateException("Firebase service is not initialized."))
         }
 
         val customUserId = resolveUserKey(ctx)
@@ -1222,17 +1222,6 @@ object LicenseManager {
                                 if (isResumed.compareAndSet(false, true)) {
                                     listenerRegistration?.remove()
                                     continuation.resume(Result.success(snapshot))
-
-                                    // Delayed 30-second database cleanup of processed action document
-                                    scope.launch(Dispatchers.IO) {
-                                        try {
-                                            kotlinx.coroutines.delay(30_000L)
-                                            docRef.delete().await()
-                                            Log.d(TAG, "Delayed cleanup: Deleted completed action document ${docRef.id} after 30s")
-                                        } catch (cleanupEx: Exception) {
-                                            Log.w(TAG, "Notice: pending_actions cleanup suppressed for ${docRef.id}: ${cleanupEx.message}")
-                                        }
-                                    }
                                 }
                             } else if (status.equals("FAILED", ignoreCase = true)) {
                                 val errorMsg = snapshot.getString("errorMessage")
@@ -1242,17 +1231,6 @@ object LicenseManager {
                                 if (isResumed.compareAndSet(false, true)) {
                                     listenerRegistration?.remove()
                                     continuation.resume(Result.failure(Exception(errorMsg)))
-
-                                    // Delayed 30-second database cleanup of processed action document
-                                    scope.launch(Dispatchers.IO) {
-                                        try {
-                                            kotlinx.coroutines.delay(30_000L)
-                                            docRef.delete().await()
-                                            Log.d(TAG, "Delayed cleanup: Deleted failed action document ${docRef.id} after 30s")
-                                        } catch (cleanupEx: Exception) {
-                                            Log.w(TAG, "Notice: pending_actions cleanup suppressed for ${docRef.id}: ${cleanupEx.message}")
-                                        }
-                                    }
                                 }
                             }
                         }

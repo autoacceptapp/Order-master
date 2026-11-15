@@ -45,15 +45,15 @@ data class SupportedLanguage(
 
 val SUPPORTED_LANGUAGES = listOf(
     SupportedLanguage("en", "English", "English", "Hello"),
-    SupportedLanguage("hi", "हिन्दी", "Hindi", "नमस्ते"),
-    SupportedLanguage("gu", "ગુજરાતી", "Gujarati", "નમસ્તે"),
-    SupportedLanguage("mr", "मराठी", "Marathi", "नमस्कार"),
-    SupportedLanguage("bn", "বাংলা", "Bengali", "নমস্কার"),
-    SupportedLanguage("ta", "தமிழ்", "Tamil", "வணக்கம்"),
-    SupportedLanguage("te", "తెలుగు", "Telugu", "నమస్కారం"),
-    SupportedLanguage("kn", "ಕನ್ನಡ", "Kannada", "ನಮಸ್ಕಾರ"),
-    SupportedLanguage("ml", "മലയാളം", "Malayalam", "നമസ്കാരം"),
-    SupportedLanguage("pa", "ਪੰਜਾਬੀ", "Punjabi", "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ")
+    SupportedLanguage("hi", "\u0939\u093F\u0928\u094D\u0926\u0940", "Hindi", "\u0928\u092E\u0938\u094D\u0924\u0947"),
+    SupportedLanguage("gu", "\u0A97\u0AC1\u0A9C\u0AB0\u0ABE\u0AA4\u0AC0", "Gujarati", "\u0AA8\u0AAE\u0AB8\u0ACD\u0AA4\u0AC7"),
+    SupportedLanguage("mr", "\u092E\u0930\u093E\u0920\u0940", "Marathi", "\u0928\u092E\u0938\u094D\u0915\u093E\u0930"),
+    SupportedLanguage("bn", "\u09AC\u09BE\u0982\u09B2\u09BE", "Bengali", "\u09A8\u09AE\u09B8\u09CD\u0995\u09BE\u09B0"),
+    SupportedLanguage("ta", "\u0BA4\u0BAE\u0BBF\u0BB4\u0BCD", "Tamil", "\u0BB5\u0BA3\u0B95\u0BCD\u0B95\u0BAE\u0BCD"),
+    SupportedLanguage("te", "\u0C24\u0C46\u0C32\u0C41\u0C17\u0C41", "Telugu", "\u0C28\u0C2E\u0C38\u0C4D\u0C15\u0C3E\u0C30\u0C02"),
+    SupportedLanguage("kn", "\u0C95\u0CA8\u0CCD\u0CA8\u0CA1", "Kannada", "\u0CA8\u0CAE\u0CB8\u0CCD\u0C95\u0CBE\u0CB0"),
+    SupportedLanguage("ml", "\u0D2E\u0D32\u0D2F\u0D3E\u0D33\u0D02", "Malayalam", "\u0D28\u0D2E\u0D38\u0D4D\u0D15\u0D3E\u0D30\u0D02"),
+    SupportedLanguage("pa", "\u0A2A\u0A70\u0A1C\u0A3E\u0A2C\u0A40", "Punjabi", "\u0A38\u0A24 \u0A38\u0A4D\u0A30\u0A40 \u0A05\u0A15\u0A3E\u0A32")
 )
 
 enum class LogSeverity {
@@ -508,7 +508,7 @@ object AppSettings {
         val blockedList = parseBlockedLocationsString(fPrefs.getString(FKEY_BLOCKED_LOCATIONS, null))
         val voiceOn = fPrefs.getBoolean(FKEY_VOICE_ENABLED, DEFAULT_VOICE_ANNOUNCER_ENABLED)
         val overlayOn = fPrefs.getBoolean(FKEY_OVERLAY_ENABLED, DEFAULT_FLOATING_OVERLAY_ENABLED)
-        val autoClickOn = fPrefs.getBoolean(FKEY_AUTO_CLICK_ENABLED, true)
+        val autoClickOn = fPrefs.getBoolean(FKEY_AUTO_CLICK_ENABLED, DEFAULT_AUTO_CLICK_ENABLED)
         val clickDelay = fPrefs.getLong(FKEY_CLICK_DELAY_MS, DEFAULT_CLICK_DELAY_MS).coerceAtLeast(100L)
 
         autoAcceptEnabled = userAutoAccept
@@ -1526,7 +1526,7 @@ object AppSettings {
 
     fun setMinFare(context: Context, value: Float) {
         if (!showFeatureLockedFeedback(context, FeatureIds.MIN_FARE, "Minimum Fare Filter")) return
-        val clamped = value.coerceIn(MIN_FARE_RANGE_START, MIN_FARE_RANGE_END)
+        val clamped = validateMinFare(value)
         minCurrencyThreshold = clamped.toDouble()
         _minFareFlow.value = clamped
         _settingsState.value = _settingsState.value.copy(minFare = clamped)
@@ -1537,7 +1537,7 @@ object AppSettings {
 
     fun setMaxFare(context: Context, value: Float) {
         if (!showFeatureLockedFeedback(context, FeatureIds.MAX_FARE, "Maximum Fare Filter")) return
-        val clamped = value.coerceIn(MAX_FARE_RANGE_START, MAX_FARE_RANGE_END)
+        val clamped = validateMaxFare(value)
         maxCurrencyThreshold = clamped.toDouble()
         _maxFareFlow.value = clamped
         _settingsState.value = _settingsState.value.copy(maxFare = clamped)

@@ -510,7 +510,7 @@ class FloatingOverlayService : Service() {
      */
     private fun formatFare(fare: Double?): String {
         return if (fare != null && fare > 0) {
-            "₹ ${fare.toInt()}"
+            "\u20B9${fare.toInt()}"
         } else {
             "--"
         }
