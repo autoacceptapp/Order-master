@@ -619,22 +619,47 @@ object TextAnalysisEngine {
     fun parseTargetOfferFromNodes(nodes: List<String>): TargetRideOffer? {
         if (nodes.isEmpty()) return null
 
-        // 1. Base Price Amount: Extracts currency numbers starting with ₹ or INR (first match within valid Rapido fare range)
+        // 1. Base Price Amount: Extracts currency numbers starting with ₹ or INR.
+        // Boosted/vehicle-tagged fares (e.g. "₹57 AUTO") replace earlier strikethrough/old fares,
+        // while "+ ₹13" nodes add bonus amounts to the detected fare.
         var baseFare = 0.0
+        var hasPrimaryFareTag = false
         for (node in nodes) {
             // Ignore timestamps (e.g. 12:30, 09:45 PM)
             if (node.contains(":") && Regex("""\b\d{1,2}:\d{2}\b""").containsMatchIn(node)) {
                 continue
             }
-            val matches = fareRegex.findAll(node)
-            for (match in matches) {
-                val candidate = (match.groups[1]?.value ?: match.groups[2]?.value)?.toDoubleOrNull() ?: 0.0
-                if (isValidRapidoFare(candidate)) {
-                    baseFare = candidate
-                    break
+            val trimmedNode = node.trim()
+            if (trimmedNode.startsWith("+")) {
+                continue
+            }
+
+            val isBoostOrVehicleNode = trimmedNode.contains("AUTO", ignoreCase = true) ||
+                trimmedNode.contains("BIKE", ignoreCase = true) ||
+                trimmedNode.contains("CAB", ignoreCase = true) ||
+                trimmedNode.contains("PARCEL", ignoreCase = true) ||
+                trimmedNode.contains("BOOST", ignoreCase = true) ||
+                trimmedNode.contains("FINAL", ignoreCase = true) ||
+                trimmedNode.contains("TOTAL", ignoreCase = true)
+
+            val (extractedNodeFare, _) = extractCurrencies(trimmedNode)
+            val candidateFare = if (extractedNodeFare != null && isValidRapidoFare(extractedNodeFare)) {
+                extractedNodeFare
+            } else {
+                val matches = fareRegex.findAll(trimmedNode)
+                matches.mapNotNull { (it.groups[1]?.value ?: it.groups[2]?.value)?.toDoubleOrNull() }
+                    .firstOrNull { isValidRapidoFare(it) } ?: 0.0
+            }
+
+            if (candidateFare > 0.0) {
+                if (baseFare <= 0.0) {
+                    baseFare = candidateFare
+                    hasPrimaryFareTag = isBoostOrVehicleNode
+                } else if (isBoostOrVehicleNode && !hasPrimaryFareTag) {
+                    baseFare = candidateFare
+                    hasPrimaryFareTag = true
                 }
             }
-            if (baseFare > 0.0) break
         }
 
         // 2. Distances: First match = Pickup distance, Second match = Drop distance
@@ -776,22 +801,77 @@ object TextAnalysisEngine {
         // Strip timestamps (e.g., 12:30, 09:45 PM) to prevent false-positive currency matches
         val cleanText = text.replace(Regex("""\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?\b""", RegexOption.IGNORE_CASE), " ")
         val breakdown = mutableListOf<Double>()
+        val matchedCurrencyRanges = mutableListOf<IntRange>()
+
+        val primaryTagRegex = Regex(
+            """\b(?:auto|bike|cab|parcel|boost|boosted|final|total|new)\b""",
+            RegexOption.IGNORE_CASE
+        )
+        val oldTagRegex = Regex(
+            """\b(?:old|was|strike|original|base)\b""",
+            RegexOption.IGNORE_CASE
+        )
 
         // 1. Direct currency matches (enforce ₹20 to ₹2000 range)
         val directMatches = currencyRegex.findAll(cleanText).toList()
+        var lastValidMatch: MatchResult? = null
+        var hasPrimaryFareTag = false
+
         for (match in directMatches) {
             val amount = (match.groups[1]?.value ?: match.groups[2]?.value)?.toDoubleOrNull()
             if (amount != null && isValidRapidoFare(amount)) {
-                breakdown.add(amount)
+                val trailingContext = cleanText.substring(
+                    match.range.last + 1,
+                    (match.range.last + 24).coerceAtMost(cleanText.length)
+                )
+                val leadingContext = cleanText.substring(
+                    (match.range.first - 20).coerceAtLeast(0),
+                    match.range.first
+                )
+                val hasPrimaryTag = primaryTagRegex.containsMatchIn(trailingContext) ||
+                    primaryTagRegex.containsMatchIn(leadingContext)
+                val hasOldTag = oldTagRegex.containsMatchIn(trailingContext) ||
+                    oldTagRegex.containsMatchIn(leadingContext)
+
+                if (breakdown.isEmpty()) {
+                    breakdown.add(amount)
+                    matchedCurrencyRanges.add(match.range)
+                    hasPrimaryFareTag = hasPrimaryTag && !hasOldTag
+                } else {
+                    val prev = lastValidMatch
+                    val between = if (prev != null && prev.range.last + 1 <= match.range.first) {
+                        cleanText.substring(prev.range.last + 1, match.range.first)
+                    } else {
+                        ""
+                    }
+                    if (between.contains("+")) {
+                        // Explicit additive bonus/tip (e.g., "₹56 + ₹13")
+                        breakdown.add(amount)
+                        matchedCurrencyRanges.add(match.range)
+                    } else if ((hasPrimaryTag && !hasOldTag) || (!hasPrimaryFareTag && !hasOldTag)) {
+                        // Boosted/replacement fare inside the same card replaces earlier strikethrough/old fare
+                        breakdown.clear()
+                        breakdown.add(amount)
+                        matchedCurrencyRanges.clear()
+                        matchedCurrencyRanges.add(match.range)
+                        hasPrimaryFareTag = hasPrimaryTag
+                    }
+                }
+                lastValidMatch = match
             }
         }
 
-        // 2. Plus component bonuses (e.g. "+ ₹15", "+ ₹30" - valid bonus range is ₹5 to ₹500)
+        // 2. Plus component bonuses (e.g. "+ ₹15", "+ 20" - valid bonus range is ₹5 to ₹500)
         if (breakdown.isNotEmpty()) {
             val plusMatches = plusBonusRegex.findAll(cleanText).toList()
             for (pm in plusMatches) {
+                val overlapsCurrency = matchedCurrencyRanges.any { cr ->
+                    pm.range.first <= cr.last && pm.range.last >= cr.first
+                }
+                if (overlapsCurrency) continue
+
                 val bonusVal = (pm.groups[1]?.value ?: pm.groups[2]?.value)?.toDoubleOrNull()
-                if (bonusVal != null && bonusVal in 5.0..500.0 && !breakdown.contains(bonusVal)) {
+                if (bonusVal != null && bonusVal in 5.0..500.0) {
                     val potentialTotal = breakdown.sum() + bonusVal
                     if (isValidRapidoFare(potentialTotal)) {
                         breakdown.add(bonusVal)
@@ -949,7 +1029,10 @@ object TextAnalysisEngine {
         blockedLocations: List<String> = emptyList(),
         isDestinationBlacklistEnabled: Boolean = false
     ): RideEvaluation {
-        val effectiveMaxPickup = maxPickupDistance.coerceIn(0.0f, 3.0f)
+        val effectiveMaxPickup = maxPickupDistance.coerceIn(
+            AppSettings.MIN_PICKUP_DISTANCE_KM,
+            AppSettings.MAX_PICKUP_DISTANCE_KM
+        )
 
         if (!isAutoAcceptEnabled) {
             return RideEvaluation(
@@ -1005,12 +1088,17 @@ object TextAnalysisEngine {
             true
         }
 
-        // Per-Km Rate Filter: calculate totalFare / (pickupDistanceKm + dropDistanceKm)
-        // Strictly protected against DivideByZeroException
+        // Per-Km Rate Filter: requires valid drop distance (> 0.0) so missing drop distance
+        // never inflates ₹/km by dividing total fare across pickup distance alone.
+        val hasValidDropForRate = dropDist != null && dropDist > 0.0
         val totalDistanceKm = (pickupDist ?: 0.0) + (dropDist ?: 0.0)
-        val calculatedRatePerKm = if (totalDistanceKm > 0.0) evalFare / totalDistanceKm else null
-        val passesPerKmRate = if (isMinPerKmRateEnabled && calculatedRatePerKm != null) {
-            calculatedRatePerKm >= minPerKmRate
+        val calculatedRatePerKm = if (hasValidDropForRate && totalDistanceKm > 0.0) {
+            evalFare / totalDistanceKm
+        } else {
+            null
+        }
+        val passesPerKmRate = if (isMinPerKmRateEnabled) {
+            calculatedRatePerKm != null && calculatedRatePerKm >= minPerKmRate
         } else {
             true
         }
@@ -1043,6 +1131,9 @@ object TextAnalysisEngine {
             }
             !passesBlacklist -> {
                 "REJECTED: Rejected due to Blacklisted Area ('$matchedBlockedKeyword')"
+            }
+            !passesPerKmRate && calculatedRatePerKm == null -> {
+                "REJECTED: Drop distance unavailable to verify Per-Km rate (Min ₹${minPerKmRate.toInt()}/km required)"
             }
             !passesPerKmRate && calculatedRatePerKm != null -> {
                 "REJECTED: Rejected due to low Per-Km rate (${String.format(Locale.US, "%.1f", calculatedRatePerKm)}/km < ₹${minPerKmRate.toInt()}/km)"

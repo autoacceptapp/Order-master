@@ -599,7 +599,7 @@ fun DecisionThresholdsCard(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // --- MAXIMUM PICKUP DISTANCE (0.0 km - 3.0 km) ---
+            // --- MAXIMUM PICKUP DISTANCE (0.0 km - 15.0 km) ---
             var pickupDistanceInput by remember(settings.maxPickupDistance) {
                 mutableStateOf(String.format(Locale.US, "%.1f", settings.maxPickupDistance))
             }
@@ -611,11 +611,11 @@ fun DecisionThresholdsCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Maximum Pickup Distance (0.0 km - 3.0 km)",
+                        text = "Maximum Pickup Distance (0.0 km - 15.0 km)",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                     )
                     Text(
-                        text = "Ignore rides further than this (Max threshold: 3.0 km)",
+                        text = "Ignore rides further than this (Max threshold: 15.0 km)",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -637,13 +637,19 @@ fun DecisionThresholdsCard(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Slider(
-                    value = settings.maxPickupDistance.coerceIn(0.0f, 3.0f),
+                    value = settings.maxPickupDistance.coerceIn(
+                        com.example.AppSettings.MIN_PICKUP_DISTANCE_KM,
+                        com.example.AppSettings.MAX_PICKUP_DISTANCE_KM
+                    ),
                     onValueChange = { newVal ->
-                        val rounded = (Math.round(newVal * 10.0f) / 10.0f).coerceIn(0.0f, 3.0f)
+                        val rounded = (Math.round(newVal * 10.0f) / 10.0f).coerceIn(
+                            com.example.AppSettings.MIN_PICKUP_DISTANCE_KM,
+                            com.example.AppSettings.MAX_PICKUP_DISTANCE_KM
+                        )
                         onMaxDistanceChanged(rounded)
                     },
-                    valueRange = 0.0f..3.0f,
-                    steps = 29, // 0.1km steps from 0.0 to 3.0
+                    valueRange = com.example.AppSettings.MIN_PICKUP_DISTANCE_KM..com.example.AppSettings.MAX_PICKUP_DISTANCE_KM,
+                    steps = 0, // Smooth 0.1km snapping from 0.0 to 15.0
                     colors = SliderDefaults.colors(
                         thumbColor = MaterialTheme.colorScheme.secondary,
                         activeTrackColor = MaterialTheme.colorScheme.secondary
@@ -658,7 +664,7 @@ fun DecisionThresholdsCard(
                     onValueChange = { input ->
                         pickupDistanceInput = input
                         input.toFloatOrNull()?.let { parsed ->
-                            if (parsed in 0.0f..3.0f) {
+                            if (parsed in com.example.AppSettings.MIN_PICKUP_DISTANCE_KM..com.example.AppSettings.MAX_PICKUP_DISTANCE_KM) {
                                 onMaxDistanceChanged(parsed)
                             }
                         }
@@ -672,12 +678,12 @@ fun DecisionThresholdsCard(
                 )
             }
 
-            // Quick Preset Chips for Distance (within 0.0 - 3.0 km)
+            // Quick Preset Chips for Distance (within 0.0 - 15.0 km)
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                val distancePresets = listOf(0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f)
+                val distancePresets = listOf(1.0f, 2.0f, 3.0f, 5.0f, 10.0f, 15.0f)
                 distancePresets.forEach { preset ->
                     val isSelected = (String.format(Locale.US, "%.1f", settings.maxPickupDistance) == String.format(Locale.US, "%.1f", preset))
                     FilterChip(

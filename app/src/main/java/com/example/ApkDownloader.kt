@@ -312,11 +312,24 @@ object ApkDownloader {
     }
 
     /**
+     * Strictly verifies that [downloadId] matches an active in-memory or persisted
+     * APK download started by [ApkDownloader]. Unrequested/unknown IDs return false
+     * even when [activeDownloadId] is -1L (e.g. cold-start).
+     */
+    fun isExpectedDownloadId(context: Context, downloadId: Long): Boolean {
+        if (downloadId <= 0L) return false
+        val currentActiveId = activeDownloadId
+        val savedId = getSavedDownloadId(context)
+        return (currentActiveId > 0L && downloadId == currentActiveId) ||
+            (savedId > 0L && downloadId == savedId)
+    }
+
+    /**
      * Handles ACTION_DOWNLOAD_COMPLETE from dynamic or manifest broadcast receiver.
      */
     fun handleExternalDownloadComplete(context: Context, downloadId: Long) {
-        val savedId = getSavedDownloadId(context)
-        if (downloadId != activeDownloadId && downloadId != savedId && activeDownloadId != -1L) {
+        if (!isExpectedDownloadId(context, downloadId)) {
+            Log.w(TAG, "Ignoring unrequested or mismatched download ID: $downloadId")
             return
         }
         synchronized(completionLock) {
@@ -327,6 +340,7 @@ object ApkDownloader {
 
         progressPollingJob?.cancel()
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager ?: return
+        var reachedTerminalState = false
 
         try {
             val query = DownloadManager.Query().setFilterById(downloadId)
@@ -336,6 +350,7 @@ object ApkDownloader {
                     val status = if (statusCol != -1) cursor.getInt(statusCol) else -1
 
                     if (status == DownloadManager.STATUS_SUCCESSFUL) {
+                        reachedTerminalState = true
                         val fileName = getSavedFileName(context).ifBlank { activeFileName }
                         val targetDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                         val apkFile = File(targetDir, fileName)
@@ -356,6 +371,7 @@ object ApkDownloader {
                             _downloadState.value = DownloadState.Error("Downloaded APK file could not be verified.")
                         }
                     } else if (status == DownloadManager.STATUS_FAILED) {
+                        reachedTerminalState = true
                         val reasonCol = cursor.getColumnIndex(DownloadManager.COLUMN_REASON)
                         val reason = if (reasonCol != -1) cursor.getInt(reasonCol) else -1
                         val errorMsg = mapDownloadErrorReason(reason)
@@ -368,6 +384,10 @@ object ApkDownloader {
             Log.e(TAG, "Exception handling download complete", e)
             _downloadState.value = DownloadState.Error("Error finalizing downloaded file: ${e.localizedMessage}")
         } finally {
+            if (reachedTerminalState) {
+                activeDownloadId = -1L
+                clearSavedDownload(context)
+            }
             // Cleanly unregister receiver when download reaches a terminal state to prevent leaks
             unregisterReceiver(context)
         }
@@ -395,9 +415,10 @@ object ApkDownloader {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(recvContext: Context?, intent: Intent?) {
                 if (intent?.action == DownloadManager.ACTION_DOWNLOAD_COMPLETE) {
+                    val targetCtx = recvContext?.applicationContext ?: appContext
                     val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
-                    if (id > 0) {
-                        handleExternalDownloadComplete(recvContext ?: appContext, id)
+                    if (isExpectedDownloadId(targetCtx, id)) {
+                        handleExternalDownloadComplete(targetCtx, id)
                     }
                 }
             }

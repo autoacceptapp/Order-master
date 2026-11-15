@@ -360,4 +360,34 @@ class PaymentVerificationTest {
             LicenseManager.resetStateForTesting(context)
         }
     }
+
+    @Test
+    fun testRewardedAdManagerNoFillReleaseHandlingAndVersionCode() {
+        try {
+            RewardedAdManager.setMockLoadedForTesting(false)
+            assertFalse(RewardedAdManager.isNoFillState.value)
+            assertEquals(RewardedAdManager.LOADING_USER_MESSAGE, RewardedAdManager.getUnavailableMessage())
+
+            // In release builds (!isDebugBuild), ERROR_CODE_NO_FILL (3) must stop auto-retries and surface friendly message
+            assertFalse(
+                RewardedAdManager.shouldRetryAfterFailure(
+                    com.google.android.gms.ads.AdRequest.ERROR_CODE_NO_FILL,
+                    isDebugBuild = false
+                )
+            )
+            RewardedAdManager.simulateLoadFailureForTesting(
+                com.google.android.gms.ads.AdRequest.ERROR_CODE_NO_FILL,
+                isDebugBuild = false
+            )
+            assertTrue(RewardedAdManager.isNoFillState.value)
+            assertFalse(RewardedAdManager.isLoadingState.value)
+            assertEquals(RewardedAdManager.NO_FILL_USER_MESSAGE, RewardedAdManager.lastErrorMessage.value)
+            assertEquals(RewardedAdManager.NO_FILL_USER_MESSAGE, RewardedAdManager.getUnavailableMessage())
+
+            // Default local BuildConfig.APP_VERSION_CODE must be >= 1 and aligned below GitHub Actions run numbers
+            assertEquals(1, BuildConfig.APP_VERSION_CODE)
+        } finally {
+            RewardedAdManager.setMockLoadedForTesting(false)
+        }
+    }
 }

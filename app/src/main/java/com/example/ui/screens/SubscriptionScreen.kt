@@ -1440,6 +1440,8 @@ fun EarnFreePointsCard(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val isAdLoading by RewardedAdManager.isLoadingState.collectAsState()
+    val isAdNoFill by RewardedAdManager.isNoFillState.collectAsState()
 
     val handleEarnPointsClick: () -> Unit = {
         if (!isLoggedIn) {
@@ -1460,7 +1462,7 @@ fun EarnFreePointsCard(
             } else {
                 Toast.makeText(
                     context,
-                    "Loading video ad... Please try again in a moment.",
+                    RewardedAdManager.getUnavailableMessage(),
                     Toast.LENGTH_SHORT
                 ).show()
                 RewardedAdManager.loadAd(context)
@@ -1528,7 +1530,11 @@ fun EarnFreePointsCard(
                 }
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "Watch a short video ad to earn 5 reward points for your wallet",
+                    text = if (isAdNoFill && !isAdLoading && !RewardedAdManager.isAdLoaded()) {
+                        RewardedAdManager.NO_FILL_USER_MESSAGE
+                    } else {
+                        "Watch a short video ad to earn 5 reward points for your wallet"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1554,7 +1560,11 @@ fun EarnFreePointsCard(
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = "Watch Ad",
+                        text = when {
+                            isAdLoading && !RewardedAdManager.isAdLoaded() -> "Loading..."
+                            isAdNoFill && !RewardedAdManager.isAdLoaded() -> "Retry"
+                            else -> "Watch Ad"
+                        },
                         maxLines = 1,
                         softWrap = false,
                         style = MaterialTheme.typography.labelMedium.copy(

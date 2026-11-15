@@ -13,13 +13,19 @@ import com.google.android.gms.ads.OnUserEarnedRewardListener
 import com.google.android.gms.ads.rewarded.RewardedAd
 import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
 
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
 /**
  * RewardedAdManager - Singleton manager for loading and showing AdMob Rewarded Video Ads.
- * Strictly uses Google's official Test Ad Unit ID during development for guaranteed 100% fill rate.
- * Rewards users with Points via the Zero-Trust Action Queue.
+ * Production Ad Unit IDs are attempted first; in DEBUG builds, falls back to official test ads.
+ * Handles ERROR_CODE_NO_FILL gracefully in release builds without infinite loading/retry loops.
  */
 object RewardedAdManager {
     private const val TAG = "RewardedAdManager"
+    const val NO_FILL_USER_MESSAGE = "No ad available right now, try again in a moment"
+    const val LOADING_USER_MESSAGE = "Loading video ad... Please try again in a moment."
 
     // Delegated to centralized AdConfig (switches between official test ID in DEBUG and production in RELEASE)
     val TEST_AD_UNIT_ID: String
@@ -37,6 +43,15 @@ object RewardedAdManager {
     @Volatile
     private var isLoadedAdFallback = false
 
+    private val _isLoadingState = MutableStateFlow(false)
+    val isLoadingState: StateFlow<Boolean> = _isLoadingState.asStateFlow()
+
+    private val _isNoFillState = MutableStateFlow(false)
+    val isNoFillState: StateFlow<Boolean> = _isNoFillState.asStateFlow()
+
+    private val _lastErrorMessage = MutableStateFlow<String?>(null)
+    val lastErrorMessage: StateFlow<String?> = _lastErrorMessage.asStateFlow()
+
     /**
      * Checks if a rewarded ad is currently cached and ready to be shown.
      */
@@ -47,6 +62,14 @@ object RewardedAdManager {
      */
     fun isLoading(): Boolean = isLoading
 
+    fun getUnavailableMessage(): String {
+        return if (_isNoFillState.value && !isLoading) {
+            _lastErrorMessage.value ?: NO_FILL_USER_MESSAGE
+        } else {
+            LOADING_USER_MESSAGE
+        }
+    }
+
     private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
     private var retryCount = 0
     private const val MAX_RETRIES = 3
@@ -54,10 +77,10 @@ object RewardedAdManager {
     /**
      * Pre-caches a Rewarded Ad using the AdMob SDK on background worker threads.
      * Safe to call multiple times; will not re-trigger if an ad is already loaded or in-flight.
-     * First attempts production ad unit; if AdMob returns NO_FILL or fails, automatically
-     * falls back to the official test unit to guarantee 100% video ad display for rewards.
+     * First attempts production ad unit; in DEBUG builds, falls back to the official test unit.
      */
     fun loadAd(context: Context) {
+        retryCount = 0
         loadWithAdUnit(context.applicationContext, REWARDED_AD_UNIT_ID, isFallback = false)
     }
 
@@ -73,6 +96,9 @@ object RewardedAdManager {
         }
 
         isLoading = true
+        _isLoadingState.value = true
+        _isNoFillState.value = false
+        _lastErrorMessage.value = null
         try {
             val adRequest = AdRequest.Builder().build()
             Log.d(TAG, "Requesting RewardedAd with adUnitId: $adUnitToLoad (isFallback=$isFallback)")
@@ -86,6 +112,9 @@ object RewardedAdManager {
                         rewardedAd = ad
                         isLoadedAdFallback = isFallback
                         isLoading = false
+                        _isLoadingState.value = false
+                        _isNoFillState.value = false
+                        _lastErrorMessage.value = null
                         retryCount = 0
                         Log.i(TAG, "RewardedAd loaded successfully with adUnitId: $adUnitToLoad (isFallback=$isFallback)")
                     }
@@ -94,6 +123,7 @@ object RewardedAdManager {
                         rewardedAd = null
                         isLoadedAdFallback = false
                         isLoading = false
+                        _isLoadingState.value = false
                         Log.w(
                             TAG,
                             "RewardedAd notice for $adUnitToLoad: ${adError.message} (Code: ${adError.code}, Domain: ${adError.domain})."
@@ -107,6 +137,12 @@ object RewardedAdManager {
                             return
                         }
 
+                        if (!shouldRetryAfterFailure(adError.code, BuildConfig.DEBUG)) {
+                            _isNoFillState.value = true
+                            _lastErrorMessage.value = NO_FILL_USER_MESSAGE
+                            return
+                        }
+
                         if (retryCount < MAX_RETRIES) {
                             retryCount++
                             val delayMs = 5000L * retryCount
@@ -114,21 +150,27 @@ object RewardedAdManager {
                             mainHandler.postDelayed({
                                 loadWithAdUnit(appContext, adUnitToLoad, isFallback)
                             }, delayMs)
+                        } else if (adError.code == AdRequest.ERROR_CODE_NO_FILL) {
+                            _isNoFillState.value = true
+                            _lastErrorMessage.value = NO_FILL_USER_MESSAGE
                         }
                     }
                 }
             )
         } catch (t: Throwable) {
             isLoading = false
+            _isLoadingState.value = false
             Log.w(TAG, "Notice initiating RewardedAd load for adUnitId $adUnitToLoad: ${t.message}")
         }
     }
 
+    internal fun shouldRetryAfterFailure(errorCode: Int, isDebugBuild: Boolean): Boolean {
+        return !(errorCode == AdRequest.ERROR_CODE_NO_FILL && !isDebugBuild)
+    }
+
     /**
      * Shows the loaded Rewarded Ad in the provided [activity].
-     * If the ad is not yet loaded, informs the user with a Toast and triggers a background load.
-     * Invokes [onRewardEarned] when user completes watching and earns reward.
-     * Automatically requests pre-caching of the next ad immediately after reward or dismissal.
+     * If the ad is not yet loaded, informs the user with a clear Toast and triggers a background load.
      */
     fun showAd(activity: Activity, onRewardEarned: () -> Unit) {
         val ad = rewardedAd
@@ -136,7 +178,7 @@ object RewardedAdManager {
             Log.w(TAG, "Rewarded ad unavailable for production reward payout. Reloading production ad.")
             rewardedAd = null
             isLoadedAdFallback = false
-            Toast.makeText(activity, "Ad is still loading, please try again", Toast.LENGTH_SHORT).show()
+            Toast.makeText(activity, getUnavailableMessage(), Toast.LENGTH_SHORT).show()
             loadAd(activity)
             return
         }
@@ -192,6 +234,17 @@ object RewardedAdManager {
         )
     }
 
+    internal fun simulateLoadFailureForTesting(errorCode: Int, isDebugBuild: Boolean = false) {
+        rewardedAd = null
+        isLoadedAdFallback = false
+        isLoading = false
+        _isLoadingState.value = false
+        if (!shouldRetryAfterFailure(errorCode, isDebugBuild) || errorCode == AdRequest.ERROR_CODE_NO_FILL) {
+            _isNoFillState.value = true
+            _lastErrorMessage.value = NO_FILL_USER_MESSAGE
+        }
+    }
+
     /**
      * Testing hook to set/clear cached ad state in unit tests without invoking native SDK.
      */
@@ -199,6 +252,11 @@ object RewardedAdManager {
         if (!isLoaded) {
             rewardedAd = null
             isLoading = false
+            isLoadedAdFallback = false
+            _isLoadingState.value = false
+            _isNoFillState.value = false
+            _lastErrorMessage.value = null
+            retryCount = 0
         }
     }
 }

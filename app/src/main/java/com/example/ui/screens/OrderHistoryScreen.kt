@@ -95,6 +95,8 @@ fun OrderHistoryScreen(
     var showClearConfirmDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val isAdLoading by RewardedAdManager.isLoadingState.collectAsState()
+    val isAdNoFill by RewardedAdManager.isNoFillState.collectAsState()
 
     val handleWatchAd: () -> Unit = {
         var act: Activity? = null
@@ -132,7 +134,7 @@ fun OrderHistoryScreen(
                 }
             }
         } else {
-            Toast.makeText(context, "Loading video ad... Please try again in a moment.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, RewardedAdManager.getUnavailableMessage(), Toast.LENGTH_SHORT).show()
             RewardedAdManager.loadAd(context)
         }
     }
@@ -295,7 +297,11 @@ fun OrderHistoryScreen(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "Watch Ad for +5 Points",
+                        text = when {
+                            isAdLoading && !RewardedAdManager.isAdLoaded() -> "Loading Ad..."
+                            isAdNoFill && !RewardedAdManager.isAdLoaded() -> "Retry Ad (+5 Pts)"
+                            else -> "Watch Ad for +5 Points"
+                        },
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
                     )
                 }

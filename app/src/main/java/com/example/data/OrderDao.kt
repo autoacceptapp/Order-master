@@ -23,6 +23,9 @@ interface OrderDao {
     @Query("DELETE FROM order_history WHERE id NOT IN (SELECT id FROM order_history ORDER BY timestamp DESC LIMIT :keepCount)")
     suspend fun pruneOldOrders(keepCount: Int = 500)
 
+    @Query("DELETE FROM order_history WHERE timestamp < :cutoffTimestampMs")
+    suspend fun pruneOrdersOlderThan(cutoffTimestampMs: Long): Int
+
     @Query("DELETE FROM order_history")
     suspend fun clearAll()
 

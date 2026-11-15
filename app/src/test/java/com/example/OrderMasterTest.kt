@@ -96,6 +96,9 @@ class OrderMasterTest {
         assertEquals(100f, AppSettings.getMinFare(context), 0.01f)
         assertEquals(1.5f, AppSettings.getMaxPickupDistance(context), 0.01f)
         assertFalse(AppSettings.isMaxDropDistanceEnabled(context)) // still locked!
+        val partialToast = ShadowToast.getTextOfLatestToast() ?: ""
+        assertTrue("Expected partial preset toast mentioning updated filters, got '$partialToast'", partialToast.contains("Updated Min Fare, Pickup Distance"))
+        assertTrue("Expected partial preset toast mentioning locked filters, got '$partialToast'", partialToast.contains("Unlock") && partialToast.contains("Drop Distance"))
 
         AppSettings.applyPreset(context, "short")
         assertEquals(40f, AppSettings.getMinFare(context), 0.01f)

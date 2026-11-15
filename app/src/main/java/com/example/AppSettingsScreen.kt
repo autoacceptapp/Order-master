@@ -615,6 +615,9 @@ fun AppSettingsScreen(
     if (showRestrictedSettingsDialog) {
         RestrictedSettingsGuideDialog(
             onDismiss = { showRestrictedSettingsDialog = false },
+            onOpenAccessibility = {
+                PermissionUtils.openAccessibilitySettings(context)
+            },
             onOpenAppInfo = {
                 PermissionUtils.openAppInfoSettings(context)
             }

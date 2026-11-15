@@ -492,12 +492,12 @@ fun FilterSettingsScreen(
             }
 
             // =========================================================================================
-            // 3. MAXIMUM PICKUP DISTANCE FILTER (0.0 km to 3.0 km)
+            // 3. MAXIMUM PICKUP DISTANCE FILTER (0.0 km to 15.0 km)
             // =========================================================================================
             item {
                 FilterCard(
                     title = "Maximum Pickup Distance Filter",
-                    subtitle = "Strict limit to reach customer (0.0 - 3.0 km)",
+                    subtitle = "Strict limit to reach customer (0.0 - 15.0 km)",
                     icon = Icons.Default.NearMe,
                     isEnabled = settingsState.isMaxPickupDistanceEnabled,
                     onToggle = { if (isPickupUnlocked) viewModel.toggleMaxPickupDistFilter(it) },
@@ -538,11 +538,14 @@ fun FilterSettingsScreen(
                         }
 
                         Slider(
-                            value = settingsState.maxPickupDistance,
+                            value = settingsState.maxPickupDistance.coerceIn(
+                                AppSettings.MIN_PICKUP_DISTANCE_KM,
+                                AppSettings.MAX_PICKUP_DISTANCE_KM
+                            ),
                             enabled = isPickupUnlocked,
                             onValueChange = { if (isPickupUnlocked) viewModel.setMaxPickupDistance((it * 10).roundToInt() / 10f) },
-                            valueRange = 0.0f..3.0f,
-                            steps = 29, // 0.1km steps
+                            valueRange = AppSettings.MIN_PICKUP_DISTANCE_KM..AppSettings.MAX_PICKUP_DISTANCE_KM,
+                            steps = 0, // Smooth 0.1km snapping up to 15.0 km
                             modifier = Modifier.fillMaxWidth().testTag("pickup_dist_slider")
                         )
 
@@ -551,7 +554,7 @@ fun FilterSettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            listOf(1.0f, 1.5f, 2.0f, 2.5f, 3.0f).forEach { distVal ->
+                            listOf(1.5f, 3.0f, 5.0f, 10.0f, 15.0f).forEach { distVal ->
                                 val selected = kotlin.math.abs(settingsState.maxPickupDistance - distVal) < 0.05f
                                 OutlinedButton(
                                     onClick = { if (isPickupUnlocked) viewModel.setMaxPickupDistance(distVal) },

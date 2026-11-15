@@ -365,9 +365,11 @@ object RideOfferParser {
                         val isExplicitPrimaryFare = viewId.contains("boost") ||
                             viewId.contains("final") ||
                             viewId.contains("total") ||
+                            effectiveText.contains("BOOST", ignoreCase = true) ||
                             effectiveText.contains("AUTO", ignoreCase = true) ||
                             effectiveText.contains("BIKE", ignoreCase = true) ||
-                            effectiveText.contains("CAB", ignoreCase = true)
+                            effectiveText.contains("CAB", ignoreCase = true) ||
+                            effectiveText.contains("PARCEL", ignoreCase = true)
 
                         if (fareText.isEmpty() || !CURRENCY_SYMBOL_PATTERN.matcher(fareText).find()) {
                             fareText = effectiveText

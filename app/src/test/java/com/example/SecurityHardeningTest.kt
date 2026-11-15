@@ -499,4 +499,129 @@ class SecurityHardeningTest {
         val shortRes = PassManager.verifyPaymentWithBackendDetailed(context, "12345678901")
         assertTrue("11-digit UTR must be rejected as Invalid", shortRes is PassManager.VerificationResult.Invalid)
     }
+
+    @Test
+    fun unknownPassTypeAndLocalPassManagerCannotBypassProLicensingOrAutoAccept() {
+        AppSettings.init(context)
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+        LicenseManager.forceReleaseLoadingState()
+
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L
+
+        // Local PassManager flag alone must NEVER grant Pro access or expiry
+        PassManager.setPassStatus(context, true)
+        assertFalse("PassManager fallback must not activate AppSettings.isPassActive", AppSettings.isPassActive(context))
+        assertEquals("PassManager fallback must not leak expiry", 0L, AppSettings.getPassExpiryTimestamp(context))
+
+        // Unknown / null activePassType in Firestore snapshot must NOT be treated as a Pro pass
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "activePassType" to "unknown_tier",
+                "passExpiryTimestamp" to futureExpiry,
+                "autoAcceptEnabled" to true
+            )
+        )
+        assertFalse("Unknown pass type must NOT activate isPassActiveFlow", AppSettings.isPassActiveFlow.value)
+        assertFalse("Unknown pass type must NOT activate AppSettings.isPassActive", AppSettings.isPassActive(context))
+        assertEquals("Unknown pass type must yield 0L pass expiry", 0L, AppSettings.getPassExpiryTimestamp(context))
+        assertFalse(
+            "Auto-accept must stay disabled without any Pro pass or unlocked filter capability",
+            AppSettings.isAutoAcceptEnabled(context)
+        )
+
+        // Even with Remove Ads pass only, Auto-Accept capability remains false
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "activePassType" to PassTier.REMOVE_ADS.id,
+                "passExpiryTimestamp" to futureExpiry,
+                "autoAcceptEnabled" to true
+            )
+        )
+        assertFalse("Remove Ads pass must NOT unlock Pro pass state", AppSettings.isPassActive(context))
+        assertFalse("Remove Ads pass must NOT grant auto-accept capability", AppSettings.isAutoAcceptEnabled(context))
+
+        PassManager.setPassStatus(context, false)
+        AppSettings.resetBusinessStateForTest(context)
+    }
+
+    @Test
+    fun offlineColdStartClockRollbackIsDetectedAndServerTimeIsClamped() {
+        LicenseManager.resetStateForTesting(context)
+
+        // Simulate cold start after process restart (serverTimeBaselineMs == 0L, no syncWall)
+        // where device clock was rolled back 1 hour behind the persisted lastServerTimestamp
+        val persistedServerTs = System.currentTimeMillis() + 3_600_000L
+        val prefs = context.getSharedPreferences(LicenseManager.LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+        prefs.edit().putLong(LicenseManager.KEY_LAST_SERVER_TIMESTAMP, persistedServerTs).commit()
+
+        assertTrue(
+            "Offline cold-start clock rollback must be detected immediately",
+            LicenseManager.isClockTamperingDetected(context)
+        )
+        assertTrue(
+            "getCurrentServerTimeMs must clamp to at least persisted lastServerTimestamp",
+            LicenseManager.getCurrentServerTimeMs() >= persistedServerTs
+        )
+    }
+
+    @Test
+    fun unifiedHardwareIdMatchesBetweenDeviceUtilsAndHardwareIdManager() {
+        val hwUtilsField = DeviceUtils::class.java.getDeclaredField("cachedHardwareId")
+        hwUtilsField.isAccessible = true
+        hwUtilsField.set(DeviceUtils, null)
+
+        val hmIdField = HardwareIdManager::class.java.getDeclaredField("cachedHardwareId")
+        hmIdField.isAccessible = true
+        hmIdField.set(HardwareIdManager, null)
+
+        val hmDetailsField = HardwareIdManager::class.java.getDeclaredField("cachedHardwareDetails")
+        hmDetailsField.isAccessible = true
+        hmDetailsField.set(HardwareIdManager, null)
+
+        val fp1 = DeviceUtils.buildUnifiedHardwareFingerprint(context)
+        val deviceHwId = DeviceUtils.getDeviceHardwareId(context)
+        val permanentDetails = HardwareIdManager.getHardwareDetails(context)
+
+        assertTrue(deviceHwId.startsWith("HW-"))
+        assertTrue(permanentDetails.formattedId.startsWith("OM-"))
+        assertEquals(fp1.sha256Hex.uppercase(java.util.Locale.US), permanentDetails.fullSha256)
+        assertEquals("HW-" + fp1.sha256Hex.take(16).uppercase(java.util.Locale.US), deviceHwId)
+
+        // Recomputing after clearing caches must yield exact same deterministic IDs
+        hwUtilsField.set(DeviceUtils, null)
+        hmIdField.set(HardwareIdManager, null)
+        hmDetailsField.set(HardwareIdManager, null)
+
+        assertEquals(deviceHwId, DeviceUtils.getDeviceHardwareId(context))
+        assertEquals(permanentDetails.formattedId, HardwareIdManager.getPermanentHardwareId(context))
+    }
+
+    @Test
+    fun licenseManagerReferralAndPaymentUtrValidationRejectInvalidInputs() = runTest {
+        val badCodeRes = LicenseManager.claimReferralViaActionQueue("bad-123")
+        assertTrue("Malformed referral code must fail before hitting Firestore", badCodeRes.isFailure)
+        assertTrue(badCodeRes.exceptionOrNull() is IllegalArgumentException)
+
+        val refField = LicenseManager::class.java.getDeclaredField("_referralCode")
+        refField.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val refFlow = refField.get(LicenseManager) as kotlinx.coroutines.flow.MutableStateFlow<String?>
+        val previousCode = refFlow.value
+        try {
+            refFlow.value = "OMAB12CD"
+            val selfRes = LicenseManager.claimReferralViaActionQueue("omab12cd")
+            assertTrue("Self-referral must fail locally before hitting Firestore", selfRes.isFailure)
+            assertTrue(selfRes.exceptionOrNull() is IllegalArgumentException)
+        } finally {
+            refFlow.value = previousCode
+        }
+
+        val badUtrRes = LicenseManager.activatePassViaPayment(PassTier.DAILY, "12345ABC")
+        assertTrue("Non-12-digit UTR must fail before hitting Firestore", badUtrRes.isFailure)
+        assertTrue(badUtrRes.exceptionOrNull() is IllegalArgumentException)
+    }
 }
+

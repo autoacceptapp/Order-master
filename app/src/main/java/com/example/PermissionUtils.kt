@@ -415,7 +415,10 @@ object PermissionUtils {
                 ComponentName("com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsConfigActivity")
             ).apply {
                 putExtra("package_name", context.packageName)
-                putExtra("package_label", context.applicationInfo.loadLabel(context.packageManager).toString())
+                val appLabel = runCatching {
+                    context.applicationInfo.loadLabel(context.packageManager).toString()
+                }.getOrDefault(context.packageName)
+                putExtra("package_label", appLabel)
             },
             Intent().setComponent(
                 ComponentName("com.miui.powerkeeper", "com.miui.powerkeeper.ui.HiddenAppsContainerManagementActivity")
@@ -624,17 +627,26 @@ object PermissionUtils {
 
         val candidates = prioritizedIntents + otherIntents
 
-        for (intent in candidates) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (safeStartActivity(context, intent)) {
-                Log.d(TAG, "Successfully launched OEM autostart page: ${intent.component ?: intent.action}")
-                return true
+        return try {
+            for (intent in candidates) {
+                try {
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    if (safeStartActivity(context, intent)) {
+                        Log.d(TAG, "Successfully launched OEM autostart page: ${intent.component ?: intent.action}")
+                        return true
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "OEM autostart candidate failed safely: ${e.message}")
+                }
             }
-        }
 
-        // Fallback: Open Android App Info Settings page
-        Log.i(TAG, "No OEM autostart intent matched or resolved; falling back to App Details Settings")
-        return openAppDetailsSettings(context)
+            // Fallback: Open Android App Info Settings page
+            Log.i(TAG, "No OEM autostart intent matched or resolved; falling back to App Details Settings")
+            openAppDetailsSettings(context)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Unexpected error in openOemAutoStartSettings: ${t.message}")
+            openAppDetailsSettings(context)
+        }
     }
 
     /**

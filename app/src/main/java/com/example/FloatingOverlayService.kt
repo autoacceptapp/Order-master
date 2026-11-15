@@ -26,6 +26,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -93,9 +94,17 @@ class FloatingOverlayService : Service() {
                 } else {
                     context.startService(intent)
                 }
+            } catch (e: IllegalStateException) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    e is android.app.ForegroundServiceStartNotAllowedException
+                ) {
+                    Log.w(TAG, "ForegroundServiceStartNotAllowedException prevented overlay start from background: ${e.message}")
+                } else {
+                    Log.w(TAG, "IllegalStateException starting FloatingOverlayService: ${e.message}")
+                }
+            } catch (e: SecurityException) {
+                Log.w(TAG, "SecurityException starting FloatingOverlayService: ${e.message}")
             } catch (e: Throwable) {
-                // Catches ForegroundServiceStartNotAllowedException on Android 12+ (API 31+) / Android 14+
-                // as well as SecurityException or IllegalStateException when app is in background
                 Log.w(TAG, "Cannot start FloatingOverlayService from current state: ${e.message}")
             }
         }
@@ -133,6 +142,29 @@ class FloatingOverlayService : Service() {
                 }
             }
         }
+
+        internal data class OverlayDragBounds(
+            val minX: Int,
+            val minY: Int,
+            val maxX: Int,
+            val maxY: Int
+        )
+
+        internal fun computeOverlayDragBounds(
+            screenWidthPx: Int,
+            screenHeightPx: Int,
+            insetLeftPx: Int,
+            insetTopPx: Int,
+            insetRightPx: Int,
+            insetBottomPx: Int,
+            buttonSizePx: Int
+        ): OverlayDragBounds {
+            val minX = insetLeftPx.coerceAtLeast(0)
+            val minY = insetTopPx.coerceAtLeast(0)
+            val maxX = (screenWidthPx - insetRightPx - buttonSizePx).coerceAtLeast(minX)
+            val maxY = (screenHeightPx - insetBottomPx - buttonSizePx).coerceAtLeast(minY)
+            return OverlayDragBounds(minX = minX, minY = minY, maxX = maxX, maxY = maxY)
+        }
     }
 
     private var windowManager: WindowManager? = null
@@ -166,7 +198,37 @@ class FloatingOverlayService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun getScreenDimensionsPx(): Pair<Int, Int> {
+    private fun getSystemBarInsetsPx(): IntArray {
+        val wm = windowManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && wm != null) {
+            return try {
+                val insets = wm.currentWindowMetrics.windowInsets
+                    .getInsetsIgnoringVisibility(WindowInsets.Type.systemBars())
+                intArrayOf(insets.left, insets.top, insets.right, insets.bottom)
+            } catch (_: Throwable) {
+                getLegacySystemBarInsetsPx()
+            }
+        }
+        return getLegacySystemBarInsetsPx()
+    }
+
+    private fun getLegacySystemBarInsetsPx(): IntArray {
+        val statusBarResId = resources.getIdentifier("status_bar_height", "dimen", "android")
+        val statusBarHeight = if (statusBarResId > 0) {
+            resources.getDimensionPixelSize(statusBarResId)
+        } else {
+            dpToPx(24f)
+        }
+        val navBarResId = resources.getIdentifier("navigation_bar_height", "dimen", "android")
+        val navBarHeight = if (navBarResId > 0) {
+            resources.getDimensionPixelSize(navBarResId)
+        } else {
+            0
+        }
+        return intArrayOf(0, statusBarHeight.coerceAtLeast(dpToPx(24f)), 0, navBarHeight)
+    }
+
+    private fun getRawScreenDimensionsPx(): Pair<Int, Int> {
         val wm = windowManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && wm != null) {
             val bounds = wm.currentWindowMetrics.bounds
@@ -176,6 +238,28 @@ class FloatingOverlayService : Service() {
         }
         val dm = resources.displayMetrics
         return dm.widthPixels to dm.heightPixels
+    }
+
+    private fun getScreenDimensionsPx(): Pair<Int, Int> {
+        val (rawW, rawH) = getRawScreenDimensionsPx()
+        val insets = getSystemBarInsetsPx()
+        val usableW = (rawW - insets[0] - insets[2]).coerceAtLeast(0)
+        val usableH = (rawH - insets[1] - insets[3]).coerceAtLeast(0)
+        return usableW to usableH
+    }
+
+    private fun getUsableOverlayBoundsPx(buttonSizePx: Int): OverlayDragBounds {
+        val (rawW, rawH) = getRawScreenDimensionsPx()
+        val insets = getSystemBarInsetsPx()
+        return computeOverlayDragBounds(
+            screenWidthPx = rawW,
+            screenHeightPx = rawH,
+            insetLeftPx = insets[0],
+            insetTopPx = insets[1],
+            insetRightPx = insets[2],
+            insetBottomPx = insets[3],
+            buttonSizePx = buttonSizePx
+        )
     }
 
     override fun onCreate() {
@@ -202,13 +286,11 @@ class FloatingOverlayService : Service() {
             return
         }
 
-        val (screenW, screenH) = getScreenDimensionsPx()
         val sizePx = dpToPx(70f)
-        val maxX = (screenW - sizePx).coerceAtLeast(0)
-        val maxY = (screenH - sizePx).coerceAtLeast(0)
+        val bounds = getUsableOverlayBoundsPx(sizePx)
 
-        params.x = params.x.coerceIn(0, maxX)
-        params.y = params.y.coerceIn(0, maxY)
+        params.x = params.x.coerceIn(bounds.minX, bounds.maxX)
+        params.y = params.y.coerceIn(bounds.minY, bounds.maxY)
 
         safeUpdateViewLayout(root, params)
     }
@@ -315,11 +397,13 @@ class FloatingOverlayService : Service() {
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        val (screenWidth, screenHeight) = getScreenDimensionsPx()
+        val usableBounds = getUsableOverlayBoundsPx(sizePx)
 
-        // Position: right edge, ~30% from the top
-        val initialX = (screenWidth - sizePx - dpToPx(16f)).coerceAtLeast(0)
-        val initialY = (screenHeight * 0.32f).roundToInt()
+        // Position: right edge within safe insets, ~32% down usable area
+        val initialX = (usableBounds.maxX - dpToPx(16f)).coerceAtLeast(usableBounds.minX)
+        val usableHeightSpan = (usableBounds.maxY - usableBounds.minY).coerceAtLeast(0)
+        val initialY = (usableBounds.minY + (usableHeightSpan * 0.32f).roundToInt())
+            .coerceIn(usableBounds.minY, usableBounds.maxY)
 
         windowLayoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -398,12 +482,10 @@ class FloatingOverlayService : Service() {
                     }
 
                     if (isDragging) {
-                        val (screenW, screenH) = getScreenDimensionsPx()
-                        val maxX = (screenW - buttonSizePx).coerceAtLeast(0)
-                        val maxY = (screenH - buttonSizePx).coerceAtLeast(dpToPx(24f))
+                        val dragBounds = getUsableOverlayBoundsPx(buttonSizePx)
 
-                        val newX = (initialX + dx).coerceIn(0, maxX)
-                        val newY = (initialY + dy).coerceIn(dpToPx(24f), maxY)
+                        val newX = (initialX + dx).coerceIn(dragBounds.minX, dragBounds.maxX)
+                        val newY = (initialY + dy).coerceIn(dragBounds.minY, dragBounds.maxY)
 
                         // Avoid redundant WindowManager updates if coordinates haven't changed
                         if (params.x != newX || params.y != newY) {
@@ -436,7 +518,7 @@ class FloatingOverlayService : Service() {
     /**
      * Toggles between Full Automation (Green) and Voice-Only (Red) mode.
      */
-    private fun toggleMode() {
+    internal fun toggleMode() {
         if (!GlobalAdminManager.canExecuteActions(this)) {
             Toast.makeText(this, "Action blocked: Service is offline or account is suspended.", Toast.LENGTH_SHORT).show()
             updateVisualState(false)
@@ -461,7 +543,28 @@ class FloatingOverlayService : Service() {
             return
         }
 
+        val currentlyAutoClick = AppSettings.isAutoClickEnabled(this)
+        if (currentlyAutoClick && !LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE)) {
+            Toast.makeText(
+                this,
+                "Voice Announcements locked \u2014 unlock in Store",
+                Toast.LENGTH_LONG
+            ).show()
+            AppSettings.addLog(
+                title = "Voice Mode Locked",
+                message = "Voice Announcements feature is locked; keeping Full Automation active.",
+                severity = LogSeverity.WARNING
+            )
+            updateVisualState(true)
+            return
+        }
+
         val nextIsAutoClick = AppSettings.toggleAutoClick(this)
+        if (!nextIsAutoClick && LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE) &&
+            !AppSettings.isVoiceAnnouncerEnabled(this)
+        ) {
+            AppSettings.setVoiceAnnouncerEnabled(this, true)
+        }
         updateVisualState(nextIsAutoClick)
 
         val message = if (nextIsAutoClick) {

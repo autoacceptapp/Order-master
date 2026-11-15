@@ -233,7 +233,7 @@ object AppSettings {
     const val DEFAULT_MAX_PICKUP_DISTANCE = 3.0f
     const val DEFAULT_MAX_DROP_DISTANCE = 15.0f
     const val MIN_PICKUP_DISTANCE_KM = 0.0f
-    const val MAX_PICKUP_DISTANCE_KM = 3.0f
+    const val MAX_PICKUP_DISTANCE_KM = 15.0f
     const val DEFAULT_AUTO_ACCEPT_ENABLED = false
     const val DEFAULT_MIN_FARE_ENABLED = false
     const val DEFAULT_MAX_FARE_ENABLED = false
@@ -660,6 +660,7 @@ object AppSettings {
                     val effectiveEnabled = isServiceActive &&
                         LicenseManager.isServiceActive(appCtx) &&
                         !LicenseManager.isBannedFlow.value &&
+                        LicenseManager.hasAnyAutoAcceptCapability() &&
                         autoAcceptEnabled
                     if (_settingsState.value.isAutoAcceptEnabled != effectiveEnabled) {
                         _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = effectiveEnabled)
@@ -896,7 +897,7 @@ object AppSettings {
         _isVoiceAnnouncerEnabledFlow.value = finalVoiceEnabled
         _activePassTypeFlow.value = passTypeVal
         val parsedPassTier = PassTier.fromId(passTypeVal)
-        val isProPassType = parsedPassTier == null || parsedPassTier.isProPass
+        val isProPassType = parsedPassTier != null && parsedPassTier.isProPass
         _passExpiryTimestampFlow.value = if (isProPassType) passExpiryVal else 0L
         _isPassActiveFlow.value = isProPassType && passExpiryVal > LicenseManager.getCurrentServerTimeMs()
         _unlockedFeaturesFlow.value = unlockedFeaturesVal
@@ -907,10 +908,12 @@ object AppSettings {
             !LicenseManager.isClockTamperingDetected(context) &&
                 LicenseManager.isServiceActive(context) &&
                 !LicenseManager.isBannedFlow.value &&
+                LicenseManager.hasAnyAutoAcceptCapability() &&
                 finalAutoAccept
         } else {
             !LicenseManager.isClockTamperingDetected() &&
                 !LicenseManager.isBannedFlow.value &&
+                LicenseManager.hasAnyAutoAcceptCapability() &&
                 finalAutoAccept
         }
 
@@ -1190,8 +1193,20 @@ object AppSettings {
     }
 
     fun getPassExpiryTimestamp(context: Context? = null): Long {
-        val ramExpiry = _passExpiryTimestampFlow.value
-        return if (ramExpiry > 0L) ramExpiry else PassManager.getPassExpiryTimestamp(context)
+        if (LicenseManager.isClockTamperingDetected(context) ||
+            LicenseManager.isOfflineGracePeriodExpired(context) ||
+            LicenseManager.isBannedFlow.value
+        ) {
+            return 0L
+        }
+        return when (val status = LicenseManager.accessStatus.value) {
+            is AccessStatus.PassActive -> if (status.passTier.isProPass && status.remainingTimeMs > 0L) status.expiryTimestamp else 0L
+            is AccessStatus.TrialActive -> if (status.remainingTimeMs > 0L) status.expiryTimestamp else 0L
+            is AccessStatus.Expired -> 0L
+            is AccessStatus.Loading -> _passExpiryTimestampFlow.value.takeIf {
+                _isPassActiveFlow.value && it > LicenseManager.getCurrentServerTimeMs()
+            } ?: 0L
+        }
     }
 
     fun setPassExpiryTimestamp(context: Context? = null, expiryTimestamp: Long, tierId: String? = null) {
@@ -1200,7 +1215,16 @@ object AppSettings {
     }
 
     fun isPassActive(context: Context? = null): Boolean {
-        return _isPassActiveFlow.value || PassManager.isPassActive(context)
+        if (LicenseManager.isClockTamperingDetected(context) ||
+            LicenseManager.isOfflineGracePeriodExpired(context) ||
+            LicenseManager.isBannedFlow.value
+        ) {
+            return false
+        }
+        return LicenseManager.isAccessGranted() ||
+            (LicenseManager.accessStatus.value is AccessStatus.Loading &&
+                _isPassActiveFlow.value &&
+                _passExpiryTimestampFlow.value > LicenseManager.getCurrentServerTimeMs())
     }
 
     fun extendPass(context: Context? = null, durationMs: Long, tierId: String? = null): Long {
@@ -1255,7 +1279,10 @@ object AppSettings {
             Log.w(TAG, "isAutoAcceptEnabled: Clock tampering detected! Auto-accept disabled.")
             return false
         }
-        return LicenseManager.isServiceActive(context) && !LicenseManager.isBannedFlow.value && autoAcceptEnabled
+        return LicenseManager.isServiceActive(context) &&
+            !LicenseManager.isBannedFlow.value &&
+            LicenseManager.hasAnyAutoAcceptCapability() &&
+            autoAcceptEnabled
     }
 
     fun setAutoAcceptEnabled(context: Context, enabled: Boolean) {
@@ -1291,7 +1318,18 @@ object AppSettings {
     fun setMinFareEnabled(context: Context, enabled: Boolean) {
         if (enabled && !showFeatureLockedFeedback(context, FeatureIds.MIN_FARE, "Minimum Fare Filter")) return
         _isMinFareEnabledFlow.value = enabled
-        _settingsState.value = _settingsState.value.copy(isMinFareEnabled = enabled)
+        if (enabled && _isMaxFareEnabledFlow.value && _minFareFlow.value > _maxFareFlow.value) {
+            val clampedMin = validateMinFare(_minFareFlow.value, _maxFareFlow.value)
+            minCurrencyThreshold = clampedMin.toDouble()
+            _minFareFlow.value = clampedMin
+            _settingsState.value = _settingsState.value.copy(
+                isMinFareEnabled = true,
+                minFare = clampedMin
+            )
+            persistUserFilterPref(context, FKEY_MIN_FARE) { putFloat(FKEY_MIN_FARE, clampedMin) }
+        } else {
+            _settingsState.value = _settingsState.value.copy(isMinFareEnabled = enabled)
+        }
         persistUserFilterPref(context, FKEY_MIN_FARE_ENABLED) { putBoolean(FKEY_MIN_FARE_ENABLED, enabled) }
     }
 
@@ -1301,7 +1339,18 @@ object AppSettings {
     fun setMaxFareEnabled(context: Context, enabled: Boolean) {
         if (enabled && !showFeatureLockedFeedback(context, FeatureIds.MAX_FARE, "Maximum Fare Filter")) return
         _isMaxFareEnabledFlow.value = enabled
-        _settingsState.value = _settingsState.value.copy(isMaxFareEnabled = enabled)
+        if (enabled && _isMinFareEnabledFlow.value && _maxFareFlow.value < _minFareFlow.value) {
+            val clampedMax = validateMaxFare(_maxFareFlow.value, _minFareFlow.value)
+            maxCurrencyThreshold = clampedMax.toDouble()
+            _maxFareFlow.value = clampedMax
+            _settingsState.value = _settingsState.value.copy(
+                isMaxFareEnabled = true,
+                maxFare = clampedMax
+            )
+            persistUserFilterPref(context, FKEY_MAX_FARE) { putFloat(FKEY_MAX_FARE, clampedMax) }
+        } else {
+            _settingsState.value = _settingsState.value.copy(isMaxFareEnabled = enabled)
+        }
         persistUserFilterPref(context, FKEY_MAX_FARE_ENABLED) { putBoolean(FKEY_MAX_FARE_ENABLED, enabled) }
     }
 
@@ -1460,6 +1509,14 @@ object AppSettings {
             return
         }
 
+        val updatedLabels = mutableListOf<String>()
+        val lockedLabels = mutableListOf<String>()
+        if (minFareUnlocked) updatedLabels.add("Min Fare") else lockedLabels.add("Min Fare")
+        if (maxFareUnlocked) updatedLabels.add("Max Fare") else lockedLabels.add("Max Fare")
+        if (pickupUnlocked) updatedLabels.add("Pickup Distance") else lockedLabels.add("Pickup Distance")
+        if (dropUnlocked) updatedLabels.add("Drop Distance") else lockedLabels.add("Drop Distance")
+        if (rateUnlocked) updatedLabels.add("Per-KM Rate") else lockedLabels.add("Per-KM Rate")
+
         when (presetName.trim().lowercase(Locale.ROOT)) {
             "peak" -> {
                 if (minFareUnlocked) { setMinFareEnabled(context, true); setMinFare(context, 100f) }
@@ -1469,8 +1526,8 @@ object AppSettings {
                 if (rateUnlocked) { setMinPerKmRateEnabled(context, true); setMinPerKmRate(context, 12.0f) }
             }
             "short" -> {
-                if (minFareUnlocked) { setMinFareEnabled(context, true); setMinFare(context, 40f) }
-                if (maxFareUnlocked) { setMaxFareEnabled(context, true); setMaxFare(context, 250f) }
+                if (minFareUnlocked) { setMinFare(context, 40f); setMinFareEnabled(context, true) }
+                if (maxFareUnlocked) { setMaxFare(context, 250f); setMaxFareEnabled(context, true) }
                 if (pickupUnlocked) { setMaxPickupDistanceEnabled(context, true); setMaxPickupDistance(context, 1.0f) }
                 if (dropUnlocked) { setMaxDropDistanceEnabled(context, true); setMaxDropDistance(context, 4.0f) }
                 if (rateUnlocked) { setMinPerKmRateEnabled(context, false) }
@@ -1489,6 +1546,13 @@ object AppSettings {
                 if (dropUnlocked) { setMaxDropDistanceEnabled(context, false); setMaxDropDistance(context, DEFAULT_MAX_DROP_DISTANCE) }
                 if (rateUnlocked) { setMinPerKmRateEnabled(context, false); setMinPerKmRate(context, DEFAULT_MIN_PER_KM_RATE) }
             }
+        }
+
+        if (lockedLabels.isNotEmpty()) {
+            showToast(
+                context,
+                "Updated ${updatedLabels.joinToString(", ")}. Unlock ${lockedLabels.joinToString(", ")} to apply full preset."
+            )
         }
     }
 

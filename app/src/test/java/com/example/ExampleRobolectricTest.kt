@@ -78,9 +78,12 @@ class ExampleRobolectricTest {
         assertEquals(120.0f, AppSettings.getMinFare(context), 0.01f)
         assertEquals(1.8f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
-        // Enforce 0.0 to 3.0 km clamp on pickup distance
+        // Enforce 0.0 to 15.0 km clamp on pickup distance
         AppSettings.setMaxPickupDistance(context, 7.5f)
-        assertEquals(3.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
+        assertEquals(7.5f, AppSettings.getMaxPickupDistance(context), 0.01f)
+
+        AppSettings.setMaxPickupDistance(context, 25.0f)
+        assertEquals(15.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
         AppSettings.setMaxPickupDistance(context, -1.0f)
         assertEquals(0.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
@@ -1173,6 +1176,103 @@ class ExampleRobolectricTest {
         assertEquals(null, AppSettings.activePassTypeFlow.value)
         assertEquals(0L, AppSettings.passExpiryTimestampFlow.value)
         assertTrue(AppSettings.unlockedFeaturesFlow.value.isEmpty())
+    }
+
+    @Test
+    fun `test pickup filter supports up to 15 km and clamps excess distances`() {
+        val offer7Km = ParsedRideOffer(
+            rawText = "Ride: ₹180 • 7.2 km pickup • 10.0 km drop [Accept]",
+            totalFare = 180.0,
+            pickupDistanceKm = 7.2,
+            dropDistanceKm = 10.0,
+            hasAcceptButton = true
+        )
+        val evalAllowed = TextAnalysisEngine.evaluateRideOffer(
+            offer = offer7Km,
+            minFare = 50.0f,
+            maxPickupDistance = 10.0f,
+            isAutoAcceptEnabled = true,
+            isMaxPickupDistanceEnabled = true
+        )
+        assertTrue("Expected 7.2 km pickup to be accepted under 10.0 km limit", evalAllowed.isAccepted)
+
+        // Clamped at 15.0 km max limit even if caller passes 20.0f
+        val offer16Km = offer7Km.copy(pickupDistanceKm = 16.0)
+        val evalClampedReject = TextAnalysisEngine.evaluateRideOffer(
+            offer = offer16Km,
+            minFare = 50.0f,
+            maxPickupDistance = 20.0f,
+            isAutoAcceptEnabled = true,
+            isMaxPickupDistanceEnabled = true
+        )
+        assertFalse("Expected 16.0 km pickup to be rejected by 15.0 km hard ceiling", evalClampedReject.isAccepted)
+    }
+
+    @Test
+    fun `test per-km rate filter does not bypass when drop distance is null or zero`() {
+        val missingDropOffer = ParsedRideOffer(
+            rawText = "Ride: ₹100 • 1.0 km pickup [Accept]",
+            totalFare = 100.0,
+            pickupDistanceKm = 1.0,
+            dropDistanceKm = null,
+            hasAcceptButton = true
+        )
+        val evalNullDrop = TextAnalysisEngine.evaluateRideOffer(
+            offer = missingDropOffer,
+            minFare = 50.0f,
+            maxPickupDistance = 5.0f,
+            isAutoAcceptEnabled = true,
+            minPerKmRate = 12.0f,
+            isMinPerKmRateEnabled = true
+        )
+        assertFalse("Missing drop distance must not inflate per-km rate using pickup alone", evalNullDrop.isAccepted)
+        assertTrue(evalNullDrop.decisionReason.contains("Drop distance unavailable"))
+
+        val zeroDropOffer = missingDropOffer.copy(dropDistanceKm = 0.0)
+        val evalZeroDrop = TextAnalysisEngine.evaluateRideOffer(
+            offer = zeroDropOffer,
+            minFare = 50.0f,
+            maxPickupDistance = 5.0f,
+            isAutoAcceptEnabled = true,
+            minPerKmRate = 12.0f,
+            isMinPerKmRateEnabled = true
+        )
+        assertFalse("Zero drop distance must not inflate per-km rate using pickup alone", evalZeroDrop.isAccepted)
+    }
+
+    @Test
+    fun `test boosted fare replaces strikethrough fare instead of summing`() {
+        val (boostedTotal, boostedBreakdown) = TextAnalysisEngine.extractCurrencies("Auto Boost ₹45 ₹57 AUTO")
+        assertEquals(57.0, boostedTotal ?: 0.0, 0.001)
+        assertEquals(listOf(57.0), boostedBreakdown)
+
+        val (reverseTotal, reverseBreakdown) = TextAnalysisEngine.extractCurrencies("₹57 AUTO (was ₹45)")
+        assertEquals(57.0, reverseTotal ?: 0.0, 0.001)
+        assertEquals(listOf(57.0), reverseBreakdown)
+
+        val nodeTexts = listOf(
+            "Auto Boost",
+            "₹45 1",
+            "₹57 AUTO",
+            "0.6 km",
+            "City Centre",
+            "2.4 km",
+            "Railway Station",
+            "Accept"
+        )
+        val parsedTarget = TextAnalysisEngine.parseTargetOfferFromNodes(nodeTexts)
+        assertNotNull(parsedTarget)
+        assertEquals(57.0, parsedTarget?.fare ?: 0.0, 0.001)
+
+        val card = RawOrderCard(
+            id = "rapido_card_boost",
+            nodeTexts = nodeTexts,
+            bounds = android.graphics.Rect(0, 0, 1080, 500),
+            hasAcceptButton = true
+        )
+        val parsedCard = TextAnalysisEngine.parseOrderCard(card)
+        assertNotNull(parsedCard)
+        assertEquals(57.0, parsedCard?.totalFare ?: 0.0, 0.001)
     }
 }
 

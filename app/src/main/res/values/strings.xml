@@ -6,7 +6,7 @@
 
     <!-- Language Identifiers in UTF-8 -->
     <string name="language_english">English (en-IN)</string>
-    <string name="language_hindi">Hindi (हिंदी)</string>
+    <string name="language_hindi">Hindi (हिन्दी)</string>
     <string name="test_voice_announcement_en">Test Voice Announcement</string>
     <string name="test_voice_announcement_hi">Test Speech (परीक्षण आवाज़ सुनें)</string>
 

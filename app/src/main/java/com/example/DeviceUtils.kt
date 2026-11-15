@@ -29,11 +29,27 @@ object DeviceUtils {
     // Widevine DRM Scheme UUID (Standard Android hardware enclave)
     private val WIDEVINE_UUID: UUID = UUID.fromString("edef8ba9-79d6-4ace-a3c8-27dcd51d21ed")
 
+    private const val MAPS_SCAN_TTL_MS = 30_000L
+
     @Volatile
     private var cachedHardwareId: String? = null
 
     @Volatile
     private var cachedCustomUserId: String? = null
+
+    @Volatile
+    private var cachedWidevineId: String? = null
+
+    @Volatile
+    private var lastMapsCheckMs: Long = -1L
+
+    @Volatile
+    private var cachedHookResult: Boolean = false
+
+    internal data class HardwareFingerprint(
+        val sha256Hex: String,
+        val hasWidevineDrm: Boolean
+    )
 
     /**
      * Returns any previously saved legacy OM-USER-* custom ID without generating a new one.
@@ -77,6 +93,20 @@ object DeviceUtils {
     }
 
     /**
+     * Computes the single deterministic hardware fingerprint shared between DeviceUtils and HardwareIdManager,
+     * combining Widevine DRM ID (if non-empty) + ANDROID_ID + immutable Build hardware properties.
+     */
+    @Synchronized
+    internal fun buildUnifiedHardwareFingerprint(context: Context): HardwareFingerprint {
+        val widevineId = getWidevineUniqueId()?.takeIf { it.isNotBlank() }
+        val rawHardwareString = buildRawHardwareString(context, widevineId)
+        return HardwareFingerprint(
+            sha256Hex = sha256(rawHardwareString),
+            hasWidevineDrm = widevineId != null
+        )
+    }
+
+    /**
      * Returns an immutable, hardware-locked Device Hardware Fingerprint.
      * Always recomputes and verifies against cached value so SharedPreferences tampering cannot spoof HW ID.
      * Example format: "HW-A1B2C3D4E5F6"
@@ -86,9 +116,8 @@ object DeviceUtils {
         cachedHardwareId?.let { return it }
 
         // Always recompute deterministic hardware fingerprint from physical device attributes
-        val rawHardwareString = buildRawHardwareString(context)
-        val sha256Hex = sha256(rawHardwareString)
-        val formattedId = "HW-" + sha256Hex.take(16).uppercase(Locale.US)
+        val fingerprint = buildUnifiedHardwareFingerprint(context)
+        val formattedId = "HW-" + fingerprint.sha256Hex.take(16).uppercase(Locale.US)
 
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedId = prefs.getString(KEY_CACHED_HW_ID, null)
@@ -104,7 +133,7 @@ object DeviceUtils {
     /**
      * Builds a comprehensive hardware fingerprint string from immutable hardware attributes.
      */
-    private fun buildRawHardwareString(context: Context): String {
+    private fun buildRawHardwareString(context: Context, widevineId: String?): String {
         val sb = StringBuilder()
 
         // 1. Android Secure ID
@@ -124,9 +153,8 @@ object DeviceUtils {
         sb.append("DEVICE:").append(Build.DEVICE).append("|")
         sb.append("PRODUCT:").append(Build.PRODUCT).append("|")
 
-        // 3. MediaDrm Widevine Hardware Cryptographic Module ID (if supported)
-        val widevineId = getWidevineUniqueId()
-        if (widevineId != null) {
+        // 3. MediaDrm Widevine Hardware Cryptographic Module ID (only if non-empty)
+        if (!widevineId.isNullOrBlank()) {
             sb.append("WIDEVINE:").append(widevineId).append("|")
         }
 
@@ -235,22 +263,39 @@ object DeviceUtils {
 
     /**
      * Scans /proc/self/maps for injected instrumentation/hooking libraries (Frida, Xposed, LSPosed, Substrate).
+     * Caches result in memory with a 30-second TTL to avoid synchronous disk I/O in hot ride evaluation paths.
      */
     fun isHookingFrameworkDetected(): Boolean {
         if (isUnitTestEnvironment()) return false
-        return try {
+        val now = try {
+            android.os.SystemClock.elapsedRealtime()
+        } catch (_: Throwable) {
+            System.currentTimeMillis()
+        }
+        val lastCheck = lastMapsCheckMs
+        if (lastCheck >= 0L && (now - lastCheck) in 0 until MAPS_SCAN_TTL_MS) {
+            return cachedHookResult
+        }
+
+        val detected = try {
             val mapsFile = java.io.File("/proc/self/maps")
-            if (!mapsFile.exists() || !mapsFile.canRead()) return false
-            val indicators = listOf("frida", "xposed", "lsposed", "edxposed", "substrate", "riru", "zygisk")
-            mapsFile.bufferedReader().useLines { lines ->
-                lines.any { line ->
-                    val lower = line.lowercase(Locale.ROOT)
-                    indicators.any { marker -> lower.contains(marker) }
+            if (!mapsFile.exists() || !mapsFile.canRead()) {
+                false
+            } else {
+                val indicators = listOf("frida", "xposed", "lsposed", "edxposed", "substrate", "riru", "zygisk")
+                mapsFile.bufferedReader().useLines { lines ->
+                    lines.any { line ->
+                        val lower = line.lowercase(Locale.ROOT)
+                        indicators.any { marker -> lower.contains(marker) }
+                    }
                 }
             }
         } catch (_: Throwable) {
             false
         }
+        cachedHookResult = detected
+        lastMapsCheckMs = now
+        return detected
     }
 
     /**
@@ -396,25 +441,43 @@ object DeviceUtils {
      * Bypasses on emulators to prevent DrmHalHidl passthrough failure errors.
      */
     private fun getWidevineUniqueId(): String? {
+        cachedWidevineId?.let { return it }
         if (isEmulator()) {
             return null
         }
-        return try {
-            if (!MediaDrm.isCryptoSchemeSupported(WIDEVINE_UUID)) {
+        for (attempt in 0..1) {
+            var drm: MediaDrm? = null
+            try {
+                if (!MediaDrm.isCryptoSchemeSupported(WIDEVINE_UUID)) {
+                    return null
+                }
+                drm = MediaDrm(WIDEVINE_UUID)
+                val bytes = drm.getPropertyByteArray(MediaDrm.PROPERTY_DEVICE_UNIQUE_ID)
+                if (bytes.isNotEmpty()) {
+                    val hex = bytes.joinToString("") { "%02x".format(it) }
+                    if (hex.isNotBlank()) {
+                        cachedWidevineId = hex
+                        return hex
+                    }
+                }
+            } catch (_: android.media.UnsupportedSchemeException) {
                 return null
+            } catch (_: Throwable) {
+                // Retry once on transient MediaTek/OEM MediaDrm failures
+            } finally {
+                try {
+                    if (drm != null) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                            drm.close()
+                        } else {
+                            @Suppress("DEPRECATION")
+                            drm.release()
+                        }
+                    }
+                } catch (_: Throwable) {}
             }
-            val drm = MediaDrm(WIDEVINE_UUID)
-            val bytes = drm.getPropertyByteArray(MediaDrm.PROPERTY_DEVICE_UNIQUE_ID)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                drm.close()
-            } else {
-                @Suppress("DEPRECATION")
-                drm.release()
-            }
-            bytes.joinToString("") { "%02x".format(it) }
-        } catch (e: Throwable) {
-            null
         }
+        return null
     }
 
     /**

@@ -487,32 +487,56 @@ object LicenseManager {
     private var userDocListener: ListenerRegistration? = null
     private var globalSettingsListener: ListenerRegistration? = null
     private var currentUserKey: String? = null
+    private var activeUserDocUid: String? = null
     private val authLock = Any()
     private val syncMutex = Mutex()
     private val docInitAttempted = AtomicBoolean(false)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
+    @Volatile
+    private var profileUpdateDispatchedHash: String? = null
+    private val profileUpdateLock = Any()
+
+    private fun shouldDispatchProfileUpdate(userKey: String, fields: Map<String, Any>): Boolean {
+        if (fields.isEmpty()) return false
+        val normalized = fields.entries
+            .filter { it.key != "userId" }
+            .sortedBy { it.key }
+            .joinToString("|") { "${it.key}=${it.value}" }
+        if (normalized.isEmpty()) return false
+        val newHash = "$userKey::$normalized"
+        synchronized(profileUpdateLock) {
+            if (profileUpdateDispatchedHash == newHash) {
+                return false
+            }
+            profileUpdateDispatchedHash = newHash
+            return true
+        }
+    }
+
     /**
      * Real-time listener for app_settings/global to read isServiceActive.
      */
     fun startGlobalSettingsListener() {
-        if (globalSettingsListener != null) return
         val ctx = appContext ?: return
         if (FirebaseApp.getApps(ctx).isEmpty()) return
-        try {
-            val db = FirebaseFirestore.getInstance()
-            globalSettingsListener = db.collection("app_settings").document("global")
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        Log.w(TAG, "Global settings listener error: ${error.message}")
-                        return@addSnapshotListener
+        synchronized(authLock) {
+            if (globalSettingsListener != null) return
+            try {
+                val db = FirebaseFirestore.getInstance()
+                globalSettingsListener = db.collection("app_settings").document("global")
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            Log.w(TAG, "Global settings listener error: ${error.message}")
+                            return@addSnapshotListener
+                        }
+                        val isActive = snapshot?.getBoolean("isServiceActive") ?: true
+                        setServiceActiveState(isActive)
+                        Log.d(TAG, "LicenseManager: isServiceActive updated to $isActive")
                     }
-                    val isActive = snapshot?.getBoolean("isServiceActive") ?: true
-                    setServiceActiveState(isActive)
-                    Log.d(TAG, "LicenseManager: isServiceActive updated to $isActive")
-                }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to start global settings listener: ${e.message}")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start global settings listener: ${e.message}")
+            }
         }
     }
 
@@ -558,12 +582,18 @@ object LicenseManager {
     fun getCurrentServerTimeMs(): Long {
         val baseline = serverTimeBaselineMs
         val baselineElapsed = serverTimeBaselineElapsedMs
-        return if (baseline > 0L && baselineElapsed > 0L) {
+        if (baseline > 0L && baselineElapsed > 0L) {
             val elapsedDelta = safeElapsedRealtime() - baselineElapsed
-            baseline + elapsedDelta
-        } else {
-            System.currentTimeMillis()
+            return baseline + elapsedDelta
         }
+        val wallNow = System.currentTimeMillis()
+        val lastServerTs = try {
+            appContext?.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
+                ?.getLong(KEY_LAST_SERVER_TIMESTAMP, 0L) ?: 0L
+        } catch (_: Exception) {
+            0L
+        }
+        return if (lastServerTs > 0L) maxOf(wallNow, lastServerTs) else wallNow
     }
 
     /**
@@ -591,6 +621,9 @@ object LicenseManager {
                 Log.w(TAG, "Pre-launch/runtime clock tampering detected: wall=$currentWall vs expectedServerUtc=$expectedUtcNow (skew=${wallVsServerSkew}ms)")
                 return true
             }
+        } else if (lastServerTs > 0L && currentWall < lastServerTs - MAX_ALLOWED_CLOCK_DRIFT_MS) {
+            Log.w(TAG, "Offline cold-start clock rollback detected: wall=$currentWall < lastServerTs=$lastServerTs")
+            return true
         }
 
         // If no persisted server sync exists yet, stop here
@@ -916,6 +949,8 @@ object LicenseManager {
         hasLoadedLicensing = false
         hasLoadedTrial = false
         lastSuccessfulServerSyncElapsedMs = 0L
+        profileUpdateDispatchedHash = null
+        activeUserDocUid = null
         _accessStatus.value = AccessStatus.Loading
         _activePassInfo.value = null
         _trialInfo.value = null
@@ -1101,6 +1136,7 @@ object LicenseManager {
         synchronized(authLock) {
             userDocListener?.remove()
             userDocListener = null
+            activeUserDocUid = null
             globalSettingsListener?.remove()
             globalSettingsListener = null
             try {
@@ -1139,6 +1175,7 @@ object LicenseManager {
             val customUserId = resolveUserKey(ctx)
             synchronized(authLock) {
                 currentUserKey = customUserId
+                activeUserDocUid = null
                 docInitAttempted.set(false)
                 hasLoadedLicensing = false
                 serverRemoveAdsExpiry = 0L
@@ -1146,6 +1183,7 @@ object LicenseManager {
                 _unlockedFeatures.value = emptyMap()
                 _accessStatus.value = AccessStatus.Loading
             }
+            profileUpdateDispatchedHash = null
             syncHardwareTrialAndLicensing()
         }
     }
@@ -1273,8 +1311,16 @@ object LicenseManager {
      */
     suspend fun claimReferralViaActionQueue(referralCode: String): Result<Int> = withContext(Dispatchers.IO) {
         val cleanCode = referralCode.trim().uppercase(Locale.ROOT)
-        if (cleanCode.length != 8) {
-            return@withContext Result.failure(IllegalArgumentException("Referral code must be exactly 8 characters."))
+        if (!cleanCode.matches(Regex("^[A-Z0-9]{8}$"))) {
+            return@withContext Result.failure(
+                IllegalArgumentException("Referral code must be exactly 8 alphanumeric characters.")
+            )
+        }
+        val ownCode = _referralCode.value?.trim()?.uppercase(Locale.ROOT)
+        if (!ownCode.isNullOrBlank() && cleanCode == ownCode) {
+            return@withContext Result.failure(
+                IllegalArgumentException("You cannot claim your own referral code.")
+            )
         }
         val result = executeActionQueueRequest(
             actionType = "CLAIM_REFERRAL",
@@ -1364,9 +1410,9 @@ object LicenseManager {
         transactionId: String? = null
     ): Result<Unit> = withContext(Dispatchers.IO) {
         val cleanUtr = (transactionId ?: "").trim()
-        if (cleanUtr.isBlank() || cleanUtr.length !in 9..16) {
+        if (!cleanUtr.matches(Regex("^\\d{12}$"))) {
             return@withContext Result.failure(
-                IllegalArgumentException("Invalid transaction reference: '$cleanUtr'. Must be between 9 and 16 characters.")
+                IllegalArgumentException("Invalid UTR: '$cleanUtr'. Must be a valid 12-digit numeric reference.")
             )
         }
 
@@ -1429,7 +1475,7 @@ object LicenseManager {
                     updates["firebaseUid"] = firebaseUid
                     updates["userEmail"] = userEmail
                 }
-                if (updates.isNotEmpty()) {
+                if (updates.isNotEmpty() && shouldDispatchProfileUpdate(customUserId, updates)) {
                     val updateResult = executeActionQueueRequest("UPDATE_PROFILE", updates)
                     return@withContext updateResult.isSuccess
                 }
@@ -1548,11 +1594,13 @@ object LicenseManager {
                         if (!currentUser?.email.isNullOrBlank()) {
                             updateData["userEmail"] = currentUser?.email ?: ""
                         }
-                        scope.launch {
-                            try {
-                                executeActionQueueRequest("UPDATE_PROFILE", updateData)
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Failed updating profile in syncHardwareTrialAndLicensing: ${e.message}")
+                        if (shouldDispatchProfileUpdate(customUserId, updateData)) {
+                            scope.launch {
+                                try {
+                                    executeActionQueueRequest("UPDATE_PROFILE", updateData)
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Failed updating profile in syncHardwareTrialAndLicensing: ${e.message}")
+                                }
                             }
                         }
                     }
@@ -1599,8 +1647,11 @@ object LicenseManager {
             null
         }
         if (currentUser == null || currentUser.uid.isBlank()) {
-            userDocListener?.remove()
-            userDocListener = null
+            synchronized(authLock) {
+                userDocListener?.remove()
+                userDocListener = null
+                activeUserDocUid = null
+            }
             hasLoadedTrial = true
             hasLoadedLicensing = true
             refreshAccessStatus()
@@ -1609,12 +1660,20 @@ object LicenseManager {
 
         val customUserId = currentUser.uid
 
+        synchronized(authLock) {
+            if (userDocListener != null && activeUserDocUid == customUserId) {
+                return
+            }
+            userDocListener?.remove()
+            userDocListener = null
+            activeUserDocUid = customUserId
+        }
+
         try {
             val db = FirebaseFirestore.getInstance()
             val userDocRef = db.collection(COLL_USERS).document(customUserId)
 
-            userDocListener?.remove()
-            userDocListener = userDocRef.addSnapshotListener { snapshot, error ->
+            val registration = userDocRef.addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Log.w(TAG, "User snapshot listener error: ${error.message}")
                     hasLoadedLicensing = true
@@ -1746,7 +1805,7 @@ object LicenseManager {
                         updatesNeeded["current_folder"] = expectedFolder
                     }
                     if (code.isNullOrBlank()) {
-                        val generated = generateReferralCode()
+                        val generated = _referralCode.value?.takeIf { it.isNotBlank() } ?: generateReferralCode()
                         updatesNeeded["referralCode"] = generated
                         _referralCode.value = generated
                     } else {
@@ -1771,7 +1830,7 @@ object LicenseManager {
                         updatesNeeded["userEmail"] = currentEmail
                     }
 
-                    if (updatesNeeded.isNotEmpty()) {
+                    if (updatesNeeded.isNotEmpty() && shouldDispatchProfileUpdate(customUserId, updatesNeeded)) {
                         scope.launch {
                             try {
                                 executeActionQueueRequest("UPDATE_PROFILE", updatesNeeded)
@@ -1854,7 +1913,19 @@ object LicenseManager {
                     }
                 }
             }
+            synchronized(authLock) {
+                if (activeUserDocUid == customUserId) {
+                    userDocListener = registration
+                } else {
+                    registration.remove()
+                }
+            }
         } catch (e: Exception) {
+            synchronized(authLock) {
+                if (activeUserDocUid == customUserId) {
+                    activeUserDocUid = null
+                }
+            }
             Log.w(TAG, "Failed setting up licensing listener: ${e.message}")
             hasLoadedLicensing = true
             refreshAccessStatus()

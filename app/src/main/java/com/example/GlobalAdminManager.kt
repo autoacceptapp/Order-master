@@ -59,6 +59,7 @@ object GlobalAdminManager {
     private val isInitialized = AtomicBoolean(false)
 
     // Listener registrations
+    private val listenerLock = Any()
     private var globalSettingsListener: ListenerRegistration? = null
     private var userDocListener: ListenerRegistration? = null
 
@@ -85,6 +86,7 @@ object GlobalAdminManager {
     private val _isBlocked = MutableStateFlow(false)
     val isBlocked: StateFlow<Boolean> = _isBlocked.asStateFlow()
 
+    @Volatile
     private var trackedUid: String? = null
 
     // Periodic ticker to automatically unban once banUntil timestamp passes
@@ -127,43 +129,47 @@ object GlobalAdminManager {
             return
         }
 
-        try {
-            val firestore = FirebaseFirestore.getInstance()
-            val globalDocRef = firestore.collection(COLL_APP_SETTINGS).document(DOC_GLOBAL)
+        synchronized(listenerLock) {
+            if (globalSettingsListener != null) return
+            try {
+                val firestore = FirebaseFirestore.getInstance()
+                val globalDocRef = firestore.collection(COLL_APP_SETTINGS).document(DOC_GLOBAL)
 
-            globalSettingsListener?.remove()
-            globalSettingsListener = globalDocRef.addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    Log.w(TAG, "Real-time listener error on app_settings/global: ${error.message}")
-                    return@addSnapshotListener
+                globalSettingsListener = globalDocRef.addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "Real-time listener error on app_settings/global: ${error.message}")
+                        return@addSnapshotListener
+                    }
+
+                    if (snapshot != null && snapshot.exists()) {
+                        val active = snapshot.getBoolean("isServiceActive") ?: true
+                        val message = snapshot.getString("offlineMessage")
+                            ?: snapshot.getString("message")
+                            ?: "Service is currently offline for scheduled maintenance. Please check back later."
+                        val paymentActive = snapshot.getBoolean("isPaymentSystemActive") ?: true
+                        val updateActive = snapshot.getBoolean("isInAppUpdateActive") ?: true
+
+                        _isServiceActive.value = active
+                        _offlineMessage.value = message
+                        _isPaymentSystemActive.value = paymentActive
+                        _isInAppUpdateActive.value = updateActive
+                        LicenseManager.setServiceActiveState(active)
+                        Log.i(
+                            TAG,
+                            "Real-time global service update: isServiceActive=$active, isPaymentSystemActive=$paymentActive, isInAppUpdateActive=$updateActive, message=$message"
+                        )
+                    } else {
+                        // Default to active if doc does not exist
+                        _isServiceActive.value = true
+                        _isPaymentSystemActive.value = true
+                        _isInAppUpdateActive.value = true
+                        LicenseManager.setServiceActiveState(true)
+                    }
+                    updateBlockedState()
                 }
-
-                if (snapshot != null && snapshot.exists()) {
-                    val active = snapshot.getBoolean("isServiceActive") ?: true
-                    val message = snapshot.getString("offlineMessage")
-                        ?: snapshot.getString("message")
-                        ?: "Service is currently offline for scheduled maintenance. Please check back later."
-                    val paymentActive = snapshot.getBoolean("isPaymentSystemActive") ?: true
-                    val updateActive = snapshot.getBoolean("isInAppUpdateActive") ?: true
-
-                    _isServiceActive.value = active
-                    _offlineMessage.value = message
-                    _isPaymentSystemActive.value = paymentActive
-                    _isInAppUpdateActive.value = updateActive
-                    Log.i(
-                        TAG,
-                        "Real-time global service update: isServiceActive=$active, isPaymentSystemActive=$paymentActive, isInAppUpdateActive=$updateActive, message=$message"
-                    )
-                } else {
-                    // Default to active if doc does not exist
-                    _isServiceActive.value = true
-                    _isPaymentSystemActive.value = true
-                    _isInAppUpdateActive.value = true
-                }
-                updateBlockedState()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to attach global settings snapshot listener: ${e.message}", e)
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to attach global settings snapshot listener: ${e.message}", e)
         }
     }
 
@@ -171,31 +177,42 @@ object GlobalAdminManager {
      * Re-attaches user ban listener whenever the signed-in Firebase user changes.
      */
     fun onUserAuthChanged(uid: String?) {
-        trackedUid = uid
-        userDocListener?.remove()
-        userDocListener = null
-
-        val ctx = appContext ?: return
-        if (FirebaseApp.getApps(ctx).isEmpty()) return
-
-        if (uid.isNullOrBlank()) {
-            _banState.value = UserBanState.NotBanned
-            updateBlockedState()
-            return
-        }
-
-        try {
-            val firestore = FirebaseFirestore.getInstance()
-            val userDocRef = firestore.collection(COLL_USERS).document(uid)
-            userDocListener = userDocRef.addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    Log.w(TAG, "User ban listener error on users/$uid: ${error.message}")
-                    return@addSnapshotListener
-                }
-                processUserBanSnapshot(snapshot)
+        val ctx = appContext
+        synchronized(listenerLock) {
+            if (!uid.isNullOrBlank() && trackedUid == uid && userDocListener != null) {
+                return
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed attaching user ban listener: ${e.message}", e)
+            trackedUid = uid
+            userDocListener?.remove()
+            userDocListener = null
+
+            if (ctx == null || FirebaseApp.getApps(ctx).isEmpty()) {
+                if (uid.isNullOrBlank()) {
+                    _banState.value = UserBanState.NotBanned
+                    updateBlockedState()
+                }
+                return
+            }
+
+            if (uid.isNullOrBlank()) {
+                _banState.value = UserBanState.NotBanned
+                updateBlockedState()
+                return
+            }
+
+            try {
+                val firestore = FirebaseFirestore.getInstance()
+                val userDocRef = firestore.collection(COLL_USERS).document(uid)
+                userDocListener = userDocRef.addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w(TAG, "User ban listener error on users/$uid: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    processUserBanSnapshot(snapshot)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed attaching user ban listener: ${e.message}", e)
+            }
         }
     }
 

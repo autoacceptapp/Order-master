@@ -73,6 +73,7 @@ fun BannerAdView(
 
     var currentAdUnitId by remember(adUnitId) { mutableStateOf(adUnitId) }
     var isFallbackAttempted by remember(adUnitId) { mutableStateOf(false) }
+    var isAdHidden by remember(adUnitId) { mutableStateOf(false) }
     var adViewRef by remember { mutableStateOf<AdView?>(null) }
 
     DisposableEffect(currentAdUnitId) {
@@ -84,6 +85,10 @@ fun BannerAdView(
                 Log.w("BannerAdView", "Error destroying AdView: ${e.message}")
             }
         }
+    }
+
+    if (isAdHidden) {
+        return
     }
 
     Box(
@@ -109,6 +114,7 @@ fun BannerAdView(
                         this.adUnitId = currentAdUnitId
                         adListener = object : AdListener() {
                             override fun onAdLoaded() {
+                                isAdHidden = false
                                 Log.d("BannerAdView", "AdMob Banner Ad loaded successfully with unit: $currentAdUnitId")
                             }
 
@@ -122,6 +128,8 @@ fun BannerAdView(
                                     Log.i("BannerAdView", "Debug build: Attempting fallback to test banner ad unit.")
                                     isFallbackAttempted = true
                                     currentAdUnitId = AdConfig.fallbackBannerAdUnitId
+                                } else if (!BuildConfig.DEBUG || error.code == AdRequest.ERROR_CODE_NO_FILL) {
+                                    isAdHidden = true
                                 }
                             }
 
@@ -138,6 +146,7 @@ fun BannerAdView(
                             loadAd(adRequest)
                         } catch (e: Exception) {
                             Log.e("BannerAdView", "Error requesting AdMob Banner: ${e.message}", e)
+                            isAdHidden = true
                         }
                         adViewRef = this
                     }

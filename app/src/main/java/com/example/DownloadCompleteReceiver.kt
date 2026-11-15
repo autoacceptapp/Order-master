@@ -19,11 +19,14 @@ class DownloadCompleteReceiver : BroadcastReceiver() {
         if (context == null || intent == null) return
 
         if (intent.action == DownloadManager.ACTION_DOWNLOAD_COMPLETE) {
+            val appContext = context.applicationContext ?: context
             val downloadId = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
-            Log.i("DownloadCompleteReceiver", "Received ACTION_DOWNLOAD_COMPLETE for download ID: $downloadId")
-            if (downloadId > 0) {
-                ApkDownloader.handleExternalDownloadComplete(context.applicationContext, downloadId)
+            if (!ApkDownloader.isExpectedDownloadId(appContext, downloadId)) {
+                Log.d("DownloadCompleteReceiver", "Ignoring unrequested ACTION_DOWNLOAD_COMPLETE for download ID: $downloadId")
+                return
             }
+            Log.i("DownloadCompleteReceiver", "Verified ACTION_DOWNLOAD_COMPLETE for download ID: $downloadId")
+            ApkDownloader.handleExternalDownloadComplete(appContext, downloadId)
         }
     }
 }

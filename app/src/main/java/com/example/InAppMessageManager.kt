@@ -207,6 +207,8 @@ object InAppMessageManager {
             val db = FirebaseFirestore.getInstance()
             globalListener?.remove()
             globalListener = db.collection(COLL_GLOBAL_MESSAGES)
+                .orderBy("timestamp", Query.Direction.DESCENDING)
+                .limit(10)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
                         Log.w(TAG, "Global messages listener error: ${error.message}")
@@ -251,6 +253,8 @@ object InAppMessageManager {
             userMessageListener = db.collection(COLL_USERS)
                 .document(uid)
                 .collection(COLL_USER_MESSAGES)
+                .orderBy("timestamp", Query.Direction.DESCENDING)
+                .limit(10)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
                         Log.w(TAG, "User messages listener error: ${error.message}")

@@ -164,5 +164,41 @@ class FareFilterTest {
         val finalCount = AppSettings.getRecentEvaluations().size
         assertEquals(initialCount + 10, finalCount)
     }
+
+    @Test
+    fun testToggleCrossValidationClampsMinAndMaxFare() {
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.MAX_FARE to futureExpiry
+            )
+        )
+
+        // Case 1: Configure lower maxFare (150f) while filters are OFF, then enable Min Fare (300f).
+        // Toggling Max Fare ON must clamp Max Fare >= Min Fare so minFare <= maxFare holds.
+        AppSettings.setMaxFare(context, 150f)
+        AppSettings.setMinFare(context, 300f)
+        assertEquals(150f, AppSettings.getMaxFare(context), 0.01f)
+        assertEquals(300f, AppSettings.getMinFare(context), 0.01f)
+
+        AppSettings.setMinFareEnabled(context, true)
+        AppSettings.setMaxFareEnabled(context, true)
+        assertTrue(AppSettings.getMinFare(context) <= AppSettings.getMaxFare(context))
+        assertEquals(300f, AppSettings.getMaxFare(context), 0.01f)
+
+        // Case 2: Reset switches OFF, set minFare=350f and maxFare=150f, enable Max Fare,
+        // then toggling Min Fare ON must clamp Min Fare <= Max Fare.
+        AppSettings.setMinFareEnabled(context, false)
+        AppSettings.setMaxFareEnabled(context, false)
+        AppSettings.setMaxFare(context, 150f)
+        AppSettings.setMinFare(context, 350f)
+        assertEquals(350f, AppSettings.getMinFare(context), 0.01f)
+
+        AppSettings.setMaxFareEnabled(context, true)
+        AppSettings.setMinFareEnabled(context, true)
+        assertTrue(AppSettings.getMinFare(context) <= AppSettings.getMaxFare(context))
+        assertEquals(150f, AppSettings.getMinFare(context), 0.01f)
+    }
 }
 

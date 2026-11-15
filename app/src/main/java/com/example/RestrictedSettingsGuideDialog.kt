@@ -89,15 +89,7 @@ fun RestrictedSettingsGuideDialog(
         if (onOpenAppInfo != null) {
             onOpenAppInfo()
         } else {
-            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                data = Uri.fromParts("package", context.packageName, null)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            try {
-                context.startActivity(intent)
-            } catch (_: Exception) {
-                PermissionUtils.openAppDetailsSettings(context)
-            }
+            PermissionUtils.openAppInfoSettings(context)
         }
     }
 
@@ -105,9 +97,8 @@ fun RestrictedSettingsGuideDialog(
         if (onOpenAccessibility != null) {
             onOpenAccessibility()
         } else {
-            PermissionUtils.invokeRapidoAccessibilityService(context)
+            PermissionUtils.openAccessibilitySettings(context)
         }
-        onDismiss()
     }
 
     Dialog(
@@ -179,7 +170,7 @@ fun RestrictedSettingsGuideDialog(
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = "Android 13+ & 14+ Requirement",
+                                    text = "Android 13\u201316 Requirement",
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                                     color = AmberAccent
                                 )
@@ -221,7 +212,7 @@ fun RestrictedSettingsGuideDialog(
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
-                            text = "If Android displays \"Restricted setting: For your security, this setting is currently unavailable\", follow the 4 steps below to unlock it for Order Master:",
+                            text = "On Android 13\u201316, the 3-dots 'Allow restricted settings' option inside App Info ONLY appears after you first open Accessibility Settings and tap the greyed-out Order Master service once.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 18.sp
@@ -229,49 +220,49 @@ fun RestrictedSettingsGuideDialog(
                     }
                 }
 
-                // Step-by-Step Instructions
+                // Step-by-Step Instructions (Exact Android 13-16 OS sequence)
                 Column(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    // Step 1
+                    // Step 1: Must trigger the OS Restricted Settings dialog first
                     StepInstructionItem(
                         stepNumber = 1,
-                        title = "Open Phone Settings -> Apps",
-                        description = "Go to Phone Settings -> Apps -> All Apps -> Select Order Master.",
-                        icon = Icons.Default.Settings,
-                        actionLabel = "Open App Info Directly",
-                        onActionClick = handleOpenAppInfo,
-                        actionTestTag = "step1_open_app_info_btn"
-                    )
-
-                    // Step 2
-                    StepInstructionItem(
-                        stepNumber = 2,
-                        title = "Tap 3 dots (⋮) in top-right corner",
-                        description = "Look at the top-right corner of the App Info page and tap the 3 dots (⋮) menu icon.",
-                        icon = Icons.Default.MoreVert,
-                        badgeText = "Top-right menu ⋮"
-                    )
-
-                    // Step 3
-                    StepInstructionItem(
-                        stepNumber = 3,
-                        title = "Click 'Allow restricted settings'",
-                        description = "Tap 'Allow restricted settings' from the menu and verify with your Fingerprint, PIN, or Pattern.",
-                        icon = Icons.Default.Fingerprint,
-                        badgeText = "Fingerprint / PIN auth"
-                    )
-
-                    // Step 4
-                    StepInstructionItem(
-                        stepNumber = 4,
-                        title = "Toggle ON in Accessibility settings",
-                        description = "Return to Android Accessibility settings, select '${context.getString(R.string.accessibility_service_name)}', and switch it to ON.",
+                        title = "Open Accessibility Settings & tap once",
+                        description = "Tap '${context.getString(R.string.accessibility_service_name)}' once to trigger Android's 'Restricted setting' popup, then press Back to return here.",
                         icon = Icons.Default.AccessibilityNew,
                         actionLabel = "Open Accessibility Settings",
                         onActionClick = handleOpenAccessibility,
-                        actionTestTag = "step4_open_accessibility_btn"
+                        actionTestTag = "step1_open_accessibility_btn"
+                    )
+
+                    // Step 2: Open App Info where 3-dots menu is now unlocked
+                    StepInstructionItem(
+                        stepNumber = 2,
+                        title = "Open App Info",
+                        description = "Open Order Master's App Info page so you can unlock the restricted setting.",
+                        icon = Icons.Default.Settings,
+                        actionLabel = "Open App Info (3-Dots -> Allow)",
+                        onActionClick = handleOpenAppInfo,
+                        actionTestTag = "step2_open_app_info_btn"
+                    )
+
+                    // Step 3: Tap 3 dots & Allow restricted settings
+                    StepInstructionItem(
+                        stepNumber = 3,
+                        title = "Tap 3 dots (\u22EE) -> Allow restricted settings",
+                        description = "Tap the 3 dots (\u22EE) in the top-right corner of App Info, choose 'Allow restricted settings', and verify with Fingerprint, PIN, or Pattern.",
+                        icon = Icons.Default.MoreVert,
+                        badgeText = "Fingerprint / PIN auth"
+                    )
+
+                    // Step 4: Return & enable Accessibility Service
+                    StepInstructionItem(
+                        stepNumber = 4,
+                        title = "Return to Accessibility & toggle ON",
+                        description = "Open Accessibility Settings again, select '${context.getString(R.string.accessibility_service_name)}', and switch it ON.",
+                        icon = Icons.Default.Fingerprint,
+                        badgeText = "Final unlock step"
                     )
                 }
 
@@ -297,14 +288,14 @@ fun RestrictedSettingsGuideDialog(
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = "Important Tip",
+                                text = "Why is 3-dots (\u22EE) missing?",
                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                 color = OnAmberContainer
                             )
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "You only need to allow restricted settings once per installation. If the 3-dots menu is missing or greyed out, you may have already unlocked it—proceed directly to Accessibility Settings.",
+                            text = "Android hides the 3-dots 'Allow restricted settings' menu until you first attempt to turn on Accessibility (Step 1). Complete Step 1 once, then open App Info in Step 2.",
                             style = MaterialTheme.typography.bodySmall,
                             color = OnAmberContainer,
                             fontSize = 11.sp,
@@ -313,12 +304,37 @@ fun RestrictedSettingsGuideDialog(
                     }
                 }
 
-                // Action Buttons Footer
+                // Action Buttons Footer: Exact Two-Step Order
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Primary Action: Open App Info Settings (required)
+                    // Step 1 Action: Open Accessibility Settings
+                    Button(
+                        onClick = handleOpenAccessibility,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("open_accessibility_settings_button"),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PrimaryEmerald,
+                            contentColor = Color.Black
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AccessibilityNew,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "1. Open Accessibility Settings",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+
+                    // Step 2 Action: Open App Info (Allow Restricted)
                     Button(
                         onClick = handleOpenAppInfo,
                         modifier = Modifier
@@ -338,33 +354,8 @@ fun RestrictedSettingsGuideDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Open App Info Settings",
+                            text = "2. Open App Info (Allow Restricted)",
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
-                        )
-                    }
-
-                    // Secondary Action: Open Accessibility Settings
-                    Button(
-                        onClick = handleOpenAccessibility,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(44.dp)
-                            .testTag("open_accessibility_settings_button"),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = PrimaryEmerald,
-                            contentColor = Color.Black
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AccessibilityNew,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Open Accessibility Settings",
-                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
                         )
                     }
 

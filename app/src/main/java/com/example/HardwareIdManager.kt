@@ -3,10 +3,6 @@ package com.example
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.media.MediaDrm
-import android.media.UnsupportedSchemeException
-import android.os.Build
-import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.background
@@ -50,8 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.PrimaryEmerald
-import java.security.MessageDigest
-import java.util.UUID
+import java.util.Locale
 
 /**
  * HardwareIdManager
@@ -72,9 +67,6 @@ object HardwareIdManager {
     private const val KEY_PERMANENT_HARDWARE_ID = "permanent_hardware_id"
     private const val KEY_FULL_SHA256 = "permanent_full_sha256"
     private const val KEY_ID_SOURCE = "permanent_id_source"
-
-    // Widevine DRM Scheme UUID (Standard Android crypto hardware scheme)
-    private val WIDEVINE_UUID: UUID = UUID.fromString("edef8ba9-79d6-4ace-a3c8-27dcd51d21ed")
 
     @Volatile
     private var cachedHardwareId: String? = null
@@ -130,62 +122,24 @@ object HardwareIdManager {
     }
 
     /**
-     * Extracts the raw hardware unique ID from MediaDrm Widevine module with graceful fallback.
+     * Derives the permanent hardware ID from the single unified deterministic hardware fingerprint
+     * shared with DeviceUtils (Widevine DRM ID if non-empty + ANDROID_ID + immutable Build properties).
      */
     private fun generatePermanentHardwareId(context: Context): HardwareDetails {
-        var mediaDrm: MediaDrm? = null
-        if (!DeviceUtils.isEmulator()) {
-            try {
-                if (MediaDrm.isCryptoSchemeSupported(WIDEVINE_UUID)) {
-                    mediaDrm = MediaDrm(WIDEVINE_UUID)
-                    val rawBytes = mediaDrm.getPropertyByteArray(MediaDrm.PROPERTY_DEVICE_UNIQUE_ID)
-
-                    if (rawBytes != null && rawBytes.isNotEmpty()) {
-                        val fullSha256 = sha256Hex(rawBytes)
-                        val formatted = formatHardwareCode(fullSha256)
-                        Log.i(TAG, "Generated permanent hardware ID from Widevine MediaDrm: $formatted")
-                        return HardwareDetails(
-                            formattedId = formatted,
-                            fullSha256 = fullSha256,
-                            source = "Widevine Hardware DRM Module",
-                            isHardwareDrm = true
-                        )
-                    } else {
-                        Log.w(TAG, "MediaDrm deviceUniqueId returned null or empty bytes. Using crypto fallback.")
-                    }
-                } else {
-                    Log.d(TAG, "Widevine crypto scheme not supported on this device. Using crypto fallback.")
-                }
-            } catch (e: UnsupportedSchemeException) {
-                Log.w(TAG, "Widevine MediaDrm unsupported on this device: ${e.message}. Using fallback.")
-            } catch (e: Throwable) {
-                Log.w(TAG, "Exception accessing Widevine MediaDrm: ${e.message}. Using fallback.", e)
-            } finally {
-                try {
-                    if (mediaDrm != null) {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            mediaDrm.close()
-                        } else {
-                            @Suppress("DEPRECATION")
-                            mediaDrm.release()
-                        }
-                    }
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Error closing MediaDrm: ${e.message}")
-                }
-            }
-        }
-
-        // Fallback mechanism: Hardware fingerprint combination
-        val fallbackBytes = buildHardwareFallbackEntropy(context)
-        val fullSha256 = sha256Hex(fallbackBytes)
+        val fingerprint = DeviceUtils.buildUnifiedHardwareFingerprint(context)
+        val fullSha256 = fingerprint.sha256Hex.uppercase(Locale.US)
         val formatted = formatHardwareCode(fullSha256)
-        Log.i(TAG, "Generated permanent hardware ID from Hardware Fingerprint Fallback: $formatted")
+        val source = if (fingerprint.hasWidevineDrm) {
+            "Unified Hardware Fingerprint (Widevine + Device)"
+        } else {
+            "Unified Hardware Fingerprint (Device)"
+        }
+        Log.i(TAG, "Generated permanent hardware ID ($source): $formatted")
         return HardwareDetails(
             formattedId = formatted,
             fullSha256 = fullSha256,
-            source = "Hardware Cryptographic Fallback",
-            isHardwareDrm = false
+            source = source,
+            isHardwareDrm = fingerprint.hasWidevineDrm
         )
     }
 
@@ -194,45 +148,11 @@ object HardwareIdManager {
      * e.g., "OM-8F92-A103-B94C"
      */
     private fun formatHardwareCode(sha256Hex: String): String {
-        val clean = sha256Hex.uppercase().filter { it in '0'..'9' || it in 'A'..'F' }
+        val clean = sha256Hex.uppercase(Locale.US).filter { it in '0'..'9' || it in 'A'..'F' }
         val p1 = clean.take(4).padEnd(4, '0')
         val p2 = clean.drop(4).take(4).padEnd(4, '0')
         val p3 = clean.drop(8).take(4).padEnd(4, '0')
         return "OM-$p1-$p2-$p3"
-    }
-
-    /**
-     * Computes the lowercase 64-character SHA-256 hexadecimal string from byte array.
-     */
-    private fun sha256Hex(bytes: ByteArray): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        val digest = md.digest(bytes)
-        return digest.joinToString("") { "%02X".format(it) }
-    }
-
-    /**
-     * Generates persistent hardware entropy from static physical board and device identifiers.
-     */
-    private fun buildHardwareFallbackEntropy(context: Context): ByteArray {
-        val androidId = try {
-            Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: ""
-        } catch (_: Exception) {
-            ""
-        }
-
-        val entropy = StringBuilder()
-            .append("android_id=").append(androidId).append(";")
-            .append("board=").append(Build.BOARD).append(";")
-            .append("brand=").append(Build.BRAND).append(";")
-            .append("device=").append(Build.DEVICE).append(";")
-            .append("hardware=").append(Build.HARDWARE).append(";")
-            .append("manufacturer=").append(Build.MANUFACTURER).append(";")
-            .append("model=").append(Build.MODEL).append(";")
-            .append("product=").append(Build.PRODUCT).append(";")
-            .append("fingerprint=").append(Build.FINGERPRINT).append(";")
-            .toString()
-
-        return entropy.toByteArray(Charsets.UTF_8)
     }
 
     /**

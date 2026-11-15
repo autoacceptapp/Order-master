@@ -207,8 +207,9 @@ object GitHubUpdateManager {
 
             // Inspect assets array to find the compiled APK asset (.apk)
             val assetsArray: JSONArray? = json.optJSONArray("assets")
+            val preferredApkName = resolveFallbackApkFileName()
             var apkDownloadUrl: String? = null
-            var apkFileName = "app-debug.apk"
+            var apkFileName = preferredApkName
             var assetSize = 0L
 
             if (assetsArray != null && assetsArray.length() > 0) {
@@ -221,8 +222,8 @@ object GitHubUpdateManager {
                     val name = assetObj.optString("name", "")
                     val downloadUrl = assetObj.optString("browser_download_url", "")
                     if (name.endsWith(".apk", ignoreCase = true) && downloadUrl.isNotEmpty()) {
-                        // Prefer exact "app-debug.apk" direct downloadable name
-                        if (name.equals("app-debug.apk", ignoreCase = true)) {
+                        // Prefer build-type matching APK ("app-release.apk" for release, "app-debug.apk" for debug)
+                        if (name.equals(preferredApkName, ignoreCase = true)) {
                             apkDownloadUrl = downloadUrl
                             apkFileName = name
                             assetSize = assetObj.optLong("size", 0L)
@@ -237,7 +238,7 @@ object GitHubUpdateManager {
 
                 if (apkDownloadUrl == null && fallbackApkUrl != null) {
                     apkDownloadUrl = fallbackApkUrl
-                    apkFileName = fallbackApkName ?: "app-debug.apk"
+                    apkFileName = fallbackApkName ?: preferredApkName
                     assetSize = fallbackSize
                 }
             }
@@ -248,9 +249,9 @@ object GitHubUpdateManager {
                 if (dynamicConfigUrl.isNotEmpty()) {
                     apkDownloadUrl = dynamicConfigUrl
                 } else {
-                    apkDownloadUrl = "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tagName/app-debug.apk"
+                    apkDownloadUrl = resolveFallbackDownloadUrl(tagName)
                 }
-                apkFileName = "app-debug.apk"
+                apkFileName = preferredApkName
             }
 
             // Save last checked timestamp
@@ -520,14 +521,27 @@ object GitHubUpdateManager {
         val version = prefs.getString(KEY_CACHED_VERSION, "") ?: ""
         val url = prefs.getString(KEY_CACHED_DOWNLOAD_URL, "") ?: ""
         if (version.isEmpty() || url.isEmpty()) return null
+        val defaultApkName = resolveFallbackApkFileName()
         return UpdateResult.UpdateAvailable(
             latestVersion = version,
             latestVersionCode = prefs.getInt(KEY_CACHED_VERSION_CODE, 0),
             releaseNotes = prefs.getString(KEY_CACHED_RELEASE_NOTES, "") ?: "",
             downloadUrl = url,
-            apkFileName = prefs.getString(KEY_CACHED_APK_FILENAME, "app-debug.apk") ?: "app-debug.apk",
+            apkFileName = prefs.getString(KEY_CACHED_APK_FILENAME, defaultApkName) ?: defaultApkName,
             assetSize = prefs.getLong(KEY_CACHED_ASSET_SIZE, 0L)
         )
+    }
+
+    internal fun resolveFallbackApkFileName(isDebugBuild: Boolean = BuildConfig.DEBUG): String {
+        return if (isDebugBuild) "app-debug.apk" else "app-release.apk"
+    }
+
+    internal fun resolveFallbackDownloadUrl(
+        tagName: String,
+        isDebugBuild: Boolean = BuildConfig.DEBUG
+    ): String {
+        val fileName = resolveFallbackApkFileName(isDebugBuild)
+        return "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tagName/$fileName"
     }
 
     private fun clearCachedUpdate(context: Context) {
