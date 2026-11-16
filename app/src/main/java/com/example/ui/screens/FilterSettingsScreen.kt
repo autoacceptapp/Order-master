@@ -3,11 +3,14 @@ package com.example.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import com.example.PassTier
 import com.example.SUPPORTED_LANGUAGES
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -67,12 +70,14 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -108,6 +113,7 @@ import kotlin.math.roundToInt
 @Composable
 fun FilterSettingsScreen(
     viewModel: OrderMasterViewModel,
+    onNavigateToSubscription: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -126,13 +132,15 @@ fun FilterSettingsScreen(
 
     var featureToUnlock by remember { mutableStateOf<String?>(null) }
     var showMultiFilterDialog by remember { mutableStateOf(false) }
+    var multiFilterPreselectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     fun getRemainingTime(fId: String): String? {
         if (LicenseManager.isFeatureLockedByAdmin(fId)) return null
+        if (!LicenseManager.isFeatureUnlocked(fId)) return null
         val ms = LicenseManager.getFeatureRemainingTimeMs(fId)
+        if (ms <= 0L) return null
         if (ms == Long.MAX_VALUE) return "ADMIN UNLOCKED"
         if (isProMode) return "PRO ACTIVE"
-        if (ms <= 0L) return null
         val totalMins = (ms / 60000L).coerceAtLeast(1L)
         val hrs = totalMins / 60
         val mins = totalMins % 60
@@ -168,7 +176,11 @@ fun FilterSettingsScreen(
     val hasAnyAutoCapability = remember(accessStatus, unlockedFeatures, lockedFeatures) {
         LicenseManager.hasAnyAutoAcceptCapability()
     }
-    val canApplyPresets = isProMode || isMinFareUnlocked || isMaxFareUnlocked || isPickupUnlocked || isDropUnlocked || isMinRateUnlocked
+    val hasAnyEvaluationFilterUnlocked = isMinFareUnlocked || isMaxFareUnlocked ||
+        isMinRateUnlocked || isPickupUnlocked || isDropUnlocked || isBlacklistUnlocked
+    val hasAllFiltersForPresets = isProMode || (
+        isMinFareUnlocked && isMaxFareUnlocked && isPickupUnlocked && isDropUnlocked && isMinRateUnlocked
+    )
 
     var languageDropdownExpanded by remember { mutableStateOf(false) }
     var newBlacklistKeyword by remember { mutableStateOf("") }
@@ -195,15 +207,36 @@ fun FilterSettingsScreen(
         FeatureUnlockDialog(
             featureId = fId,
             onDismiss = { featureToUnlock = null },
-            onSuccess = { featureToUnlock = null }
+            onSuccess = { featureToUnlock = null },
+            onOpenMultiFilter = {
+                featureToUnlock = null
+                multiFilterPreselectedIds = setOf(fId)
+                showMultiFilterDialog = true
+            },
+            onOpenPassStore = {
+                featureToUnlock = null
+                onNavigateToSubscription()
+            }
         )
     }
 
     // Multi-Select Filter Purchase Dialog (Free Mode)
     if (showMultiFilterDialog) {
         MultiFilterUnlockDialog(
-            onDismiss = { showMultiFilterDialog = false },
-            onSuccess = { showMultiFilterDialog = false }
+            initiallySelectedIds = multiFilterPreselectedIds,
+            onDismiss = {
+                showMultiFilterDialog = false
+                multiFilterPreselectedIds = emptySet()
+            },
+            onSuccess = {
+                showMultiFilterDialog = false
+                multiFilterPreselectedIds = emptySet()
+            },
+            onOpenPassStore = {
+                showMultiFilterDialog = false
+                multiFilterPreselectedIds = emptySet()
+                onNavigateToSubscription()
+            }
         )
     }
 
@@ -389,11 +422,18 @@ fun FilterSettingsScreen(
                                     )
                                 }
                             }
+                            val nowServerMs = LicenseManager.getCurrentServerTimeMs()
+                            val unlockedFreeCount = unlockedFeatures.count { (k, v) ->
+                                !k.equals(PassTier.REMOVE_ADS.id, ignoreCase = true) &&
+                                    !LicenseManager.isFeatureLockedByAdmin(k) &&
+                                    (v == -1L || v > nowServerMs)
+                            }
                             Text(
-                                text = if (isProMode)
-                                    "All unlocked filter rules active. Ultra-fast auto-acceptance (300-700ms) with smart auto-reject."
-                                else
-                                    "All filters are locked in Free Mode. Buy any 1 or multiple filters with Points, or activate a Daily / Weekly / Monthly Pass.",
+                                text = when {
+                                    isProMode -> "All unlocked filter rules active. Ultra-fast auto-acceptance (300-700ms) with smart auto-reject."
+                                    unlockedFreeCount > 0 -> "Free Mode: $unlockedFreeCount feature(s) unlocked via Points. Buy more filters with Points or activate a Pro Pass."
+                                    else -> "All filters are locked in Free Mode. Buy any 1 or multiple filters with Points, or activate a Daily / Weekly / Monthly Pass."
+                                },
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 11.sp
@@ -402,7 +442,10 @@ fun FilterSettingsScreen(
                             if (!isProMode) {
                                 Spacer(modifier = Modifier.height(8.dp))
                                 FilledTonalButton(
-                                    onClick = { showMultiFilterDialog = true },
+                                    onClick = {
+                                        multiFilterPreselectedIds = emptySet()
+                                        showMultiFilterDialog = true
+                                    },
                                     shape = RoundedCornerShape(8.dp),
                                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                     modifier = Modifier
@@ -1086,6 +1129,16 @@ fun FilterSettingsScreen(
                                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
                                 )
                                 Spacer(modifier = Modifier.height(3.dp))
+                                val onAutoClickUnlock = {
+                                    if (isAutoClickAdminLocked) {
+                                        Toast.makeText(context, "Auto-Click is locked by Admin", Toast.LENGTH_SHORT).show()
+                                    } else if (hasAnyEvaluationFilterUnlocked) {
+                                        featureToUnlock = FeatureIds.AUTO_CLICK
+                                    } else {
+                                        multiFilterPreselectedIds = setOf(FeatureIds.MIN_FARE, FeatureIds.AUTO_CLICK)
+                                        showMultiFilterDialog = true
+                                    }
+                                }
                                 if (isAutoClickAdminLocked) {
                                     Surface(
                                         shape = RoundedCornerShape(6.dp),
@@ -1122,7 +1175,7 @@ fun FilterSettingsScreen(
                                     }
                                 } else if (!isAutoClickUnlocked) {
                                     FilledTonalButton(
-                                        onClick = { featureToUnlock = FeatureIds.AUTO_CLICK },
+                                        onClick = onAutoClickUnlock,
                                         shape = RoundedCornerShape(6.dp),
                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                         modifier = Modifier.height(25.dp)
@@ -1146,7 +1199,7 @@ fun FilterSettingsScreen(
                                 Text(
                                     text = when {
                                         isAutoClickAdminLocked -> "🔒 Auto-Click locked by Admin"
-                                        !hasAnyAutoCapability -> "🔒 Unlock any filter or Auto-Click (15 Pts/Hr)"
+                                        !hasAnyAutoCapability -> "🔒 Unlock at least 1 filter rule first to enable Auto-Click"
                                         settingsState.isAutoClickEnabled && isAutoClickUnlocked -> "🟢 Green HUD: Full Auto Click (300-700ms Pro Speed)"
                                         settingsState.isAutoClickEnabled -> "🟢 Green HUD: Full Auto Click (Standard Speed)"
                                         else -> "🔴 Red HUD: Voice Alert Only"
@@ -1163,32 +1216,51 @@ fun FilterSettingsScreen(
                                 )
                             }
                             val autoClickSwitchEnabled = !isAutoClickAdminLocked && hasAnyAutoCapability
-                            Switch(
-                                checked = settingsState.isAutoClickEnabled && autoClickSwitchEnabled,
-                                onCheckedChange = {
-                                    if (isAutoClickAdminLocked) return@Switch
-                                    if (!hasAnyAutoCapability) {
-                                        featureToUnlock = FeatureIds.AUTO_CLICK
+                            Box(
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .then(
+                                        if (!autoClickSwitchEnabled) {
+                                            Modifier.clickable {
+                                                if (isAutoClickAdminLocked) {
+                                                    Toast.makeText(context, "Auto-Click is locked by Admin", Toast.LENGTH_SHORT).show()
+                                                } else if (hasAnyEvaluationFilterUnlocked) {
+                                                    featureToUnlock = FeatureIds.AUTO_CLICK
+                                                } else {
+                                                    multiFilterPreselectedIds = setOf(FeatureIds.MIN_FARE, FeatureIds.AUTO_CLICK)
+                                                    showMultiFilterDialog = true
+                                                }
+                                            }
+                                        } else {
+                                            Modifier
+                                        }
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Switch(
+                                    checked = settingsState.isAutoClickEnabled && autoClickSwitchEnabled,
+                                    onCheckedChange = if (autoClickSwitchEnabled) {
+                                        { viewModel.toggleAutoClick(it) }
                                     } else {
-                                        viewModel.toggleAutoClick(it)
-                                    }
-                                },
-                                enabled = autoClickSwitchEnabled,
-                                thumbContent = {
-                                    Icon(
-                                        imageVector = if (settingsState.isAutoClickEnabled && autoClickSwitchEnabled) Icons.Default.TouchApp else Icons.Default.RecordVoiceOver,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(SwitchDefaults.IconSize)
-                                    )
-                                },
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = Color.White,
-                                    checkedTrackColor = Color(0xFF10B981),
-                                    uncheckedThumbColor = Color.White,
-                                    uncheckedTrackColor = Color(0xFFEF4444)
-                                ),
-                                modifier = Modifier.testTag("auto_click_switch")
-                            )
+                                        null
+                                    },
+                                    enabled = autoClickSwitchEnabled,
+                                    thumbContent = {
+                                        Icon(
+                                            imageVector = if (settingsState.isAutoClickEnabled && autoClickSwitchEnabled) Icons.Default.TouchApp else Icons.Default.RecordVoiceOver,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(SwitchDefaults.IconSize)
+                                        )
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.White,
+                                        checkedTrackColor = Color(0xFF10B981),
+                                        uncheckedThumbColor = Color.White,
+                                        uncheckedTrackColor = Color(0xFFEF4444)
+                                    ),
+                                    modifier = Modifier.testTag("auto_click_switch")
+                                )
+                            }
                         }
 
                         // Dynamic Price Display Indicator
@@ -1259,8 +1331,17 @@ fun FilterSettingsScreen(
         // 6. SAVE/RESTORE QUICK PRESETS BAR AT THE BOTTOM
         // =========================================================================================
         QuickPresetsBar(
-            onApplyPreset = { presetName -> if (canApplyPresets) viewModel.applyPreset(presetName) },
-            canApply = canApplyPresets,
+            onApplyPreset = { presetName ->
+                if (!viewModel.applyPreset(presetName)) {
+                    val missing = AppSettings.getMissingFeaturesForPreset(presetName)
+                        .filterNot { LicenseManager.isFeatureLockedByAdmin(it) }
+                    if (missing.isNotEmpty()) {
+                        multiFilterPreselectedIds = missing.toSet()
+                        showMultiFilterDialog = true
+                    }
+                }
+            },
+            hasAllFilters = hasAllFiltersForPresets,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 8.dp)
@@ -1288,11 +1369,27 @@ private fun FilterCard(
     pointsPerHour: Int = 10,
     content: @Composable () -> Unit
 ) {
+    val context = LocalContext.current
+    val currentOnUnlockClick by rememberUpdatedState(onUnlockClick)
     val effectivelyUnlocked = isUnlocked && !isAdminLocked
+    val handleLockedInteraction = {
+        if (isAdminLocked) {
+            Toast.makeText(context, "$title is locked by Admin", Toast.LENGTH_SHORT).show()
+        } else {
+            currentOnUnlockClick?.invoke()
+        }
+    }
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .testTag(testTag)
+            .then(
+                if (!effectivelyUnlocked) {
+                    Modifier.clickable { handleLockedInteraction() }
+                } else {
+                    Modifier
+                }
+            )
             .alpha(if (effectivelyUnlocked) 1f else 0.85f),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
@@ -1482,16 +1579,29 @@ private fun FilterCard(
                 Spacer(modifier = Modifier.width(8.dp))
 
                 // Individual Toggle Switch
-                Switch(
-                    checked = isEnabled && effectivelyUnlocked,
-                    onCheckedChange = if (effectivelyUnlocked) onToggle else null,
-                    enabled = effectivelyUnlocked,
-                    modifier = Modifier.testTag("${testTag}_switch"),
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.White,
-                        checkedTrackColor = MaterialTheme.colorScheme.primary
+                Box(
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .then(
+                            if (!effectivelyUnlocked) {
+                                Modifier.clickable { handleLockedInteraction() }
+                            } else {
+                                Modifier
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Switch(
+                        checked = isEnabled && effectivelyUnlocked,
+                        onCheckedChange = if (effectivelyUnlocked) onToggle else null,
+                        enabled = effectivelyUnlocked,
+                        modifier = Modifier.testTag("${testTag}_switch"),
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = MaterialTheme.colorScheme.primary
+                        )
                     )
-                )
+                }
             }
 
             // Expandable control inputs when filter is active
@@ -1511,12 +1621,12 @@ private fun FilterCard(
 private fun QuickPresetsBar(
     onApplyPreset: (String) -> Unit,
     modifier: Modifier = Modifier,
-    canApply: Boolean = true
+    hasAllFilters: Boolean = true
 ) {
     Surface(
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-        modifier = modifier.alpha(if (canApply) 1f else 0.55f)
+        modifier = modifier
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -1532,20 +1642,20 @@ private fun QuickPresetsBar(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Icon(
-                        imageVector = if (canApply) Icons.Default.Speed else Icons.Default.Lock,
+                        imageVector = if (hasAllFilters) Icons.Default.Speed else Icons.Default.Lock,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
-                        text = if (canApply) "Quick Rule Presets" else "Quick Rule Presets (Unlock Filter)",
+                        text = "Quick Rule Presets",
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.Bold
                         )
                     )
                 }
                 Text(
-                    text = if (canApply) "Tap to restore" else "Locked",
+                    text = if (hasAllFilters) "Tap to apply" else "Tap preset to unlock filters",
                     style = MaterialTheme.typography.labelSmall.copy(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 10.sp
@@ -1560,25 +1670,21 @@ private fun QuickPresetsBar(
                 PresetChip(
                     name = "Peak Hours",
                     onClick = { onApplyPreset("peak") },
-                    enabled = canApply,
                     modifier = Modifier.weight(1f)
                 )
                 PresetChip(
                     name = "Short Trips",
                     onClick = { onApplyPreset("short") },
-                    enabled = canApply,
                     modifier = Modifier.weight(1f)
                 )
                 PresetChip(
                     name = "High Value",
                     onClick = { onApplyPreset("high") },
-                    enabled = canApply,
                     modifier = Modifier.weight(1f)
                 )
                 PresetChip(
                     name = "Default",
                     onClick = { onApplyPreset("default") },
-                    enabled = canApply,
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -1590,12 +1696,10 @@ private fun QuickPresetsBar(
 private fun PresetChip(
     name: String,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true
+    modifier: Modifier = Modifier
 ) {
     OutlinedButton(
         onClick = onClick,
-        enabled = enabled,
         shape = RoundedCornerShape(10.dp),
         contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
         modifier = modifier.heightIn(min = 48.dp)

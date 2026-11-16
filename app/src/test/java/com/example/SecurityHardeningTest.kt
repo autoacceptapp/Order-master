@@ -623,5 +623,122 @@ class SecurityHardeningTest {
         assertTrue("Non-12-digit UTR must fail before hitting Firestore", badUtrRes.isFailure)
         assertTrue(badUtrRes.exceptionOrNull() is IllegalArgumentException)
     }
+
+    @Test
+    fun defaultFreemiumUserStartsLockedWithZeroPhantomTimers() {
+        AppSettings.init(context)
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+        LicenseManager.forceReleaseLoadingState()
+
+        assertFalse(LicenseManager.isAccessGranted())
+        assertTrue(LicenseManager.unlockedFeatures.value.isEmpty())
+        FeatureIds.ALL_FEATURES.forEach { feature ->
+            assertEquals(
+                "Default freemium user must have 0ms remaining on ${feature.id}",
+                0L,
+                LicenseManager.getFeatureRemainingTimeMs(feature.id)
+            )
+            assertFalse(
+                "Feature ${feature.id} must be locked by default",
+                LicenseManager.isFeatureUnlocked(feature.id)
+            )
+        }
+
+        val state = AppSettings.settingsState.value
+        assertFalse(state.isAutoAcceptEnabled)
+        assertFalse(state.isMinFareEnabled)
+        assertFalse(state.isMaxFareEnabled)
+        assertFalse(state.isMaxPickupDistanceEnabled)
+        assertFalse(state.isMaxDropDistanceEnabled)
+        assertFalse(state.isMinPerKmRateEnabled)
+        assertFalse(state.isDestinationBlacklistEnabled)
+        assertFalse(state.isVoiceAnnouncerEnabled)
+        assertFalse(state.isFloatingOverlayEnabled)
+        assertFalse(state.isAutoClickEnabled)
+        assertFalse(AppSettings.hasActiveEvaluationFilter(context))
+    }
+
+    @Test
+    fun featureRemainingTimeZeroesOnTamperOrAdminLock() {
+        AppSettings.init(context)
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.forceReleaseLoadingState()
+
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(FeatureIds.MIN_FARE to futureExpiry)
+        )
+        assertTrue(LicenseManager.getFeatureRemainingTimeMs(FeatureIds.MIN_FARE) > 0L)
+
+        // Clock rollback tampering must immediately zero remaining time
+        LicenseManager.setLastServerSyncForTesting(
+            elapsedMs = SystemClock.elapsedRealtime() + 3_600_000L,
+            wallClockMs = System.currentTimeMillis() + 3_600_000L
+        )
+        assertEquals(0L, LicenseManager.getFeatureRemainingTimeMs(FeatureIds.MIN_FARE))
+
+        // Clear tampering prefs and re-verify Admin lock zeroes remaining time
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.forceReleaseLoadingState()
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(FeatureIds.MIN_FARE to futureExpiry),
+            locked = setOf(FeatureIds.MIN_FARE)
+        )
+        assertEquals(0L, LicenseManager.getFeatureRemainingTimeMs(FeatureIds.MIN_FARE))
+    }
+
+    @Test
+    fun autoClickAloneWithoutEvaluationFilterCannotEnableAutoAccept() {
+        AppSettings.init(context)
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+        LicenseManager.forceReleaseLoadingState()
+
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(FeatureIds.AUTO_CLICK to futureExpiry)
+        )
+
+        assertFalse(
+            "AUTO_CLICK without any evaluation filter unlocked must NOT grant auto-accept capability",
+            LicenseManager.hasAnyAutoAcceptCapability()
+        )
+        AppSettings.setAutoAcceptEnabled(context, true)
+        assertFalse(
+            "Master auto-accept must stay OFF until at least 1 evaluation filter or Pro Pass is active",
+            AppSettings.isAutoAcceptEnabled(context)
+        )
+        assertFalse(AppSettings.settingsState.value.isAutoClickEnabled)
+    }
+
+    @Test
+    fun lockedLocalPrefsTogglesCannotLeakIntoEffectiveSettingsState() {
+        AppSettings.init(context)
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+        LicenseManager.forceReleaseLoadingState()
+
+        // Simulate stale/tampered booleans written into user filter SharedPreferences while in Free Mode
+        context.getSharedPreferences(AppSettings.USER_FILTER_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("fkey_min_fare_enabled", true)
+            .putBoolean("fkey_max_fare_enabled", true)
+            .putBoolean("fkey_auto_accept_enabled", true)
+            .putBoolean("fkey_auto_click_enabled", true)
+            .commit()
+
+        AppSettings.applyFirestoreSnapshotForTest(context, emptyMap())
+
+        assertFalse(AppSettings.isMinFareEnabled(context))
+        assertFalse(AppSettings.isMaxFareEnabled(context))
+        assertFalse(AppSettings.isAutoAcceptEnabled(context))
+        assertFalse(AppSettings.isAutoClickEnabled(context))
+        assertFalse(AppSettings.settingsState.value.isMinFareEnabled)
+        assertFalse(AppSettings.settingsState.value.isMaxFareEnabled)
+        assertFalse(AppSettings.settingsState.value.isAutoAcceptEnabled)
+        assertFalse(AppSettings.settingsState.value.isAutoClickEnabled)
+        assertFalse(AppSettings.hasActiveEvaluationFilter(context))
+    }
 }
 

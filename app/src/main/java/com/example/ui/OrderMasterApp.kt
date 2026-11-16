@@ -566,7 +566,10 @@ fun OrderMasterApp(
             }
 
             composable(Screen.Filters.route) {
-                FilterSettingsScreen(viewModel = viewModel)
+                FilterSettingsScreen(
+                    viewModel = viewModel,
+                    onNavigateToSubscription = { navController.navigate(Screen.Subscription.route) }
+                )
             }
 
             composable(Screen.History.route) {

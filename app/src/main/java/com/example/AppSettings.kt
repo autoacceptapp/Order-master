@@ -438,6 +438,56 @@ object AppSettings {
     @Volatile
     private var appContextRef: Context? = null
 
+    // Raw user toggle preferences kept in memory so effective exposed StateFlows can strictly mask locked features
+    @Volatile private var rawMinFareEnabled: Boolean = DEFAULT_MIN_FARE_ENABLED
+    @Volatile private var rawMaxFareEnabled: Boolean = DEFAULT_MAX_FARE_ENABLED
+    @Volatile private var rawMaxPickupDistEnabled: Boolean = DEFAULT_MAX_PICKUP_DIST_ENABLED
+    @Volatile private var rawMaxDropDistEnabled: Boolean = DEFAULT_MAX_DROP_DIST_ENABLED
+    @Volatile private var rawMinPerKmRateEnabled: Boolean = DEFAULT_MIN_PER_KM_RATE_ENABLED
+    @Volatile private var rawBlacklistEnabled: Boolean = DEFAULT_DESTINATION_BLACKLIST_ENABLED
+    @Volatile private var rawVoiceEnabled: Boolean = DEFAULT_VOICE_ANNOUNCER_ENABLED
+    @Volatile private var rawOverlayEnabled: Boolean = DEFAULT_FLOATING_OVERLAY_ENABLED
+    @Volatile private var rawAutoClickEnabled: Boolean = DEFAULT_AUTO_CLICK_ENABLED
+
+    fun publishEffectiveSettings(context: Context? = appContextRef) {
+        val ctx = context ?: appContextRef
+        val securityClean = !LicenseManager.isClockTamperingDetected(ctx) &&
+            !LicenseManager.isBannedFlow.value &&
+            (ctx == null || !DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx))
+        val serviceOnline = if (ctx != null) LicenseManager.isServiceActive(ctx) else LicenseManager.isServiceActive()
+        val hasCapability = securityClean && LicenseManager.hasAnyAutoAcceptCapability()
+
+        val effAutoAccept = serviceOnline && hasCapability && autoAcceptEnabled
+        val effMinFare = rawMinFareEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)
+        val effMaxFare = rawMaxFareEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)
+        val effPickup = rawMaxPickupDistEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)
+        val effDrop = rawMaxDropDistEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)
+        val effRate = rawMinPerKmRateEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)
+        val effBlacklist = rawBlacklistEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
+        val effVoice = rawVoiceEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE)
+        val effOverlay = rawOverlayEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)
+        val effAutoClick = rawAutoClickEnabled && hasCapability
+
+        _isMinFareEnabledFlow.value = effMinFare
+        _isMaxFareEnabledFlow.value = effMaxFare
+        _isFloatingOverlayEnabledFlow.value = effOverlay
+        _isVoiceAnnouncerEnabledFlow.value = effVoice
+
+        val current = _settingsState.value
+        _settingsState.value = current.copy(
+            isAutoAcceptEnabled = effAutoAccept,
+            isMinFareEnabled = effMinFare,
+            isMaxFareEnabled = effMaxFare,
+            isMaxPickupDistanceEnabled = effPickup,
+            isMaxDropDistanceEnabled = effDrop,
+            isMinPerKmRateEnabled = effRate,
+            isDestinationBlacklistEnabled = effBlacklist,
+            isVoiceAnnouncerEnabled = effVoice,
+            isFloatingOverlayEnabled = effOverlay,
+            isAutoClickEnabled = effAutoClick
+        )
+    }
+
     private fun getPrefs(context: Context): SharedPreferences {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
@@ -523,33 +573,30 @@ object AppSettings {
         minCurrencyThreshold = minFareVal.toDouble()
         maxCurrencyThreshold = maxFareVal.toDouble()
 
+        rawMinFareEnabled = minFareOn
+        rawMaxFareEnabled = maxFareOn
+        rawMaxPickupDistEnabled = maxPickupOn
+        rawMaxDropDistEnabled = maxDropOn
+        rawMinPerKmRateEnabled = minRateOn
+        rawBlacklistEnabled = blacklistOn
+        rawVoiceEnabled = voiceOn
+        rawOverlayEnabled = overlayOn
+        rawAutoClickEnabled = autoClickOn
+
         _minFareFlow.value = minFareVal
-        _isMinFareEnabledFlow.value = minFareOn
         _maxFareFlow.value = maxFareVal
-        _isMaxFareEnabledFlow.value = maxFareOn
         _maxPickupDistanceFlow.value = maxPickupVal
-        _isFloatingOverlayEnabledFlow.value = overlayOn
-        _isVoiceAnnouncerEnabledFlow.value = voiceOn
 
         _settingsState.value = _settingsState.value.copy(
-            isAutoAcceptEnabled = userAutoAccept,
-            isMinFareEnabled = minFareOn,
             minFare = minFareVal,
-            isMaxFareEnabled = maxFareOn,
             maxFare = maxFareVal,
-            isMaxPickupDistanceEnabled = maxPickupOn,
             maxPickupDistance = maxPickupVal,
-            isMaxDropDistanceEnabled = maxDropOn,
             maxDropDistance = maxDropVal,
             clickDelayMs = clickDelay,
-            isMinPerKmRateEnabled = minRateOn,
             minPerKmRate = minRateVal,
-            isDestinationBlacklistEnabled = blacklistOn,
-            blockedLocations = blockedList,
-            isVoiceAnnouncerEnabled = voiceOn,
-            isFloatingOverlayEnabled = overlayOn,
-            isAutoClickEnabled = autoClickOn
+            blockedLocations = blockedList
         )
+        publishEffectiveSettings(context)
     }
 
     /**
@@ -629,16 +676,22 @@ object AppSettings {
             }
         }
 
+        LicenseManager.onEntitlementsChanged = {
+            publishEffectiveSettings(appContextRef)
+        }
+
         // Observe LicenseManager's authoritative server state in background without touching disk
         if (!isLicenseObserverStarted) {
             isLicenseObserverStarted = true
             appScope.launch {
                 combine(
                     LicenseManager.accessStatus,
+                    LicenseManager.unlockedFeatures,
+                    LicenseManager.lockedFeatures,
                     LicenseManager.isServiceActiveFlow
-                ) { status, isServiceActive ->
-                    Pair(status, isServiceActive)
-                }.collect { (status, isServiceActive) ->
+                ) { status, _, _, _ ->
+                    status
+                }.collect { status ->
                     when (status) {
                         is AccessStatus.PassActive -> {
                             if (status.passTier.isProPass && status.expiryTimestamp > 0L) {
@@ -666,14 +719,7 @@ object AppSettings {
                         }
                     }
 
-                    val effectiveEnabled = isServiceActive &&
-                        LicenseManager.isServiceActive(appCtx) &&
-                        !LicenseManager.isBannedFlow.value &&
-                        LicenseManager.hasAnyAutoAcceptCapability() &&
-                        autoAcceptEnabled
-                    if (_settingsState.value.isAutoAcceptEnabled != effectiveEnabled) {
-                        _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = effectiveEnabled)
-                    }
+                    publishEffectiveSettings(appCtx)
                     mainHandler.post {
                         syncOverlayService(appCtx)
                     }
@@ -897,13 +943,19 @@ object AppSettings {
         minCurrencyThreshold = finalMinFare.toDouble()
         maxCurrencyThreshold = finalMaxFare.toDouble()
 
+        rawMinFareEnabled = finalMinFareEnabled
+        rawMaxFareEnabled = finalMaxFareEnabled
+        rawMaxPickupDistEnabled = finalMaxPickupEnabled
+        rawMaxDropDistEnabled = finalMaxDropEnabled
+        rawMinPerKmRateEnabled = finalMinRateEnabled
+        rawBlacklistEnabled = finalBlacklistEnabled
+        rawVoiceEnabled = finalVoiceEnabled
+        rawOverlayEnabled = finalOverlayEnabled
+        rawAutoClickEnabled = finalAutoClickEnabled
+
         _minFareFlow.value = finalMinFare
-        _isMinFareEnabledFlow.value = finalMinFareEnabled
         _maxFareFlow.value = finalMaxFare
-        _isMaxFareEnabledFlow.value = finalMaxFareEnabled
         _maxPickupDistanceFlow.value = finalMaxPickup
-        _isFloatingOverlayEnabledFlow.value = finalOverlayEnabled
-        _isVoiceAnnouncerEnabledFlow.value = finalVoiceEnabled
         _activePassTypeFlow.value = passTypeVal
         val parsedPassTier = PassTier.fromId(passTypeVal)
         val isProPassType = parsedPassTier != null && parsedPassTier.isProPass
@@ -913,46 +965,24 @@ object AppSettings {
         _lockedFeaturesFlow.value = lockedFeaturesVal
         _isFirestoreSyncedFlow.value = true
 
-        val effectiveAutoAccept = if (context != null) {
-            !LicenseManager.isClockTamperingDetected(context) &&
-                LicenseManager.isServiceActive(context) &&
-                !LicenseManager.isBannedFlow.value &&
-                LicenseManager.hasAnyAutoAcceptCapability() &&
-                finalAutoAccept
-        } else {
-            !LicenseManager.isClockTamperingDetected() &&
-                !LicenseManager.isBannedFlow.value &&
-                LicenseManager.hasAnyAutoAcceptCapability() &&
-                finalAutoAccept
-        }
-
         _settingsState.value = current.copy(
-            isAutoAcceptEnabled = effectiveAutoAccept,
-            isMinFareEnabled = finalMinFareEnabled,
             minFare = finalMinFare,
-            isMaxFareEnabled = finalMaxFareEnabled,
             maxFare = finalMaxFare,
-            isMaxPickupDistanceEnabled = finalMaxPickupEnabled,
             maxPickupDistance = finalMaxPickup,
-            isMaxDropDistanceEnabled = finalMaxDropEnabled,
             maxDropDistance = finalMaxDrop,
             clickDelayMs = finalClickDelay,
-            isMinPerKmRateEnabled = finalMinRateEnabled,
             minPerKmRate = finalMinRate,
-            isDestinationBlacklistEnabled = finalBlacklistEnabled,
             blockedLocations = finalBlockedList,
-            isVoiceAnnouncerEnabled = finalVoiceEnabled,
-            isFloatingOverlayEnabled = finalOverlayEnabled,
-            isAutoClickEnabled = finalAutoClickEnabled,
             activePassType = passTypeVal,
             passExpiryTimestamp = passExpiryVal,
             unlockedFeatures = unlockedFeaturesVal,
             lockedFeatures = lockedFeaturesVal
         )
+        publishEffectiveSettings(context)
 
         Log.i(
             TAG,
-            "Firestore RAM sync: unlocked=${unlockedFeaturesVal.keys}, locked=$lockedFeaturesVal, pass=$passTypeVal, autoAccept=$effectiveAutoAccept"
+            "Firestore RAM sync: unlocked=${unlockedFeaturesVal.keys}, locked=$lockedFeaturesVal, pass=$passTypeVal, autoAccept=${_settingsState.value.isAutoAcceptEnabled}"
         )
 
         if (context != null) {
@@ -973,13 +1003,19 @@ object AppSettings {
         minCurrencyThreshold = RESTRICTED_MIN_FARE.toDouble()
         maxCurrencyThreshold = DEFAULT_MAX_FARE.toDouble()
 
+        rawMinFareEnabled = DEFAULT_MIN_FARE_ENABLED
+        rawMaxFareEnabled = DEFAULT_MAX_FARE_ENABLED
+        rawMaxPickupDistEnabled = DEFAULT_MAX_PICKUP_DIST_ENABLED
+        rawMaxDropDistEnabled = DEFAULT_MAX_DROP_DIST_ENABLED
+        rawMinPerKmRateEnabled = DEFAULT_MIN_PER_KM_RATE_ENABLED
+        rawBlacklistEnabled = DEFAULT_DESTINATION_BLACKLIST_ENABLED
+        rawVoiceEnabled = DEFAULT_VOICE_ANNOUNCER_ENABLED
+        rawOverlayEnabled = DEFAULT_FLOATING_OVERLAY_ENABLED
+        rawAutoClickEnabled = DEFAULT_AUTO_CLICK_ENABLED
+
         _minFareFlow.value = RESTRICTED_MIN_FARE
-        _isMinFareEnabledFlow.value = DEFAULT_MIN_FARE_ENABLED
         _maxFareFlow.value = DEFAULT_MAX_FARE
-        _isMaxFareEnabledFlow.value = DEFAULT_MAX_FARE_ENABLED
         _maxPickupDistanceFlow.value = RESTRICTED_MAX_PICKUP_DISTANCE
-        _isFloatingOverlayEnabledFlow.value = DEFAULT_FLOATING_OVERLAY_ENABLED
-        _isVoiceAnnouncerEnabledFlow.value = DEFAULT_VOICE_ANNOUNCER_ENABLED
         _activePassTypeFlow.value = null
         _passExpiryTimestampFlow.value = 0L
         _isPassActiveFlow.value = false
@@ -988,28 +1024,19 @@ object AppSettings {
 
         val current = _settingsState.value
         _settingsState.value = current.copy(
-            isAutoAcceptEnabled = RESTRICTED_AUTO_ACCEPT_ENABLED,
-            isMinFareEnabled = DEFAULT_MIN_FARE_ENABLED,
             minFare = RESTRICTED_MIN_FARE,
-            isMaxFareEnabled = DEFAULT_MAX_FARE_ENABLED,
             maxFare = DEFAULT_MAX_FARE,
-            isMaxPickupDistanceEnabled = DEFAULT_MAX_PICKUP_DIST_ENABLED,
             maxPickupDistance = RESTRICTED_MAX_PICKUP_DISTANCE,
-            isMaxDropDistanceEnabled = DEFAULT_MAX_DROP_DIST_ENABLED,
             maxDropDistance = DEFAULT_MAX_DROP_DISTANCE,
             clickDelayMs = DEFAULT_CLICK_DELAY_MS,
-            isMinPerKmRateEnabled = DEFAULT_MIN_PER_KM_RATE_ENABLED,
             minPerKmRate = DEFAULT_MIN_PER_KM_RATE,
-            isDestinationBlacklistEnabled = DEFAULT_DESTINATION_BLACKLIST_ENABLED,
             blockedLocations = emptyList(),
-            isVoiceAnnouncerEnabled = DEFAULT_VOICE_ANNOUNCER_ENABLED,
-            isFloatingOverlayEnabled = DEFAULT_FLOATING_OVERLAY_ENABLED,
-            isAutoClickEnabled = DEFAULT_AUTO_CLICK_ENABLED,
             activePassType = null,
             passExpiryTimestamp = 0L,
             unlockedFeatures = emptyMap(),
             lockedFeatures = emptySet()
         )
+        publishEffectiveSettings(context)
 
         if (context != null) {
             mainHandler.post {
@@ -1091,6 +1118,7 @@ object AppSettings {
         } catch (e: Exception) {
             Log.w(TAG, "Firebase sign out error: ${e.message}")
         }
+        LicenseManager.onUserAuthChanged(null, null)
         updateUserAuthFromFirebase(context, null)
     }
 
@@ -1296,7 +1324,7 @@ object AppSettings {
 
     fun setAutoAcceptEnabled(context: Context, enabled: Boolean) {
         if (enabled) {
-            if (DeviceUtils.isRuntimeHookOrDebuggerDetected(context)) {
+            if (DeviceUtils.isRuntimeHookOrDebuggerDetected(context) || LicenseManager.isClockTamperingDetected(context)) {
                 showToast(context, "Security check failed")
                 return
             }
@@ -1304,80 +1332,78 @@ object AppSettings {
                 showToast(context, "Service offline or account restricted by Admin")
                 return
             }
+            if (!LicenseManager.hasAnyAutoAcceptCapability()) {
+                showToast(context, "Unlock at least 1 filter with Points or activate a Pro Pass")
+                return
+            }
         }
         autoAcceptEnabled = enabled
-        _settingsState.value = _settingsState.value.copy(isAutoAcceptEnabled = enabled)
+        publishEffectiveSettings(context)
         persistUserFilterPref(context, FKEY_AUTO_ACCEPT) { putBoolean(FKEY_AUTO_ACCEPT, enabled) }
         syncOverlayService(context)
     }
 
     fun isVoiceAnnouncerEnabled(context: Context): Boolean =
-        _settingsState.value.isVoiceAnnouncerEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE)
+        rawVoiceEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE)
 
     fun setVoiceAnnouncerEnabled(context: Context, enabled: Boolean) {
         if (enabled && !showFeatureLockedFeedback(context, FeatureIds.TTS_VOICE, "Voice Announcements")) return
-        _isVoiceAnnouncerEnabledFlow.value = enabled
-        _settingsState.value = _settingsState.value.copy(isVoiceAnnouncerEnabled = enabled)
+        rawVoiceEnabled = enabled
+        publishEffectiveSettings(context)
         persistUserFilterPref(context, FKEY_VOICE_ENABLED) { putBoolean(FKEY_VOICE_ENABLED, enabled) }
     }
 
     fun isMinFareEnabled(context: Context): Boolean =
-        _isMinFareEnabledFlow.value && LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)
+        rawMinFareEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)
 
     fun setMinFareEnabled(context: Context, enabled: Boolean) {
         if (enabled && !showFeatureLockedFeedback(context, FeatureIds.MIN_FARE, "Minimum Fare Filter")) return
-        _isMinFareEnabledFlow.value = enabled
-        if (enabled && _isMaxFareEnabledFlow.value && _minFareFlow.value > _maxFareFlow.value) {
+        rawMinFareEnabled = enabled
+        if (enabled && rawMaxFareEnabled && _minFareFlow.value > _maxFareFlow.value) {
             val clampedMin = validateMinFare(_minFareFlow.value, _maxFareFlow.value)
             minCurrencyThreshold = clampedMin.toDouble()
             _minFareFlow.value = clampedMin
-            _settingsState.value = _settingsState.value.copy(
-                isMinFareEnabled = true,
-                minFare = clampedMin
-            )
+            _settingsState.value = _settingsState.value.copy(minFare = clampedMin)
             persistUserFilterPref(context, FKEY_MIN_FARE) { putFloat(FKEY_MIN_FARE, clampedMin) }
-        } else {
-            _settingsState.value = _settingsState.value.copy(isMinFareEnabled = enabled)
         }
+        publishEffectiveSettings(context)
         persistUserFilterPref(context, FKEY_MIN_FARE_ENABLED) { putBoolean(FKEY_MIN_FARE_ENABLED, enabled) }
     }
 
     fun isMaxFareEnabled(context: Context): Boolean =
-        _isMaxFareEnabledFlow.value && LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)
+        rawMaxFareEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)
 
     fun setMaxFareEnabled(context: Context, enabled: Boolean) {
         if (enabled && !showFeatureLockedFeedback(context, FeatureIds.MAX_FARE, "Maximum Fare Filter")) return
-        _isMaxFareEnabledFlow.value = enabled
-        if (enabled && _isMinFareEnabledFlow.value && _maxFareFlow.value < _minFareFlow.value) {
+        rawMaxFareEnabled = enabled
+        if (enabled && rawMinFareEnabled && _maxFareFlow.value < _minFareFlow.value) {
             val clampedMax = validateMaxFare(_maxFareFlow.value, _minFareFlow.value)
             maxCurrencyThreshold = clampedMax.toDouble()
             _maxFareFlow.value = clampedMax
-            _settingsState.value = _settingsState.value.copy(
-                isMaxFareEnabled = true,
-                maxFare = clampedMax
-            )
+            _settingsState.value = _settingsState.value.copy(maxFare = clampedMax)
             persistUserFilterPref(context, FKEY_MAX_FARE) { putFloat(FKEY_MAX_FARE, clampedMax) }
-        } else {
-            _settingsState.value = _settingsState.value.copy(isMaxFareEnabled = enabled)
         }
+        publishEffectiveSettings(context)
         persistUserFilterPref(context, FKEY_MAX_FARE_ENABLED) { putBoolean(FKEY_MAX_FARE_ENABLED, enabled) }
     }
 
     fun isMaxPickupDistanceEnabled(context: Context): Boolean =
-        _settingsState.value.isMaxPickupDistanceEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)
+        rawMaxPickupDistEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)
 
     fun setMaxPickupDistanceEnabled(context: Context, enabled: Boolean) {
         if (enabled && !showFeatureLockedFeedback(context, FeatureIds.MAX_PICKUP_DISTANCE, "Pickup Distance Filter")) return
-        _settingsState.value = _settingsState.value.copy(isMaxPickupDistanceEnabled = enabled)
+        rawMaxPickupDistEnabled = enabled
+        publishEffectiveSettings(context)
         persistUserFilterPref(context, FKEY_MAX_PICKUP_ENABLED) { putBoolean(FKEY_MAX_PICKUP_ENABLED, enabled) }
     }
 
     fun isMaxDropDistanceEnabled(context: Context): Boolean =
-        _settingsState.value.isMaxDropDistanceEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)
+        rawMaxDropDistEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)
 
     fun setMaxDropDistanceEnabled(context: Context, enabled: Boolean) {
         if (enabled && !showFeatureLockedFeedback(context, FeatureIds.MAX_DROP_DISTANCE, "Drop Distance Filter")) return
-        _settingsState.value = _settingsState.value.copy(isMaxDropDistanceEnabled = enabled)
+        rawMaxDropDistEnabled = enabled
+        publishEffectiveSettings(context)
         persistUserFilterPref(context, FKEY_MAX_DROP_ENABLED) { putBoolean(FKEY_MAX_DROP_ENABLED, enabled) }
     }
 
@@ -1391,11 +1417,12 @@ object AppSettings {
     }
 
     fun isMinPerKmRateEnabled(context: Context): Boolean =
-        _settingsState.value.isMinPerKmRateEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)
+        rawMinPerKmRateEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)
 
     fun setMinPerKmRateEnabled(context: Context, enabled: Boolean) {
         if (enabled && !showFeatureLockedFeedback(context, FeatureIds.MIN_PER_KM_RATE, "Minimum Per-KM Filter")) return
-        _settingsState.value = _settingsState.value.copy(isMinPerKmRateEnabled = enabled)
+        rawMinPerKmRateEnabled = enabled
+        publishEffectiveSettings(context)
         persistUserFilterPref(context, FKEY_MIN_RATE_ENABLED) { putBoolean(FKEY_MIN_RATE_ENABLED, enabled) }
     }
 
@@ -1409,11 +1436,12 @@ object AppSettings {
     }
 
     fun isDestinationBlacklistEnabled(context: Context): Boolean =
-        _settingsState.value.isDestinationBlacklistEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
+        rawBlacklistEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
 
     fun setDestinationBlacklistEnabled(context: Context, enabled: Boolean) {
         if (enabled && !showFeatureLockedFeedback(context, FeatureIds.DESTINATION_BLACKLIST, "Destination Blacklist")) return
-        _settingsState.value = _settingsState.value.copy(isDestinationBlacklistEnabled = enabled)
+        rawBlacklistEnabled = enabled
+        publishEffectiveSettings(context)
         persistUserFilterPref(context, FKEY_BLACKLIST_ENABLED) { putBoolean(FKEY_BLACKLIST_ENABLED, enabled) }
     }
 
@@ -1443,18 +1471,18 @@ object AppSettings {
     }
 
     fun isFloatingOverlayEnabled(context: Context): Boolean =
-        _settingsState.value.isFloatingOverlayEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)
+        rawOverlayEnabled && LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)
 
     fun setFloatingOverlayEnabled(context: Context, enabled: Boolean) {
         if (enabled && !showFeatureLockedFeedback(context, FeatureIds.FLOATING_OVERLAY, "Floating Overlay")) return
-        _isFloatingOverlayEnabledFlow.value = enabled
-        _settingsState.value = _settingsState.value.copy(isFloatingOverlayEnabled = enabled)
+        rawOverlayEnabled = enabled
+        publishEffectiveSettings(context)
         persistUserFilterPref(context, FKEY_OVERLAY_ENABLED) { putBoolean(FKEY_OVERLAY_ENABLED, enabled) }
         syncOverlayService(context)
     }
 
     fun isAutoClickEnabled(context: Context): Boolean =
-        _settingsState.value.isAutoClickEnabled && LicenseManager.hasAnyAutoAcceptCapability()
+        rawAutoClickEnabled && LicenseManager.hasAnyAutoAcceptCapability()
 
     fun setAutoClickEnabled(context: Context, enabled: Boolean) {
         if (enabled) {
@@ -1467,7 +1495,8 @@ object AppSettings {
                 return
             }
         }
-        _settingsState.value = _settingsState.value.copy(isAutoClickEnabled = enabled)
+        rawAutoClickEnabled = enabled
+        publishEffectiveSettings(context)
         persistUserFilterPref(context, FKEY_AUTO_CLICK_ENABLED) { putBoolean(FKEY_AUTO_CLICK_ENABLED, enabled) }
     }
 
@@ -1475,6 +1504,15 @@ object AppSettings {
         val next = !isAutoClickEnabled(context)
         setAutoClickEnabled(context, next)
         return isAutoClickEnabled(context)
+    }
+
+    fun hasActiveEvaluationFilter(context: Context): Boolean {
+        return isMinFareEnabled(context) ||
+            isMaxFareEnabled(context) ||
+            isMaxPickupDistanceEnabled(context) ||
+            isMaxDropDistanceEnabled(context) ||
+            isMinPerKmRateEnabled(context) ||
+            isDestinationBlacklistEnabled(context)
     }
 
     // --- Last Accepted Fare Communication ---
@@ -1506,80 +1544,117 @@ object AppSettings {
         }
     }
 
-    fun applyPreset(context: Context, presetName: String) {
-        val minFareUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)
-        val maxFareUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)
-        val pickupUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)
-        val dropUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)
-        val rateUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)
-
-        if (!minFareUnlocked && !maxFareUnlocked && !pickupUnlocked && !dropUnlocked && !rateUnlocked) {
-            showToast(context, "Unlock filters or activate Pro Pass to apply presets")
-            return
+    fun getRequiredFeaturesForPreset(presetName: String): Set<String> {
+        return when (presetName.trim().lowercase(Locale.ROOT)) {
+            "peak" -> setOf(
+                FeatureIds.MIN_FARE,
+                FeatureIds.MAX_PICKUP_DISTANCE,
+                FeatureIds.MAX_DROP_DISTANCE,
+                FeatureIds.MIN_PER_KM_RATE
+            )
+            "short" -> setOf(
+                FeatureIds.MIN_FARE,
+                FeatureIds.MAX_FARE,
+                FeatureIds.MAX_PICKUP_DISTANCE,
+                FeatureIds.MAX_DROP_DISTANCE
+            )
+            "high" -> setOf(
+                FeatureIds.MIN_FARE,
+                FeatureIds.MAX_PICKUP_DISTANCE,
+                FeatureIds.MIN_PER_KM_RATE
+            )
+            else -> setOf(
+                FeatureIds.MIN_FARE,
+                FeatureIds.MAX_FARE,
+                FeatureIds.MAX_PICKUP_DISTANCE,
+                FeatureIds.MAX_DROP_DISTANCE,
+                FeatureIds.MIN_PER_KM_RATE
+            )
         }
+    }
 
-        val updatedLabels = mutableListOf<String>()
-        val lockedLabels = mutableListOf<String>()
-        if (minFareUnlocked) updatedLabels.add("Min Fare") else lockedLabels.add("Min Fare")
-        if (maxFareUnlocked) updatedLabels.add("Max Fare") else lockedLabels.add("Max Fare")
-        if (pickupUnlocked) updatedLabels.add("Pickup Distance") else lockedLabels.add("Pickup Distance")
-        if (dropUnlocked) updatedLabels.add("Drop Distance") else lockedLabels.add("Drop Distance")
-        if (rateUnlocked) updatedLabels.add("Per-KM Rate") else lockedLabels.add("Per-KM Rate")
+    fun getMissingFeaturesForPreset(presetName: String): List<String> {
+        return getRequiredFeaturesForPreset(presetName).filterNot { LicenseManager.isFeatureUnlocked(it) }
+    }
+
+    fun applyPreset(context: Context, presetName: String): Boolean {
+        val required = getRequiredFeaturesForPreset(presetName)
+        val missing = required.filterNot { LicenseManager.isFeatureUnlocked(it) }
+        if (missing.isNotEmpty()) {
+            val adminBlocked = missing.filter { LicenseManager.isFeatureLockedByAdmin(it) }
+            val msg = if (adminBlocked.isNotEmpty()) {
+                "Some preset filters are locked by Admin"
+            } else {
+                "Unlock all required filters (${missing.size} remaining) or activate Pro Pass to apply preset"
+            }
+            showToast(context, msg)
+            return false
+        }
 
         when (presetName.trim().lowercase(Locale.ROOT)) {
             "peak" -> {
-                if (minFareUnlocked) { setMinFareEnabled(context, true); setMinFare(context, 100f) }
-                if (maxFareUnlocked) { setMaxFareEnabled(context, false) }
-                if (pickupUnlocked) { setMaxPickupDistanceEnabled(context, true); setMaxPickupDistance(context, 1.5f) }
-                if (dropUnlocked) { setMaxDropDistanceEnabled(context, true); setMaxDropDistance(context, 8.0f) }
-                if (rateUnlocked) { setMinPerKmRateEnabled(context, true); setMinPerKmRate(context, 12.0f) }
+                setMinFareEnabled(context, true)
+                setMinFare(context, 100f)
+                if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)) setMaxFareEnabled(context, false)
+                setMaxPickupDistanceEnabled(context, true)
+                setMaxPickupDistance(context, 1.5f)
+                setMaxDropDistanceEnabled(context, true)
+                setMaxDropDistance(context, 8.0f)
+                setMinPerKmRateEnabled(context, true)
+                setMinPerKmRate(context, 12.0f)
             }
             "short" -> {
-                if (minFareUnlocked) { setMinFare(context, 40f); setMinFareEnabled(context, true) }
-                if (maxFareUnlocked) { setMaxFare(context, 250f); setMaxFareEnabled(context, true) }
-                if (pickupUnlocked) { setMaxPickupDistanceEnabled(context, true); setMaxPickupDistance(context, 1.0f) }
-                if (dropUnlocked) { setMaxDropDistanceEnabled(context, true); setMaxDropDistance(context, 4.0f) }
-                if (rateUnlocked) { setMinPerKmRateEnabled(context, false) }
+                if (LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)) setMinPerKmRateEnabled(context, false)
+                setMaxFare(context, 250f)
+                setMinFare(context, 40f)
+                setMinFareEnabled(context, true)
+                setMaxFareEnabled(context, true)
+                setMaxPickupDistanceEnabled(context, true)
+                setMaxPickupDistance(context, 1.0f)
+                setMaxDropDistanceEnabled(context, true)
+                setMaxDropDistance(context, 4.0f)
             }
             "high" -> {
-                if (minFareUnlocked) { setMinFareEnabled(context, true); setMinFare(context, 150f) }
-                if (maxFareUnlocked) { setMaxFareEnabled(context, false) }
-                if (pickupUnlocked) { setMaxPickupDistanceEnabled(context, true); setMaxPickupDistance(context, 3.0f) }
-                if (dropUnlocked) { setMaxDropDistanceEnabled(context, false) }
-                if (rateUnlocked) { setMinPerKmRateEnabled(context, true); setMinPerKmRate(context, 15.0f) }
+                if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)) setMaxFareEnabled(context, false)
+                if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)) setMaxDropDistanceEnabled(context, false)
+                setMinFareEnabled(context, true)
+                setMinFare(context, 150f)
+                setMaxPickupDistanceEnabled(context, true)
+                setMaxPickupDistance(context, 3.0f)
+                setMinPerKmRateEnabled(context, true)
+                setMinPerKmRate(context, 15.0f)
             }
             else -> { // "default"
-                if (minFareUnlocked) { setMinFareEnabled(context, true); setMinFare(context, DEFAULT_MIN_FARE) }
-                if (maxFareUnlocked) { setMaxFareEnabled(context, false); setMaxFare(context, DEFAULT_MAX_FARE) }
-                if (pickupUnlocked) { setMaxPickupDistanceEnabled(context, true); setMaxPickupDistance(context, DEFAULT_MAX_PICKUP_DISTANCE) }
-                if (dropUnlocked) { setMaxDropDistanceEnabled(context, false); setMaxDropDistance(context, DEFAULT_MAX_DROP_DISTANCE) }
-                if (rateUnlocked) { setMinPerKmRateEnabled(context, false); setMinPerKmRate(context, DEFAULT_MIN_PER_KM_RATE) }
+                setMinFare(context, DEFAULT_MIN_FARE)
+                setMaxFare(context, DEFAULT_MAX_FARE)
+                setMinFareEnabled(context, true)
+                setMaxFareEnabled(context, false)
+                setMaxPickupDistanceEnabled(context, true)
+                setMaxPickupDistance(context, DEFAULT_MAX_PICKUP_DISTANCE)
+                setMaxDropDistanceEnabled(context, false)
+                setMaxDropDistance(context, DEFAULT_MAX_DROP_DISTANCE)
+                setMinPerKmRateEnabled(context, false)
+                setMinPerKmRate(context, DEFAULT_MIN_PER_KM_RATE)
             }
         }
-
-        if (lockedLabels.isNotEmpty()) {
-            showToast(
-                context,
-                "Updated ${updatedLabels.joinToString(", ")}. Unlock ${lockedLabels.joinToString(", ")} to apply full preset."
-            )
-        }
+        return true
     }
 
     // --- Fare Range Validation Functions ---
 
     fun isValidMinFare(candidateMin: Float, currentMax: Float = _maxFareFlow.value): Boolean {
         return candidateMin in MIN_FARE_RANGE_START..MIN_FARE_RANGE_END &&
-            (!_isMaxFareEnabledFlow.value || candidateMin <= currentMax)
+            (!rawMaxFareEnabled || candidateMin <= currentMax)
     }
 
     fun isValidMaxFare(candidateMax: Float, currentMin: Float = _minFareFlow.value): Boolean {
         return candidateMax in MAX_FARE_RANGE_START..MAX_FARE_RANGE_END &&
-            (!_isMinFareEnabledFlow.value || candidateMax >= currentMin)
+            (!rawMinFareEnabled || candidateMax >= currentMin)
     }
 
     fun validateMinFare(value: Float, currentMax: Float = _maxFareFlow.value): Float {
         val clamped = value.coerceIn(MIN_FARE_RANGE_START, MIN_FARE_RANGE_END)
-        return if (_isMaxFareEnabledFlow.value && clamped > currentMax) {
+        return if (rawMaxFareEnabled && clamped > currentMax) {
             currentMax.coerceAtLeast(MIN_FARE_RANGE_START)
         } else {
             clamped
@@ -1588,7 +1663,7 @@ object AppSettings {
 
     fun validateMaxFare(value: Float, currentMin: Float = _minFareFlow.value): Float {
         val clamped = value.coerceIn(MAX_FARE_RANGE_START, MAX_FARE_RANGE_END)
-        return if (_isMinFareEnabledFlow.value && clamped < currentMin) {
+        return if (rawMinFareEnabled && clamped < currentMin) {
             currentMin.coerceAtMost(MAX_FARE_RANGE_END)
         } else {
             clamped

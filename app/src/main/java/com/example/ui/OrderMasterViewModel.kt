@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ActivityLogEntry
 import com.example.AppSettings
+import com.example.LicenseManager
 import com.example.LogSeverity
 import com.example.ParsedRideOffer
 import com.example.RideEvaluation
@@ -90,11 +91,20 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
         val app = getApplication<Application>()
         val nextState = !settingsState.value.isAutoAcceptEnabled
         AppSettings.setAutoAcceptEnabled(app, nextState)
+        val actualState = AppSettings.isAutoAcceptEnabled(app)
+        if (nextState && !actualState) {
+            AppSettings.addLog(
+                title = "Automation Locked",
+                message = "Unlock at least 1 filter with Points or activate a Pro Pass to enable Master Automation.",
+                severity = LogSeverity.WARNING
+            )
+            return
+        }
         AppSettings.addLog(
-            title = if (nextState) "Master Automation ACTIVE" else "Master Automation PAUSED",
-            message = if (nextState) "Accessibility listener active. Evaluating screen overlay cards."
+            title = if (actualState) "Master Automation ACTIVE" else "Master Automation PAUSED",
+            message = if (actualState) "Accessibility listener active. Evaluating screen overlay cards."
                      else "Screen overlay processing paused by captain.",
-            severity = if (nextState) LogSeverity.INFO else LogSeverity.WARNING
+            severity = if (actualState) LogSeverity.INFO else LogSeverity.WARNING
         )
     }
 
@@ -195,14 +205,17 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
         TTSManager.testAnnouncement(app)
     }
 
-    fun applyPreset(presetName: String) {
+    fun applyPreset(presetName: String): Boolean {
         val app = getApplication<Application>()
-        AppSettings.applyPreset(app, presetName)
-        AppSettings.addLog(
-            title = "Preset Applied: $presetName",
-            message = "All modular filter thresholds updated according to $presetName profile.",
-            severity = LogSeverity.INFO
-        )
+        val applied = AppSettings.applyPreset(app, presetName)
+        if (applied) {
+            AppSettings.addLog(
+                title = "Preset Applied: $presetName",
+                message = "All modular filter thresholds updated according to $presetName profile.",
+                severity = LogSeverity.INFO
+            )
+        }
+        return applied
     }
 
     // --- Order History Actions ---
@@ -256,7 +269,7 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
             )
         )
 
-        val evaluation = TextAnalysisEngine.evaluateRideOffer(
+        val rawEvaluation = TextAnalysisEngine.evaluateRideOffer(
             offer = parsedOffer,
             minFare = state.minFare,
             maxFare = state.maxFare,
@@ -272,6 +285,16 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
             blockedLocations = state.blockedLocations,
             isDestinationBlacklistEnabled = AppSettings.isDestinationBlacklistEnabled(app)
         )
+        val hasProOrTrial = LicenseManager.isAccessGranted()
+        val hasActiveEvalFilter = AppSettings.hasActiveEvaluationFilter(app)
+        val evaluation = if (!hasProOrTrial && !hasActiveEvalFilter) {
+            rawEvaluation.copy(
+                isAccepted = false,
+                decisionReason = "Free Mode: Unlock and enable at least 1 filter (or activate a Pro Pass) to evaluate rides."
+            )
+        } else {
+            rawEvaluation
+        }
 
         val logSeverity = if (evaluation.isAccepted) LogSeverity.MATCH_ACCEPTED else LogSeverity.REJECTED
         AppSettings.addLog(

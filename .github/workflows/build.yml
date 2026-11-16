@@ -76,11 +76,16 @@ jobs:
 
           # 2: Release Keystore
           CUSTOM_KEYSTORE="false"
-          if [ -n "${KEYSTORE_BASE64}" ]; then
+          CLEAN_KEYSTORE_B64="$(printf '%s' "${KEYSTORE_BASE64}" | tr -d '\r\n ')"
+          if [ -n "${CLEAN_KEYSTORE_B64}" ]; then
             echo "Decoding KEYSTORE_BASE64 into app/release.jks..."
-            printf '%s' "${KEYSTORE_BASE64}" | tr -d '\r\n ' | base64 -d > app/release.jks
-            CUSTOM_KEYSTORE="true"
-            echo "✅ app/release.jks decoded successfully ($(stat -c%s app/release.jks) bytes)."
+            if printf '%s' "${CLEAN_KEYSTORE_B64}" | base64 -d > app/release.jks && [ -s app/release.jks ]; then
+              CUSTOM_KEYSTORE="true"
+              echo "✅ app/release.jks decoded successfully ($(stat -c%s app/release.jks) bytes)."
+            else
+              echo "::error::KEYSTORE_BASE64 secret is set but could not be decoded into a valid keystore."
+              exit 1
+            fi
           elif [ -f "./debug.keystore.base64" ]; then
             echo "Restoring debug.keystore and configuring fallback release keystore..."
             tr -d '\r\n ' < ./debug.keystore.base64 | base64 -d > ./debug.keystore
@@ -145,6 +150,13 @@ jobs:
         run: |
           echo "=== Building Release APK ==="
 
+          # Strip accidental \r/\n from mobile copy-pasted secrets
+          KEYSTORE_PASSWORD="$(printf '%s' "${KEYSTORE_PASSWORD:-}" | tr -d '\r\n')"
+          KEY_ALIAS="$(printf '%s' "${KEY_ALIAS:-}" | tr -d '\r\n')"
+          KEY_PASSWORD="$(printf '%s' "${KEY_PASSWORD:-}" | tr -d '\r\n')"
+          FIREBASE_FALLBACK_API_KEY="$(printf '%s' "${FIREBASE_FALLBACK_API_KEY:-}" | tr -d '\r\n')"
+          export KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD FIREBASE_FALLBACK_API_KEY
+
           # Ensure fallback debug keystore is not unlocked with stale/unrelated secrets
           if [ "${CUSTOM_KEYSTORE}" != "true" ]; then
             echo "No KEYSTORE_BASE64 secret configured; using fallback debug keystore credentials."
@@ -161,18 +173,25 @@ jobs:
           if [ -f "app/release.jks" ]; then
             CHECK_PASS="${KEYSTORE_PASSWORD:-android}"
             CHECK_ALIAS="${KEY_ALIAS:-androiddebugkey}"
+            CHECK_KEY_PASS="${KEY_PASSWORD:-${CHECK_PASS}}"
             if ! keytool -list -keystore app/release.jks -storepass "${CHECK_PASS}" -alias "${CHECK_ALIAS}" >/dev/null 2>&1; then
-              echo "::error::Failed to unlock app/release.jks (alias: ${CHECK_ALIAS}). Verify that KEYSTORE_BASE64 matches KEYSTORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD in GitHub Secrets."
+              echo "::error::Failed to unlock app/release.jks (alias: ${CHECK_ALIAS}). Verify that KEYSTORE_BASE64 matches KEYSTORE_PASSWORD and KEY_ALIAS in GitHub Secrets."
               exit 1
             fi
+            if ! keytool -importkeystore -srckeystore app/release.jks -srcstorepass "${CHECK_PASS}" -srcalias "${CHECK_ALIAS}" -srckeypass "${CHECK_KEY_PASS}" -destkeystore /tmp/keycheck.p12 -deststoretype PKCS12 -deststorepass "check123" -noprompt >/dev/null 2>&1; then
+              rm -f /tmp/keycheck.p12
+              echo "::error::Keystore opened, but KEY_PASSWORD is incorrect for alias '${CHECK_ALIAS}'. Verify KEY_PASSWORD in GitHub Secrets."
+              exit 1
+            fi
+            rm -f /tmp/keycheck.p12
           fi
 
           if command -v gradle >/dev/null 2>&1; then
             echo "Using pre-installed Gradle CLI ($(gradle --version | head -n 3 | tr '\n' ' '))"
-            gradle clean assembleRelease --stacktrace --no-daemon --no-build-cache
+            gradle clean assembleRelease --stacktrace --no-daemon --no-build-cache --no-configuration-cache
           else
             echo "Falling back to Gradle Wrapper..."
-            ./gradlew clean assembleRelease --stacktrace --no-daemon --no-build-cache
+            ./gradlew clean assembleRelease --stacktrace --no-daemon --no-build-cache --no-configuration-cache
           fi
 
       # Step 9: Verify and Locate Generated APKs

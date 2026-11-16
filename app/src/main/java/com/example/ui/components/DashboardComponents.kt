@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Security
@@ -51,10 +52,12 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -75,6 +78,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ActivityLogEntry
 import com.example.AppSettings
+import com.example.FeatureIds
+import com.example.LicenseManager
 import com.example.LogSeverity
 import com.example.PermissionUtils
 import com.example.SettingsState
@@ -378,6 +383,26 @@ fun DecisionThresholdsCard(
     onDelayChanged: (Long) -> Unit
 ) {
     val focusManager = LocalFocusManager.current
+    val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
+    val lockedFeatures by LicenseManager.lockedFeatures.collectAsState()
+    val isMinFareUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) {
+        LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)
+    }
+    val isMaxFareUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) {
+        LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)
+    }
+    val isPickupUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) {
+        LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)
+    }
+    val isAutoClickUnlocked = remember(accessStatus, unlockedFeatures, lockedFeatures) {
+        LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK)
+    }
+    val hasAnyAutoCapability = remember(accessStatus, unlockedFeatures, lockedFeatures) {
+        LicenseManager.hasAnyAutoAcceptCapability()
+    }
+    val canAdjustBothFares = isMinFareUnlocked && isMaxFareUnlocked
+
     var minPriceInput by remember(settings.minFare) {
         mutableStateOf(settings.minFare.roundToInt().toString())
     }
@@ -412,6 +437,35 @@ fun DecisionThresholdsCard(
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                     color = MaterialTheme.colorScheme.onSurface
                 )
+            }
+
+            if (!isMinFareUnlocked || !isMaxFareUnlocked || !isPickupUnlocked) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Filters Locked",
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = "Unlock filters in the Filters tab with Points or activate a Pro Pass to customize locked thresholds.",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                        )
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -451,6 +505,7 @@ fun DecisionThresholdsCard(
             ) {
                 OutlinedTextField(
                     value = minPriceInput,
+                    enabled = isMinFareUnlocked,
                     onValueChange = { input ->
                         minPriceInput = input.filter { it.isDigit() }
                         minPriceInput.toFloatOrNull()?.let { newVal ->
@@ -500,6 +555,7 @@ fun DecisionThresholdsCard(
 
                 OutlinedTextField(
                     value = maxPriceInput,
+                    enabled = isMaxFareUnlocked,
                     onValueChange = { input ->
                         maxPriceInput = input.filter { it.isDigit() }
                         maxPriceInput.toFloatOrNull()?.let { newVal ->
@@ -558,6 +614,7 @@ fun DecisionThresholdsCard(
             val currentRange = clampedSliderMin..clampedSliderMax
             RangeSlider(
                 value = currentRange,
+                enabled = canAdjustBothFares,
                 onValueChange = { range ->
                     val newMin = range.start.roundToInt().toFloat().coerceIn(
                         AppSettings.MIN_FARE_RANGE_START,
@@ -603,10 +660,12 @@ fun DecisionThresholdsCard(
                 AppSettings.FARE_RANGE_PRESETS.forEach { (label, minVal, maxVal) ->
                     val clampedMin = AppSettings.validateMinFare(minVal, maxVal)
                     val clampedMax = AppSettings.validateMaxFare(maxVal, clampedMin)
-                    val isSelected = (settings.minFare.roundToInt() == clampedMin.roundToInt() &&
-                        settings.maxFare.roundToInt() == clampedMax.roundToInt())
+                    val isSelected = canAdjustBothFares &&
+                        settings.minFare.roundToInt() == clampedMin.roundToInt() &&
+                        settings.maxFare.roundToInt() == clampedMax.roundToInt()
                     FilterChip(
                         selected = isSelected,
+                        enabled = canAdjustBothFares,
                         onClick = {
                             if (clampedMin > settings.maxFare) {
                                 onMaxFareChanged(clampedMax)
@@ -670,6 +729,7 @@ fun DecisionThresholdsCard(
                         com.example.AppSettings.MIN_PICKUP_DISTANCE_KM,
                         com.example.AppSettings.MAX_PICKUP_DISTANCE_KM
                     ),
+                    enabled = isPickupUnlocked,
                     onValueChange = { newVal ->
                         val rounded = (Math.round(newVal * 10.0f) / 10.0f).coerceIn(
                             com.example.AppSettings.MIN_PICKUP_DISTANCE_KM,
@@ -690,6 +750,7 @@ fun DecisionThresholdsCard(
 
                 OutlinedTextField(
                     value = pickupDistanceInput,
+                    enabled = isPickupUnlocked,
                     onValueChange = { input ->
                         pickupDistanceInput = input
                         input.toFloatOrNull()?.let { parsed ->
@@ -714,9 +775,11 @@ fun DecisionThresholdsCard(
             ) {
                 val distancePresets = listOf(1.0f, 2.0f, 3.0f, 5.0f, 10.0f, 15.0f)
                 distancePresets.forEach { preset ->
-                    val isSelected = (String.format(Locale.US, "%.1f", settings.maxPickupDistance) == String.format(Locale.US, "%.1f", preset))
+                    val isSelected = isPickupUnlocked &&
+                        (String.format(Locale.US, "%.1f", settings.maxPickupDistance) == String.format(Locale.US, "%.1f", preset))
                     FilterChip(
                         selected = isSelected,
+                        enabled = isPickupUnlocked,
                         onClick = { onMaxDistanceChanged(preset) },
                         label = { Text("${preset} km", fontSize = 12.sp) },
                         colors = FilterChipDefaults.filterChipColors(
@@ -743,8 +806,10 @@ fun DecisionThresholdsCard(
             ) {
                 listOf(250L to "Fast (250ms)", 500L to "Safe (500ms)", 1000L to "1.0 sec", 1500L to "1.5 sec").forEach { (delay, label) ->
                     val isSelected = settings.clickDelayMs == delay
+                    val isDelayAllowed = isAutoClickUnlocked || (hasAnyAutoCapability && delay >= 1000L)
                     FilterChip(
                         selected = isSelected,
+                        enabled = isDelayAllowed,
                         onClick = { onDelayChanged(delay) },
                         label = { Text(label, fontSize = 11.sp) }
                     )
@@ -916,11 +981,27 @@ fun RideSimulatorCard(
         TextAnalysisEngine.parseRideOffer(offerInput)
     }
 
-    val evaluation = remember(parsedOffer, settings) {
-        TextAnalysisEngine.evaluateRideOffer(
+    val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
+    val lockedFeatures by LicenseManager.lockedFeatures.collectAsState()
+
+    val evaluation = remember(parsedOffer, settings, accessStatus, unlockedFeatures, lockedFeatures) {
+        val rawEval = TextAnalysisEngine.evaluateRideOffer(
             offer = parsedOffer,
             settings = settings
         )
+        val isProOrTrial = LicenseManager.isAccessGranted()
+        val hasActiveEvalFilter = settings.isMinFareEnabled || settings.isMaxFareEnabled ||
+            settings.isMaxPickupDistanceEnabled || settings.isMaxDropDistanceEnabled ||
+            settings.isMinPerKmRateEnabled || settings.isDestinationBlacklistEnabled
+        if (!isProOrTrial && !hasActiveEvalFilter) {
+            rawEval.copy(
+                isAccepted = false,
+                decisionReason = "Free Mode: Unlock and enable at least 1 filter (or activate a Pro Pass) to evaluate rides."
+            )
+        } else {
+            rawEval
+        }
     }
 
     Card(

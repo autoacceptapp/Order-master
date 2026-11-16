@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
@@ -8,6 +9,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,6 +48,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -63,6 +66,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -107,10 +111,12 @@ fun FareFilterCard(
     remainingTimeText: String? = null,
     pointsPerHour: Int = 10
 ) {
+    val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val currentOnValueChange by rememberUpdatedState(onValueChange)
     val currentOnToggle by rememberUpdatedState(onToggle)
     val currentOnValueChangeFinished by rememberUpdatedState(onValueChangeFinished)
+    val currentOnUnlockClick by rememberUpdatedState(onUnlockClick)
 
     // Local visual dragging state synced cleanly via LaunchedEffect to prevent remember(value) key desync
     var localSliderValue by remember {
@@ -153,11 +159,25 @@ fun FareFilterCard(
     }
 
     val effectivelyUnlocked = isUnlocked && !isAdminLocked
+    val handleLockedInteraction = {
+        if (isAdminLocked) {
+            Toast.makeText(context, "$title is locked by Admin", Toast.LENGTH_SHORT).show()
+        } else {
+            currentOnUnlockClick?.invoke()
+        }
+    }
 
     Card(
         modifier = modifier
             .fillMaxWidth()
             .testTag(testTag)
+            .then(
+                if (!effectivelyUnlocked) {
+                    Modifier.clickable { handleLockedInteraction() }
+                } else {
+                    Modifier
+                }
+            )
             .alpha(if (effectivelyUnlocked) 1f else 0.85f),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
@@ -347,18 +367,31 @@ fun FareFilterCard(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
-                Switch(
-                    checked = isEnabled && effectivelyUnlocked,
-                    onCheckedChange = if (effectivelyUnlocked) currentOnToggle else null,
-                    enabled = effectivelyUnlocked,
-                    modifier = Modifier.testTag("${testTag}_switch"),
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.White,
-                        checkedTrackColor = accentColor,
-                        uncheckedThumbColor = MaterialTheme.colorScheme.outline,
-                        uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                Box(
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .then(
+                            if (!effectivelyUnlocked) {
+                                Modifier.clickable { handleLockedInteraction() }
+                            } else {
+                                Modifier
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Switch(
+                        checked = isEnabled && effectivelyUnlocked,
+                        onCheckedChange = if (effectivelyUnlocked) currentOnToggle else null,
+                        enabled = effectivelyUnlocked,
+                        modifier = Modifier.testTag("${testTag}_switch"),
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = accentColor,
+                            uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+                            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
                     )
-                )
+                }
             }
 
             // =========================================================================

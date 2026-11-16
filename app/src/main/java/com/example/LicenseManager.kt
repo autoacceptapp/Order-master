@@ -500,6 +500,9 @@ object LicenseManager {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     @Volatile
+    internal var onEntitlementsChanged: (() -> Unit)? = null
+
+    @Volatile
     private var profileUpdateDispatchedHash: String? = null
     private val profileUpdateLock = Any()
 
@@ -683,6 +686,28 @@ object LicenseManager {
         return false
     }
 
+    private fun clearUserSessionStateLocked(preserveTrialUsed: Boolean = false) {
+        serverPassTier = null
+        serverPassExpiry = 0L
+        serverRemoveAdsExpiry = 0L
+        serverTrialClaimed = 0L
+        serverTrialExpiry = 0L
+        if (!preserveTrialUsed) {
+            serverTrialUsed = false
+        }
+        docInitAttempted.set(false)
+        _pointsBalance.value = 0
+        _hasClaimedReferral.value = false
+        _referralCount.value = 0
+        _referralCode.value = null
+        _removeAdsExpiryMs.value = 0L
+        _unlockedFeatures.value = emptyMap()
+        _lockedFeatures.value = emptySet()
+        _activePassInfo.value = null
+        _trialInfo.value = null
+        _currentFolder.value = "free_mod"
+    }
+
     /**
      * Enforces immediate invalidation of local license cache and triggers cloud re-sync
      * when clock tampering or expired grace period is detected.
@@ -690,12 +715,7 @@ object LicenseManager {
     fun invalidateAndForceCloudResync(context: Context, reason: String) {
         Log.w(TAG, "INVALIDATING LICENSE CACHE: $reason. Triggering mandatory cloud re-sync.")
         clearLicensingCache(context)
-        serverPassTier = null
-        serverPassExpiry = 0L
-        serverRemoveAdsExpiry = 0L
-        _removeAdsExpiryMs.value = 0L
-        serverTrialClaimed = 0L
-        serverTrialExpiry = 0L
+        clearUserSessionStateLocked(preserveTrialUsed = true)
         serverTrialUsed = true // Block free trial exploitation on tampered environments
 
         _accessStatus.value = AccessStatus.Expired(
@@ -1219,20 +1239,26 @@ object LicenseManager {
         scope.launch {
             val ctx = appContext ?: return@launch
             val customUserId = resolveUserKey(ctx)
+            val isSignedOut = userUid.isNullOrBlank()
             val alreadyAttached = synchronized(authLock) {
-                if (activeUserDocUid == customUserId && userDocListener != null && currentUserKey == customUserId) {
+                if (!isSignedOut && activeUserDocUid == customUserId && userDocListener != null && currentUserKey == customUserId) {
                     true
                 } else {
+                    if (isSignedOut) {
+                        userDocListener?.remove()
+                        userDocListener = null
+                    }
                     currentUserKey = customUserId
                     activeUserDocUid = null
-                    docInitAttempted.set(false)
                     hasLoadedLicensing = false
-                    serverRemoveAdsExpiry = 0L
-                    _removeAdsExpiryMs.value = 0L
-                    _unlockedFeatures.value = emptyMap()
+                    clearUserSessionStateLocked()
                     _accessStatus.value = AccessStatus.Loading
                     false
                 }
+            }
+            if (isSignedOut) {
+                clearLicensingCache(ctx)
+                hasLoadedTrial = false
             }
             if (!alreadyAttached) {
                 profileUpdateDispatchedHash = null
@@ -1577,6 +1603,7 @@ object LicenseManager {
             }
             if (currentUser == null || currentUser.uid.isBlank()) {
                 Log.d(TAG, "No signed-in FirebaseAuth user; skipping users/{uid} cloud sync until login.")
+                clearUserSessionStateLocked()
                 hasLoadedTrial = true
                 hasLoadedLicensing = true
                 refreshAccessStatus()
@@ -1708,6 +1735,7 @@ object LicenseManager {
                 userDocListener = null
                 activeUserDocUid = null
             }
+            clearUserSessionStateLocked()
             hasLoadedTrial = true
             hasLoadedLicensing = true
             refreshAccessStatus()
@@ -2020,6 +2048,11 @@ object LicenseManager {
      * ZERO local storage reads.
      */
     fun refreshAccessStatus(context: Context? = null) {
+        recomputeAccessStatus(context)
+        onEntitlementsChanged?.invoke()
+    }
+
+    private fun recomputeAccessStatus(context: Context? = null) {
         val ctx = context ?: appContext
         if (DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) {
             Log.w(TAG, "Runtime hooking or release debugger detected; locking access.")
@@ -2345,7 +2378,7 @@ object LicenseManager {
         val ctx = appContext
         if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return false
         if (isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) return false
-        if (isAccessGranted() || isFeatureUnlocked(FeatureIds.AUTO_CLICK)) return true
+        if (isAccessGranted()) return true
 
         return listOf(
             FeatureIds.MIN_FARE,
@@ -2396,11 +2429,15 @@ object LicenseManager {
      * Returns 0L when locked or expired.
      */
     fun getFeatureRemainingTimeMs(featureId: String): Long {
+        if (isClockTamperingDetected() || _isBannedFlow.value) return 0L
+        val ctx = appContext
+        if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return 0L
         if (isFeatureLockedByAdmin(featureId)) return 0L
+        if (!isFeatureUnlocked(featureId)) return 0L
         if (isAccessGranted()) {
             return when (val status = _accessStatus.value) {
-                is AccessStatus.PassActive -> status.remainingTimeMs
-                is AccessStatus.TrialActive -> status.remainingTimeMs
+                is AccessStatus.PassActive -> status.remainingTimeMs.coerceAtLeast(0L)
+                is AccessStatus.TrialActive -> status.remainingTimeMs.coerceAtLeast(0L)
                 else -> 0L
             }
         }
@@ -2454,6 +2491,7 @@ object LicenseManager {
                 val updatedMap = _unlockedFeatures.value.toMutableMap()
                 updatedMap[pricing.id] = newExpiry
                 _unlockedFeatures.value = updatedMap
+                onEntitlementsChanged?.invoke()
                 Log.i(TAG, "UNLOCK_FEATURE completed via Action Queue for ${pricing.id}. New expiry: $newExpiry")
                 Result.success(newExpiry)
             },
@@ -2521,6 +2559,7 @@ object LicenseManager {
                 (snap.getLong("newPointsBalance"))?.let { newBal ->
                     _pointsBalance.value = newBal.toInt()
                 }
+                onEntitlementsChanged?.invoke()
                 Log.i(TAG, "UNLOCK_MULTIPLE_FEATURES completed atomically for ${pricings.size} feature(s).")
                 Result.success(unlockedResults)
             },
@@ -2538,6 +2577,7 @@ object LicenseManager {
     ) {
         _unlockedFeatures.value = unlocked
         _lockedFeatures.value = locked.map { it.lowercase() }.toSet()
+        onEntitlementsChanged?.invoke()
     }
 }
 

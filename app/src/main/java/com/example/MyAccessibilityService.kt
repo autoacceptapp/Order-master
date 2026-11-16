@@ -620,6 +620,8 @@ open class MyAccessibilityService : AccessibilityService() {
         val isMaxDropDistEnabled = isDropDistUnlocked && AppSettings.isMaxDropDistanceEnabled(this)
         val isDestinationBlacklistEnabled = isBlacklistUnlocked && AppSettings.isDestinationBlacklistEnabled(this)
         val effectiveBlockedLocations = if (isBlacklistUnlocked) blockedLocations else emptyList()
+        val hasAnyActiveFilterEnabled = isMinFareEnabled || isMaxFareEnabled || isMaxPickupDistEnabled ||
+            isMaxDropDistEnabled || isMinPerKmRateEnabled || isDestinationBlacklistEnabled
 
         val evaluatedOffers = mutableListOf<Pair<ParsedRideOffer, RideEvaluation>>()
 
@@ -701,6 +703,17 @@ open class MyAccessibilityService : AccessibilityService() {
                 broadcastLog("Auto-Accept paused: Unlock a filter with Points or activate a Pass.")
                 return
             }
+            if (!isProMode && !hasAnyActiveFilterEnabled) {
+                val topOffer = matchingOffers.first().first
+                AppSettings.addLog(
+                    title = "Filter Rule Required",
+                    message = "Ride detected (₹${topOffer.totalFare?.toInt() ?: 0}), but no unlocked filter toggle is active in Free Mode. Enable at least 1 filter before auto-accepting.",
+                    severity = LogSeverity.WARNING,
+                    evaluation = matchingOffers.first().second
+                )
+                broadcastLog("Auto-Accept paused: Enable at least 1 unlocked filter rule.")
+                return
+            }
 
             val isAutoClick = AppSettings.isAutoClickEnabled(this)
             if (!isAutoClick) {
@@ -760,12 +773,11 @@ open class MyAccessibilityService : AccessibilityService() {
             pendingAcceptRunnable = acceptRunnable
             mainHandler.postDelayed(acceptRunnable, acceptDelayMs)
         } else if (isAutoAccept && evaluatedOffers.isNotEmpty()) {
-            // Smart Auto-Reject: Execute if any evaluation filter is unlocked (and Auto-Click isn't Admin locked)
-            val hasAnyFilterUnlocked = !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) && (
-                isMinFareUnlocked || isMaxFareUnlocked || isMinPerKmRateUnlocked ||
-                    isPickupDistUnlocked || isDropDistUnlocked || isBlacklistUnlocked
-            )
-            if (hasAnyFilterUnlocked) {
+            // Smart Auto-Reject: Execute only if Pro Mode or at least 1 evaluation filter is BOTH unlocked & enabled
+            val canAutoReject = (isProMode || hasAnyActiveFilterEnabled) &&
+                !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) &&
+                LicenseManager.hasAnyAutoAcceptCapability()
+            if (canAutoReject) {
                 val isAutoClick = AppSettings.isAutoClickEnabled(this)
                 if (isAutoClick) {
                     val (rejectedOffer, rejectedEval) = evaluatedOffers.first()
@@ -832,17 +844,13 @@ open class MyAccessibilityService : AccessibilityService() {
                 Log.d(TAG, "executeCardRejectClick skipped: Auto-Accept or Auto-Click disabled.")
                 return
             }
-            // Security check: Active pass/trial OR at least one unlocked granular filter (and AUTO_CLICK not Admin-locked)
-            val hasAnyFilterUnlocked = !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) && (
-                LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE) ||
-                    LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE) ||
-                    LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE) ||
-                    LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE) ||
-                    LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE) ||
-                    LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
-            )
-            if (!hasAnyFilterUnlocked || !LicenseManager.hasAnyAutoAcceptCapability()) {
-                Log.w(TAG, "executeCardRejectClick: Auto-reject blocked. No filters unlocked.")
+            // Security check: Active pass/trial OR at least one unlocked & enabled granular filter (and AUTO_CLICK not Admin-locked)
+            val isProModeNow = LicenseManager.isAccessGranted()
+            val canAutoReject = (isProModeNow || AppSettings.hasActiveEvaluationFilter(this)) &&
+                !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) &&
+                LicenseManager.hasAnyAutoAcceptCapability()
+            if (!canAutoReject) {
+                Log.w(TAG, "executeCardRejectClick: Auto-reject blocked. No active filters unlocked/enabled.")
                 return
             }
 

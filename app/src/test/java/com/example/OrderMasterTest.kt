@@ -78,12 +78,14 @@ class OrderMasterTest {
     @Test
     fun testQuickPresets() {
         // Locked: presets blocked
-        AppSettings.applyPreset(context, "peak")
-        assertEquals("Unlock filters or activate Pro Pass to apply presets", ShadowToast.getTextOfLatestToast())
+        assertFalse(AppSettings.applyPreset(context, "peak"))
+        assertTrue(
+            (ShadowToast.getTextOfLatestToast() ?: "").contains("Unlock all required filters")
+        )
         assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
         assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
 
-        // Unlock multiple filters (MIN_FARE + MAX_PICKUP_DISTANCE): preset updates ONLY unlocked filters
+        // Partial unlock (only MIN_FARE + MAX_PICKUP_DISTANCE for "peak"): must refuse partial application cleanly
         val futureExpiry = System.currentTimeMillis() + 3_600_000L
         LicenseManager.setFeatureLocksForTesting(
             unlocked = mapOf(
@@ -91,20 +93,53 @@ class OrderMasterTest {
                 FeatureIds.MAX_PICKUP_DISTANCE to futureExpiry
             )
         )
+        assertFalse(AppSettings.applyPreset(context, "peak"))
+        assertEquals(AppSettings.RESTRICTED_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(AppSettings.RESTRICTED_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
+        assertFalse(AppSettings.isMinFareEnabled(context))
+        assertFalse(AppSettings.isMaxDropDistanceEnabled(context))
 
-        AppSettings.applyPreset(context, "peak")
+        // Unlock all required filters for "peak" (MIN_FARE, MAX_PICKUP_DISTANCE, MAX_DROP_DISTANCE, MIN_PER_KM_RATE)
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.MAX_PICKUP_DISTANCE to futureExpiry,
+                FeatureIds.MAX_DROP_DISTANCE to futureExpiry,
+                FeatureIds.MIN_PER_KM_RATE to futureExpiry
+            )
+        )
+        assertTrue(AppSettings.applyPreset(context, "peak"))
         assertEquals(100f, AppSettings.getMinFare(context), 0.01f)
         assertEquals(1.5f, AppSettings.getMaxPickupDistance(context), 0.01f)
-        assertFalse(AppSettings.isMaxDropDistanceEnabled(context)) // still locked!
-        val partialToast = ShadowToast.getTextOfLatestToast() ?: ""
-        assertTrue("Expected partial preset toast mentioning updated filters, got '$partialToast'", partialToast.contains("Updated Min Fare, Pickup Distance"))
-        assertTrue("Expected partial preset toast mentioning locked filters, got '$partialToast'", partialToast.contains("Unlock") && partialToast.contains("Drop Distance"))
+        assertEquals(8.0f, AppSettings.getMaxDropDistance(context), 0.01f)
+        assertEquals(12.0f, AppSettings.getMinPerKmRate(context), 0.01f)
+        assertTrue(AppSettings.isMinFareEnabled(context))
+        assertTrue(AppSettings.isMaxPickupDistanceEnabled(context))
+        assertTrue(AppSettings.isMaxDropDistanceEnabled(context))
+        assertTrue(AppSettings.isMinPerKmRateEnabled(context))
+        assertFalse(AppSettings.isMaxFareEnabled(context))
 
-        AppSettings.applyPreset(context, "short")
+        // Still missing MAX_FARE for "short" -> blocked cleanly
+        assertFalse(AppSettings.applyPreset(context, "short"))
+        assertEquals(100f, AppSettings.getMinFare(context), 0.01f)
+
+        // Unlock MAX_FARE too so all preset filters are unlocked
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.MAX_FARE to futureExpiry,
+                FeatureIds.MAX_PICKUP_DISTANCE to futureExpiry,
+                FeatureIds.MAX_DROP_DISTANCE to futureExpiry,
+                FeatureIds.MIN_PER_KM_RATE to futureExpiry
+            )
+        )
+        assertTrue(AppSettings.applyPreset(context, "short"))
         assertEquals(40f, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(250f, AppSettings.getMaxFare(context), 0.01f)
         assertEquals(1.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
+        assertEquals(4.0f, AppSettings.getMaxDropDistance(context), 0.01f)
 
-        AppSettings.applyPreset(context, "default")
+        assertTrue(AppSettings.applyPreset(context, "default"))
         assertEquals(AppSettings.DEFAULT_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
         assertEquals(AppSettings.DEFAULT_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
     }

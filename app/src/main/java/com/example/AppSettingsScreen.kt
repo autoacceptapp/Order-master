@@ -1244,7 +1244,9 @@ fun InAppUpdaterSettingsCard() {
 fun FeatureUnlockDialog(
     featureId: String,
     onDismiss: () -> Unit,
-    onSuccess: () -> Unit
+    onSuccess: () -> Unit,
+    onOpenMultiFilter: (() -> Unit)? = null,
+    onOpenPassStore: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -1406,6 +1408,36 @@ fun FeatureUnlockDialog(
                         }
                     }
                 }
+
+                if (onOpenMultiFilter != null || onOpenPassStore != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (onOpenMultiFilter != null) {
+                            TextButton(
+                                onClick = onOpenMultiFilter,
+                                enabled = !isLoading,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("unlock_dialog_multi_filter_button")
+                            ) {
+                                Text("Buy Multiple Filters", fontSize = 12.sp)
+                            }
+                        }
+                        if (onOpenPassStore != null) {
+                            TextButton(
+                                onClick = onOpenPassStore,
+                                enabled = !isLoading,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("unlock_dialog_pro_pass_button")
+                            ) {
+                                Text("Pro Passes", fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
@@ -1471,7 +1503,8 @@ fun FeatureUnlockDialog(
 fun MultiFilterUnlockDialog(
     initiallySelectedIds: Set<String> = emptySet(),
     onDismiss: () -> Unit,
-    onSuccess: () -> Unit
+    onSuccess: () -> Unit,
+    onOpenPassStore: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -1479,7 +1512,7 @@ fun MultiFilterUnlockDialog(
     val lockedFeatures by LicenseManager.lockedFeatures.collectAsState()
     val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
 
-    var selectedIds by remember {
+    var selectedIds by remember(initiallySelectedIds, lockedFeatures) {
         mutableStateOf(
             initiallySelectedIds.filter { id -> !LicenseManager.isFeatureLockedByAdmin(id) }.toSet()
         )
@@ -1671,6 +1704,18 @@ fun MultiFilterUnlockDialog(
                                 style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.error)
                             )
                         }
+                    }
+                }
+
+                if (onOpenPassStore != null) {
+                    TextButton(
+                        onClick = onOpenPassStore,
+                        enabled = !isLoading,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("multi_filter_open_pass_store_button")
+                    ) {
+                        Text("Or Activate Daily / Weekly / Monthly Pro Pass", fontSize = 12.sp)
                     }
                 }
             }
