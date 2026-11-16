@@ -18,19 +18,24 @@ android {
     minSdk = 24
     targetSdk = 36
 
-    val versionMajor = 1
-    val versionMinor = 0
-    val versionPatch = 2
+    val versionMajor = project.findProperty("VERSION_MAJOR")?.toString()?.toIntOrNull() ?: 1
+    val versionMinor = project.findProperty("VERSION_MINOR")?.toString()?.toIntOrNull() ?: 0
+    val versionPatch = project.findProperty("VERSION_PATCH")?.toString()?.toIntOrNull() ?: 2
+
+    val defaultVersionName = project.findProperty("VERSION_NAME")?.toString()
+        ?: "$versionMajor.$versionMinor.$versionPatch"
+
+    val baseVersionCode = project.findProperty("BASE_VERSION_CODE")?.toString()?.toIntOrNull() ?: 102
 
     val appVersionCode = project.findProperty("VERSION_CODE")?.toString()?.toIntOrNull()
         ?: project.findProperty("versionCode")?.toString()?.toIntOrNull()
         ?: System.getenv("VERSION_CODE")?.toIntOrNull()
-        ?: 1
+        ?: baseVersionCode
 
     val appVersionName = project.findProperty("VERSION_NAME")?.toString()
         ?: project.findProperty("versionName")?.toString()
         ?: System.getenv("VERSION_NAME")
-        ?: "$versionMajor.$versionMinor.$versionPatch"
+        ?: defaultVersionName
 
     versionCode = appVersionCode
     versionName = appVersionName

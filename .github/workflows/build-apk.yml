@@ -75,10 +75,19 @@ jobs:
       - name: Prepare Dynamic Version Metadata
         id: version_meta
         run: |
-          BUILD_NUM="${{ github.run_number }}"
-          VERSION_NAME="1.0.${BUILD_NUM}"
-          VERSION_CODE="${BUILD_NUM}"
-          RELEASE_TAG="v${VERSION_NAME}"
+          RUN_NUM="${{ github.run_number }}"
+          VERSION_CODE="${RUN_NUM}"
+          if [ "${VERSION_CODE}" -lt 102 ]; then
+            VERSION_CODE=$((100 + RUN_NUM))
+          fi
+
+          BASE_VERSION_NAME=$(grep -E "^VERSION_NAME=" gradle.properties 2>/dev/null | cut -d'=' -f2 | tr -d ' "\r\n' || true)
+          if [ -z "${BASE_VERSION_NAME}" ]; then
+            BASE_VERSION_NAME="1.0.2"
+          fi
+          VERSION_NAME="${BASE_VERSION_NAME}-debug"
+          RELEASE_TAG="v${BASE_VERSION_NAME}-debug-build-${VERSION_CODE}"
+
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
           echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
@@ -95,10 +104,10 @@ jobs:
           echo "=== Building Debug APK ==="
           if command -v gradle >/dev/null 2>&1; then
             echo "Using pre-installed Gradle CLI ($(gradle --version | head -n 3 | tr '\n' ' '))"
-            gradle clean assembleDebug --stacktrace --no-daemon
+            gradle assembleDebug --stacktrace
           else
             echo "Falling back to Gradle Wrapper..."
-            ./gradlew clean assembleDebug --stacktrace --no-daemon
+            ./gradlew assembleDebug --stacktrace
           fi
 
       - name: Locate and Prepare Debug APK Outputs

@@ -116,22 +116,37 @@ jobs:
       - name: Prepare Dynamic Version Metadata
         id: version_meta
         run: |
-          # Compute SemVer and build numbers
-          BUILD_NUM="${{ github.run_number }}"
-          VERSION_NAME="1.0.${BUILD_NUM}"
-          VERSION_CODE="${BUILD_NUM}"
-          
-          # If triggered by a Git Tag (e.g., v1.1.0), extract version from tag
+          # 1. Monotonic Version Code: Must strictly increase on every build (>= 102 to avoid downgrade)
+          RUN_NUM="${{ github.run_number }}"
+          VERSION_CODE="${RUN_NUM}"
+          if [ "${VERSION_CODE}" -lt 102 ]; then
+            VERSION_CODE=$((100 + RUN_NUM))
+          fi
+
+          # 2. Extract Base Semantic Version Name from gradle.properties
+          BASE_VERSION_NAME=$(grep -E "^VERSION_NAME=" gradle.properties 2>/dev/null | cut -d'=' -f2 | tr -d ' "\r\n' || true)
+          if [ -z "${BASE_VERSION_NAME}" ]; then
+            BASE_VERSION_NAME="1.0.2"
+          fi
+
+          # If triggered by a Git Tag (e.g., v1.0.3 or v1.1.0), extract version from tag
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             RELEASE_TAG="${GITHUB_REF#refs/tags/}"
+            VERSION_NAME="${RELEASE_TAG#v}"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            RELEASE_TAG="${GITHUB_REF#refs/tags/}"
+            VERSION_NAME="${RELEASE_TAG}"
           else
+            VERSION_NAME="${BASE_VERSION_NAME}"
             RELEASE_TAG="v${VERSION_NAME}"
           fi
 
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
           echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
-          echo "Computed Tag: ${RELEASE_TAG} (Code: ${VERSION_CODE})"
+          echo "Computed Release Tag: ${RELEASE_TAG}"
+          echo "Computed Version Name: ${VERSION_NAME}"
+          echo "Computed Version Code: ${VERSION_CODE}"
 
       # Step 7: Make gradlew executable
       - name: Grant Execute Permission to Gradle Wrapper
@@ -232,10 +247,10 @@ jobs:
 
           if command -v gradle >/dev/null 2>&1; then
             echo "Using pre-installed Gradle CLI ($(gradle --version | head -n 3 | tr '\n' ' '))"
-            gradle clean assembleRelease --stacktrace --no-daemon --no-build-cache --no-configuration-cache
+            gradle assembleRelease --stacktrace
           else
             echo "Falling back to Gradle Wrapper..."
-            ./gradlew clean assembleRelease --stacktrace --no-daemon --no-build-cache --no-configuration-cache
+            ./gradlew assembleRelease --stacktrace
           fi
 
       # Step 9: Verify and Locate Generated APKs
