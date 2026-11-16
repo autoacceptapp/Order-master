@@ -133,6 +133,10 @@ jobs:
         env:
           VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
           VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          FIREBASE_FALLBACK_API_KEY: ${{ secrets.FIREBASE_FALLBACK_API_KEY }}
         run: |
           echo "=== Building Release APK ==="
           if command -v gradle >/dev/null 2>&1; then

@@ -134,8 +134,8 @@ jobs:
           name: "Debug Release ${{ steps.version_meta.outputs.release_tag }} (Build #${{ steps.version_meta.outputs.version_code }})"
           target_commitish: ${{ github.sha }}
           draft: false
-          prerelease: false
-          make_latest: "true"
+          prerelease: true
+          make_latest: "false"
           generate_release_notes: true
           body: |
             ### 📱 Order Master Debug APK ${{ steps.version_meta.outputs.release_tag }}
