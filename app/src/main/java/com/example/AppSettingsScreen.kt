@@ -1238,28 +1238,6 @@ fun InAppUpdaterSettingsCard() {
 }
 
 /**
- * Payment Response Double-Check (Frontend):
- * Pass status is updated strictly upon server confirmation.
- */
-fun onPaymentSuccess(
-    context: android.content.Context,
-    paymentId: String,
-    onComplete: ((Boolean) -> Unit)? = null
-) {
-    PassManager.verifyPaymentWithBackend(context, paymentId) { isSuccess ->
-        if (isSuccess) {
-            PassManager.setPassStatus(context, true)
-            android.widget.Toast.makeText(context, context.getString(R.string.settings_toast_pass_activated), android.widget.Toast.LENGTH_SHORT).show()
-            onComplete?.invoke(true)
-        } else {
-            PassManager.setPassStatus(context, false)
-            android.widget.Toast.makeText(context, context.getString(R.string.settings_toast_payment_failed), android.widget.Toast.LENGTH_SHORT).show()
-            onComplete?.invoke(false)
-        }
-    }
-}
-
-/**
  * Interactive Dialog to Unlock a Specific Premium Feature on an Hourly Pay-Per-Use Basis.
  */
 @Composable

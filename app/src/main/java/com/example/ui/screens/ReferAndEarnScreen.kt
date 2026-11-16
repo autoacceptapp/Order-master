@@ -242,7 +242,7 @@ fun ReferAndEarnScreen(
                             result.onSuccess {
                                 successMessage = "Referral applied! +50 Points added to your account."
                                 inputCode = ""
-                                ReferralManager.pendingInviteCode.value = ""
+                                ReferralManager.clearPendingInviteCode(context)
                                 Toast.makeText(context, "Claimed! +50 Points Added", Toast.LENGTH_LONG).show()
                             }.onFailure { err ->
                                 val msg = err.message ?: "Failed to claim referral code."

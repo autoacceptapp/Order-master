@@ -15,8 +15,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.tasks.await
@@ -118,41 +122,46 @@ object PassManager {
         }
     }
 
-    private val _isPassActiveFlow = MutableStateFlow(false)
+    private val readOnlyPassScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 
-    init {
-        scope.launch {
-            LicenseManager.accessStatus.collect { status ->
-                val active = when (status) {
-                    is AccessStatus.PassActive -> status.passTier.isProPass && status.remainingTimeMs > 0
-                    is AccessStatus.TrialActive -> status.remainingTimeMs > 0
-                    else -> false
-                }
-                _isPassActiveFlow.value = active
-            }
+    private fun isStatusProOrTrialActive(status: AccessStatus): Boolean {
+        return when (status) {
+            is AccessStatus.PassActive -> status.passTier.isProPass && status.remainingTimeMs > 0
+            is AccessStatus.TrialActive -> status.remainingTimeMs > 0
+            else -> false
         }
     }
 
     /**
-     * Exposes reactive StateFlow indicating whether the subscription pass is active.
+     * Strictly read-only StateFlow derived directly from [LicenseManager.accessStatus].
+     * Emits true ONLY when a Pro Pass (`isProPass && remainingTimeMs > 0`) or Free Trial (`remainingTimeMs > 0`) is active.
      */
-    val isPassActiveFlow: StateFlow<Boolean> = _isPassActiveFlow.asStateFlow()
+    val isPassActiveFlow: StateFlow<Boolean> = LicenseManager.accessStatus
+        .map { status -> isStatusProOrTrialActive(status) }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = readOnlyPassScope,
+            started = SharingStarted.Eagerly,
+            initialValue = isStatusProOrTrialActive(LicenseManager.accessStatus.value)
+        )
 
     /**
-     * Checks strictly whether a subscription pass is currently active.
-     * Evaluates strictly from in-memory StateFlow.
+     * Checks strictly whether a subscription pass or trial is currently active.
+     * Evaluates strictly from read-only [isPassActiveFlow] backed by [LicenseManager.accessStatus].
      * Zero local storage (no SharedPreferences).
      */
     fun isPassActive(context: Context? = null): Boolean {
-        return _isPassActiveFlow.value
+        return isPassActiveFlow.value
     }
 
     /**
-     * Updates pass status strictly in memory.
-     * ZERO local storage (no SharedPreferences).
+     * Neutralized no-op kept only for backward compatibility with legacy callers.
+     * Pass status is strictly read-only and derived from server-authoritative [LicenseManager.accessStatus],
+     * so local callers can never override or spoof active pass state.
      */
+    @Deprecated("Pass status is strictly read-only and derived from LicenseManager.accessStatus.")
     fun setPassStatus(context: Context? = null, status: Boolean) {
-        _isPassActiveFlow.value = status
+        Log.d(TAG, "Ignoring local setPassStatus($status): PassManager.isPassActiveFlow is strictly server-derived.")
     }
 
     /**
@@ -186,14 +195,13 @@ object PassManager {
         onComplete: ((Boolean) -> Unit)? = null
     ) {
         verifyPaymentWithBackend(context, paymentId, preferredTier) { isSuccess ->
+            LicenseManager.refreshAccessStatus(context)
             if (isSuccess) {
                 val isPro = preferredTier?.isProPass != false
-                setPassStatus(context, isPro)
                 val toastText = if (isPro) "Pass Activated!" else "Ad-Free Pass Activated!"
                 Toast.makeText(context, toastText, Toast.LENGTH_SHORT).show()
                 onComplete?.invoke(true)
             } else {
-                setPassStatus(context, false)
                 Toast.makeText(context, "Payment not verified yet. Please wait a minute or check your UTR", Toast.LENGTH_SHORT).show()
                 onComplete?.invoke(false)
             }
@@ -260,9 +268,7 @@ object PassManager {
                 val finalExpiryTimestamp = if (currentExpiry > now) currentExpiry else (now + tier.durationMs)
 
                 withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
-                    if (tier.isProPass) {
-                        setPassStatus(context, true)
-                    }
+                    LicenseManager.refreshAccessStatus(context)
                     AppSettings.addLog(
                         title = "Pass Activated",
                         message = "${tier.title} activated via UTR $cleanUtr. Valid for ${tier.durationDays} day(s).",
@@ -613,18 +619,17 @@ object PassManager {
                 val isActive = isPaidProActive || isTrialActive
 
                 withContext(Dispatchers.Main) {
+                    LicenseManager.refreshAccessStatus(context)
                     if (isActive) {
-                        setPassStatus(context, true)
                         Log.i(TAG, "Server check: Pro/Trial access is ACTIVE (paidExpiry=$passExpiryDate, tier=$passTypeStr) for user $userId")
                     } else {
-                        setPassStatus(context, false)
                         Log.w(TAG, "Server check: Pro pass INACTIVE (expiry=$passExpiryDate, tier=$passTypeStr, status=$paymentStatus) for user $userId")
                     }
                 }
                 isActive
             } else {
                 withContext(Dispatchers.Main) {
-                    setPassStatus(context, false)
+                    LicenseManager.refreshAccessStatus(context)
                 }
                 false
             }

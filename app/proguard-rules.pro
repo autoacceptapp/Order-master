@@ -6,10 +6,8 @@
 # Keep application Entry Points, Activities, Services, and Receivers
 -keep class com.example.OrderMasterApplication { *; }
 -keep class com.example.MainActivity { *; }
--keep class com.example.CaptainStoreActivity { *; }
 -keep class com.example.PaymentActivity { *; }
 -keep class com.example.MyAccessibilityService { *; }
--keep class com.example.SmartTextService { *; }
 -keep class com.example.RapidoAccessibilityService { *; }
 -keep class com.example.FloatingOverlayService { *; }
 -keep class com.example.DownloadCompleteReceiver { *; }
@@ -26,6 +24,7 @@
 -keep class com.example.data.OrderEntity { *; }
 -keep class com.example.data.UserProfile { *; }
 -keep class com.example.data.ReceivedPayment { *; }
+-keep class com.example.data.repository.AppConfig { *; }
 
 # Kotlin Coroutines, Metadata & Flow rules
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}

@@ -125,14 +125,39 @@ class PaymentVerificationTest {
         assertFalse(PassManager.isPassActive(context))
     }
 
+    @Suppress("DEPRECATION")
     @Test
-    fun testPassManagerSetPassStatusAndToggle() {
+    fun testPassManagerReadOnlyAndSetPassStatusNeutralized() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        PassManager.setPassStatus(context, true)
-        assertTrue(PassManager.isPassActive(context))
-
-        PassManager.setPassStatus(context, false)
+        LicenseManager.resetStateForTesting(context)
         assertFalse(PassManager.isPassActive(context))
+        assertFalse(PassManager.isPassActiveFlow.value)
+
+        // Local mutation call must NOT spoof or override server-derived pass status
+        PassManager.setPassStatus(context, true)
+        assertFalse(PassManager.isPassActive(context))
+        assertFalse(PassManager.isPassActiveFlow.value)
+
+        // Authoritative Pro Pass in LicenseManager activates read-only flow
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = PassTier.DAILY,
+            passExpiry = futureExpiry,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = true
+        )
+        LicenseManager.refreshAccessStatus(context)
+        assertTrue(PassManager.isPassActive(context))
+        assertTrue(PassManager.isPassActiveFlow.value)
+
+        // Local disable call must also NOT override authoritative LicenseManager state
+        PassManager.setPassStatus(context, false)
+        assertTrue(PassManager.isPassActive(context))
+        assertTrue(PassManager.isPassActiveFlow.value)
+
+        LicenseManager.resetStateForTesting(context)
     }
 
     @Test

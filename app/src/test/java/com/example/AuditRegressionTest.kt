@@ -255,5 +255,132 @@ class AuditRegressionTest {
         assertFalse(paymentPayload.containsKey("durationMs"))
         assertFalse(paymentPayload.containsKey("transactionId"))
     }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun `pass manager isPassActiveFlow is strictly read-only from LicenseManager accessStatus`() {
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L
+
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.forceReleaseLoadingState()
+        assertFalse(PassManager.isPassActiveFlow.value)
+
+        // Calling legacy setPassStatus(true) must remain ignored
+        PassManager.setPassStatus(context, true)
+        assertFalse(PassManager.isPassActiveFlow.value)
+        assertFalse(PassManager.isPassActive(context))
+
+        // Active Trial -> true
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = null,
+            passExpiry = 0L,
+            trialClaimed = System.currentTimeMillis() - 10_000L,
+            trialExpiry = futureExpiry,
+            trialUsed = true
+        )
+        LicenseManager.refreshAccessStatus(context)
+        assertTrue(LicenseManager.accessStatus.value is AccessStatus.TrialActive)
+        assertTrue(PassManager.isPassActiveFlow.value)
+
+        // Expired Trial + expired Pass -> false
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.forceReleaseLoadingState()
+        assertFalse(PassManager.isPassActiveFlow.value)
+
+        // Remove Ads Pass alone -> false
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = PassTier.REMOVE_ADS,
+            passExpiry = futureExpiry,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = true
+        )
+        LicenseManager.refreshAccessStatus(context)
+        assertFalse(PassManager.isPassActiveFlow.value)
+
+        // Pro Pass (Weekly) -> true
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = PassTier.WEEKLY,
+            passExpiry = futureExpiry,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = true
+        )
+        LicenseManager.refreshAccessStatus(context)
+        assertTrue(LicenseManager.accessStatus.value is AccessStatus.PassActive)
+        assertTrue(PassManager.isPassActiveFlow.value)
+    }
+
+    @Test
+    fun `pending referral invite code persists across cold restarts and clears cleanly`() {
+        ReferralManager.clearPendingInviteCode(context)
+        assertEquals("", ReferralManager.pendingInviteCode.value)
+
+        // Capture invite code from deep link
+        ReferralManager.setPendingInviteCode(context, " om78xy90 ")
+        assertEquals("OM78XY90", ReferralManager.pendingInviteCode.value)
+
+        // Simulate cold process restart: wipe RAM flow and restore via init()
+        ReferralManager.pendingInviteCode.value = ""
+        ReferralManager.init(context)
+        assertEquals("OM78XY90", ReferralManager.pendingInviteCode.value)
+
+        // Redemption / explicit clear removes both RAM state and SharedPreferences
+        ReferralManager.clearPendingInviteCode(context)
+        assertEquals("", ReferralManager.pendingInviteCode.value)
+        ReferralManager.init(context)
+        assertEquals("", ReferralManager.pendingInviteCode.value)
+    }
+
+    @Test
+    fun `order repository pruneExpiredOrdersIfNeeded removes orders older than 30 days`() = kotlinx.coroutines.test.runTest {
+        val db = com.example.data.AppDatabase.getDatabase(context)
+        val dao = db.orderDao()
+        dao.clearAll()
+
+        val nowMs = 1_800_000_000_000L
+        val dayMs = 86_400_000L
+        dao.insertOrder(
+            com.example.data.OrderEntity(
+                timestamp = nowMs - (35L * dayMs),
+                fare = 90.0,
+                pickupDistanceKm = 1.1,
+                dropDistanceKm = 4.0,
+                pickupLocation = "Expired Pickup",
+                dropLocation = "Expired Drop",
+                isAccepted = false,
+                decisionReason = "Rejected",
+                rawText = "expired"
+            )
+        )
+        dao.insertOrder(
+            com.example.data.OrderEntity(
+                timestamp = nowMs - (5L * dayMs),
+                fare = 160.0,
+                pickupDistanceKm = 0.7,
+                dropDistanceKm = 5.5,
+                pickupLocation = "Fresh Pickup",
+                dropLocation = "Fresh Drop",
+                isAccepted = true,
+                decisionReason = "Accepted",
+                rawText = "fresh"
+            )
+        )
+
+        val repo = com.example.data.OrderRepository(context)
+        val deleted = repo.pruneExpiredOrdersIfNeeded(nowMs)
+        assertEquals(1, deleted)
+        assertEquals(1, repo.getCount())
+        // Subsequent call in the same session is throttled
+        assertEquals(0, repo.pruneExpiredOrdersIfNeeded(nowMs))
+
+        dao.clearAll()
+    }
 }
 

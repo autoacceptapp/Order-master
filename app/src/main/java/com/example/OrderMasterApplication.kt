@@ -210,6 +210,7 @@ class OrderMasterApplication : Application() {
                 AppSettings.init(this)
                 LicenseManager.init(this)
                 GlobalAdminManager.init(this)
+                ReferralManager.init(this)
                 com.example.data.repository.AppConfigRepository.init(this)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to initialize core engines synchronously in test: ${e.message}", e)
@@ -222,7 +223,9 @@ class OrderMasterApplication : Application() {
                 AppSettings.init(this@OrderMasterApplication)
                 LicenseManager.init(this@OrderMasterApplication)
                 GlobalAdminManager.init(this@OrderMasterApplication)
+                ReferralManager.init(this@OrderMasterApplication)
                 com.example.data.repository.AppConfigRepository.init(this@OrderMasterApplication)
+                com.example.data.OrderRepository.getInstance(this@OrderMasterApplication).pruneExpiredOrdersIfNeeded()
                 Log.d(TAG, "Core engines initialized successfully on background thread.")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to initialize core engines in Application.onCreate: ${e.message}", e)

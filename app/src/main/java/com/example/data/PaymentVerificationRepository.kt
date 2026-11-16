@@ -227,12 +227,12 @@ class PaymentVerificationRepository(
                     paymentStatus.equals("VERIFIED", ignoreCase = true)
                 val isActive = isProTier && isPaymentSuccessful && passExpiryDate > currentTime
 
-                PassManager.setPassStatus(context, isActive)
+                LicenseManager.refreshAccessStatus(context)
                 Log.d(TAG, "checkIsPaymentVerified for user $userId: isActive=$isActive (status=$paymentStatus, expiry=$passExpiryDate)")
                 isActive
             } else {
                 Log.d(TAG, "checkIsPaymentVerified for user $userId: user doc does not exist")
-                PassManager.setPassStatus(context, false)
+                LicenseManager.refreshAccessStatus(context)
                 false
             }
         } catch (e: FirebaseFirestoreException) {
@@ -490,9 +490,7 @@ class PaymentVerificationRepository(
             val newExpiryDate = Date(newExpiryTimestamp)
 
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
-                if (passTier.isProPass) {
-                    PassManager.setPassStatus(context, true)
-                }
+                LicenseManager.refreshAccessStatus(context)
                 AppSettings.addLog(
                     title = "Payment Verified & Unlocked",
                     message = "UTR: $utr (₹$amount). Activated ${passTier.title} until $newExpiryDate.",

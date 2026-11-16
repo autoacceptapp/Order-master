@@ -108,19 +108,15 @@ class MainActivity : ComponentActivity() {
         GlobalAdminManager.init(this)
         InAppMessageManager.init(this)
         AppConfigRepository.init(this)
+        ReferralManager.init(this)
 
-        // Safe AdMob SDK Initialization on the Main Thread
+        // AdMob SDK is already initialized in OrderMasterApplication.onCreate(); safely pre-load RewardedAd
         try {
-            com.google.android.gms.ads.MobileAds.initialize(this) { status ->
-                Log.i(TAG, "AdMob SDK Initialized on Main Thread: $status")
-                try {
-                    RewardedAdManager.loadAd(applicationContext)
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Notice pre-caching RewardedAd after init: ${e.message}")
-                }
+            if (!RewardedAdManager.isAdLoaded() && !RewardedAdManager.isLoading()) {
+                RewardedAdManager.loadAd(applicationContext)
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "Notice initializing AdMob SDK on Main Thread: ${e.message}")
+            Log.w(TAG, "Notice pre-caching RewardedAd in onCreate: ${e.message}")
         }
 
         isNotificationPermissionGranted.value = PermissionUtils.areNotificationsEnabled(this)
@@ -142,7 +138,6 @@ class MainActivity : ComponentActivity() {
                         // User was explicitly deleted or disabled in Firebase Auth: enforce Zero-Trust sign out
                         withContext(Dispatchers.Main) {
                             AppSettings.signOut(applicationContext)
-                            PassManager.setPassStatus(applicationContext, false)
                             Toast.makeText(
                                 applicationContext,
                                 "Session Expired or Account Deleted. Logged out.",
@@ -446,7 +441,7 @@ class MainActivity : ComponentActivity() {
         val code = data.getQueryParameter("code")
         if (!code.isNullOrBlank()) {
             val cleanCode = code.trim().uppercase(java.util.Locale.ROOT)
-            ReferralManager.pendingInviteCode.value = cleanCode
+            ReferralManager.setPendingInviteCode(applicationContext, cleanCode)
             Log.i(TAG, "Deep link captured invite code: $cleanCode")
         }
     }
@@ -520,17 +515,13 @@ fun ForceUpdateDialog(
         // Consumes back press: update is mandatory
     }
 
-    // Auto-prompt installer when download completes
+    // Redirect to Unknown App Sources permission settings only if missing;
+    // ApkDownloader.handleExternalDownloadComplete() dispatches the single foreground installer prompt.
     LaunchedEffect(downloadState) {
-        if (downloadState is DownloadState.ReadyToInstall) {
-            val file = (downloadState as DownloadState.ReadyToInstall).apkFile
-            if (ApkDownloader.canRequestPackageInstalls(context)) {
-                ApkDownloader.promptInstall(context, file)
-            } else {
-                try {
-                    context.startActivity(ApkDownloader.createManageUnknownAppSourcesIntent(context))
-                } catch (_: Exception) {}
-            }
+        if (downloadState is DownloadState.ReadyToInstall && !ApkDownloader.canRequestPackageInstalls(context)) {
+            try {
+                context.startActivity(ApkDownloader.createManageUnknownAppSourcesIntent(context))
+            } catch (_: Exception) {}
         }
     }
 

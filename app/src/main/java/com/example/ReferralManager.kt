@@ -22,9 +22,49 @@ object ReferralManager {
 
     const val REFERRAL_BONUS_POINTS = 20
     const val WELCOME_BONUS_POINTS = 50
+    const val PREFS_NAME = "referral_prefs"
+    const val KEY_PENDING_INVITE_CODE = "pending_invite_code"
 
-    // Deep link captured invite code
+    // Deep link captured invite code (restored across cold restarts via referral_prefs)
     val pendingInviteCode = MutableStateFlow<String>("")
+
+    fun init(context: Context) {
+        try {
+            val saved = context.applicationContext
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getString(KEY_PENDING_INVITE_CODE, "")
+                ?.trim()
+                ?.uppercase(Locale.ROOT)
+                .orEmpty()
+            if (saved.isNotEmpty() && pendingInviteCode.value.isBlank()) {
+                pendingInviteCode.value = saved
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed restoring pending invite code: ${e.message}")
+        }
+    }
+
+    fun setPendingInviteCode(context: Context, code: String) {
+        val cleanCode = code.trim().uppercase(Locale.ROOT)
+        pendingInviteCode.value = cleanCode
+        try {
+            val editor = context.applicationContext
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+            if (cleanCode.isEmpty()) {
+                editor.remove(KEY_PENDING_INVITE_CODE)
+            } else {
+                editor.putString(KEY_PENDING_INVITE_CODE, cleanCode)
+            }
+            editor.apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed persisting pending invite code: ${e.message}")
+        }
+    }
+
+    fun clearPendingInviteCode(context: Context) {
+        setPendingInviteCode(context, "")
+    }
 
     /**
      * Executes referral claiming via the Zero-Trust `CLAIM_REFERRAL` action queue.
@@ -71,7 +111,7 @@ object ReferralManager {
         val queueResult = LicenseManager.claimReferralViaActionQueue(cleanCode)
         queueResult.fold(
             onSuccess = {
-                pendingInviteCode.value = ""
+                clearPendingInviteCode(context)
                 Log.i(TAG, "CLAIM_REFERRAL completed via Action Queue for code $cleanCode")
                 Result.success(Unit)
             },
