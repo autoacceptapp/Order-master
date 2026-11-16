@@ -52,6 +52,7 @@ jobs:
 
       # Step 4: Decode Permanent Keystores & Google Services from GitHub Secrets
       - name: Decode Secrets and Keystores
+        id: decode_secrets
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
@@ -61,7 +62,7 @@ jobs:
           # 1: Firebase Google Services JSON
           if [ -n "${GOOGLE_SERVICES_JSON}" ]; then
             echo "Writing GOOGLE_SERVICES_JSON directly into app/google-services.json..."
-            echo "${GOOGLE_SERVICES_JSON}" > app/google-services.json
+            printf '%s\n' "${GOOGLE_SERVICES_JSON}" > app/google-services.json
             echo "✅ app/google-services.json written from secret ($(stat -c%s app/google-services.json) bytes)."
           elif [ -f "app/google-services.json" ]; then
             echo "✅ Using existing app/google-services.json from repository ($(stat -c%s app/google-services.json) bytes)."
@@ -74,13 +75,15 @@ jobs:
           fi
 
           # 2: Release Keystore
+          CUSTOM_KEYSTORE="false"
           if [ -n "${KEYSTORE_BASE64}" ]; then
             echo "Decoding KEYSTORE_BASE64 into app/release.jks..."
-            echo "${KEYSTORE_BASE64}" | base64 -d > app/release.jks
+            printf '%s' "${KEYSTORE_BASE64}" | tr -d '\r\n ' | base64 -d > app/release.jks
+            CUSTOM_KEYSTORE="true"
             echo "✅ app/release.jks decoded successfully ($(stat -c%s app/release.jks) bytes)."
           elif [ -f "./debug.keystore.base64" ]; then
             echo "Restoring debug.keystore and configuring fallback release keystore..."
-            base64 -d ./debug.keystore.base64 > ./debug.keystore
+            tr -d '\r\n ' < ./debug.keystore.base64 | base64 -d > ./debug.keystore
             cp ./debug.keystore app/release.jks
             echo "✅ Keystore restored from debug.keystore.base64."
           elif [ -f "./debug.keystore" ]; then
@@ -88,6 +91,7 @@ jobs:
             cp ./debug.keystore app/release.jks
             echo "✅ Keystore copied to app/release.jks."
           fi
+          echo "custom_keystore=${CUSTOM_KEYSTORE}" >> "$GITHUB_OUTPUT"
 
       # Step 5: Verify Static SHA-1 Fingerprints of the Keystores
       - name: Verify Keystore SHA-1 Fingerprints
@@ -137,8 +141,32 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           FIREBASE_FALLBACK_API_KEY: ${{ secrets.FIREBASE_FALLBACK_API_KEY }}
+          CUSTOM_KEYSTORE: ${{ steps.decode_secrets.outputs.custom_keystore }}
         run: |
           echo "=== Building Release APK ==="
+
+          # Ensure fallback debug keystore is not unlocked with stale/unrelated secrets
+          if [ "${CUSTOM_KEYSTORE}" != "true" ]; then
+            echo "No KEYSTORE_BASE64 secret configured; using fallback debug keystore credentials."
+            unset KEYSTORE_PASSWORD STORE_PASSWORD KEY_ALIAS KEY_PASSWORD
+          else
+            # Unset empty GitHub Secrets so build.gradle.kts `System.getenv(...) ?: "android"` fallback works
+            [ -z "${KEYSTORE_PASSWORD:-}" ] && unset KEYSTORE_PASSWORD
+            [ -z "${STORE_PASSWORD:-}" ] && unset STORE_PASSWORD
+            [ -z "${KEY_ALIAS:-}" ] && unset KEY_ALIAS
+            [ -z "${KEY_PASSWORD:-}" ] && unset KEY_PASSWORD
+          fi
+          [ -z "${FIREBASE_FALLBACK_API_KEY:-}" ] && unset FIREBASE_FALLBACK_API_KEY
+
+          if [ -f "app/release.jks" ]; then
+            CHECK_PASS="${KEYSTORE_PASSWORD:-android}"
+            CHECK_ALIAS="${KEY_ALIAS:-androiddebugkey}"
+            if ! keytool -list -keystore app/release.jks -storepass "${CHECK_PASS}" -alias "${CHECK_ALIAS}" >/dev/null 2>&1; then
+              echo "::error::Failed to unlock app/release.jks (alias: ${CHECK_ALIAS}). Verify that KEYSTORE_BASE64 matches KEYSTORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD in GitHub Secrets."
+              exit 1
+            fi
+          fi
+
           if command -v gradle >/dev/null 2>&1; then
             echo "Using pre-installed Gradle CLI ($(gradle --version | head -n 3 | tr '\n' ' '))"
             gradle clean assembleRelease --stacktrace --no-daemon --no-build-cache
