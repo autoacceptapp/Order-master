@@ -66,7 +66,8 @@ object DeviceUtils {
 
     /**
      * Returns a persistent custom User ID formatted as "OM-USER-XXXXXXXX" (8 uppercase alphanumeric characters).
-     * Saved in SharedPreferences so it remains permanent for the app installation.
+     * Derived deterministically from the unified hardware fingerprint so reinstalling on the same device
+     * resolves to the exact same ID, while honoring legacy SharedPreferences value if already present.
      */
     @Synchronized
     fun getCustomUserId(context: Context): String {
@@ -79,17 +80,29 @@ object DeviceUtils {
             return savedId
         }
 
-        // Generate 8-character random uppercase alphanumeric string
-        val allowedChars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-        val randomSuffix = (1..8)
-            .map { allowedChars.random() }
-            .joinToString("")
-        val newUserId = "OM-USER-$randomSuffix"
+        // Derive 8-character suffix deterministically from unified hardware fingerprint
+        val suffix = buildUnifiedHardwareFingerprint(context)
+            .sha256Hex
+            .take(8)
+            .uppercase(Locale.US)
+        val newUserId = "OM-USER-$suffix"
 
         prefs.edit().putString(KEY_CUSTOM_USER_ID, newUserId).apply()
         cachedCustomUserId = newUserId
         Log.i(TAG, "Generated and stored permanent Custom User ID: $newUserId")
         return newUserId
+    }
+
+    @Synchronized
+    internal fun resetCustomUserIdForTesting(context: Context? = null) {
+        cachedCustomUserId = null
+        if (context != null) {
+            context.applicationContext
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .remove(KEY_CUSTOM_USER_ID)
+                .apply()
+        }
     }
 
     /**

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
@@ -290,9 +291,16 @@ object GlobalAdminManager {
         _isBlocked.value = isServiceDown || isBanned
     }
 
+    @VisibleForTesting
+    internal fun setBanStateForTesting(state: UserBanState) {
+        _banState.value = state
+        updateBlockedState()
+    }
+
     /**
      * Evaluates whether automated background tasks, MacroDroid intents, or Accessibility clicks
-     * are permitted to execute. Returns false if global service is offline or user is banned.
+     * are permitted to execute. Performs a live comparison against `LicenseManager.getCurrentServerTimeMs()`
+     * so Doze-mode delays on background timers never allow banned sessions or retain expired bans.
      */
     fun canExecuteActions(context: Context? = null): Boolean {
         if (!_isServiceActive.value) {
@@ -303,15 +311,21 @@ object GlobalAdminManager {
             Log.d(TAG, "Action blocked: Clock tampering detected.")
             return false
         }
+        val now = LicenseManager.getCurrentServerTimeMs()
         val currentBan = _banState.value
         if (currentBan is UserBanState.Banned) {
-            if (LicenseManager.getCurrentServerTimeMs() < currentBan.banUntilTimestamp) {
+            if (now < currentBan.banUntilTimestamp) {
                 Log.d(TAG, "Action blocked: User is banned until ${currentBan.formattedDateTime}.")
                 return false
             } else {
+                Log.i(TAG, "Live ban check expired banUntil=${currentBan.banUntilTimestamp} at now=$now. Lifting ban.")
                 _banState.value = UserBanState.NotBanned
                 updateBlockedState()
             }
+        }
+        if (LicenseManager.isCurrentlyBanned()) {
+            Log.d(TAG, "Action blocked: LicenseManager reports active ban.")
+            return false
         }
         return true
     }

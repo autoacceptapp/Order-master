@@ -2330,6 +2330,28 @@ object LicenseManager {
     }
 
     /**
+     * Evaluates ban state live against authoritative server clock rather than relying solely
+     * on the 10-second ticker Handler (which Android Doze mode may delay).
+     */
+    fun isCurrentlyBanned(): Boolean {
+        val banUntil = _banUntilTimestampFlow.value
+        if (banUntil != null) {
+            if (getCurrentServerTimeMs() < banUntil) {
+                if (!_isBannedFlow.value) {
+                    _isBannedFlow.value = true
+                }
+                return true
+            } else {
+                _isBannedFlow.value = false
+                _banUntilTimestampFlow.value = null
+                _banReasonFlow.value = null
+                return false
+            }
+        }
+        return _isBannedFlow.value
+    }
+
+    /**
      * Pay-Per-Use & Admin Lock/Unlock Feature Check:
      * 1. Denies immediately if security violation / ban / explicit Admin lock applies.
      * 2. Returns true if full Pro Pass or Trial is active (unless explicitly locked by Admin).
@@ -2337,7 +2359,7 @@ object LicenseManager {
      *    or Admin (-1L / permanent or future server expiry timestamp).
      */
     fun isFeatureUnlocked(featureId: String): Boolean {
-        if (isClockTamperingDetected() || _isBannedFlow.value) return false
+        if (isClockTamperingDetected() || isCurrentlyBanned()) return false
         val ctx = appContext
         if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return false
         if (isFeatureLockedByAdmin(featureId)) return false
@@ -2374,7 +2396,7 @@ object LicenseManager {
      * - Either active Pro Pass/Trial OR AUTO_CLICK unlocked OR at least one filter unlocked in Free Mode
      */
     fun hasAnyAutoAcceptCapability(): Boolean {
-        if (!isServiceActive() || _isBannedFlow.value || isClockTamperingDetected()) return false
+        if (!isServiceActive() || isCurrentlyBanned() || isClockTamperingDetected()) return false
         val ctx = appContext
         if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return false
         if (isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) return false
@@ -2398,7 +2420,7 @@ object LicenseManager {
      * unlocked_features["remove_ads_pass"]). Daily/Weekly/Monthly Passes and Free Trial still show ads.
      */
     fun isAdsRemoved(): Boolean {
-        if (isClockTamperingDetected() || _isBannedFlow.value) return false
+        if (isClockTamperingDetected() || isCurrentlyBanned()) return false
         val ctx = appContext
         if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return false
 
@@ -2429,7 +2451,7 @@ object LicenseManager {
      * Returns 0L when locked or expired.
      */
     fun getFeatureRemainingTimeMs(featureId: String): Long {
-        if (isClockTamperingDetected() || _isBannedFlow.value) return 0L
+        if (isClockTamperingDetected() || isCurrentlyBanned()) return 0L
         val ctx = appContext
         if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return 0L
         if (isFeatureLockedByAdmin(featureId)) return 0L

@@ -33,6 +33,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -876,20 +877,24 @@ class FloatingOverlayService : Service() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 try {
-                    // Attempt with ONLY FOREGROUND_SERVICE_TYPE_SPECIAL_USE as primary type
-                    startForeground(
+                    // Attempt with ONLY FOREGROUND_SERVICE_TYPE_SPECIAL_USE as primary type via ServiceCompat
+                    ServiceCompat.startForeground(
+                        this,
                         NOTIFICATION_ID,
                         notification,
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
                     )
-                    Log.d(TAG, "Foreground service started with FOREGROUND_SERVICE_TYPE_SPECIAL_USE")
+                    Log.d(TAG, "Foreground service started with FOREGROUND_SERVICE_TYPE_SPECIAL_USE via ServiceCompat")
                 } catch (e: SecurityException) {
                     Log.w(TAG, "SecurityException starting with SPECIAL_USE: ${e.message}. Falling back to DATA_SYNC...")
+                    attemptDataSyncFallback(notification)
+                } catch (e: IllegalArgumentException) {
+                    Log.w(TAG, "IllegalArgumentException starting with SPECIAL_USE: ${e.message}. Falling back to DATA_SYNC...")
                     attemptDataSyncFallback(notification)
                 } catch (e: IllegalStateException) {
                     // Specifically handles ForegroundServiceStartNotAllowedException on Android 12+ / 14+ (API 31+)
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && e is android.app.ForegroundServiceStartNotAllowedException) {
-                        Log.w(TAG, "ForegroundServiceStartNotAllowedException on Android 14+ / OEM device: ${e.message}. Attempting graceful DATA_SYNC fallback...")
+                        Log.w(TAG, "ForegroundServiceStartNotAllowedException on Android 14+ / OEM device: ${e.message}. Falling back to DATA_SYNC...")
                     } else {
                         Log.w(TAG, "IllegalStateException with SPECIAL_USE: ${e.message}. Falling back to DATA_SYNC...")
                     }
@@ -897,19 +902,24 @@ class FloatingOverlayService : Service() {
                 }
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 try {
-                    startForeground(
+                    ServiceCompat.startForeground(
+                        this,
                         NOTIFICATION_ID,
                         notification,
                         ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                     )
-                    Log.d(TAG, "Foreground service started with FOREGROUND_SERVICE_TYPE_DATA_SYNC")
+                    Log.d(TAG, "Foreground service started with FOREGROUND_SERVICE_TYPE_DATA_SYNC via ServiceCompat")
                 } catch (t: Throwable) {
                     Log.w(TAG, "Error starting foreground service with DATA_SYNC: ${t.message}")
                     handleForegroundStartFailure()
                 }
             } else {
-                @Suppress("DEPRECATION")
-                startForeground(NOTIFICATION_ID, notification)
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    notification,
+                    0
+                )
             }
         } catch (t: Throwable) {
             Log.e(TAG, "Unexpected error in startAsForeground: ${t.message}", t)
@@ -920,15 +930,20 @@ class FloatingOverlayService : Service() {
     private fun attemptDataSyncFallback(notification: Notification) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
+                ServiceCompat.startForeground(
+                    this,
                     NOTIFICATION_ID,
                     notification,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                 )
                 Log.d(TAG, "Fallback to FOREGROUND_SERVICE_TYPE_DATA_SYNC succeeded.")
             } else {
-                @Suppress("DEPRECATION")
-                startForeground(NOTIFICATION_ID, notification)
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    notification,
+                    0
+                )
             }
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException in DATA_SYNC fallback: ${e.message}")

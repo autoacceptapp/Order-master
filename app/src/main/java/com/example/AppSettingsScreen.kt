@@ -122,6 +122,7 @@ fun AppSettingsScreen(
 
     // Reactive licensing and operating mode (Free vs Pro)
     val accessStatus by LicenseManager.accessStatus.collectAsState()
+    val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
     val isProMode = when (val s = accessStatus) {
         is AccessStatus.PassActive -> s.passTier.isProPass && s.remainingTimeMs > 0
         is AccessStatus.TrialActive -> s.remainingTimeMs > 0
@@ -397,6 +398,7 @@ fun AppSettingsScreen(
 
             // Freemium Operating Mode & Pro Pass Status Card
             item {
+                val hasCustomFilters = !isProMode && LicenseManager.hasAnyAutoAcceptCapability()
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -405,12 +407,15 @@ fun AppSettingsScreen(
                     colors = CardDefaults.cardColors(
                         containerColor = if (isProMode)
                             MaterialTheme.colorScheme.surface
+                        else if (hasCustomFilters)
+                            MaterialTheme.colorScheme.surface
                         else
                             MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                     ),
                     border = CardDefaults.outlinedCardBorder().copy(
                         brush = androidx.compose.ui.graphics.SolidColor(
                             if (isProMode) PrimaryEmerald.copy(alpha = 0.5f)
+                            else if (hasCustomFilters) PrimaryEmerald.copy(alpha = 0.35f)
                             else MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f)
                         )
                     )
@@ -437,14 +442,19 @@ fun AppSettingsScreen(
                                         .clip(CircleShape)
                                         .background(
                                             if (isProMode) PrimaryEmerald.copy(alpha = 0.15f)
+                                            else if (hasCustomFilters) PrimaryEmerald.copy(alpha = 0.15f)
                                             else MaterialTheme.colorScheme.tertiaryContainer
                                         ),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
-                                        imageVector = if (isProMode) Icons.Default.Check else Icons.Default.Lock,
+                                        imageVector = if (isProMode) Icons.Default.Check
+                                        else if (hasCustomFilters) Icons.Default.Check
+                                        else Icons.Default.Lock,
                                         contentDescription = null,
-                                        tint = if (isProMode) PrimaryEmerald else MaterialTheme.colorScheme.onTertiaryContainer,
+                                        tint = if (isProMode) PrimaryEmerald
+                                        else if (hasCustomFilters) PrimaryEmerald
+                                        else MaterialTheme.colorScheme.onTertiaryContainer,
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
@@ -454,20 +464,31 @@ fun AppSettingsScreen(
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
                                         Text(
-                                            text = if (isProMode) "Pro Mode (Full Automation)" else "Free Mode (Filters Locked)",
+                                            text = if (isProMode)
+                                                "Pro Mode (Full Automation)"
+                                            else if (hasCustomFilters)
+                                                "Free Mode (Custom Filters Active)"
+                                            else
+                                                "Free Mode (Filters Locked)",
                                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                                         )
                                         if (!isProMode) {
                                             Surface(
                                                 shape = RoundedCornerShape(4.dp),
-                                                color = MaterialTheme.colorScheme.tertiaryContainer
+                                                color = if (hasCustomFilters)
+                                                    PrimaryEmerald.copy(alpha = 0.15f)
+                                                else
+                                                    MaterialTheme.colorScheme.tertiaryContainer
                                             ) {
                                                 Text(
-                                                    text = "PRO PASS",
+                                                    text = if (hasCustomFilters) "CUSTOM ACTIVE" else "PRO PASS",
                                                     style = MaterialTheme.typography.labelSmall.copy(
                                                         fontSize = 9.sp,
                                                         fontWeight = FontWeight.ExtraBold,
-                                                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                                                        color = if (hasCustomFilters)
+                                                            PrimaryEmeraldDark
+                                                        else
+                                                            MaterialTheme.colorScheme.onTertiaryContainer
                                                     ),
                                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                                 )
@@ -477,6 +498,8 @@ fun AppSettingsScreen(
                                     Text(
                                         text = if (isProMode)
                                             "All automation filters active. Orders are evaluated in 300-700ms with smart auto-reject."
+                                        else if (hasCustomFilters)
+                                            "Custom filters unlocked with Points are active. Automation is evaluating rides matching your unlocked rules."
                                         else
                                             "All filters are locked in Free Mode. Buy filters with Points in Filter Rules or activate a Daily / Weekly / Monthly Pass.",
                                         style = MaterialTheme.typography.bodySmall,

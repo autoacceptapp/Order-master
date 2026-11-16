@@ -46,6 +46,7 @@ open class MyAccessibilityService : AccessibilityService() {
         const val TARGET_PACKAGE = "com.rapido.rider"
         const val DEBOUNCE_WINDOW_MS = 100L // 100ms debounce to balance ultra-fast response with frame rate stability
         const val COOLDOWN_MS = 2000L // 2 seconds delay between order acceptance
+        const val REJECT_DEBOUNCE_MS = 400L // 400ms debounce after rejecting an invalid card
         const val MAX_TRAVERSAL_TIMEOUT_MS = 45L // Strictly under 50ms traversal timeout to eliminate ANRs
         const val MAX_TRAVERSAL_DEPTH = 12       // Strictly limit recursion depth to prevent ANRs on nested layouts
         const val MIN_COORDINATE_TAP_INTERVAL_MS = 2000L // Strict rate-limiter: min 2000ms delay between coordinate taps
@@ -780,23 +781,49 @@ open class MyAccessibilityService : AccessibilityService() {
             if (canAutoReject) {
                 val isAutoClick = AppSettings.isAutoClickEnabled(this)
                 if (isAutoClick) {
-                    val (rejectedOffer, rejectedEval) = evaluatedOffers.first()
-                    val configuredDelayMs = AppSettings.getClickDelayMs(this)
-                    val delayMs = if (isAutoClickSpeedUnlocked) {
-                        configuredDelayMs.coerceIn(300L, 5000L)
-                    } else {
-                        configuredDelayMs.coerceIn(1000L, 5000L)
-                    }
-                    pendingRejectRunnable?.let { mainHandler.removeCallbacks(it) }
-                    isPendingExecution = true
-                    val rejectRunnable = Runnable {
-                        pendingRejectRunnable = null
-                        serviceScope.launch {
-                            executeCardRejectClick(rejectedOffer, rejectedEval)
+                    val invalidOffers = evaluatedOffers
+                        .filterNot { it.second.isAccepted }
+                        .sortedWith(compareBy({ it.first.bounds.top }, { it.first.bounds.left }))
+
+                    if (invalidOffers.isNotEmpty()) {
+                        val configuredDelayMs = AppSettings.getClickDelayMs(this)
+                        val delayMs = if (isAutoClickSpeedUnlocked) {
+                            configuredDelayMs.coerceIn(300L, 5000L)
+                        } else {
+                            configuredDelayMs.coerceIn(1000L, 5000L)
                         }
+                        pendingRejectRunnable?.let { mainHandler.removeCallbacks(it) }
+                        isPendingExecution = true
+                        val rejectRunnable = Runnable {
+                            pendingRejectRunnable = null
+                            serviceScope.launch {
+                                try {
+                                    for ((index, item) in invalidOffers.withIndex()) {
+                                        val (rejectedOffer, rejectedEval) = item
+                                        if (!isServiceRunning ||
+                                            !AppSettings.isAutoAcceptEnabled(this@MyAccessibilityService) ||
+                                            !AppSettings.isAutoClickEnabled(this@MyAccessibilityService) ||
+                                            !GlobalAdminManager.canExecuteActions(this@MyAccessibilityService)
+                                        ) {
+                                            break
+                                        }
+                                        val clicked = executeCardRejectClick(rejectedOffer, rejectedEval)
+                                        if (index < invalidOffers.size - 1) {
+                                            if (clicked) {
+                                                delay(REJECT_DEBOUNCE_MS + 25L)
+                                            } else {
+                                                delay(50L)
+                                            }
+                                        }
+                                    }
+                                } finally {
+                                    isPendingExecution = false
+                                }
+                            }
+                        }
+                        pendingRejectRunnable = rejectRunnable
+                        mainHandler.postDelayed(rejectRunnable, delayMs)
                     }
-                    pendingRejectRunnable = rejectRunnable
-                    mainHandler.postDelayed(rejectRunnable, delayMs)
                 }
             } else {
                 Log.d(TAG, "Auto-reject skipped: filters locked, allowing offer to time out.")
@@ -833,16 +860,16 @@ open class MyAccessibilityService : AccessibilityService() {
      * Executes ACTION_CLICK strictly targeting the Reject/Pass button node
      * located inside the spatial bounds of an invalid/rejected order card to clear the screen.
      */
-    private suspend fun executeCardRejectClick(offer: ParsedRideOffer, evaluation: RideEvaluation) {
+    private suspend fun executeCardRejectClick(offer: ParsedRideOffer, evaluation: RideEvaluation): Boolean {
         acquireBriefWakeLock(4000L)
         try {
             if (!GlobalAdminManager.canExecuteActions(this)) {
                 Log.w(TAG, "executeCardRejectClick blocked: Global kill switch active or user banned.")
-                return
+                return false
             }
             if (!AppSettings.isAutoAcceptEnabled(this) || !AppSettings.isAutoClickEnabled(this)) {
                 Log.d(TAG, "executeCardRejectClick skipped: Auto-Accept or Auto-Click disabled.")
-                return
+                return false
             }
             // Security check: Active pass/trial OR at least one unlocked & enabled granular filter (and AUTO_CLICK not Admin-locked)
             val isProModeNow = LicenseManager.isAccessGranted()
@@ -851,14 +878,14 @@ open class MyAccessibilityService : AccessibilityService() {
                 LicenseManager.hasAnyAutoAcceptCapability()
             if (!canAutoReject) {
                 Log.w(TAG, "executeCardRejectClick: Auto-reject blocked. No active filters unlocked/enabled.")
-                return
+                return false
             }
 
-            // Debounce / Cooldown check: respect strict COOLDOWN_MS
+            // Debounce / Cooldown check: respect active debounce/cooldown
             val now = SystemClock.elapsedRealtime()
             if (now < lastProcessTime) {
                 Log.d(TAG, "executeCardRejectClick: Suppressed due to active cooldown.")
-                return
+                return false
             }
 
             var clicked = false
@@ -913,26 +940,27 @@ open class MyAccessibilityService : AccessibilityService() {
                 Log.i(TAG, "executeCardRejectClick: coordinate fallback tap at ($tapX, $tapY) success=$clicked")
             }
 
-            // Cooldown: 2000ms cooldown upon success to ignore lingering UI elements; standard debounce on failure
+            // Debounce: 400ms debounce upon success so next offer is not missed; standard debounce on failure
             lastProcessTime = if (clicked) {
-                SystemClock.elapsedRealtime() + COOLDOWN_MS
+                SystemClock.elapsedRealtime() + REJECT_DEBOUNCE_MS
             } else {
                 SystemClock.elapsedRealtime()
             }
 
             AppSettings.addLog(
                 title = if (clicked) "Order Auto-Dismissed" else "Reject Attempted",
-                message = if (clicked) "Dismissed card via Reject action. (${evaluation.decisionReason}). Cooldown active (2000ms)."
+                message = if (clicked) "Dismissed card via Reject action. (${evaluation.decisionReason}). Debounce active (400ms)."
                 else "Reject button not found in card bounds; letting offer time out naturally.",
                 severity = if (clicked) LogSeverity.REJECTED else LogSeverity.INFO,
                 evaluation = evaluation
             )
             broadcastLog("Auto-reject executed: $clicked (${evaluation.decisionReason})")
+            return clicked
         } catch (e: Exception) {
             Log.e(TAG, "Error executing card reject click", e)
             lastProcessTime = SystemClock.elapsedRealtime()
+            return false
         } finally {
-            isPendingExecution = false
             releaseWakeLock()
         }
     }

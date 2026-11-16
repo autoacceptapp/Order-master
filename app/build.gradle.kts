@@ -61,11 +61,17 @@ android {
         file("${rootDir}/release.jks")
       ).firstOrNull { it.exists() && it.length() > 0 }
 
+      val envStorePass = System.getenv("KEYSTORE_PASSWORD")?.trim()?.takeIf { it.isNotEmpty() }
+        ?: System.getenv("STORE_PASSWORD")?.trim()?.takeIf { it.isNotEmpty() }
+      val envKeyAlias = System.getenv("KEY_ALIAS")?.trim()?.takeIf { it.isNotEmpty() }
+      val envKeyPass = System.getenv("KEY_PASSWORD")?.trim()?.takeIf { it.isNotEmpty() }
+        ?: envStorePass
+
       if (releaseKeystore != null) {
         storeFile = releaseKeystore
-        storePassword = System.getenv("KEYSTORE_PASSWORD") ?: System.getenv("STORE_PASSWORD") ?: "android"
-        keyAlias = System.getenv("KEY_ALIAS") ?: "androiddebugkey"
-        keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: "android"
+        storePassword = envStorePass ?: "android"
+        keyAlias = envKeyAlias ?: "androiddebugkey"
+        keyPassword = envKeyPass ?: "android"
       } else {
         storeFile = file("${rootDir}/debug.keystore")
         storePassword = "android"

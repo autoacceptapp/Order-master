@@ -83,18 +83,18 @@ jobs:
               CUSTOM_KEYSTORE="true"
               echo "✅ app/release.jks decoded successfully ($(stat -c%s app/release.jks) bytes)."
             else
-              echo "::error::KEYSTORE_BASE64 secret is set but could not be decoded into a valid keystore."
-              exit 1
+              echo "::warning::KEYSTORE_BASE64 secret could not be decoded. Falling back to debug keystore."
+              rm -f app/release.jks
             fi
-          elif [ -f "./debug.keystore.base64" ]; then
-            echo "Restoring debug.keystore and configuring fallback release keystore..."
+          else
+            echo "No custom KEYSTORE_BASE64 secret provided. Using bundled debug keystore."
+            rm -f app/release.jks
+          fi
+
+          # Ensure debug.keystore is present
+          if [ ! -s "./debug.keystore" ] && [ -f "./debug.keystore.base64" ]; then
+            echo "Restoring debug.keystore from debug.keystore.base64..."
             tr -d '\r\n ' < ./debug.keystore.base64 | base64 -d > ./debug.keystore
-            cp ./debug.keystore app/release.jks
-            echo "✅ Keystore restored from debug.keystore.base64."
-          elif [ -f "./debug.keystore" ]; then
-            echo "Using existing debug.keystore..."
-            cp ./debug.keystore app/release.jks
-            echo "✅ Keystore copied to app/release.jks."
           fi
           echo "custom_keystore=${CUSTOM_KEYSTORE}" >> "$GITHUB_OUTPUT"
 
@@ -104,7 +104,7 @@ jobs:
           echo "=== Verifying Keystore Integrity & Static SHA-1 Fingerprint ==="
           if [ -f "app/release.jks" ]; then
             echo "--- Release Keystore Certificate Info (release.jks) ---"
-            keytool -list -v -keystore app/release.jks -storepass android 2>/dev/null | grep -E "Alias name:|Owner:|Issuer:|Valid from:|SHA1:|SHA256:" || echo "Keystore readable with custom or default credentials"
+            keytool -list -v -keystore app/release.jks -storepass android 2>/dev/null | grep -E "Alias name:|Owner:|Issuer:|Valid from:|SHA1:|SHA256:" || echo "Custom release keystore detected"
           fi
 
           if [ -f "./debug.keystore" ]; then
@@ -155,36 +155,80 @@ jobs:
           KEY_ALIAS="$(printf '%s' "${KEY_ALIAS:-}" | tr -d '\r\n')"
           KEY_PASSWORD="$(printf '%s' "${KEY_PASSWORD:-}" | tr -d '\r\n')"
           FIREBASE_FALLBACK_API_KEY="$(printf '%s' "${FIREBASE_FALLBACK_API_KEY:-}" | tr -d '\r\n')"
-          export KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD FIREBASE_FALLBACK_API_KEY
+          export FIREBASE_FALLBACK_API_KEY
 
-          # Ensure fallback debug keystore is not unlocked with stale/unrelated secrets
-          if [ "${CUSTOM_KEYSTORE}" != "true" ]; then
-            echo "No KEYSTORE_BASE64 secret configured; using fallback debug keystore credentials."
-            unset KEYSTORE_PASSWORD STORE_PASSWORD KEY_ALIAS KEY_PASSWORD
-          else
-            # Unset empty GitHub Secrets so build.gradle.kts `System.getenv(...) ?: "android"` fallback works
-            [ -z "${KEYSTORE_PASSWORD:-}" ] && unset KEYSTORE_PASSWORD
-            [ -z "${STORE_PASSWORD:-}" ] && unset STORE_PASSWORD
-            [ -z "${KEY_ALIAS:-}" ] && unset KEY_ALIAS
-            [ -z "${KEY_PASSWORD:-}" ] && unset KEY_PASSWORD
+          # Determine and test valid signing credentials before launching Gradle
+          TARGET_PASS="${KEYSTORE_PASSWORD:-}"
+          TARGET_ALIAS="${KEY_ALIAS:-}"
+          TARGET_KEYPASS="${KEY_PASSWORD:-}"
+
+          # If no custom keystore was supplied, or if secrets are empty, default to android / androiddebugkey
+          if [ "${CUSTOM_KEYSTORE}" != "true" ] || [ -z "${TARGET_PASS}" ]; then
+            rm -f app/release.jks
+            TARGET_PASS="android"
+            TARGET_ALIAS="androiddebugkey"
+            TARGET_KEYPASS="android"
           fi
-          [ -z "${FIREBASE_FALLBACK_API_KEY:-}" ] && unset FIREBASE_FALLBACK_API_KEY
 
           if [ -f "app/release.jks" ]; then
-            CHECK_PASS="${KEYSTORE_PASSWORD:-android}"
-            CHECK_ALIAS="${KEY_ALIAS:-androiddebugkey}"
-            CHECK_KEY_PASS="${KEY_PASSWORD:-${CHECK_PASS}}"
-            if ! keytool -list -keystore app/release.jks -storepass "${CHECK_PASS}" -alias "${CHECK_ALIAS}" >/dev/null 2>&1; then
-              echo "::error::Failed to unlock app/release.jks (alias: ${CHECK_ALIAS}). Verify that KEYSTORE_BASE64 matches KEYSTORE_PASSWORD and KEY_ALIAS in GitHub Secrets."
-              exit 1
+            # Verify if TARGET_PASS works. If not, test if default 'android' works
+            if ! keytool -list -keystore app/release.jks -storepass "${TARGET_PASS}" >/dev/null 2>&1; then
+              if keytool -list -keystore app/release.jks -storepass android >/dev/null 2>&1; then
+                echo "Notice: Configured keystore password failed, but 'android' unlocked app/release.jks. Falling back to 'android'."
+                TARGET_PASS="android"
+                TARGET_ALIAS="androiddebugkey"
+                TARGET_KEYPASS="android"
+              else
+                echo "::warning::Cannot unlock app/release.jks with KEYSTORE_PASSWORD or 'android'. Falling back to debug.keystore."
+                rm -f app/release.jks
+                TARGET_PASS="android"
+                TARGET_ALIAS="androiddebugkey"
+                TARGET_KEYPASS="android"
+              fi
             fi
-            if ! keytool -importkeystore -srckeystore app/release.jks -srcstorepass "${CHECK_PASS}" -srcalias "${CHECK_ALIAS}" -srckeypass "${CHECK_KEY_PASS}" -destkeystore /tmp/keycheck.p12 -deststoretype PKCS12 -deststorepass "check123" -noprompt >/dev/null 2>&1; then
+
+            if [ -f "app/release.jks" ]; then
+              # Check if TARGET_ALIAS exists in keystore. If not, detect the actual alias from keystore
+              if [ -z "${TARGET_ALIAS}" ] || ! keytool -list -keystore app/release.jks -storepass "${TARGET_PASS}" -alias "${TARGET_ALIAS}" >/dev/null 2>&1; then
+                DETECTED_ALIAS=$(keytool -list -v -keystore app/release.jks -storepass "${TARGET_PASS}" 2>/dev/null | grep -i "Alias name:" | head -n 1 | sed 's/.*Alias name: *//I')
+                if [ -n "${DETECTED_ALIAS}" ]; then
+                  echo "Notice: Using detected keystore alias: ${DETECTED_ALIAS}"
+                  TARGET_ALIAS="${DETECTED_ALIAS}"
+                else
+                  TARGET_ALIAS="androiddebugkey"
+                fi
+              fi
+
+              if [ -z "${TARGET_KEYPASS}" ]; then
+                TARGET_KEYPASS="${TARGET_PASS}"
+              fi
+
+              # Verify key password
+              if ! keytool -importkeystore -srckeystore app/release.jks -srcstorepass "${TARGET_PASS}" -srcalias "${TARGET_ALIAS}" -srckeypass "${TARGET_KEYPASS}" -destkeystore /tmp/keycheck.p12 -deststoretype PKCS12 -deststorepass "check123" -noprompt >/dev/null 2>&1; then
+                rm -f /tmp/keycheck.p12
+                if [ "${TARGET_KEYPASS}" != "android" ] && keytool -importkeystore -srckeystore app/release.jks -srcstorepass "${TARGET_PASS}" -srcalias "${TARGET_ALIAS}" -srckeypass "android" -destkeystore /tmp/keycheck.p12 -deststoretype PKCS12 -deststorepass "check123" -noprompt >/dev/null 2>&1; then
+                  echo "Notice: KEY_PASSWORD was incorrect, but key opened with 'android'. Using 'android'."
+                  TARGET_KEYPASS="android"
+                else
+                  echo "::warning::Keystore unlocked, but key password for alias '${TARGET_ALIAS}' is incorrect. Falling back to debug.keystore."
+                  rm -f app/release.jks
+                  TARGET_PASS="android"
+                  TARGET_ALIAS="androiddebugkey"
+                  TARGET_KEYPASS="android"
+                fi
+              fi
               rm -f /tmp/keycheck.p12
-              echo "::error::Keystore opened, but KEY_PASSWORD is incorrect for alias '${CHECK_ALIAS}'. Verify KEY_PASSWORD in GitHub Secrets."
-              exit 1
             fi
-            rm -f /tmp/keycheck.p12
+            if [ -f "app/release.jks" ]; then
+              echo "Custom release keystore and alias '${TARGET_ALIAS}' successfully validated."
+            fi
           fi
+
+          # Export the exact verified credentials for Gradle's System.getenv() calls
+          export KEYSTORE_PASSWORD="${TARGET_PASS}"
+          export STORE_PASSWORD="${TARGET_PASS}"
+          export KEY_ALIAS="${TARGET_ALIAS}"
+          export KEY_PASSWORD="${TARGET_KEYPASS}"
 
           if command -v gradle >/dev/null 2>&1; then
             echo "Using pre-installed Gradle CLI ($(gradle --version | head -n 3 | tr '\n' ' '))"

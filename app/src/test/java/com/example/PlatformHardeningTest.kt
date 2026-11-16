@@ -82,9 +82,11 @@ class PlatformHardeningTest {
     @Test
     fun `floating overlay toggleMode shows lock toast and refuses dead state when TTS_VOICE is locked`() {
         val futureExpiry = System.currentTimeMillis() + 3_600_000L
-        // Unlock ONLY MIN_FARE (Pro/Auto-Accept capability present, TTS_VOICE still locked!)
         LicenseManager.setFeatureLocksForTesting(
-            unlocked = mapOf(FeatureIds.MIN_FARE to futureExpiry)
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.AUTO_CLICK to futureExpiry
+            )
         )
         AppSettings.setAutoClickEnabled(context, true)
         assertTrue(AppSettings.isAutoClickEnabled(context))

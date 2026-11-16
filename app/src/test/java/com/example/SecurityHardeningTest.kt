@@ -415,6 +415,9 @@ class SecurityHardeningTest {
         LicenseManager.setFeatureLocksForTesting(
             unlocked = mapOf(FeatureIds.MIN_PER_KM_RATE to futureExpiry)
         )
+        // Expired trial toggles reset cleanly; toggle must not silently re-activate
+        assertFalse(AppSettings.isMinPerKmRateEnabled(context))
+        AppSettings.setMinPerKmRateEnabled(context, true)
         assertTrue(AppSettings.isMinPerKmRateEnabled(context))
         assertFalse(AppSettings.isMinFareEnabled(context))
         assertFalse(AppSettings.isMaxFareEnabled(context))
@@ -424,6 +427,17 @@ class SecurityHardeningTest {
         assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
         assertFalse(AppSettings.isFloatingOverlayEnabled(context))
         assertTrue(LicenseManager.hasAnyAutoAcceptCapability())
+        // Strict AUTO_CLICK check: unlocking a rate filter does NOT grant auto-click
+        assertFalse(AppSettings.isAutoClickEnabled(context))
+
+        // Unlocking AUTO_CLICK allows enabling auto-click
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_PER_KM_RATE to futureExpiry,
+                FeatureIds.AUTO_CLICK to futureExpiry
+            )
+        )
+        AppSettings.setAutoClickEnabled(context, true)
         assertTrue(AppSettings.isAutoClickEnabled(context))
 
         // Activating Daily/Weekly/Monthly Pass unlocks all filters
@@ -438,6 +452,18 @@ class SecurityHardeningTest {
         )
         LicenseManager.refreshAccessStatus(context)
         assertTrue(LicenseManager.isAccessGranted())
+
+        // Under Pro Pass, user can enable all automation filters
+        AppSettings.setMinFareEnabled(context, true)
+        AppSettings.setMaxFareEnabled(context, true)
+        AppSettings.setMaxPickupDistanceEnabled(context, true)
+        AppSettings.setMaxDropDistanceEnabled(context, true)
+        AppSettings.setMinPerKmRateEnabled(context, true)
+        AppSettings.setDestinationBlacklistEnabled(context, true)
+        AppSettings.setVoiceAnnouncerEnabled(context, true)
+        AppSettings.setFloatingOverlayEnabled(context, true)
+        AppSettings.setAutoClickEnabled(context, true)
+
         assertTrue(AppSettings.isMinFareEnabled(context))
         assertTrue(AppSettings.isMaxFareEnabled(context))
         assertTrue(AppSettings.isMaxPickupDistanceEnabled(context))
@@ -600,6 +626,47 @@ class SecurityHardeningTest {
     }
 
     @Test
+    fun `deterministic fallback custom user ID preserves ID across reinstall and honors legacy prefs`() {
+        // 1. Clean slate
+        DeviceUtils.resetCustomUserIdForTesting(context)
+        assertNull(DeviceUtils.getSavedCustomUserIdOrNull(context))
+
+        // 2. Deterministic derivation from hardware fingerprint
+        val userId1 = DeviceUtils.getCustomUserId(context)
+        assertTrue(userId1.startsWith("OM-USER-"))
+        assertEquals(16, userId1.length) // "OM-USER-" (8) + 8 chars = 16
+
+        val expectedSuffix = DeviceUtils.buildUnifiedHardwareFingerprint(context)
+            .sha256Hex
+            .take(8)
+            .uppercase(java.util.Locale.US)
+        assertEquals("OM-USER-$expectedSuffix", userId1)
+
+        // 3. Clear in-memory cache and SharedPreferences (simulate app uninstall/reinstall on same device)
+        DeviceUtils.resetCustomUserIdForTesting(context)
+        val userIdAfterReinstall = DeviceUtils.getCustomUserId(context)
+        assertEquals(
+            "Reinstalling on the same device must deterministically produce the exact same custom user ID",
+            userId1,
+            userIdAfterReinstall
+        )
+
+        // 4. Test legacy migration: if SharedPreferences already holds a saved ID, it must be honored
+        val legacyId = "OM-USER-LEGACY01"
+        context.getSharedPreferences("device_security_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString("custom_user_id", legacyId)
+            .commit()
+
+        DeviceUtils.resetCustomUserIdForTesting(null) // clear in-memory cache only
+        assertEquals(legacyId, DeviceUtils.getSavedCustomUserIdOrNull(context))
+        assertEquals(legacyId, DeviceUtils.getCustomUserId(context))
+
+        // Cleanup
+        DeviceUtils.resetCustomUserIdForTesting(context)
+    }
+
+    @Test
     fun licenseManagerReferralAndPaymentUtrValidationRejectInvalidInputs() = runTest {
         val badCodeRes = LicenseManager.claimReferralViaActionQueue("bad-123")
         assertTrue("Malformed referral code must fail before hitting Firestore", badCodeRes.isFailure)
@@ -739,6 +806,123 @@ class SecurityHardeningTest {
         assertFalse(AppSettings.settingsState.value.isAutoAcceptEnabled)
         assertFalse(AppSettings.settingsState.value.isAutoClickEnabled)
         assertFalse(AppSettings.hasActiveEvaluationFilter(context))
+    }
+
+    @Test
+    fun firestoreBlacklistSyncMergesAndDeduplicatesBothBlockedLocationsAndBlacklistedDestinations() {
+        AppSettings.init(context)
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+        LicenseManager.forceReleaseLoadingState()
+
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(FeatureIds.DESTINATION_BLACKLIST to futureExpiry)
+        )
+
+        // 1. Admin writes only blacklistedDestinations
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "isDestinationBlacklistEnabled" to true,
+                "blacklistedDestinations" to listOf("  Airport ", "Toll Gate", "airport")
+            )
+        )
+        assertEquals(listOf("Airport", "Toll Gate"), AppSettings.getBlockedLocations(context))
+
+        // 2. Both blockedLocations and blacklistedDestinations present -> merge & deduplicate cleanly
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "isDestinationBlacklistEnabled" to true,
+                "blockedLocations" to listOf("Highway Toll", "Railway Station"),
+                "blacklistedDestinations" to listOf("highway toll", "Slum Area")
+            )
+        )
+        assertEquals(
+            listOf("Highway Toll", "Railway Station", "Slum Area"),
+            AppSettings.getBlockedLocations(context)
+        )
+        AppSettings.resetBusinessStateForTest(context)
+    }
+
+    @Test
+    fun signOutViaUpdateUserAuthClearsLocalCustomizationFlagsForNextFirestoreSync() {
+        AppSettings.init(context)
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+        LicenseManager.forceReleaseLoadingState()
+
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.DESTINATION_BLACKLIST to futureExpiry
+            )
+        )
+
+        // User customizes Min Fare & Blacklist locally (writes customized_* flags into USER_FILTER_PREFS_NAME)
+        AppSettings.setMinFare(context, 180f)
+        AppSettings.setBlockedLocations(context, listOf("LocalOnly"))
+
+        val fPrefs = context.getSharedPreferences(AppSettings.USER_FILTER_PREFS_NAME, Context.MODE_PRIVATE)
+        assertTrue(fPrefs.all.keys.any { it.startsWith("customized_") })
+
+        // Signing out via updateUserAuthFromFirebase(context, null) MUST clear all customized_* flags
+        AppSettings.updateUserAuthFromFirebase(context, null)
+        assertFalse(
+            "All customized_* flags must be cleared on sign-out",
+            fPrefs.all.keys.any { it.startsWith("customized_") }
+        )
+
+        // Next user / fresh Firestore rules now apply cleanly without being blocked by stale local flags
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.DESTINATION_BLACKLIST to futureExpiry
+            )
+        )
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "minFare" to 75.0,
+                "blacklistedDestinations" to listOf("AdminZone")
+            )
+        )
+        assertEquals(75f, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(listOf("AdminZone"), AppSettings.getBlockedLocations(context))
+        AppSettings.resetBusinessStateForTest(context)
+    }
+
+    @Test
+    fun globalAdminManagerCanExecuteActionsEvaluatesBanExpiryLiveWithoutTicker() {
+        LicenseManager.resetStateForTesting(context)
+        GlobalAdminManager.setBanStateForTesting(UserBanState.NotBanned)
+        assertTrue(GlobalAdminManager.canExecuteActions(context))
+
+        val now = LicenseManager.getCurrentServerTimeMs()
+        // Active ban blocks execution immediately
+        GlobalAdminManager.setBanStateForTesting(
+            UserBanState.Banned(
+                banUntilTimestamp = now + 120_000L,
+                formattedDateTime = "Future",
+                reason = "Violation"
+            )
+        )
+        assertFalse(GlobalAdminManager.canExecuteActions(context))
+        assertTrue(GlobalAdminManager.isBlocked.value)
+
+        // Expired ban timestamp is lifted synchronously inside canExecuteActions() even if ticker hasn't fired
+        GlobalAdminManager.setBanStateForTesting(
+            UserBanState.Banned(
+                banUntilTimestamp = now - 1_000L,
+                formattedDateTime = "Past",
+                reason = "Expired"
+            )
+        )
+        assertTrue(GlobalAdminManager.canExecuteActions(context))
+        assertTrue(GlobalAdminManager.banState.value is UserBanState.NotBanned)
+        assertFalse(GlobalAdminManager.isBlocked.value)
     }
 }
 

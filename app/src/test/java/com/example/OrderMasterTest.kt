@@ -139,9 +139,23 @@ class OrderMasterTest {
         assertEquals(1.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
         assertEquals(4.0f, AppSettings.getMaxDropDistance(context), 0.01f)
 
+        // Regression: verify previously high minFare (e.g. 300f) does not clamp maxFare (250f) during short preset
+        AppSettings.setMaxFare(context, 500f)
+        AppSettings.setMinFare(context, 300f)
+        AppSettings.setMinFareEnabled(context, true)
+        AppSettings.setMaxFareEnabled(context, true)
+        assertEquals(300f, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(500f, AppSettings.getMaxFare(context), 0.01f)
+        assertTrue(AppSettings.applyPreset(context, "short"))
+        assertEquals(40f, AppSettings.getMinFare(context), 0.01f)
+        assertEquals(250f, AppSettings.getMaxFare(context), 0.01f)
+        assertEquals(1.0f, AppSettings.getMaxPickupDistance(context), 0.01f)
+        assertEquals(4.0f, AppSettings.getMaxDropDistance(context), 0.01f)
+
         assertTrue(AppSettings.applyPreset(context, "default"))
         assertEquals(AppSettings.DEFAULT_MIN_FARE, AppSettings.getMinFare(context), 0.01f)
         assertEquals(AppSettings.DEFAULT_MAX_PICKUP_DISTANCE, AppSettings.getMaxPickupDistance(context), 0.01f)
+        assertEquals(50.0f, AppSettings.DEFAULT_MAX_DROP_DISTANCE, 0.01f)
     }
 
     @Test

@@ -672,11 +672,11 @@ fun FilterSettingsScreen(
                         }
 
                         Slider(
-                            value = settingsState.maxDropDistance,
+                            value = settingsState.maxDropDistance.coerceIn(1.0f, 50.0f),
                             enabled = isDropUnlocked,
                             onValueChange = { if (isDropUnlocked) viewModel.setMaxDropDistance((it * 2).roundToInt() / 2f) },
-                            valueRange = 1.0f..30.0f,
-                            steps = 57, // 0.5km steps
+                            valueRange = 1.0f..50.0f,
+                            steps = 97, // 0.5km steps
                             modifier = Modifier.fillMaxWidth().testTag("drop_dist_slider")
                         )
 
@@ -685,7 +685,7 @@ fun FilterSettingsScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            listOf(5.0f, 10.0f, 15.0f, 20.0f, 30.0f).forEach { distVal ->
+                            listOf(5.0f, 10.0f, 15.0f, 25.0f, 50.0f).forEach { distVal ->
                                 val selected = kotlin.math.abs(settingsState.maxDropDistance - distVal) < 0.25f
                                 OutlinedButton(
                                     onClick = { if (isDropUnlocked) viewModel.setMaxDropDistance(distVal) },

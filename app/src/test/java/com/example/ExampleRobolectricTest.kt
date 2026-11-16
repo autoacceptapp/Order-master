@@ -399,6 +399,8 @@ class ExampleRobolectricTest {
         assertEquals(45L, MyAccessibilityService.MAX_TRAVERSAL_TIMEOUT_MS)
         assertTrue(MyAccessibilityService.MAX_TRAVERSAL_DEPTH <= 15)
         assertEquals(12, MyAccessibilityService.MAX_TRAVERSAL_DEPTH)
+        assertEquals(400L, MyAccessibilityService.REJECT_DEBOUNCE_MS)
+        assertEquals(2000L, MyAccessibilityService.COOLDOWN_MS)
 
         val service = MyAccessibilityService()
         val node = android.view.accessibility.AccessibilityNodeInfo.obtain()

@@ -41,14 +41,14 @@ jobs:
           echo "=== Setting up Keystore and Google Services ==="
 
           # 1. Restore debug.keystore
-          if [ -n "${KEYSTORE_BASE64}" ]; then
-            echo "Restoring debug.keystore from KEYSTORE_BASE64 secret..."
-            echo "${KEYSTORE_BASE64}" | base64 -d > ./debug.keystore
-          elif [ -f "./debug.keystore.base64" ]; then
+          if [ -f "./debug.keystore.base64" ]; then
             echo "Restoring debug.keystore from ./debug.keystore.base64 file..."
-            base64 -d ./debug.keystore.base64 > ./debug.keystore
+            tr -d '\r\n ' < ./debug.keystore.base64 | base64 -d > ./debug.keystore
           elif [ -f "./debug.keystore" ]; then
             echo "Using existing ./debug.keystore..."
+          elif [ -n "${KEYSTORE_BASE64}" ]; then
+            echo "Restoring debug.keystore from KEYSTORE_BASE64 secret..."
+            printf '%s' "${KEYSTORE_BASE64}" | tr -d '\r\n ' | base64 -d > ./debug.keystore
           fi
 
           if [ ! -s "./debug.keystore" ]; then

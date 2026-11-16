@@ -145,14 +145,18 @@ class OrderMasterApplication : Application() {
                     PlayIntegrityAppCheckProviderFactory.getInstance()
                 }
                 firebaseAppCheck.installAppCheckProviderFactory(debugFactory)
-            } else if (isInstalledFromPlayStore()) {
-                Log.d(TAG, "Configuring Firebase App Check with PlayIntegrityAppCheckProviderFactory (Play Store RELEASE build)")
-                firebaseAppCheck.installAppCheckProviderFactory(
-                    PlayIntegrityAppCheckProviderFactory.getInstance()
-                )
             } else {
-                Log.i(TAG, "Sideloaded/GitHub APK detected; skipping PlayIntegrityAppCheckProviderFactory.")
-                return
+                // In release builds (both Play Store and sideloaded GitHub Releases APKs),
+                // Google Play Integrity API works as long as Google Play Services is available
+                // and the release signing key SHA-256 is registered in Firebase Console.
+                try {
+                    Log.d(TAG, "Configuring Firebase App Check with PlayIntegrityAppCheckProviderFactory (RELEASE build)")
+                    firebaseAppCheck.installAppCheckProviderFactory(
+                        PlayIntegrityAppCheckProviderFactory.getInstance()
+                    )
+                } catch (t: Throwable) {
+                    Log.w(TAG, "PlayIntegrityAppCheckProviderFactory initialization error or Play Services missing: ${t.message}; degrading gracefully.")
+                }
             }
 
             // Enable automatic App Check token refresh for continuous background monitoring

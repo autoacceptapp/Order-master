@@ -25,6 +25,20 @@
 -keep class com.example.data.UserProfile { *; }
 -keep class com.example.data.ReceivedPayment { *; }
 -keep class com.example.data.repository.AppConfig { *; }
+-keep class com.example.data.repository.** { *; }
+
+# Keep licensing, entitlements, admin managers, and device security
+-keep class com.example.LicenseManager { *; }
+-keep class com.example.LicenseManager$** { *; }
+-keep class com.example.FeatureIds { *; }
+-keep class com.example.PassTier { *; }
+-keep class com.example.AccessStatus { *; }
+-keep class com.example.AccessStatus$** { *; }
+-keep class com.example.GlobalAdminManager { *; }
+-keep class com.example.UserBanState { *; }
+-keep class com.example.UserBanState$** { *; }
+-keep class com.example.AppSettings { *; }
+-keep class com.example.DeviceUtils { *; }
 
 # Kotlin Coroutines, Metadata & Flow rules
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
