@@ -176,6 +176,7 @@ class FloatingOverlayService : Service() {
     private var windowLayoutParams: WindowManager.LayoutParams? = null
 
     private var isViewAttached = false
+    internal var voiceAutoEnabledByOverlay = false
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -561,10 +562,16 @@ class FloatingOverlayService : Service() {
         }
 
         val nextIsAutoClick = AppSettings.toggleAutoClick(this)
-        if (!nextIsAutoClick && LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE) &&
+        if (!nextIsAutoClick &&
+            LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE) &&
+            !LicenseManager.isFeatureLockedByAdmin(FeatureIds.TTS_VOICE) &&
             !AppSettings.isVoiceAnnouncerEnabled(this)
         ) {
             AppSettings.setVoiceAnnouncerEnabled(this, true)
+            voiceAutoEnabledByOverlay = true
+        } else if (nextIsAutoClick && voiceAutoEnabledByOverlay) {
+            AppSettings.setVoiceAnnouncerEnabled(this, false)
+            voiceAutoEnabledByOverlay = false
         }
         updateVisualState(nextIsAutoClick)
 
@@ -582,15 +589,25 @@ class FloatingOverlayService : Service() {
         )
     }
 
+    @androidx.annotation.VisibleForTesting
+    internal fun getModeBadgeTextForTesting(): String = tvMode?.text?.toString() ?: ""
+
     /**
      * Updates the button background color and sub-badge:
-     * - Green: Full Automation Mode
-     * - Red: Voice-Only Mode
-     * - Dark Red/Lock: Locked
+     * - Green: Full Automation Mode ("AUTO")
+     * - Red: Voice-Only Mode ("VOICE") when TTS Voice is unlocked & enabled,
+     *        "PAUSED" when TTS Voice is unlocked but voice announcer is OFF,
+     *        or "LOCK" when unentitled/locked
      */
-    private fun updateVisualState(isAutoClickEnabled: Boolean) {
+    internal fun updateVisualState(isAutoClickEnabled: Boolean) {
         val isLicensed = LicenseManager.hasAnyAutoAcceptCapability()
-        val effectiveAutoClick = isLicensed && isAutoClickEnabled && !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)
+        val effectiveAutoClick = isLicensed &&
+            isAutoClickEnabled &&
+            !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) &&
+            LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK)
+        val isVoiceUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE) &&
+            !LicenseManager.isFeatureLockedByAdmin(FeatureIds.TTS_VOICE)
+        val isVoiceActive = isVoiceUnlocked && AppSettings.isVoiceAnnouncerEnabled(this)
 
         val bgColor = if (effectiveAutoClick) COLOR_FULL_AUTO_BG else COLOR_VOICE_ONLY_BG
         val strokeColor = if (effectiveAutoClick) COLOR_FULL_AUTO_BORDER else COLOR_VOICE_ONLY_BORDER
@@ -605,7 +622,9 @@ class FloatingOverlayService : Service() {
         tvMode?.text = when {
             !isLicensed -> "LOCK"
             effectiveAutoClick -> "AUTO"
-            else -> "VOICE"
+            isVoiceActive -> "VOICE"
+            isVoiceUnlocked -> "PAUSED"
+            else -> "LOCK"
         }
     }
 
@@ -974,6 +993,7 @@ class FloatingOverlayService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isServiceRunning = false
+        voiceAutoEnabledByOverlay = false
         if (activeInstance === this) {
             activeInstance = null
         }

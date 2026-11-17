@@ -101,5 +101,26 @@ class ExampleUnitTest {
     assertEquals(20, ReferralManager.REFERRAL_BONUS_POINTS)
     assertEquals(50, ReferralManager.WELCOME_BONUS_POINTS)
   }
+
+  @Test
+  fun testParseVersionCode_and_isVersionNewer_buildTagPriority() {
+    // Explicit build numbers must win over SemVer patch number (2)
+    assertEquals(
+      105,
+      GitHubUpdateManager.parseVersionCode(
+        "v1.0.2-build-105",
+        "Order Master v1.0.2-build-105 (Build #105)"
+      )
+    )
+    assertEquals(105, GitHubUpdateManager.parseVersionCode("v1.0.2-debug-build-105"))
+    assertEquals(108, GitHubUpdateManager.parseVersionCode("v1.0.2", "Order Master v1.0.2 (Build #108)"))
+
+    assertTrue(GitHubUpdateManager.isVersionNewer("v1.0.2-build-105", "1.0.2", 102))
+    assertFalse(GitHubUpdateManager.isVersionNewer("v1.0.2-build-105", "1.0.2", 105))
+    assertFalse(GitHubUpdateManager.isVersionNewer("v1.0.2-build-101", "1.0.2", 105))
+
+    // Equal build code falls back to SemVer comparison
+    assertTrue(GitHubUpdateManager.isVersionNewer("v1.1.0-build-105", "1.0.2", 105))
+  }
 }
 

@@ -723,6 +723,7 @@ object LicenseManager {
             hasHadPreviousPass = true,
             message = "Security verification required. Please connect to internet to verify your subscription."
         )
+        onEntitlementsChanged?.invoke()
 
         scope.launch {
             try {
@@ -1270,6 +1271,7 @@ object LicenseManager {
                 clearLicensingCache(ctx)
                 hasLoadedTrial = false
             }
+            onEntitlementsChanged?.invoke()
             if (!alreadyAttached) {
                 profileUpdateDispatchedHash = null
             }

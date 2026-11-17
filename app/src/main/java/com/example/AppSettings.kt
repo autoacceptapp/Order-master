@@ -462,7 +462,7 @@ object AppSettings {
             val serviceOnline = if (ctx != null) LicenseManager.isServiceActive(ctx) else LicenseManager.isServiceActive()
             val hasCapability = securityClean && LicenseManager.hasAnyAutoAcceptCapability()
 
-            if (LicenseManager.accessStatus.value is AccessStatus.Expired) {
+            if (LicenseManager.accessStatus.value is AccessStatus.Expired && LicenseManager.hasLoadedLicensing) {
                 cleanExpiredFeatureToggles(ctx)
             }
 
@@ -522,13 +522,17 @@ object AppSettings {
      * unlocked when accessStatus transitions to Expired. Cleans any customized_ flags for expired toggles.
      */
     fun cleanExpiredFeatureToggles(context: Context? = appContextRef) {
+        if (LicenseManager.accessStatus.value !is AccessStatus.Expired || !LicenseManager.hasLoadedLicensing) {
+            return
+        }
         val ctx = context ?: appContextRef ?: return
-        val prefs = getUserFilterPrefs(ctx)
-        val editor = prefs.edit()
-        var changed = false
         synchronized(settingsLock) {
+            val prefs = getUserFilterPrefs(ctx)
+            val editor = prefs.edit()
+            var changed = false
+
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)) {
-                if (rawMinFareEnabled) {
+                if (rawMinFareEnabled || prefs.getBoolean(FKEY_MIN_FARE_ENABLED, false)) {
                     rawMinFareEnabled = false
                     editor.putBoolean(FKEY_MIN_FARE_ENABLED, false)
                     editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_MIN_FARE_ENABLED")
@@ -536,7 +540,7 @@ object AppSettings {
                 }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)) {
-                if (rawMaxFareEnabled) {
+                if (rawMaxFareEnabled || prefs.getBoolean(FKEY_MAX_FARE_ENABLED, false)) {
                     rawMaxFareEnabled = false
                     editor.putBoolean(FKEY_MAX_FARE_ENABLED, false)
                     editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_MAX_FARE_ENABLED")
@@ -544,7 +548,7 @@ object AppSettings {
                 }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)) {
-                if (rawMaxPickupDistEnabled) {
+                if (rawMaxPickupDistEnabled || prefs.getBoolean(FKEY_MAX_PICKUP_ENABLED, false)) {
                     rawMaxPickupDistEnabled = false
                     editor.putBoolean(FKEY_MAX_PICKUP_ENABLED, false)
                     editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_MAX_PICKUP_ENABLED")
@@ -552,7 +556,7 @@ object AppSettings {
                 }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)) {
-                if (rawMaxDropDistEnabled) {
+                if (rawMaxDropDistEnabled || prefs.getBoolean(FKEY_MAX_DROP_ENABLED, false)) {
                     rawMaxDropDistEnabled = false
                     editor.putBoolean(FKEY_MAX_DROP_ENABLED, false)
                     editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_MAX_DROP_ENABLED")
@@ -560,7 +564,7 @@ object AppSettings {
                 }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)) {
-                if (rawMinPerKmRateEnabled) {
+                if (rawMinPerKmRateEnabled || prefs.getBoolean(FKEY_MIN_RATE_ENABLED, false)) {
                     rawMinPerKmRateEnabled = false
                     editor.putBoolean(FKEY_MIN_RATE_ENABLED, false)
                     editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_MIN_RATE_ENABLED")
@@ -568,7 +572,7 @@ object AppSettings {
                 }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)) {
-                if (rawBlacklistEnabled) {
+                if (rawBlacklistEnabled || prefs.getBoolean(FKEY_BLACKLIST_ENABLED, false)) {
                     rawBlacklistEnabled = false
                     editor.putBoolean(FKEY_BLACKLIST_ENABLED, false)
                     editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_BLACKLIST_ENABLED")
@@ -576,7 +580,7 @@ object AppSettings {
                 }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE)) {
-                if (rawVoiceEnabled) {
+                if (rawVoiceEnabled || prefs.getBoolean(FKEY_VOICE_ENABLED, false)) {
                     rawVoiceEnabled = false
                     editor.putBoolean(FKEY_VOICE_ENABLED, false)
                     editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_VOICE_ENABLED")
@@ -584,7 +588,7 @@ object AppSettings {
                 }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)) {
-                if (rawOverlayEnabled) {
+                if (rawOverlayEnabled || prefs.getBoolean(FKEY_OVERLAY_ENABLED, false)) {
                     rawOverlayEnabled = false
                     editor.putBoolean(FKEY_OVERLAY_ENABLED, false)
                     editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_OVERLAY_ENABLED")
@@ -592,16 +596,17 @@ object AppSettings {
                 }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK)) {
-                if (rawAutoClickEnabled) {
+                if (rawAutoClickEnabled || prefs.getBoolean(FKEY_AUTO_CLICK_ENABLED, false)) {
                     rawAutoClickEnabled = false
                     editor.putBoolean(FKEY_AUTO_CLICK_ENABLED, false)
                     editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_AUTO_CLICK_ENABLED")
                     changed = true
                 }
             }
-        }
-        if (changed) {
-            editor.commit()
+
+            if (changed) {
+                editor.commit()
+            }
         }
     }
 
@@ -624,6 +629,13 @@ object AppSettings {
     private fun isUserCustomized(context: Context?, prefKey: String): Boolean {
         val ctx = context ?: appContextRef ?: return false
         return getUserFilterPrefs(ctx).getBoolean("${FKEY_USER_CUSTOMIZED_PREFIX}$prefKey", false)
+    }
+
+    private fun hasLocalUserFilterPref(context: Context?, prefKey: String): Boolean {
+        val ctx = context ?: appContextRef ?: return false
+        val fPrefs = getUserFilterPrefs(ctx)
+        return fPrefs.getBoolean("${FKEY_USER_CUSTOMIZED_PREFIX}$prefKey", false) ||
+            fPrefs.contains(prefKey)
     }
 
     private fun clearUserCustomizationFlags(context: Context?) {
@@ -790,8 +802,9 @@ object AppSettings {
         } else {
             _userAuthState.value = UserAuthState()
             stopUserConfigSnapshotListener()
-            clearUserCustomizationFlags(appCtx)
-            resetBusinessStateToRestrictedDefaults(appCtx)
+            if (LicenseManager.accessStatus.value !is AccessStatus.Loading && LicenseManager.hasLoadedLicensing) {
+                publishEffectiveSettings(appCtx)
+            }
         }
 
         // Register AuthStateListener once so sign-in / sign-out transitions attach/detach listeners automatically
@@ -812,7 +825,7 @@ object AppSettings {
         }
 
         LicenseManager.onEntitlementsChanged = {
-            if (LicenseManager.accessStatus.value is AccessStatus.Expired) {
+            if (LicenseManager.accessStatus.value is AccessStatus.Expired && LicenseManager.hasLoadedLicensing) {
                 cleanExpiredFeatureToggles(appContextRef)
             }
             publishEffectiveSettings(appContextRef)
@@ -848,7 +861,9 @@ object AppSettings {
                             if (_passExpiryTimestampFlow.value <= LicenseManager.getCurrentServerTimeMs()) {
                                 _passExpiryTimestampFlow.value = 0L
                             }
-                            cleanExpiredFeatureToggles(appCtx)
+                            if (LicenseManager.hasLoadedLicensing) {
+                                cleanExpiredFeatureToggles(appCtx)
+                            }
                         }
                         else -> {
                             if (!_isFirestoreSyncedFlow.value) {
@@ -994,64 +1009,106 @@ object AppSettings {
         }
 
         synchronized(settingsLock) {
-            // Preserve user's locally customized filter values & toggles; apply Firestore defaults only when not locally customized
+            // Preserve user's locally saved filter values & toggles (either customized_* flag or explicit entry
+            // in USER_FILTER_PREFS_NAME); apply Firestore defaults only when not locally present.
+            // Also read raw RAM backing toggles (not masked SettingsState booleans) so AccessStatus.Loading
+            // does not erase raw user preferences while entitlements are still loading.
             val current = _settingsState.value
+            val fPrefs = (context ?: appContextRef)?.let { getUserFilterPrefs(it) }
 
             val serverAutoAccept = if (data.containsKey("autoAcceptEnabled") || data.containsKey("isAutoAcceptEnabled")) {
-                (data["autoAcceptEnabled"] as? Boolean) ?: (data["isAutoAcceptEnabled"] as? Boolean) ?: current.isAutoAcceptEnabled
-            } else current.isAutoAcceptEnabled
-            val finalAutoAccept = if (isUserCustomized(context, FKEY_AUTO_ACCEPT)) current.isAutoAcceptEnabled else serverAutoAccept
+                (data["autoAcceptEnabled"] as? Boolean) ?: (data["isAutoAcceptEnabled"] as? Boolean) ?: autoAcceptEnabled
+            } else autoAcceptEnabled
+            val finalAutoAccept = if (hasLocalUserFilterPref(context, FKEY_AUTO_ACCEPT)) {
+                fPrefs?.takeIf { it.contains(FKEY_AUTO_ACCEPT) }?.getBoolean(FKEY_AUTO_ACCEPT, autoAcceptEnabled) ?: autoAcceptEnabled
+            } else serverAutoAccept
 
             val rawMinFare = (data["minFare"] as? Number)?.toFloat()
-            val finalMinFare = if (rawMinFare != null && !isUserCustomized(context, FKEY_MIN_FARE)) {
+            val finalMinFare = if (rawMinFare != null && !hasLocalUserFilterPref(context, FKEY_MIN_FARE)) {
                 if (rawMinFare > 0f) rawMinFare.coerceIn(MIN_FARE_RANGE_START, MIN_FARE_RANGE_END) else RESTRICTED_MIN_FARE
-            } else _minFareFlow.value
-            val finalMinFareEnabled = if (!isUserCustomized(context, FKEY_MIN_FARE_ENABLED)) {
-                (data["isMinFareEnabled"] as? Boolean) ?: current.isMinFareEnabled
-            } else current.isMinFareEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_MIN_FARE) }?.getFloat(FKEY_MIN_FARE, _minFareFlow.value)
+                    ?.coerceIn(MIN_FARE_RANGE_START, MIN_FARE_RANGE_END) ?: _minFareFlow.value
+            }
+            val finalMinFareEnabled = if (!hasLocalUserFilterPref(context, FKEY_MIN_FARE_ENABLED)) {
+                (data["isMinFareEnabled"] as? Boolean) ?: rawMinFareEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_MIN_FARE_ENABLED) }?.getBoolean(FKEY_MIN_FARE_ENABLED, rawMinFareEnabled)
+                    ?: rawMinFareEnabled
+            }
 
             val rawMaxFare = (data["maxFare"] as? Number)?.toFloat()
-            val finalMaxFare = if (rawMaxFare != null && !isUserCustomized(context, FKEY_MAX_FARE)) {
+            val finalMaxFare = if (rawMaxFare != null && !hasLocalUserFilterPref(context, FKEY_MAX_FARE)) {
                 if (rawMaxFare > 0f) rawMaxFare.coerceIn(MAX_FARE_RANGE_START, MAX_FARE_RANGE_END) else DEFAULT_MAX_FARE
-            } else _maxFareFlow.value
-            val finalMaxFareEnabled = if (!isUserCustomized(context, FKEY_MAX_FARE_ENABLED)) {
-                (data["isMaxFareEnabled"] as? Boolean) ?: current.isMaxFareEnabled
-            } else current.isMaxFareEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_MAX_FARE) }?.getFloat(FKEY_MAX_FARE, _maxFareFlow.value)
+                    ?.coerceIn(MAX_FARE_RANGE_START, MAX_FARE_RANGE_END) ?: _maxFareFlow.value
+            }
+            val finalMaxFareEnabled = if (!hasLocalUserFilterPref(context, FKEY_MAX_FARE_ENABLED)) {
+                (data["isMaxFareEnabled"] as? Boolean) ?: rawMaxFareEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_MAX_FARE_ENABLED) }?.getBoolean(FKEY_MAX_FARE_ENABLED, rawMaxFareEnabled)
+                    ?: rawMaxFareEnabled
+            }
 
             val rawMaxPickup = (data["maxPickupDistance"] as? Number)?.toFloat()
-            val finalMaxPickup = if (rawMaxPickup != null && !isUserCustomized(context, FKEY_MAX_PICKUP)) {
+            val finalMaxPickup = if (rawMaxPickup != null && !hasLocalUserFilterPref(context, FKEY_MAX_PICKUP)) {
                 rawMaxPickup.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM)
-            } else _maxPickupDistanceFlow.value
-            val finalMaxPickupEnabled = if (!isUserCustomized(context, FKEY_MAX_PICKUP_ENABLED)) {
-                (data["isMaxPickupDistanceEnabled"] as? Boolean) ?: current.isMaxPickupDistanceEnabled
-            } else current.isMaxPickupDistanceEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_MAX_PICKUP) }?.getFloat(FKEY_MAX_PICKUP, _maxPickupDistanceFlow.value)
+                    ?.coerceIn(MIN_PICKUP_DISTANCE_KM, MAX_PICKUP_DISTANCE_KM) ?: _maxPickupDistanceFlow.value
+            }
+            val finalMaxPickupEnabled = if (!hasLocalUserFilterPref(context, FKEY_MAX_PICKUP_ENABLED)) {
+                (data["isMaxPickupDistanceEnabled"] as? Boolean) ?: rawMaxPickupDistEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_MAX_PICKUP_ENABLED) }?.getBoolean(FKEY_MAX_PICKUP_ENABLED, rawMaxPickupDistEnabled)
+                    ?: rawMaxPickupDistEnabled
+            }
 
             val rawMaxDrop = (data["maxDropDistance"] as? Number)?.toFloat()
-            val finalMaxDrop = if (rawMaxDrop != null && !isUserCustomized(context, FKEY_MAX_DROP)) {
+            val finalMaxDrop = if (rawMaxDrop != null && !hasLocalUserFilterPref(context, FKEY_MAX_DROP)) {
                 rawMaxDrop.coerceIn(1.0f, 50.0f)
-            } else current.maxDropDistance
-            val finalMaxDropEnabled = if (!isUserCustomized(context, FKEY_MAX_DROP_ENABLED)) {
-                (data["isMaxDropDistanceEnabled"] as? Boolean) ?: current.isMaxDropDistanceEnabled
-            } else current.isMaxDropDistanceEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_MAX_DROP) }?.getFloat(FKEY_MAX_DROP, current.maxDropDistance)
+                    ?.coerceIn(1.0f, 50.0f) ?: current.maxDropDistance
+            }
+            val finalMaxDropEnabled = if (!hasLocalUserFilterPref(context, FKEY_MAX_DROP_ENABLED)) {
+                (data["isMaxDropDistanceEnabled"] as? Boolean) ?: rawMaxDropDistEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_MAX_DROP_ENABLED) }?.getBoolean(FKEY_MAX_DROP_ENABLED, rawMaxDropDistEnabled)
+                    ?: rawMaxDropDistEnabled
+            }
 
             val rawMinRate = (data["minPerKmRate"] as? Number)?.toFloat()
-            val finalMinRate = if (rawMinRate != null && !isUserCustomized(context, FKEY_MIN_RATE)) {
+            val finalMinRate = if (rawMinRate != null && !hasLocalUserFilterPref(context, FKEY_MIN_RATE)) {
                 rawMinRate.coerceIn(1.0f, 100.0f)
-            } else current.minPerKmRate
-            val finalMinRateEnabled = if (!isUserCustomized(context, FKEY_MIN_RATE_ENABLED)) {
-                (data["isMinPerKmRateEnabled"] as? Boolean) ?: current.isMinPerKmRateEnabled
-            } else current.isMinPerKmRateEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_MIN_RATE) }?.getFloat(FKEY_MIN_RATE, current.minPerKmRate)
+                    ?.coerceIn(1.0f, 100.0f) ?: current.minPerKmRate
+            }
+            val finalMinRateEnabled = if (!hasLocalUserFilterPref(context, FKEY_MIN_RATE_ENABLED)) {
+                (data["isMinPerKmRateEnabled"] as? Boolean) ?: rawMinPerKmRateEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_MIN_RATE_ENABLED) }?.getBoolean(FKEY_MIN_RATE_ENABLED, rawMinPerKmRateEnabled)
+                    ?: rawMinPerKmRateEnabled
+            }
 
-            val finalClickDelay = if (data.containsKey("clickDelayMs") && !isUserCustomized(context, FKEY_CLICK_DELAY_MS)) {
+            val finalClickDelay = if (data.containsKey("clickDelayMs") && !hasLocalUserFilterPref(context, FKEY_CLICK_DELAY_MS)) {
                 (data["clickDelayMs"] as? Number)?.toLong()?.coerceAtLeast(100L) ?: current.clickDelayMs
-            } else current.clickDelayMs
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_CLICK_DELAY_MS) }?.getLong(FKEY_CLICK_DELAY_MS, current.clickDelayMs)
+                    ?.coerceAtLeast(100L) ?: current.clickDelayMs
+            }
 
-            val finalBlacklistEnabled = if (data.containsKey("isDestinationBlacklistEnabled") && !isUserCustomized(context, FKEY_BLACKLIST_ENABLED)) {
-                (data["isDestinationBlacklistEnabled"] as? Boolean) ?: current.isDestinationBlacklistEnabled
-            } else current.isDestinationBlacklistEnabled
+            val finalBlacklistEnabled = if (data.containsKey("isDestinationBlacklistEnabled") && !hasLocalUserFilterPref(context, FKEY_BLACKLIST_ENABLED)) {
+                (data["isDestinationBlacklistEnabled"] as? Boolean) ?: rawBlacklistEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_BLACKLIST_ENABLED) }?.getBoolean(FKEY_BLACKLIST_ENABLED, rawBlacklistEnabled)
+                    ?: rawBlacklistEnabled
+            }
 
             val hasBlockedLocationsField = data.containsKey("blockedLocations") || data.containsKey("blacklistedDestinations")
-            val finalBlockedList = if (hasBlockedLocationsField && !isUserCustomized(context, FKEY_BLOCKED_LOCATIONS)) {
+            val finalBlockedList = if (hasBlockedLocationsField && !hasLocalUserFilterPref(context, FKEY_BLOCKED_LOCATIONS)) {
                 val blockedLocationsList = (data["blockedLocations"] as? List<*>)
                     ?.mapNotNull { it as? String }
                     ?: emptyList()
@@ -1063,25 +1120,36 @@ object AppSettings {
                     .filter { it.isNotEmpty() }
                     .distinctBy { it.lowercase(Locale.ROOT) }
                     .sorted()
+            } else if (hasLocalUserFilterPref(context, FKEY_BLOCKED_LOCATIONS) && fPrefs?.contains(FKEY_BLOCKED_LOCATIONS) == true) {
+                parseBlockedLocationsString(fPrefs.getString(FKEY_BLOCKED_LOCATIONS, null))
             } else current.blockedLocations
 
             val finalOverlayEnabled = if ((data.containsKey("isFloatingOverlayEnabled") || data.containsKey("floatingOverlayEnabled")) &&
-                !isUserCustomized(context, FKEY_OVERLAY_ENABLED)
+                !hasLocalUserFilterPref(context, FKEY_OVERLAY_ENABLED)
             ) {
-                (data["isFloatingOverlayEnabled"] as? Boolean) ?: (data["floatingOverlayEnabled"] as? Boolean) ?: current.isFloatingOverlayEnabled
-            } else current.isFloatingOverlayEnabled
+                (data["isFloatingOverlayEnabled"] as? Boolean) ?: (data["floatingOverlayEnabled"] as? Boolean) ?: rawOverlayEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_OVERLAY_ENABLED) }?.getBoolean(FKEY_OVERLAY_ENABLED, rawOverlayEnabled)
+                    ?: rawOverlayEnabled
+            }
 
             val finalVoiceEnabled = if ((data.containsKey("isVoiceAnnouncerEnabled") || data.containsKey("voiceAnnouncerEnabled")) &&
-                !isUserCustomized(context, FKEY_VOICE_ENABLED)
+                !hasLocalUserFilterPref(context, FKEY_VOICE_ENABLED)
             ) {
-                (data["isVoiceAnnouncerEnabled"] as? Boolean) ?: (data["voiceAnnouncerEnabled"] as? Boolean) ?: current.isVoiceAnnouncerEnabled
-            } else current.isVoiceAnnouncerEnabled
+                (data["isVoiceAnnouncerEnabled"] as? Boolean) ?: (data["voiceAnnouncerEnabled"] as? Boolean) ?: rawVoiceEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_VOICE_ENABLED) }?.getBoolean(FKEY_VOICE_ENABLED, rawVoiceEnabled)
+                    ?: rawVoiceEnabled
+            }
 
             val finalAutoClickEnabled = if ((data.containsKey("isAutoClickEnabled") || data.containsKey("autoClickEnabled")) &&
-                !isUserCustomized(context, FKEY_AUTO_CLICK_ENABLED)
+                !hasLocalUserFilterPref(context, FKEY_AUTO_CLICK_ENABLED)
             ) {
-                (data["isAutoClickEnabled"] as? Boolean) ?: (data["autoClickEnabled"] as? Boolean) ?: current.isAutoClickEnabled
-            } else current.isAutoClickEnabled
+                (data["isAutoClickEnabled"] as? Boolean) ?: (data["autoClickEnabled"] as? Boolean) ?: rawAutoClickEnabled
+            } else {
+                fPrefs?.takeIf { it.contains(FKEY_AUTO_CLICK_ENABLED) }?.getBoolean(FKEY_AUTO_CLICK_ENABLED, rawAutoClickEnabled)
+                    ?: rawAutoClickEnabled
+            }
 
             // Update all RAM properties & StateFlows atomically
             autoAcceptEnabled = finalAutoAccept

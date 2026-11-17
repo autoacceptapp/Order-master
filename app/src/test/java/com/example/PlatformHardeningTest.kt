@@ -239,4 +239,93 @@ class PlatformHardeningTest {
         assertEquals("Hindi (\u0939\u093F\u0928\u094D\u0926\u0940)", context.getString(R.string.language_hindi))
         assertEquals("\u20B999", context.getString(R.string.payment_price_format, 99))
     }
+
+    @Test
+    fun `release build never selects debug apk asset and apk downloader rejects mismatched build type`() {
+        val debugOnlyAssets = org.json.JSONArray().apply {
+            put(org.json.JSONObject().apply {
+                put("name", "app-debug.apk")
+                put("browser_download_url", "https://github.com/autoacceptapp/Order-master/releases/download/v1.0.2-debug-build-105/app-debug.apk")
+                put("size", 5_000_000L)
+            })
+        }
+
+        // Release builds must reject debug-only release assets cleanly
+        val releaseSelection = GitHubUpdateManager.selectCompatibleApkAsset(debugOnlyAssets, isDebugBuild = false)
+        assertEquals(null, releaseSelection)
+
+        // Debug builds select app-debug.apk
+        val debugSelection = GitHubUpdateManager.selectCompatibleApkAsset(debugOnlyAssets, isDebugBuild = true)
+        assertEquals("app-debug.apk", debugSelection?.fileName)
+
+        // Release builds select app-release.apk / *-release.apk even when debug APK is also present
+        val mixedAssets = org.json.JSONArray().apply {
+            put(org.json.JSONObject().apply {
+                put("name", "app-debug.apk")
+                put("browser_download_url", "https://example.com/app-debug.apk")
+                put("size", 5_000_000L)
+            })
+            put(org.json.JSONObject().apply {
+                put("name", "OrderMaster-v1.0.2-build-106-release.apk")
+                put("browser_download_url", "https://example.com/OrderMaster-v1.0.2-build-106-release.apk")
+                put("size", 6_000_000L)
+            })
+        }
+        val mixedReleaseSelection = GitHubUpdateManager.selectCompatibleApkAsset(mixedAssets, isDebugBuild = false)
+        assertEquals("OrderMaster-v1.0.2-build-106-release.apk", mixedReleaseSelection?.fileName)
+
+        assertFalse(ApkDownloader.isCompatibleApkForBuildType("https://example.com/app-debug.apk", "app-debug.apk", isDebugBuild = false))
+        assertTrue(ApkDownloader.isCompatibleApkForBuildType("https://example.com/app-release.apk", "app-release.apk", isDebugBuild = false))
+    }
+
+    @Test
+    fun `floating overlay toggleMode cleanly restores voice state on AUTO to VOICE to AUTO and updates visual badge`() {
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.AUTO_CLICK to futureExpiry,
+                FeatureIds.TTS_VOICE to futureExpiry
+            )
+        )
+        AppSettings.setAutoAcceptEnabled(context, true)
+        AppSettings.setFloatingOverlayEnabled(context, true)
+        AppSettings.setAutoClickEnabled(context, true)
+        AppSettings.setVoiceAnnouncerEnabled(context, false)
+
+        val controller = Robolectric.buildService(FloatingOverlayService::class.java).create()
+        val service = controller.get()
+        assertEquals("AUTO", service.getModeBadgeTextForTesting())
+
+        // AUTO -> VOICE: auto-enables voice announcer & shows VOICE
+        service.toggleMode()
+        assertFalse(AppSettings.isAutoClickEnabled(context))
+        assertTrue(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertEquals("VOICE", service.getModeBadgeTextForTesting())
+
+        // VOICE -> AUTO: restores voice announcer back to OFF & shows AUTO
+        service.toggleMode()
+        assertTrue(AppSettings.isAutoClickEnabled(context))
+        assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
+        assertEquals("AUTO", service.getModeBadgeTextForTesting())
+
+        // When Auto-Click is OFF and voice announcer is OFF (even though TTS_VOICE is unlocked), badge shows PAUSED
+        AppSettings.setAutoClickEnabled(context, false)
+        service.updateVisualState(false)
+        assertEquals("PAUSED", service.getModeBadgeTextForTesting())
+
+        // When TTS_VOICE is locked by Admin and Auto-Click is OFF, badge shows LOCK
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.AUTO_CLICK to futureExpiry,
+                FeatureIds.TTS_VOICE to futureExpiry
+            ),
+            locked = setOf(FeatureIds.TTS_VOICE)
+        )
+        service.updateVisualState(false)
+        assertEquals("LOCK", service.getModeBadgeTextForTesting())
+
+        controller.destroy()
+    }
 }

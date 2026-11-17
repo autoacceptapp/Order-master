@@ -147,12 +147,30 @@ object ApkDownloader {
         }
     }
 
+    internal fun isCompatibleApkForBuildType(
+        downloadUrl: String,
+        fileName: String,
+        isDebugBuild: Boolean = BuildConfig.DEBUG
+    ): Boolean {
+        val urlAssetName = downloadUrl.substringAfterLast('/').substringBefore('?').trim()
+        val containsDebug = fileName.contains("debug", ignoreCase = true) ||
+            urlAssetName.contains("debug", ignoreCase = true)
+        val containsRelease = fileName.contains("release", ignoreCase = true) ||
+            urlAssetName.contains("release", ignoreCase = true)
+
+        return if (!isDebugBuild) {
+            !containsDebug
+        } else {
+            !containsRelease
+        }
+    }
+
     /**
      * Downloads an APK file using system DownloadManager.
      *
      * @param context Application context
      * @param downloadUrl Direct URL to the .apk asset
-     * @param fileName Target filename on disk (default "app-debug.apk")
+     * @param fileName Target filename on disk (default matches BuildConfig.DEBUG)
      */
     fun startDownload(
         context: Context,
@@ -161,6 +179,14 @@ object ApkDownloader {
         coroutineScope: CoroutineScope = CoroutineScope(Dispatchers.IO)
     ) {
         val appContext = context.applicationContext
+        if (!isCompatibleApkForBuildType(downloadUrl, fileName)) {
+            val buildType = if (BuildConfig.DEBUG) "debug" else "release"
+            Log.e(TAG, "Blocked incompatible APK download '$fileName' ($downloadUrl) on $buildType build.")
+            _downloadState.value = DownloadState.Error(
+                "Incompatible APK update ($fileName) for this $buildType build."
+            )
+            return
+        }
         activeFileName = fileName
 
         // Cancel previous download or polling job

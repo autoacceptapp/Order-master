@@ -1167,5 +1167,70 @@ class SecurityHardeningTest {
         assertEquals(25, AppSettings.getRecentEvaluations().size)
         AppSettings.clearEvaluations()
     }
+
+    @Test
+    fun appSettingsPreservesLocalTogglesAcrossLoadingAndFirestoreDefaultsOnlyClearingOnVerifiedExpired() {
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+
+        // Pre-persist local user filter preferences & toggles before entitlements finish loading
+        val fPrefs = context.getSharedPreferences(AppSettings.USER_FILTER_PREFS_NAME, Context.MODE_PRIVATE)
+        fPrefs.edit()
+            .putBoolean("user_auto_accept_enabled", true)
+            .putBoolean("user_min_fare_enabled", true)
+            .putFloat("user_min_fare", 140f)
+            .putBoolean("user_auto_click_enabled", true)
+            .commit()
+
+        // 1. AccessStatus is Loading: init() + publishEffectiveSettings() must NOT wipe local preferences
+        assertTrue(LicenseManager.accessStatus.value is AccessStatus.Loading)
+        AppSettings.init(context)
+        AppSettings.publishEffectiveSettings(context)
+        assertTrue(
+            "Loading state must not wipe user_min_fare_enabled from SharedPreferences",
+            fPrefs.getBoolean("user_min_fare_enabled", false)
+        )
+        assertTrue(
+            "Loading state must not wipe user_auto_click_enabled from SharedPreferences",
+            fPrefs.getBoolean("user_auto_click_enabled", false)
+        )
+
+        // 2. Firestore snapshot arrives with default false values while still Loading: local preferences must be preserved
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "autoAcceptEnabled" to false,
+                "isMinFareEnabled" to false,
+                "minFare" to 50.0,
+                "isAutoClickEnabled" to false
+            )
+        )
+        assertTrue(fPrefs.getBoolean("user_min_fare_enabled", false))
+
+        // 3. Transition Loading -> PassActive: effective SettingsState must immediately expose preserved user toggles
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L
+        LicenseManager.setLicensingForTesting(
+            passTier = PassTier.MONTHLY,
+            passExpiry = futureExpiry
+        )
+        assertTrue(LicenseManager.accessStatus.value is AccessStatus.PassActive)
+        assertTrue(AppSettings.isAutoAcceptEnabled(context))
+        assertTrue(AppSettings.isMinFareEnabled(context))
+        assertTrue(AppSettings.isAutoClickEnabled(context))
+        assertTrue(AppSettings.settingsState.value.isMinFareEnabled)
+        assertTrue(AppSettings.settingsState.value.isAutoClickEnabled)
+        assertEquals(140f, AppSettings.getMinFare(context), 0.01f)
+
+        // 4. Transition PassActive -> verified Expired: unentitled toggles are reset cleanly
+        LicenseManager.setLicensingForTesting(
+            passTier = PassTier.MONTHLY,
+            passExpiry = System.currentTimeMillis() - 60_000L
+        )
+        assertTrue(LicenseManager.accessStatus.value is AccessStatus.Expired)
+        assertFalse(AppSettings.isMinFareEnabled(context))
+        assertFalse(AppSettings.isAutoClickEnabled(context))
+        assertFalse(fPrefs.getBoolean("user_min_fare_enabled", true))
+        assertFalse(fPrefs.getBoolean("user_auto_click_enabled", true))
+    }
 }
 

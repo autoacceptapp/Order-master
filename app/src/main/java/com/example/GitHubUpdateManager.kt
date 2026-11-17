@@ -211,59 +211,41 @@ object GitHubUpdateManager {
                 return@withContext err
             }
 
-            // Inspect assets array to find the compiled APK asset (.apk)
+            // Inspect assets array to find a build-type compatible compiled APK asset (.apk)
             val assetsArray: JSONArray? = json.optJSONArray("assets")
             val preferredApkName = resolveFallbackApkFileName()
-            var apkDownloadUrl: String? = null
-            var apkFileName = preferredApkName
-            var assetSize = 0L
+            val selectedAsset = selectCompatibleApkAsset(assetsArray)
+            var apkDownloadUrl: String? = selectedAsset?.downloadUrl
+            var apkFileName = selectedAsset?.fileName ?: preferredApkName
+            var assetSize = selectedAsset?.size ?: 0L
 
-            if (assetsArray != null && assetsArray.length() > 0) {
-                var fallbackApkUrl: String? = null
-                var fallbackApkName: String? = null
-                var fallbackSize = 0L
-
-                for (i in 0 until assetsArray.length()) {
-                    val assetObj = assetsArray.getJSONObject(i)
-                    val name = assetObj.optString("name", "")
-                    val downloadUrl = assetObj.optString("browser_download_url", "")
-                    if (name.endsWith(".apk", ignoreCase = true) && downloadUrl.isNotEmpty()) {
-                        // Prefer build-type matching APK ("app-release.apk" for release, "app-debug.apk" for debug)
-                        if (name.equals(preferredApkName, ignoreCase = true)) {
-                            apkDownloadUrl = downloadUrl
-                            apkFileName = name
-                            assetSize = assetObj.optLong("size", 0L)
-                            break
-                        } else if (fallbackApkUrl == null) {
-                            fallbackApkUrl = downloadUrl
-                            fallbackApkName = name
-                            fallbackSize = assetObj.optLong("size", 0L)
-                        }
-                    }
-                }
-
-                if (apkDownloadUrl == null && fallbackApkUrl != null) {
-                    apkDownloadUrl = fallbackApkUrl
-                    apkFileName = fallbackApkName ?: preferredApkName
-                    assetSize = fallbackSize
-                }
-            }
-
-            // Fallback direct URL format using unified dynamicAppDownloadUrl or GitHub direct release URL
+            // Fallback ONLY to compatible dynamicAppDownloadUrl; never fall back to a mismatched build-type APK
             if (apkDownloadUrl.isNullOrEmpty()) {
                 val dynamicConfigUrl = com.example.data.repository.AppConfigRepository.currentAppConfig.value.dynamicAppDownloadUrl.trim()
-                if (dynamicConfigUrl.isNotEmpty()) {
+                val dynamicFileName = dynamicConfigUrl.substringAfterLast('/').substringBefore('?').trim()
+                if (dynamicConfigUrl.isNotEmpty() &&
+                    ApkDownloader.isCompatibleApkForBuildType(dynamicConfigUrl, dynamicFileName)
+                ) {
                     apkDownloadUrl = dynamicConfigUrl
+                    apkFileName = dynamicFileName.takeIf { it.endsWith(".apk", ignoreCase = true) } ?: preferredApkName
                 } else {
-                    apkDownloadUrl = resolveFallbackDownloadUrl(tagName)
+                    Log.w(
+                        TAG,
+                        "Release '$tagName' has no compatible ${if (BuildConfig.DEBUG) "debug" else "release"} APK asset and dynamicAppDownloadUrl is empty/incompatible; returning NoUpdate."
+                    )
+                    saveLastCheckTime(context)
+                    clearCachedUpdate(context)
+                    _isDialogVisible.value = false
+                    val noUpdate = UpdateResult.NoUpdate(currentVersion)
+                    _updateState.value = noUpdate
+                    return@withContext noUpdate
                 }
-                apkFileName = preferredApkName
             }
 
             // Save last checked timestamp
             saveLastCheckTime(context)
 
-            // Extract numeric version code from tag name (e.g. "debug-apk-build-12-1" -> 12, "v1.0.12" -> 12)
+            // Extract numeric version code from tag name or title (e.g. "v1.0.2-build-105" -> 105)
             val latestVersionCode = parseVersionCode(tagName, releaseTitle)
 
             Log.i(
@@ -272,20 +254,32 @@ object GitHubUpdateManager {
             )
 
             // Compare latest release against current installed version:
-            // 1. Semantic Version check (tag_name vs BuildConfig.VERSION_NAME)
-            // 2. Numeric versionCode check if explicitly tagged or titled
-            val isSemVerNewer = VersionUtils.isUpdateAvailable(
-                currentVersion = currentVersion,
-                latestVersion = tagName
-            )
-            val isCodeNewer = latestVersionCode > 0 && latestVersionCode > currentVersionCode
-
-            val hasNewVersion = isSemVerNewer || isCodeNewer || isVersionNewer(
-                remoteVersion = tagName,
-                currentVersion = currentVersion,
-                currentVersionCode = currentVersionCode,
-                releaseTitle = releaseTitle
-            )
+            // Prioritize explicit build/run versionCode when present; fall back to SemVer when equal or absent.
+            val hasExplicitBuild = hasExplicitBuildNumber(tagName, releaseTitle)
+            val hasNewVersion = if (hasExplicitBuild && latestVersionCode > 0) {
+                when {
+                    latestVersionCode > currentVersionCode -> true
+                    latestVersionCode < currentVersionCode -> false
+                    else -> isVersionNewer(
+                        remoteVersion = tagName,
+                        currentVersion = currentVersion,
+                        currentVersionCode = currentVersionCode,
+                        releaseTitle = releaseTitle
+                    )
+                }
+            } else {
+                val isSemVerNewer = VersionUtils.isUpdateAvailable(
+                    currentVersion = currentVersion,
+                    latestVersion = tagName
+                )
+                val isCodeNewer = latestVersionCode > 0 && latestVersionCode > currentVersionCode
+                isSemVerNewer || isCodeNewer || isVersionNewer(
+                    remoteVersion = tagName,
+                    currentVersion = currentVersion,
+                    currentVersionCode = currentVersionCode,
+                    releaseTitle = releaseTitle
+                )
+            }
 
             if (!hasNewVersion) {
                 Log.i(TAG, "No update available: latestVersionCode ($latestVersionCode) <= currentVersionCode ($currentVersionCode)")
@@ -343,15 +337,86 @@ object GitHubUpdateManager {
         }
     }
 
+    internal data class SelectedApkAsset(
+        val downloadUrl: String,
+        val fileName: String,
+        val size: Long
+    )
+
+    internal fun selectCompatibleApkAsset(
+        assetsArray: JSONArray?,
+        isDebugBuild: Boolean = BuildConfig.DEBUG
+    ): SelectedApkAsset? {
+        if (assetsArray == null || assetsArray.length() == 0) return null
+        val preferredExact = resolveFallbackApkFileName(isDebugBuild)
+        var exactMatch: SelectedApkAsset? = null
+        var typedMatch: SelectedApkAsset? = null
+        var genericMatch: SelectedApkAsset? = null
+
+        for (i in 0 until assetsArray.length()) {
+            val assetObj = assetsArray.optJSONObject(i) ?: continue
+            val name = assetObj.optString("name", "").trim()
+            val downloadUrl = assetObj.optString("browser_download_url", "").trim()
+            if (!name.endsWith(".apk", ignoreCase = true) || downloadUrl.isEmpty()) continue
+
+            val isDebugAsset = name.contains("debug", ignoreCase = true)
+            val isReleaseAsset = name.contains("release", ignoreCase = true)
+
+            if (!isDebugBuild) {
+                // Release build: NEVER select debug APKs
+                if (isDebugAsset) continue
+                if (name.equals(preferredExact, ignoreCase = true)) {
+                    exactMatch = SelectedApkAsset(downloadUrl, name, assetObj.optLong("size", 0L))
+                    break
+                } else if (name.endsWith("-release.apk", ignoreCase = true) || isReleaseAsset) {
+                    if (typedMatch == null) {
+                        typedMatch = SelectedApkAsset(downloadUrl, name, assetObj.optLong("size", 0L))
+                    }
+                } else if (genericMatch == null) {
+                    genericMatch = SelectedApkAsset(downloadUrl, name, assetObj.optLong("size", 0L))
+                }
+            } else {
+                // Debug build: prefer app-debug.apk / *-debug.apk; NEVER select release APKs
+                if (isReleaseAsset) continue
+                if (name.equals(preferredExact, ignoreCase = true)) {
+                    exactMatch = SelectedApkAsset(downloadUrl, name, assetObj.optLong("size", 0L))
+                    break
+                } else if (name.endsWith("-debug.apk", ignoreCase = true) || isDebugAsset) {
+                    if (typedMatch == null) {
+                        typedMatch = SelectedApkAsset(downloadUrl, name, assetObj.optLong("size", 0L))
+                    }
+                } else if (genericMatch == null) {
+                    genericMatch = SelectedApkAsset(downloadUrl, name, assetObj.optLong("size", 0L))
+                }
+            }
+        }
+
+        return exactMatch ?: typedMatch ?: genericMatch
+    }
+
+    internal fun hasExplicitBuildNumber(tagName: String, releaseTitle: String? = null): Boolean {
+        val cleanTag = tagName.trim()
+        if (Regex("""debug-apk-build-(\d+)""", RegexOption.IGNORE_CASE).containsMatchIn(cleanTag)) return true
+        if (Regex("""(?:build|run)[-_](\d+)""", RegexOption.IGNORE_CASE).containsMatchIn(cleanTag)) return true
+        if (!releaseTitle.isNullOrBlank() &&
+            Regex("""(?:build\s*#?|#)\s*(\d+)""", RegexOption.IGNORE_CASE).containsMatchIn(releaseTitle)
+        ) {
+            return true
+        }
+        return false
+    }
+
     /**
      * Extracts numerical version code from tags such as:
+     * - "v1.0.2-build-105" -> 105
+     * - "v1.0.2-debug-build-105" -> 105
      * - "debug-apk-build-12-1" -> 12
      * - "debug-apk-build-12" -> 12
+     * - Title "Order Master v1.0.2-build-105 (Build #105)" -> 105
      * - "v1.0.12" -> 12
      * - "1.0.12" -> 12
      * - "build-12" -> 12
      * - "12" -> 12
-     * - Title "Order Master v1.0.12 (Build #12)" -> 12
      */
     fun parseVersionCode(tagName: String, releaseTitle: String? = null): Int {
         val cleanTag = tagName.trim()
@@ -363,27 +428,27 @@ object GitHubUpdateManager {
             if (code != null && code > 0) return code
         }
 
-        // 2. SemVer: 1.0.<run_number> or v1.0.<run_number>
-        val semverMatch = Regex("""(?:v)?\d+\.\d+\.(\d+)""", RegexOption.IGNORE_CASE).find(cleanTag)
-        if (semverMatch != null) {
-            val code = semverMatch.groupValues[1].toIntOrNull()
-            if (code != null && code > 0) return code
-        }
-
-        // 3. build-<number> or run-<number>
+        // 2. Explicit build-<number> or run-<number> BEFORE SemVer patch extraction
         val buildMatch = Regex("""(?:build|run)[-_](\d+)""", RegexOption.IGNORE_CASE).find(cleanTag)
         if (buildMatch != null) {
             val code = buildMatch.groupValues[1].toIntOrNull()
             if (code != null && code > 0) return code
         }
 
-        // 4. Release title containing "Build #12" or "#12"
+        // 3. Release title containing "Build #105" or "#105"
         if (!releaseTitle.isNullOrBlank()) {
             val titleMatch = Regex("""(?:build\s*#?|#)\s*(\d+)""", RegexOption.IGNORE_CASE).find(releaseTitle)
             if (titleMatch != null) {
                 val code = titleMatch.groupValues[1].toIntOrNull()
                 if (code != null && code > 0) return code
             }
+        }
+
+        // 4. SemVer fallback: 1.0.<patch> or v1.0.<patch>
+        val semverMatch = Regex("""(?:v)?\d+\.\d+\.(\d+)""", RegexOption.IGNORE_CASE).find(cleanTag)
+        if (semverMatch != null) {
+            val code = semverMatch.groupValues[1].toIntOrNull()
+            if (code != null && code > 0) return code
         }
 
         // 5. Fallback: all numbers in tag
@@ -396,7 +461,8 @@ object GitHubUpdateManager {
     }
 
     /**
-     * Fallback SemVer comparison.
+     * Compares remote release version against current installed version/build.
+     * Prioritizes explicit build/run versionCode when present; falls back to SemVer when equal or absent.
      */
     fun isVersionNewer(
         remoteVersion: String,
@@ -404,15 +470,19 @@ object GitHubUpdateManager {
         currentVersionCode: Int = BuildConfig.VERSION_CODE,
         releaseTitle: String? = null
     ): Boolean {
-        // Explicit build/run tag check (e.g. "debug-apk-build-12-1" or releaseTitle "#12")
-        val isExplicitBuildTag = remoteVersion.contains("build", ignoreCase = true) ||
-            remoteVersion.contains("run", ignoreCase = true) ||
-            !releaseTitle.isNullOrBlank()
-
-        if (isExplicitBuildTag) {
+        val hasExplicitBuild = hasExplicitBuildNumber(remoteVersion, releaseTitle)
+        if (hasExplicitBuild) {
             val remoteCode = parseVersionCode(remoteVersion, releaseTitle)
             if (remoteCode > 0) {
-                return remoteCode > currentVersionCode
+                if (remoteCode > currentVersionCode) return true
+                if (remoteCode < currentVersionCode) return false
+                // Equal versionCode: fall back to SemVer only when remoteVersion parses as valid SemVer
+                if (VersionUtils.parseSemVer(remoteVersion) != null &&
+                    VersionUtils.parseSemVer(currentVersion) != null
+                ) {
+                    return VersionUtils.isUpdateAvailable(currentVersion, remoteVersion)
+                }
+                return false
             }
         }
 
@@ -557,7 +627,8 @@ object GitHubUpdateManager {
     internal fun getCachedUpdateAvailable(
         context: Context,
         currentVersionCode: Int = BuildConfig.VERSION_CODE,
-        currentVersion: String = BuildConfig.VERSION_NAME
+        currentVersion: String = BuildConfig.VERSION_NAME,
+        isDebugBuild: Boolean = BuildConfig.DEBUG
     ): UpdateResult.UpdateAvailable? {
         if (clearIfAlreadyUpdated(context, currentVersionCode, currentVersion)) {
             return null
@@ -566,13 +637,19 @@ object GitHubUpdateManager {
         val version = prefs.getString(KEY_CACHED_VERSION, "") ?: ""
         val url = prefs.getString(KEY_CACHED_DOWNLOAD_URL, "") ?: ""
         if (version.isEmpty() || url.isEmpty()) return null
-        val defaultApkName = resolveFallbackApkFileName()
+        val defaultApkName = resolveFallbackApkFileName(isDebugBuild)
+        val apkFileName = prefs.getString(KEY_CACHED_APK_FILENAME, defaultApkName) ?: defaultApkName
+        if (!isDebugBuild && !ApkDownloader.isCompatibleApkForBuildType(url, apkFileName, isDebugBuild = false)) {
+            Log.w(TAG, "Purging cached incompatible debug APK update ($apkFileName / $url) on release build.")
+            clearCachedUpdate(context)
+            return null
+        }
         return UpdateResult.UpdateAvailable(
             latestVersion = version,
             latestVersionCode = prefs.getInt(KEY_CACHED_VERSION_CODE, 0),
             releaseNotes = prefs.getString(KEY_CACHED_RELEASE_NOTES, "") ?: "",
             downloadUrl = url,
-            apkFileName = prefs.getString(KEY_CACHED_APK_FILENAME, defaultApkName) ?: defaultApkName,
+            apkFileName = apkFileName,
             assetSize = prefs.getLong(KEY_CACHED_ASSET_SIZE, 0L)
         )
     }
