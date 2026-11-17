@@ -7,6 +7,7 @@ import com.example.data.PaymentVerificationRepository
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -626,44 +627,34 @@ class SecurityHardeningTest {
     }
 
     @Test
-    fun `deterministic fallback custom user ID preserves ID across reinstall and honors legacy prefs`() {
-        // 1. Clean slate
+    fun `legacy custom user ID is strictly read-only migration hint and resolveUserKey avoids OM-USER generation`() {
+        // 1. Clean slate: no legacy custom_user_id on disk
         DeviceUtils.resetCustomUserIdForTesting(context)
         assertNull(DeviceUtils.getSavedCustomUserIdOrNull(context))
 
-        // 2. Deterministic derivation from hardware fingerprint
-        val userId1 = DeviceUtils.getCustomUserId(context)
-        assertTrue(userId1.startsWith("OM-USER-"))
-        assertEquals(16, userId1.length) // "OM-USER-" (8) + 8 chars = 16
+        // 2. Unauthenticated resolveUserKey resolves deterministically to linkedHardwareId (not OM-USER-*)
+        val expectedHwId = HardwareIdManager.getPermanentHardwareId(context)
+        val resolvedKey = LicenseManager.resolveUserKey(context)
+        assertEquals(expectedHwId, resolvedKey)
+        assertFalse("resolveUserKey must not generate legacy OM-USER-* IDs", resolvedKey.startsWith("OM-USER-"))
 
-        val expectedSuffix = DeviceUtils.buildUnifiedHardwareFingerprint(context)
-            .sha256Hex
-            .take(8)
-            .uppercase(java.util.Locale.US)
-        assertEquals("OM-USER-$expectedSuffix", userId1)
-
-        // 3. Clear in-memory cache and SharedPreferences (simulate app uninstall/reinstall on same device)
-        DeviceUtils.resetCustomUserIdForTesting(context)
-        val userIdAfterReinstall = DeviceUtils.getCustomUserId(context)
-        assertEquals(
-            "Reinstalling on the same device must deterministically produce the exact same custom user ID",
-            userId1,
-            userIdAfterReinstall
+        // 3. HardwareIdManager must NOT create duplicate hardware_id_prefs SharedPreferences
+        val legacyHwPrefs = context.getSharedPreferences("hardware_id_prefs", Context.MODE_PRIVATE)
+        assertTrue(
+            "hardware_id_prefs must remain empty when HardwareIdManager delegates to DeviceUtils",
+            legacyHwPrefs.all.isEmpty()
         )
 
-        // 4. Test legacy migration: if SharedPreferences already holds a saved ID, it must be honored
+        // 4. Read-only migration hint honors pre-existing custom_user_id on disk and clears cleanly
         val legacyId = "OM-USER-LEGACY01"
         context.getSharedPreferences("device_security_prefs", Context.MODE_PRIVATE)
             .edit()
             .putString("custom_user_id", legacyId)
             .commit()
 
-        DeviceUtils.resetCustomUserIdForTesting(null) // clear in-memory cache only
         assertEquals(legacyId, DeviceUtils.getSavedCustomUserIdOrNull(context))
-        assertEquals(legacyId, DeviceUtils.getCustomUserId(context))
-
-        // Cleanup
-        DeviceUtils.resetCustomUserIdForTesting(context)
+        DeviceUtils.clearSavedCustomUserId(context)
+        assertNull(DeviceUtils.getSavedCustomUserIdOrNull(context))
     }
 
     @Test
@@ -1064,6 +1055,117 @@ class SecurityHardeningTest {
         assertFalse(AppSettings.isAutoClickEnabled(context))
         assertFalse("Persisted XML pref must be reset to false", prefs.getBoolean("user_min_fare_enabled", true))
         assertFalse("Persisted XML pref must be reset to false", prefs.getBoolean("user_auto_click_enabled", true))
+    }
+
+    @Test
+    fun canonicalFirestoreFeatureKeysTakePrecedenceOverLegacyAliases() {
+        AppSettings.init(context)
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+        LicenseManager.forceReleaseLoadingState()
+
+        val canonicalExpiry = System.currentTimeMillis() + 7_200_000L
+        val legacyExpiry = System.currentTimeMillis() + 3_600_000L
+
+        // When both canonical and legacy keys exist, canonical unlockedFeatures & lockedFeatures must win
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "unlockedFeatures" to mapOf(FeatureIds.MIN_FARE to canonicalExpiry),
+                "unlocked_features" to mapOf(FeatureIds.MAX_FARE to legacyExpiry),
+                "lockedFeatures" to listOf(FeatureIds.AUTO_CLICK),
+                "locked_features" to listOf(FeatureIds.TTS_VOICE)
+            )
+        )
+
+        assertEquals(mapOf(FeatureIds.MIN_FARE to canonicalExpiry), AppSettings.unlockedFeaturesFlow.value)
+        assertEquals(setOf(FeatureIds.AUTO_CLICK), AppSettings.lockedFeaturesFlow.value)
+
+        // Fallback to legacy aliases works cleanly when canonical keys are absent
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "unlocked_features" to mapOf(FeatureIds.MAX_FARE to legacyExpiry),
+                "locked_features" to listOf(FeatureIds.TTS_VOICE)
+            )
+        )
+        assertEquals(mapOf(FeatureIds.MAX_FARE to legacyExpiry), AppSettings.unlockedFeaturesFlow.value)
+        assertEquals(setOf(FeatureIds.TTS_VOICE), AppSettings.lockedFeaturesFlow.value)
+
+        AppSettings.resetBusinessStateForTest(context)
+    }
+
+    @Test
+    fun githubUpdateManagerClearsCachedMetadataWhenInstalledVersionCatchesUp() {
+        GitHubUpdateManager.clearCachedUpdate(context)
+        GitHubUpdateManager.cacheUpdateAvailable(
+            context,
+            UpdateResult.UpdateAvailable(
+                latestVersion = "v2.0.0",
+                latestVersionCode = 50,
+                releaseNotes = "Update notes",
+                downloadUrl = "https://example.com/app-release.apk",
+                apkFileName = "app-release.apk",
+                assetSize = 1024L
+            )
+        )
+
+        // While installed versionCode < cachedVersionCode, cached update is surfaced
+        val available = GitHubUpdateManager.getCachedUpdateAvailable(
+            context,
+            currentVersionCode = 49,
+            currentVersion = "1.9.0"
+        )
+        assertNotNull(available)
+        assertEquals(50, available?.latestVersionCode)
+
+        // Once installed versionCode >= cachedVersionCode, cached metadata is purged immediately
+        val stale = GitHubUpdateManager.getCachedUpdateAvailable(
+            context,
+            currentVersionCode = 50,
+            currentVersion = "2.0.0"
+        )
+        assertNull(stale)
+        assertNull(
+            GitHubUpdateManager.getCachedUpdateAvailable(
+                context,
+                currentVersionCode = 49,
+                currentVersion = "1.9.0"
+            )
+        )
+    }
+
+    @Test
+    fun recentEvaluationsFlowCapsInMemoryBufferAt25Items() {
+        AppSettings.clearEvaluations()
+        for (i in 1..35) {
+            val offer = ParsedRideOffer(
+                rawText = "Offer #$i ₹${100 + i}",
+                totalFare = (100 + i).toDouble(),
+                pickupDistanceKm = 1.0,
+                dropDistanceKm = 3.0,
+                hasAcceptButton = true
+            )
+            AppSettings.recordEvaluation(
+                context,
+                RideEvaluation(
+                    offer = offer,
+                    isAutoAcceptEnabled = true,
+                    passesFare = true,
+                    passesPickupDistance = true,
+                    isAccepted = true,
+                    decisionReason = "Accepted #$i"
+                )
+            )
+        }
+        // Wait briefly for Dispatchers.IO coroutine buffer updates
+        val deadline = System.currentTimeMillis() + 3000L
+        while (AppSettings.getRecentEvaluations().size < 25 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(25)
+        }
+        Thread.sleep(150)
+        assertEquals(25, AppSettings.getRecentEvaluations().size)
+        AppSettings.clearEvaluations()
     }
 }
 

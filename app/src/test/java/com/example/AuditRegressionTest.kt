@@ -92,10 +92,10 @@ class AuditRegressionTest {
 
     @Test
     fun `apk downloader handleDownloadRemoved clears saved tracking and emits Error state`() {
-        context.getSharedPreferences("apk_downloader_prefs", Context.MODE_PRIVATE)
+        context.getSharedPreferences(ApkDownloader.PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putLong("active_download_id", 888L)
-            .putString("download_file_name", "app-release.apk")
+            .putLong(ApkDownloader.KEY_ACTIVE_DOWNLOAD_ID, 888L)
+            .putString(GitHubUpdateManager.KEY_CACHED_APK_FILENAME, "app-release.apk")
             .commit()
         assertTrue(ApkDownloader.isExpectedDownloadId(context, 888L))
 

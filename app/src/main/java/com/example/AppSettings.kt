@@ -970,8 +970,8 @@ object AppSettings {
             ?: (data["passExpiry"] as? Number)?.toLong()
             ?: 0L
 
-        val rawFeatures = (data["unlocked_features"] as? Map<*, *>)
-            ?: (data["unlockedFeatures"] as? Map<*, *>)
+        val rawFeatures = (data["unlockedFeatures"] as? Map<*, *>)
+            ?: (data["unlocked_features"] as? Map<*, *>)
         val unlockedFeaturesVal = rawFeatures?.mapNotNull { (k, v) ->
             val featureKey = k as? String ?: return@mapNotNull null
             val exp = when (v) {
@@ -982,7 +982,7 @@ object AppSettings {
             featureKey to exp
         }?.toMap() ?: emptyMap()
 
-        val rawLocked = data["locked_features"] ?: data["lockedFeatures"]
+        val rawLocked = data["lockedFeatures"] ?: data["locked_features"]
         val lockedFeaturesVal: Set<String> = when (rawLocked) {
             is List<*> -> rawLocked.mapNotNull { (it as? String)?.trim()?.lowercase() }
                 .filter { it.isNotEmpty() }.toSet()
@@ -1975,7 +1975,7 @@ object AppSettings {
             evaluationMutex.withLock {
                 val current = _recentEvaluationsFlow.value.toMutableList()
                 current.add(0, evaluation)
-                if (current.size > 100) {
+                if (current.size > 25) {
                     current.removeAt(current.lastIndex)
                 }
                 _recentEvaluationsFlow.value = current

@@ -24,6 +24,8 @@ object DeviceUtils {
     private const val TAG = "DeviceUtils"
     private const val PREFS_NAME = "device_security_prefs"
     private const val KEY_CACHED_HW_ID = "cached_device_hw_id"
+    private const val KEY_CACHED_FULL_SHA256 = "cached_full_sha256"
+    private const val KEY_CACHED_HAS_DRM = "cached_has_widevine_drm"
     private const val KEY_CUSTOM_USER_ID = "custom_user_id"
 
     // Widevine DRM Scheme UUID (Standard Android hardware enclave)
@@ -33,9 +35,6 @@ object DeviceUtils {
 
     @Volatile
     private var cachedHardwareId: String? = null
-
-    @Volatile
-    private var cachedCustomUserId: String? = null
 
     @Volatile
     private var cachedWidevineId: String? = null
@@ -53,7 +52,7 @@ object DeviceUtils {
 
     /**
      * Returns any previously saved legacy OM-USER-* custom ID without generating a new one.
-     * Used during profile migration into canonical Firebase Auth UID documents.
+     * Strictly read-only migration hint for legacy profiles migrating into canonical Firebase Auth UID docs.
      */
     fun getSavedCustomUserIdOrNull(context: Context): String? {
         return try {
@@ -65,43 +64,23 @@ object DeviceUtils {
     }
 
     /**
-     * Returns a persistent custom User ID formatted as "OM-USER-XXXXXXXX" (8 uppercase alphanumeric characters).
-     * Derived deterministically from the unified hardware fingerprint so reinstalling on the same device
-     * resolves to the exact same ID, while honoring legacy SharedPreferences value if already present.
+     * Clears any legacy custom_user_id hint once migration completes (or during test resets).
      */
     @Synchronized
-    fun getCustomUserId(context: Context): String {
-        cachedCustomUserId?.let { return it }
-
-        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val savedId = prefs.getString(KEY_CUSTOM_USER_ID, null)
-        if (!savedId.isNullOrBlank()) {
-            cachedCustomUserId = savedId
-            return savedId
-        }
-
-        // Derive 8-character suffix deterministically from unified hardware fingerprint
-        val suffix = buildUnifiedHardwareFingerprint(context)
-            .sha256Hex
-            .take(8)
-            .uppercase(Locale.US)
-        val newUserId = "OM-USER-$suffix"
-
-        prefs.edit().putString(KEY_CUSTOM_USER_ID, newUserId).apply()
-        cachedCustomUserId = newUserId
-        Log.i(TAG, "Generated and stored permanent Custom User ID: $newUserId")
-        return newUserId
-    }
-
-    @Synchronized
-    internal fun resetCustomUserIdForTesting(context: Context? = null) {
-        cachedCustomUserId = null
-        if (context != null) {
+    fun clearSavedCustomUserId(context: Context) {
+        try {
             context.applicationContext
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit()
                 .remove(KEY_CUSTOM_USER_ID)
                 .apply()
+        } catch (_: Exception) {}
+    }
+
+    @Synchronized
+    internal fun resetCustomUserIdForTesting(context: Context? = null) {
+        if (context != null) {
+            clearSavedCustomUserId(context)
         }
     }
 
@@ -121,7 +100,7 @@ object DeviceUtils {
 
     /**
      * Returns an immutable, hardware-locked Device Hardware Fingerprint.
-     * Always recomputes and verifies against cached value so SharedPreferences tampering cannot spoof HW ID.
+     * Always recomputes and verifies against cached value in device_security_prefs so SharedPreferences tampering cannot spoof HW ID.
      * Example format: "HW-A1B2C3D4E5F6"
      */
     @Synchronized
@@ -137,7 +116,11 @@ object DeviceUtils {
         if (!savedId.isNullOrBlank() && savedId != formattedId) {
             Log.w(TAG, "Hardware ID cache mismatch detected ($savedId != $formattedId); overriding tampered value.")
         }
-        prefs.edit().putString(KEY_CACHED_HW_ID, formattedId).apply()
+        prefs.edit()
+            .putString(KEY_CACHED_HW_ID, formattedId)
+            .putString(KEY_CACHED_FULL_SHA256, fingerprint.sha256Hex.uppercase(Locale.US))
+            .putBoolean(KEY_CACHED_HAS_DRM, fingerprint.hasWidevineDrm)
+            .apply()
         cachedHardwareId = formattedId
         Log.i(TAG, "Computed Verified Device Hardware ID: $formattedId")
         return formattedId

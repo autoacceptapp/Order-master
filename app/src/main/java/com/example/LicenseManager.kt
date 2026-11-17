@@ -1678,8 +1678,8 @@ object LicenseManager {
                     _removeAdsExpiryMs.value = if (serverRemoveAdsExpiry > now) serverRemoveAdsExpiry else 0L
 
                     // Parse Pay-Per-Use & Admin feature unlocks map, filtering out expired remnants
-                    val rawFeatures = (snapshot.get("unlocked_features") as? Map<*, *>)
-                        ?: (snapshot.get("unlockedFeatures") as? Map<*, *>)
+                    val rawFeatures = (snapshot.get("unlockedFeatures") as? Map<*, *>)
+                        ?: (snapshot.get("unlocked_features") as? Map<*, *>)
                     val parsedFeatures = rawFeatures?.mapNotNull { (k, v) ->
                         val featureKey = k as? String ?: return@mapNotNull null
                         val exp = when (v) {
@@ -1701,13 +1701,13 @@ object LicenseManager {
 
                     val folder = computeCurrentFolder(tier, passExpiry, serverTrialClaimed, serverTrialExpiry, now)
                     _currentFolder.value = folder
-                    val savedFolder = snapshot.getString("current_folder")
+                    val savedFolder = snapshot.getString("currentFolder") ?: snapshot.getString("current_folder")
                     val savedHwId = snapshot.getString("linkedHardwareId")
 
                     if (savedFolder != folder || savedHwId != hwId) {
                         val updateData = mutableMapOf<String, Any>(
                             "userId" to customUserId,
-                            "current_folder" to folder,
+                            "currentFolder" to folder,
                             "linkedHardwareId" to hwId
                         )
                         if (currentUser != null && currentUser.uid.isNotBlank()) {
@@ -1870,8 +1870,8 @@ object LicenseManager {
                     _currentFolder.value = expectedFolder
 
                     // Parse Pay-Per-Use & Admin feature unlocks map, filtering out expired remnants
-                    val rawFeatures = (snapshot.get("unlocked_features") as? Map<*, *>)
-                        ?: (snapshot.get("unlockedFeatures") as? Map<*, *>)
+                    val rawFeatures = (snapshot.get("unlockedFeatures") as? Map<*, *>)
+                        ?: (snapshot.get("unlocked_features") as? Map<*, *>)
                     val parsedFeatures = rawFeatures?.mapNotNull { (k, v) ->
                         val featureKey = k as? String ?: return@mapNotNull null
                         val exp = when (v) {
@@ -1891,8 +1891,8 @@ object LicenseManager {
                         passExpiry = if (parsedTier?.isProPass == true) passExpiry else 0L
                     )
 
-                    // Parse explicit Admin Lock list/map (locked_features / lockedFeatures)
-                    val rawLocked = snapshot.get("locked_features") ?: snapshot.get("lockedFeatures")
+                    // Parse explicit Admin Lock list/map (lockedFeatures canonical, fallback locked_features)
+                    val rawLocked = snapshot.get("lockedFeatures") ?: snapshot.get("locked_features")
                     val parsedLocked: Set<String> = when (rawLocked) {
                         is List<*> -> rawLocked.mapNotNull { (it as? String)?.trim()?.lowercase() }
                             .filter { it.isNotEmpty() }.toSet()
@@ -1930,14 +1930,14 @@ object LicenseManager {
 
                     val currentHwId = ctx?.let { HardwareIdManager.getPermanentHardwareId(it) } ?: ""
                     val existingLinkedHw = snapshot.getString("linkedHardwareId")
-                    val existingFolder = snapshot.getString("current_folder")
+                    val existingFolder = snapshot.getString("currentFolder") ?: snapshot.getString("current_folder")
 
                     val updatesNeeded = mutableMapOf<String, Any>()
                     if (currentHwId.isNotBlank() && existingLinkedHw != currentHwId) {
                         updatesNeeded["linkedHardwareId"] = currentHwId
                     }
                     if (existingFolder != expectedFolder) {
-                        updatesNeeded["current_folder"] = expectedFolder
+                        updatesNeeded["currentFolder"] = expectedFolder
                     }
                     if (code.isNullOrBlank()) {
                         val generated = _referralCode.value?.takeIf { it.isNotBlank() } ?: generateReferralCode()
@@ -2028,6 +2028,9 @@ object LicenseManager {
                                     }
                                     hasLoadedLicensing = true
                                     refreshAccessStatus()
+                                    if (!legacyCustomId.isNullOrBlank()) {
+                                        DeviceUtils.clearSavedCustomUserId(context)
+                                    }
                                     Log.i(TAG, "INIT_PROFILE successfully completed via Action Queue for $customUserId")
                                 } else {
                                     Log.w(TAG, "INIT_PROFILE action failed: ${actionResult.exceptionOrNull()?.message}")
@@ -2069,9 +2072,9 @@ object LicenseManager {
 
     /**
      * Resolves the canonical Firestore Document ID for the active user:
-     * Strictly uses FirebaseAuth `uid` whenever signed in to match `users/{uid}` security rules
-     * and eliminate the `OM-USER-*` vs `uid` split-brain vulnerability.
-     * Falls back to `OM-USER-*` / ephemeral ID only when unauthenticated.
+     * Strictly uses FirebaseAuth `uid` whenever signed in to match `users/{uid}` security rules.
+     * Falls back to `linkedHardwareId` (`HardwareIdManager.getPermanentHardwareId`) before sign-in
+     * and never generates legacy `OM-USER-*` IDs.
      */
     fun resolveUserKey(context: Context? = null, email: String? = null, uid: String? = null): String {
         if (!uid.isNullOrBlank()) return uid
@@ -2087,9 +2090,9 @@ object LicenseManager {
 
         val targetContext = context ?: appContext
         return if (targetContext != null) {
-            DeviceUtils.getCustomUserId(targetContext)
+            HardwareIdManager.getPermanentHardwareId(targetContext)
         } else {
-            "OM-USER-TEMP-${java.util.UUID.randomUUID().toString().replace("-", "").take(8).uppercase(Locale.ROOT)}"
+            ""
         }
     }
 

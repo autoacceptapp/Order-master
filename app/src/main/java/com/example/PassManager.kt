@@ -391,21 +391,26 @@ object PassManager {
 
             // 1. Create pending entry in pending_verifications only if absent (satisfies strict create rule)
             if (pendingSnapshot == null || !pendingSnapshot.exists()) {
-                val firebaseUid = try {
-                    FirebaseAuth.getInstance().currentUser?.uid ?: userId
+                val authUser = try {
+                    FirebaseAuth.getInstance().currentUser
                 } catch (_: Exception) {
-                    userId
+                    null
                 }
+                val firebaseUid = authUser?.uid ?: userId
+                val userEmail = authUser?.email ?: ""
+                val linkedHwId = HardwareIdManager.getPermanentHardwareId(context)
                 try {
                     pendingDocRef.set(
                         mapOf(
                             "status" to "PENDING",
-                            "passName" to tier.title,
+                            "passTier" to tier.id,
                             "amount" to tier.priceInInr,
                             "isUsed" to false,
                             "utr" to cleanUtr,
                             "userId" to userId,
                             "firebaseUid" to firebaseUid,
+                            "userEmail" to userEmail,
+                            "linkedHardwareId" to linkedHwId,
                             "createdAt" to FieldValue.serverTimestamp()
                         )
                     ).await()
@@ -601,8 +606,8 @@ object PassManager {
                 val parsedTier = PassTier.fromId(passTypeStr)
                 val isProTier = parsedTier?.isProPass == true
 
-                val paymentStatus = doc.getString("payment_status")
-                    ?: doc.getString("paymentStatus")
+                val paymentStatus = doc.getString("paymentStatus")
+                    ?: doc.getString("payment_status")
                     ?: if (doc.getBoolean("isPaymentVerified") == true || (!passTypeStr.isNullOrBlank() && isProTier)) "SUCCESS" else "FAILED"
 
                 val passExpiryDate: Long = doc.getLong("passExpiryTimestamp")

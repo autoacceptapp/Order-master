@@ -63,10 +63,7 @@ import java.util.Locale
 object HardwareIdManager {
 
     private const val TAG = "HardwareIdManager"
-    private const val PREFS_NAME = "hardware_id_prefs"
-    private const val KEY_PERMANENT_HARDWARE_ID = "permanent_hardware_id"
-    private const val KEY_FULL_SHA256 = "permanent_full_sha256"
-    private const val KEY_ID_SOURCE = "permanent_id_source"
+    private const val LEGACY_PREFS_NAME = "hardware_id_prefs"
 
     @Volatile
     private var cachedHardwareId: String? = null
@@ -96,29 +93,29 @@ object HardwareIdManager {
 
     /**
      * Retrieves comprehensive hardware identification details including source and full SHA-256 hash.
+     * Uses DeviceUtils as the single source of truth (stored/verified in device_security_prefs).
      */
     @Synchronized
     fun getHardwareDetails(context: Context): HardwareDetails {
         cachedHardwareDetails?.let { return it }
 
-        // Always recompute physical Widevine / hardware fingerprint to prevent SharedPreferences spoofing
+        // Ensure DeviceUtils validates & persists the unified fingerprint in device_security_prefs
+        DeviceUtils.getDeviceHardwareId(context)
+        cleanupLegacyPrefsIfPresent(context)
+
         val details = generatePermanentHardwareId(context)
-
-        val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val savedId = prefs.getString(KEY_PERMANENT_HARDWARE_ID, null)
-        if (!savedId.isNullOrEmpty() && savedId != details.formattedId) {
-            Log.w(TAG, "HardwareIdManager cache mismatch ($savedId != ${details.formattedId}); restoring genuine hardware ID.")
-        }
-
-        prefs.edit()
-            .putString(KEY_PERMANENT_HARDWARE_ID, details.formattedId)
-            .putString(KEY_FULL_SHA256, details.fullSha256)
-            .putString(KEY_ID_SOURCE, details.source)
-            .apply()
-
         cachedHardwareDetails = details
         cachedHardwareId = details.formattedId
         return details
+    }
+
+    private fun cleanupLegacyPrefsIfPresent(context: Context) {
+        try {
+            val appCtx = context.applicationContext ?: context
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                appCtx.deleteSharedPreferences(LEGACY_PREFS_NAME)
+            }
+        } catch (_: Throwable) {}
     }
 
     /**

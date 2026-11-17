@@ -210,8 +210,8 @@ class PaymentVerificationRepository(
                 val passTypeStr = doc.getString("activePassType") ?: doc.getString("passType")
                 val parsedTier = PassTier.fromId(passTypeStr)
                 val isProTier = parsedTier?.isProPass == true
-                val paymentStatus = doc.getString("payment_status")
-                    ?: doc.getString("paymentStatus")
+                val paymentStatus = doc.getString("paymentStatus")
+                    ?: doc.getString("payment_status")
                     ?: if (doc.getBoolean("isPaymentVerified") == true || (!passTypeStr.isNullOrBlank() && isProTier)) "SUCCESS" else "FAILED"
 
                 val passExpiryDate = doc.getLong("passExpiryTimestamp")
@@ -359,17 +359,22 @@ class PaymentVerificationRepository(
                 // Register pending verification only if it does not already exist (Zero-Trust create rule)
                 if (pendingSnapshot == null || !pendingSnapshot.exists()) {
                     val tier = selectedTier ?: mapAmountToPassTier(9L)
+                    val userEmail = try {
+                        FirebaseAuth.getInstance().currentUser?.email ?: ""
+                    } catch (_: Exception) {
+                        ""
+                    }
                     val pendingPayload = hashMapOf<String, Any>(
                         "status" to "PENDING",
-                        "passName" to tier.title,
                         "passTier" to tier.id,
                         "amount" to tier.priceInInr,
                         "isUsed" to false,
                         "utr" to utr,
                         "userId" to userId,
                         "firebaseUid" to currentUid,
-                        "timestamp" to FieldValue.serverTimestamp(),
-                        "deviceHardwareId" to com.example.HardwareIdManager.getPermanentHardwareId(context)
+                        "userEmail" to userEmail,
+                        "linkedHardwareId" to com.example.HardwareIdManager.getPermanentHardwareId(context),
+                        "createdAt" to FieldValue.serverTimestamp()
                     )
                     pendingDocRef.set(pendingPayload).await()
                 }

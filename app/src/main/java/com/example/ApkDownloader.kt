@@ -52,9 +52,9 @@ sealed class DownloadState {
 object ApkDownloader {
 
     private const val TAG = "ApkDownloader"
-    private const val PREFS_NAME = "apk_downloader_prefs"
-    private const val KEY_ACTIVE_DOWNLOAD_ID = "active_download_id"
-    private const val KEY_DOWNLOAD_FILE_NAME = "download_file_name"
+    internal const val PREFS_NAME = GitHubUpdateManager.PREFS_NAME
+    private const val LEGACY_PREFS_NAME = "apk_downloader_prefs"
+    internal const val KEY_ACTIVE_DOWNLOAD_ID = "active_download_id"
 
     private val _downloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
     val downloadState: StateFlow<DownloadState> = _downloadState.asStateFlow()
@@ -365,6 +365,7 @@ object ApkDownloader {
 
                         if (apkFile.exists() && apkFile.length() > 0) {
                             Log.i(TAG, "Download finished successfully: ${apkFile.absolutePath} (${apkFile.length()} bytes)")
+                            GitHubUpdateManager.clearCachedUpdate(context)
                             _downloadState.value = DownloadState.ReadyToInstall(apkFile)
 
                             // Post notification and prompt installer only when app is in foreground
@@ -506,10 +507,11 @@ object ApkDownloader {
     }
 
     private fun saveActiveDownload(context: Context, downloadId: Long, fileName: String) {
+        cleanupLegacyDownloadPrefs(context)
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putLong(KEY_ACTIVE_DOWNLOAD_ID, downloadId)
-            .putString(KEY_DOWNLOAD_FILE_NAME, fileName)
+            .putString(GitHubUpdateManager.KEY_CACHED_APK_FILENAME, fileName)
             .apply()
     }
 
@@ -521,15 +523,23 @@ object ApkDownloader {
     private fun getSavedFileName(context: Context): String {
         val fallback = GitHubUpdateManager.resolveFallbackApkFileName()
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_DOWNLOAD_FILE_NAME, fallback) ?: fallback
+            .getString(GitHubUpdateManager.KEY_CACHED_APK_FILENAME, fallback) ?: fallback
     }
 
     private fun clearSavedDownload(context: Context) {
+        cleanupLegacyDownloadPrefs(context)
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .remove(KEY_ACTIVE_DOWNLOAD_ID)
-            .remove(KEY_DOWNLOAD_FILE_NAME)
             .apply()
+    }
+
+    private fun cleanupLegacyDownloadPrefs(context: Context) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                context.applicationContext.deleteSharedPreferences(LEGACY_PREFS_NAME)
+            }
+        } catch (_: Throwable) {}
     }
 
     private fun mapDownloadErrorReason(reason: Int): String {

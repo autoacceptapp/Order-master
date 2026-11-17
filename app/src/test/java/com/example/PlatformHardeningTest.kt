@@ -144,9 +144,9 @@ class PlatformHardeningTest {
         assertTrue(ApkDownloader.downloadState.value is DownloadState.Idle)
 
         // When a legitimate active_download_id is persisted, only that exact ID matches
-        context.getSharedPreferences("apk_downloader_prefs", Context.MODE_PRIVATE)
+        context.getSharedPreferences(ApkDownloader.PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putLong("active_download_id", 777L)
+            .putLong(ApkDownloader.KEY_ACTIVE_DOWNLOAD_ID, 777L)
             .apply()
 
         assertTrue(ApkDownloader.isExpectedDownloadId(context, 777L))

@@ -48,7 +48,7 @@ object GitHubUpdateManager {
     private const val GITHUB_REPO = "Order-master"
     const val LATEST_RELEASE_API_URL = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
 
-    private const val PREFS_NAME = "github_update_prefs"
+    internal const val PREFS_NAME = "github_update_prefs"
     private const val KEY_AUTO_UPDATE_ENABLED = "key_auto_update_enabled"
     private const val KEY_SKIPPED_VERSION = "key_skipped_version"
     private const val KEY_LAST_CHECK_TIME = "key_last_check_time"
@@ -56,7 +56,7 @@ object GitHubUpdateManager {
     private const val KEY_CACHED_VERSION_CODE = "key_cached_version_code"
     private const val KEY_CACHED_RELEASE_NOTES = "key_cached_release_notes"
     private const val KEY_CACHED_DOWNLOAD_URL = "key_cached_download_url"
-    private const val KEY_CACHED_APK_FILENAME = "key_cached_apk_filename"
+    internal const val KEY_CACHED_APK_FILENAME = "key_cached_apk_filename"
     private const val KEY_CACHED_ASSET_SIZE = "key_cached_asset_size"
 
     // 15 minutes throttle window to prevent aggressive GitHub API rate limiting
@@ -88,6 +88,7 @@ object GitHubUpdateManager {
         scope: CoroutineScope = CoroutineScope(Dispatchers.IO),
         force: Boolean = false
     ) {
+        clearIfAlreadyUpdated(context)
         if (!GlobalAdminManager.isInAppUpdateActive.value) {
             Log.i(TAG, "In-App Updates disabled globally by Admin (isInAppUpdateActive=false); aborting update check.")
             return
@@ -111,7 +112,9 @@ object GitHubUpdateManager {
             if (!force && timeSinceLastCheck < CHECK_THROTTLE_WINDOW_MS && timeSinceLastCheck >= 0) {
                 if (cachedVersion.isNotEmpty() && !cachedVersion.equals(skippedVersion, ignoreCase = true)) {
                     val cachedInfo = getCachedUpdateAvailable(context)
-                    if (cachedInfo != null && isVersionNewer(
+                    if (cachedInfo != null &&
+                        (cachedInfo.latestVersionCode <= 0 || BuildConfig.VERSION_CODE < cachedInfo.latestVersionCode) &&
+                        isVersionNewer(
                             remoteVersion = cachedInfo.latestVersion,
                             currentVersion = BuildConfig.VERSION_NAME,
                             currentVersionCode = BuildConfig.VERSION_CODE
@@ -126,6 +129,8 @@ object GitHubUpdateManager {
                             releaseNotes = cachedInfo.releaseNotes
                         )
                         return@launch
+                    } else if (cachedInfo != null) {
+                        clearCachedUpdate(context)
                     }
                 }
                 Log.d(TAG, "Skipping automatic update check; checked ${timeSinceLastCheck / 1000}s ago.")
@@ -155,6 +160,7 @@ object GitHubUpdateManager {
         ignoreSkipped: Boolean = false,
         notifySystem: Boolean = true
     ): UpdateResult = withContext(Dispatchers.IO) {
+        clearIfAlreadyUpdated(context, currentVersionCode, currentVersion)
         if (!GlobalAdminManager.isInAppUpdateActive.value) {
             Log.i(TAG, "In-App Updates disabled globally by Admin (isInAppUpdateActive=false); aborting checkForUpdates.")
             _updateState.value = UpdateResult.Idle
@@ -499,7 +505,7 @@ object GitHubUpdateManager {
             .getLong(KEY_LAST_CHECK_TIME, 0L)
     }
 
-    private fun cacheUpdateAvailable(context: Context, update: UpdateResult.UpdateAvailable) {
+    internal fun cacheUpdateAvailable(context: Context, update: UpdateResult.UpdateAvailable) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_CACHED_VERSION, update.latestVersion)
@@ -516,7 +522,46 @@ object GitHubUpdateManager {
             .getString(KEY_CACHED_VERSION, "") ?: ""
     }
 
-    private fun getCachedUpdateAvailable(context: Context): UpdateResult.UpdateAvailable? {
+    /**
+     * Clears cached update metadata immediately if the installed app has already caught up to
+     * or surpassed the cached release version.
+     */
+    fun clearIfAlreadyUpdated(
+        context: Context,
+        currentVersionCode: Int = BuildConfig.VERSION_CODE,
+        currentVersion: String = BuildConfig.VERSION_NAME
+    ): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val cachedVersion = prefs.getString(KEY_CACHED_VERSION, "") ?: ""
+        val cachedVersionCode = prefs.getInt(KEY_CACHED_VERSION_CODE, 0)
+        if (cachedVersion.isEmpty() && cachedVersionCode <= 0) return false
+
+        val isAlreadyUpToDate = (cachedVersionCode > 0 && currentVersionCode >= cachedVersionCode) ||
+            (cachedVersionCode <= 0 && cachedVersion.isNotEmpty() && !isVersionNewer(
+                remoteVersion = cachedVersion,
+                currentVersion = currentVersion,
+                currentVersionCode = currentVersionCode
+            ))
+
+        if (isAlreadyUpToDate) {
+            Log.i(
+                TAG,
+                "Clearing stale cached update ($cachedVersion / code $cachedVersionCode); installed build $currentVersion ($currentVersionCode) is already up to date."
+            )
+            clearCachedUpdate(context)
+            return true
+        }
+        return false
+    }
+
+    internal fun getCachedUpdateAvailable(
+        context: Context,
+        currentVersionCode: Int = BuildConfig.VERSION_CODE,
+        currentVersion: String = BuildConfig.VERSION_NAME
+    ): UpdateResult.UpdateAvailable? {
+        if (clearIfAlreadyUpdated(context, currentVersionCode, currentVersion)) {
+            return null
+        }
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val version = prefs.getString(KEY_CACHED_VERSION, "") ?: ""
         val url = prefs.getString(KEY_CACHED_DOWNLOAD_URL, "") ?: ""
@@ -544,7 +589,7 @@ object GitHubUpdateManager {
         return "https://github.com/$GITHUB_OWNER/$GITHUB_REPO/releases/download/$tagName/$fileName"
     }
 
-    private fun clearCachedUpdate(context: Context) {
+    fun clearCachedUpdate(context: Context) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .remove(KEY_CACHED_VERSION)
