@@ -1,0 +1,8 @@
+2026-11-16T16:09:00.9370000Z Requested labels: ubuntu-latest
+2026-11-16T16:09:00.9370000Z Job defined at: autoacceptapp/Order-master/.github/workflows/build.yml@refs/heads/main
+2026-11-16T16:09:00.9370000Z Waiting for a runner to pick up this job...
+2026-11-16T16:09:00.9280000Z Evaluating build-and-release.if
+2026-11-16T16:09:00.9280000Z Evaluating: success()
+2026-11-16T16:09:00.9280000Z Result: true
+2026-11-16T16:09:01.0430000Z Job is about to start running on the hosted runner: GitHub Actions 1000000395
+2026-11-16T16:09:01.0430000Z Job is waiting for a hosted runner to come online.

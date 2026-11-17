@@ -53,7 +53,14 @@ android {
 
   signingConfigs {
     create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
+      val debugStore = listOf(
+        file("${rootDir}/debug.keystore"),
+        file("${rootDir}/app/debug.keystore"),
+        file("${rootDir}/app/release.jks"),
+        file("release.jks"),
+        file("${rootDir}/release.jks")
+      ).firstOrNull { it.exists() && it.length() > 0 } ?: file("${rootDir}/debug.keystore")
+      storeFile = debugStore
       storePassword = "android"
       keyAlias = "androiddebugkey"
       keyPassword = "android"
@@ -63,7 +70,9 @@ android {
       val releaseKeystore = listOf(
         file("release.jks"),
         file("${rootDir}/app/release.jks"),
-        file("${rootDir}/release.jks")
+        file("${rootDir}/release.jks"),
+        file("${rootDir}/debug.keystore"),
+        file("${rootDir}/app/debug.keystore")
       ).firstOrNull { it.exists() && it.length() > 0 }
 
       val envStorePass = System.getenv("KEYSTORE_PASSWORD")?.trim()?.takeIf { it.isNotEmpty() }
@@ -78,7 +87,13 @@ android {
         keyAlias = envKeyAlias ?: "androiddebugkey"
         keyPassword = envKeyPass ?: "android"
       } else {
-        storeFile = file("${rootDir}/debug.keystore")
+        val fallbackStore = listOf(
+          file("${rootDir}/debug.keystore"),
+          file("${rootDir}/app/debug.keystore"),
+          file("${rootDir}/app/release.jks"),
+          file("release.jks")
+        ).firstOrNull { it.exists() && it.length() > 0 } ?: file("${rootDir}/debug.keystore")
+        storeFile = fallbackStore
         storePassword = "android"
         keyAlias = "androiddebugkey"
         keyPassword = "android"
@@ -95,7 +110,9 @@ android {
       val hasReleaseKeystore = listOf(
         file("release.jks"),
         file("${rootDir}/app/release.jks"),
-        file("${rootDir}/release.jks")
+        file("${rootDir}/release.jks"),
+        file("${rootDir}/debug.keystore"),
+        file("${rootDir}/app/debug.keystore")
       ).any { it.exists() && it.length() > 0 }
 
       signingConfig = if (hasReleaseKeystore) {

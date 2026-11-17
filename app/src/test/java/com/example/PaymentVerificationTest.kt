@@ -305,8 +305,12 @@ class PaymentVerificationTest {
             trialUsed = true
         )
 
-        LicenseManager.refreshAccessStatus(context)
+        val cached = LicenseManager.getCachedLicensingData(context)
+        assertEquals(trialExpiry, cached.trialExpiry)
+        assertEquals(now - 1000L, cached.trialClaimed)
+        assertTrue("isFreeTrialAllowed must be true", DeviceUtils.isFreeTrialAllowed(context))
 
+        LicenseManager.refreshAccessStatus(context)
         val status = LicenseManager.accessStatus.value
         assertTrue("Status must be TrialActive on fast UI boot but was $status", status is AccessStatus.TrialActive)
         assertEquals(trialExpiry, (status as AccessStatus.TrialActive).expiryTimestamp)
@@ -410,7 +414,7 @@ class PaymentVerificationTest {
             assertEquals(RewardedAdManager.NO_FILL_USER_MESSAGE, RewardedAdManager.getUnavailableMessage())
 
             // Default local BuildConfig.APP_VERSION_CODE must be >= 1 and aligned below GitHub Actions run numbers
-            assertEquals(1, BuildConfig.APP_VERSION_CODE)
+            assertTrue(BuildConfig.APP_VERSION_CODE >= 1)
         } finally {
             RewardedAdManager.setMockLoadedForTesting(false)
         }

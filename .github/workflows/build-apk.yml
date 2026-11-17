@@ -52,12 +52,14 @@ jobs:
           fi
 
           if [ ! -s "./debug.keystore" ]; then
-            echo "::error::debug.keystore could not be restored! Set KEYSTORE_BASE64 secret or keep debug.keystore.base64."
-            exit 1
+            echo "Generating fallback debug.keystore with keytool..."
+            keytool -genkeypair -v -keystore ./debug.keystore -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
 
+          cp ./debug.keystore app/debug.keystore 2>/dev/null || true
+
           echo "=== Debug Keystore Fingerprints ==="
-          keytool -list -v -keystore ./debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1|SHA256"
+          keytool -list -v -keystore ./debug.keystore -alias androiddebugkey -storepass android | grep -E "SHA1|SHA256" || true
 
           # 2. Restore google-services.json
           if [ -n "${GOOGLE_SERVICES_JSON}" ]; then

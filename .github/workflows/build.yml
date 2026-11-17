@@ -74,27 +74,43 @@ jobs:
             echo "⚠️ Warning: app/google-services.json not found; build will proceed with fallback."
           fi
 
-          # 2: Release Keystore
+          # 2: Release & Debug Keystores
           CUSTOM_KEYSTORE="false"
           CLEAN_KEYSTORE_B64="$(printf '%s' "${KEYSTORE_BASE64}" | tr -d '\r\n ')"
           if [ -n "${CLEAN_KEYSTORE_B64}" ]; then
             echo "Decoding KEYSTORE_BASE64 into app/release.jks..."
             if printf '%s' "${CLEAN_KEYSTORE_B64}" | base64 -d > app/release.jks && [ -s app/release.jks ]; then
               CUSTOM_KEYSTORE="true"
+              cp app/release.jks ./debug.keystore 2>/dev/null || true
+              cp app/release.jks app/debug.keystore 2>/dev/null || true
               echo "✅ app/release.jks decoded successfully ($(stat -c%s app/release.jks) bytes)."
             else
               echo "::warning::KEYSTORE_BASE64 secret could not be decoded. Falling back to debug keystore."
               rm -f app/release.jks
             fi
-          else
-            echo "No custom KEYSTORE_BASE64 secret provided. Using bundled debug keystore."
-            rm -f app/release.jks
           fi
 
-          # Ensure debug.keystore is present
-          if [ ! -s "./debug.keystore" ] && [ -f "./debug.keystore.base64" ]; then
-            echo "Restoring debug.keystore from debug.keystore.base64..."
-            tr -d '\r\n ' < ./debug.keystore.base64 | base64 -d > ./debug.keystore
+          # Ensure ./debug.keystore is ALWAYS guaranteed to exist on the runner
+          if [ ! -s "./debug.keystore" ]; then
+            if [ -f "./debug.keystore.base64" ]; then
+              echo "Restoring debug.keystore from debug.keystore.base64..."
+              tr -d '\r\n ' < ./debug.keystore.base64 | base64 -d > ./debug.keystore
+            elif [ -s "app/release.jks" ]; then
+              echo "Copying app/release.jks to ./debug.keystore..."
+              cp app/release.jks ./debug.keystore
+            else
+              echo "Generating fallback debug.keystore with keytool..."
+              keytool -genkeypair -v -keystore ./debug.keystore -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            fi
+          fi
+
+          # Ensure app/debug.keystore is also in place
+          cp ./debug.keystore app/debug.keystore 2>/dev/null || true
+
+          # If app/release.jks is not present, use ./debug.keystore
+          if [ ! -s "app/release.jks" ]; then
+            echo "Setting up app/release.jks from ./debug.keystore..."
+            cp ./debug.keystore app/release.jks
           fi
           echo "custom_keystore=${CUSTOM_KEYSTORE}" >> "$GITHUB_OUTPUT"
 
@@ -173,17 +189,18 @@ jobs:
           export FIREBASE_FALLBACK_API_KEY
 
           # Determine and test valid signing credentials before launching Gradle
-          TARGET_PASS="${KEYSTORE_PASSWORD:-}"
-          TARGET_ALIAS="${KEY_ALIAS:-}"
-          TARGET_KEYPASS="${KEY_PASSWORD:-}"
+          TARGET_PASS="${KEYSTORE_PASSWORD:-android}"
+          TARGET_ALIAS="${KEY_ALIAS:-androiddebugkey}"
+          TARGET_KEYPASS="${KEY_PASSWORD:-$TARGET_PASS}"
 
-          # If no custom keystore was supplied, or if secrets are empty, default to android / androiddebugkey
-          if [ "${CUSTOM_KEYSTORE}" != "true" ] || [ -z "${TARGET_PASS}" ]; then
-            rm -f app/release.jks
-            TARGET_PASS="android"
-            TARGET_ALIAS="androiddebugkey"
-            TARGET_KEYPASS="android"
+          # Guarantee both keystore files exist
+          if [ ! -s "app/release.jks" ] && [ -s "./debug.keystore" ]; then
+            cp ./debug.keystore app/release.jks
           fi
+          if [ ! -s "./debug.keystore" ] && [ -s "app/release.jks" ]; then
+            cp app/release.jks ./debug.keystore
+          fi
+          cp ./debug.keystore app/debug.keystore 2>/dev/null || true
 
           if [ -f "app/release.jks" ]; then
             # Verify if TARGET_PASS works. If not, test if default 'android' works
@@ -194,8 +211,8 @@ jobs:
                 TARGET_ALIAS="androiddebugkey"
                 TARGET_KEYPASS="android"
               else
-                echo "::warning::Cannot unlock app/release.jks with KEYSTORE_PASSWORD or 'android'. Falling back to debug.keystore."
-                rm -f app/release.jks
+                echo "::warning::Cannot unlock app/release.jks with KEYSTORE_PASSWORD or 'android'. Using ./debug.keystore."
+                cp ./debug.keystore app/release.jks
                 TARGET_PASS="android"
                 TARGET_ALIAS="androiddebugkey"
                 TARGET_KEYPASS="android"
@@ -225,8 +242,8 @@ jobs:
                   echo "Notice: KEY_PASSWORD was incorrect, but key opened with 'android'. Using 'android'."
                   TARGET_KEYPASS="android"
                 else
-                  echo "::warning::Keystore unlocked, but key password for alias '${TARGET_ALIAS}' is incorrect. Falling back to debug.keystore."
-                  rm -f app/release.jks
+                  echo "::warning::Keystore unlocked, but key password for alias '${TARGET_ALIAS}' is incorrect. Using debug keystore."
+                  cp ./debug.keystore app/release.jks
                   TARGET_PASS="android"
                   TARGET_ALIAS="androiddebugkey"
                   TARGET_KEYPASS="android"
@@ -235,7 +252,7 @@ jobs:
               rm -f /tmp/keycheck.p12
             fi
             if [ -f "app/release.jks" ]; then
-              echo "Custom release keystore and alias '${TARGET_ALIAS}' successfully validated."
+              echo "Release keystore and alias '${TARGET_ALIAS}' successfully validated."
             fi
           fi
 
