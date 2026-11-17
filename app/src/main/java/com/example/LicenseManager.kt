@@ -1216,6 +1216,20 @@ object LicenseManager {
      * Evaluates strictly against reactive cloud-synced AccessStatus StateFlow.
      * Returns true ONLY if status is PassActive or TrialActive with valid remaining time.
      */
+    val isPassActive: Boolean
+        get() = when (val s = _accessStatus.value) {
+            is AccessStatus.PassActive -> s.passTier.isProPass && s.remainingTimeMs > 0
+            else -> false
+        }
+
+    val isTrialActive: Boolean
+        get() = when (val s = _accessStatus.value) {
+            is AccessStatus.TrialActive -> s.remainingTimeMs > 0
+            else -> false
+        }
+
+    fun isProMode(): Boolean = isPassActive || isTrialActive
+
     fun isAccessGranted(): Boolean {
         if (DeviceUtils.isRuntimeHookOrDebuggerDetected(appContext)) {
             Log.w(TAG, "isAccessGranted blocked: Runtime hooking or debugger tamper detected.")
@@ -1225,11 +1239,7 @@ object LicenseManager {
             Log.w(TAG, "isAccessGranted blocked: Clock tampering detected.")
             return false
         }
-        return when (val status = _accessStatus.value) {
-            is AccessStatus.PassActive -> status.passTier.isProPass && status.remainingTimeMs > 0
-            is AccessStatus.TrialActive -> status.remainingTimeMs > 0
-            else -> false
-        }
+        return isProMode()
     }
 
     /**
@@ -1631,7 +1641,11 @@ object LicenseManager {
 
                 if (snapshot != null && snapshot.exists()) {
                     val trialClaimed = snapshot.getLong("trialClaimed") ?: snapshot.getLong("firstClaimedTimestamp") ?: 0L
-                    val trialExpiry = snapshot.getLong("trialExpiry") ?: snapshot.getLong("trialExpiryTimestamp") ?: 0L
+                    val trialExpiry = snapshot.getLong("trialExpiry")
+                        ?: snapshot.getLong("trialExpiryTimestamp")
+                        ?: snapshot.getLong("freeTrialExpiry")
+                        ?: snapshot.getLong("trialExpiresAt")
+                        ?: 0L
                     val isUsed = snapshot.getBoolean("trialUsed") ?: snapshot.getBoolean("isUsed") ?: (trialClaimed > 0L)
                     val passType = snapshot.getString("activePassType") ?: snapshot.getString("passType")
                     val passExpiry = snapshot.getLong("passExpiryTimestamp") ?: snapshot.getLong("passExpiry") ?: 0L
@@ -1654,11 +1668,36 @@ object LicenseManager {
                         hasLoadedTrial = true
                     }
 
+                    serverPassTier = tier?.takeIf { it.isProPass }
+                    serverPassExpiry = if (tier?.isProPass == true) passExpiry else 0L
+
                     serverRemoveAdsExpiry = maxOf(
                         removeAdsExpiry,
                         if (tier == PassTier.REMOVE_ADS) passExpiry else 0L
                     )
                     _removeAdsExpiryMs.value = if (serverRemoveAdsExpiry > now) serverRemoveAdsExpiry else 0L
+
+                    // Parse Pay-Per-Use & Admin feature unlocks map, filtering out expired remnants
+                    val rawFeatures = (snapshot.get("unlocked_features") as? Map<*, *>)
+                        ?: (snapshot.get("unlockedFeatures") as? Map<*, *>)
+                    val parsedFeatures = rawFeatures?.mapNotNull { (k, v) ->
+                        val featureKey = k as? String ?: return@mapNotNull null
+                        val exp = when (v) {
+                            is Number -> v.toLong()
+                            true -> -1L
+                            else -> return@mapNotNull null
+                        }
+                        featureKey to exp
+                    }?.toMap() ?: emptyMap()
+                    _unlockedFeatures.value = filterAuthoritativeUnlockedFeatures(
+                        rawMap = parsedFeatures,
+                        now = now,
+                        passActive = tier?.isProPass == true && passExpiry > now,
+                        trialActive = trialClaimed > 0L && trialExpiry > now,
+                        trialUsed = isUsed,
+                        trialExpiry = trialExpiry,
+                        passExpiry = if (tier?.isProPass == true) passExpiry else 0L
+                    )
 
                     val folder = computeCurrentFolder(tier, passExpiry, serverTrialClaimed, serverTrialExpiry, now)
                     _currentFolder.value = folder
@@ -1782,7 +1821,11 @@ object LicenseManager {
                     val hasClaimed = snapshot.getBoolean("hasClaimedReferral") ?: false
                     val refCount = snapshot.getLong("referralCount")?.toInt() ?: 0
                     val trialClaimed = snapshot.getLong("trialClaimed") ?: snapshot.getLong("firstClaimedTimestamp") ?: 0L
-                    val trialExpiry = snapshot.getLong("trialExpiry") ?: snapshot.getLong("trialExpiryTimestamp") ?: 0L
+                    val trialExpiry = snapshot.getLong("trialExpiry")
+                        ?: snapshot.getLong("trialExpiryTimestamp")
+                        ?: snapshot.getLong("freeTrialExpiry")
+                        ?: snapshot.getLong("trialExpiresAt")
+                        ?: 0L
                     val isTrialUsed = snapshot.getBoolean("trialUsed") ?: snapshot.getBoolean("isUsed") ?: (trialClaimed > 0L)
 
                     // Always sync trial and licensing state unconditionally for real-time Firestore updates
@@ -1826,7 +1869,7 @@ object LicenseManager {
                     )
                     _currentFolder.value = expectedFolder
 
-                    // Parse Pay-Per-Use & Admin feature unlocks map (-1L or Long.MAX_VALUE = permanent unlock)
+                    // Parse Pay-Per-Use & Admin feature unlocks map, filtering out expired remnants
                     val rawFeatures = (snapshot.get("unlocked_features") as? Map<*, *>)
                         ?: (snapshot.get("unlockedFeatures") as? Map<*, *>)
                     val parsedFeatures = rawFeatures?.mapNotNull { (k, v) ->
@@ -1838,7 +1881,15 @@ object LicenseManager {
                         }
                         featureKey to exp
                     }?.toMap() ?: emptyMap()
-                    _unlockedFeatures.value = parsedFeatures
+                    _unlockedFeatures.value = filterAuthoritativeUnlockedFeatures(
+                        rawMap = parsedFeatures,
+                        now = currentTimeNow,
+                        passActive = parsedTier?.isProPass == true && passExpiry > currentTimeNow,
+                        trialActive = trialClaimed > 0L && trialExpiry > currentTimeNow,
+                        trialUsed = isTrialUsed,
+                        trialExpiry = trialExpiry,
+                        passExpiry = if (parsedTier?.isProPass == true) passExpiry else 0L
+                    )
 
                     // Parse explicit Admin Lock list/map (locked_features / lockedFeatures)
                     val rawLocked = snapshot.get("locked_features") ?: snapshot.get("lockedFeatures")
@@ -2214,6 +2265,19 @@ object LicenseManager {
         }
 
         // 3. Both Pass & Trial Expired or Not Active
+        val filtered = filterAuthoritativeUnlockedFeatures(
+            rawMap = _unlockedFeatures.value,
+            now = now,
+            passActive = false,
+            trialActive = false,
+            trialUsed = trialUsed || trialClaimed > 0L,
+            trialExpiry = trialExpiry,
+            passExpiry = passExpiry
+        )
+        if (_unlockedFeatures.value != filtered) {
+            _unlockedFeatures.value = filtered
+        }
+
         val hasHadPreviousPass = tier != null || passExpiry > 0L
         val authState = GoogleAuthManager.userAuthState.value
         val msg = if (!authState.isLoggedIn) {
@@ -2317,16 +2381,72 @@ object LicenseManager {
         return parent != null && locked.contains(parent)
     }
 
+    /**
+     * Authoritative Feature Unlock Filter:
+     * - Keeps Admin permanent unlocks (-1L or Long.MAX_VALUE).
+     * - Excludes any expired timestamps (exp <= now).
+     * - If trial is expired/used and no active Pro Pass or Trial, excludes residual timestamps matching trialExpiry (within 5s).
+     * - If pass is expired and no active Pro Pass, excludes residual timestamps matching passExpiry (within 5s).
+     */
+    fun filterAuthoritativeUnlockedFeatures(
+        rawMap: Map<String, Long>,
+        now: Long = getCurrentServerTimeMs(),
+        passActive: Boolean = isPassActive,
+        trialActive: Boolean = isTrialActive,
+        trialUsed: Boolean = serverTrialUsed,
+        trialExpiry: Long = serverTrialExpiry,
+        passExpiry: Long = serverPassExpiry
+    ): Map<String, Long> {
+        if (rawMap.isEmpty()) return emptyMap()
+
+        val isTrialDead = (!trialActive && !passActive) && (trialUsed || (trialExpiry in 1L..now))
+        val isPassDead = !passActive && (passExpiry in 1L..now)
+
+        return rawMap.filter { (key, exp) ->
+            if (key.isBlank()) return@filter false
+            // 1. Keep Admin permanent unlocks (-1L or Long.MAX_VALUE)
+            if (exp == -1L || exp == Long.MAX_VALUE) {
+                return@filter true
+            }
+            // 2. Ignore/filter out any expired timestamps
+            if (exp <= now) {
+                return@filter false
+            }
+            // 3. If trial is dead/expired and entry matches trialExpiry within 5s tolerance, exclude as trial remnant
+            if (isTrialDead && trialExpiry > 0L && kotlin.math.abs(exp - trialExpiry) <= 5000L) {
+                return@filter false
+            }
+            // 4. If pass is dead/expired and entry matches passExpiry within 5s tolerance, exclude as pass remnant
+            if (isPassDead && passExpiry > 0L && kotlin.math.abs(exp - passExpiry) <= 5000L) {
+                return@filter false
+            }
+            true
+        }
+    }
+
     private fun findFeatureUnlockExpiry(featureId: String): Long? {
         val map = _unlockedFeatures.value
         if (map.isEmpty()) return null
         val target = featureId.lowercase()
-        map.entries.firstOrNull { it.key.equals(target, ignoreCase = true) }?.let { return it.value }
-        val parent = FeatureIds.parentGroupFor(target)
-        if (parent != null) {
-            map.entries.firstOrNull { it.key.equals(parent, ignoreCase = true) }?.let { return it.value }
+        val exp = map.entries.firstOrNull { it.key.equals(target, ignoreCase = true) }?.value
+            ?: FeatureIds.parentGroupFor(target)?.let { parent ->
+                map.entries.firstOrNull { it.key.equals(parent, ignoreCase = true) }?.value
+            }
+            ?: return null
+
+        val now = getCurrentServerTimeMs()
+        if (exp != -1L && exp != Long.MAX_VALUE) {
+            if (exp <= now) return null
+            if (!isPassActive && !isTrialActive) {
+                if ((serverTrialUsed || serverTrialExpiry <= now) && serverTrialExpiry > 0L && kotlin.math.abs(exp - serverTrialExpiry) <= 5000L) {
+                    return null
+                }
+                if (serverPassExpiry in 1L..now && kotlin.math.abs(exp - serverPassExpiry) <= 5000L) {
+                    return null
+                }
+            }
         }
-        return null
+        return exp
     }
 
     /**
@@ -2415,11 +2535,11 @@ object LicenseManager {
     }
 
     /**
-     * Checks if ads should be suppressed.
+     * Checks if ads should be suppressed due to an active Remove Ads Pass.
      * Returns true STRICTLY when user holds an active Remove Ads Pass (removeAdsExpiryMs or
-     * unlocked_features["remove_ads_pass"]). Daily/Weekly/Monthly Passes and Free Trial still show ads.
+     * unlocked_features["remove_ads_pass"] / unlocked_features["remove_ads"]).
      */
-    fun isAdsRemoved(): Boolean {
+    fun isRemoveAdsActive(): Boolean {
         if (isClockTamperingDetected() || isCurrentlyBanned()) return false
         val ctx = appContext
         if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return false
@@ -2438,12 +2558,22 @@ object LicenseManager {
             it.key.equals(PassTier.REMOVE_ADS.id, ignoreCase = true) ||
                 it.key.equals("remove_ads", ignoreCase = true)
         }?.value
-        if (directExpiry != null && (directExpiry == -1L || directExpiry > now)) {
+        if (directExpiry != null && (directExpiry == -1L || directExpiry == Long.MAX_VALUE || directExpiry > now)) {
             return true
         }
 
         return false
     }
+
+    fun isAdsRemoved(): Boolean = isRemoveAdsActive()
+
+    /**
+     * Controls whether Banner Ads should be shown.
+     * Returns false if user is in Pro Mode (active Pro Pass or active Free Trial)
+     * OR if user has an active Remove Ads Pass.
+     * In Free Mode, returns true even if 1 or more filter features are unlocked with Points.
+     */
+    fun shouldShowBannerAds(): Boolean = !isProMode() && !isRemoveAdsActive()
 
     /**
      * Returns remaining active time in milliseconds for a specific feature.
@@ -2597,9 +2727,33 @@ object LicenseManager {
         unlocked: Map<String, Long>,
         locked: Set<String> = emptySet()
     ) {
-        _unlockedFeatures.value = unlocked
+        _unlockedFeatures.value = filterAuthoritativeUnlockedFeatures(unlocked)
         _lockedFeatures.value = locked.map { it.lowercase() }.toSet()
         onEntitlementsChanged?.invoke()
+    }
+
+    @VisibleForTesting
+    internal fun setLicensingForTesting(
+        passTier: PassTier? = null,
+        passExpiry: Long = 0L,
+        trialClaimed: Long = 0L,
+        trialExpiry: Long = 0L,
+        trialUsed: Boolean = false,
+        removeAdsExpiry: Long = 0L
+    ) {
+        serverPassTier = passTier?.takeIf { it.isProPass }
+        serverPassExpiry = if (passTier?.isProPass == true) passExpiry else 0L
+        serverTrialClaimed = trialClaimed
+        serverTrialExpiry = trialExpiry
+        serverTrialUsed = trialUsed
+        serverRemoveAdsExpiry = maxOf(
+            removeAdsExpiry,
+            if (passTier == PassTier.REMOVE_ADS) passExpiry else 0L
+        )
+        _removeAdsExpiryMs.value = if (serverRemoveAdsExpiry > getCurrentServerTimeMs()) serverRemoveAdsExpiry else 0L
+        hasLoadedTrial = true
+        hasLoadedLicensing = true
+        refreshAccessStatus()
     }
 }
 

@@ -924,5 +924,146 @@ class SecurityHardeningTest {
         assertTrue(GlobalAdminManager.banState.value is UserBanState.NotBanned)
         assertFalse(GlobalAdminManager.isBlocked.value)
     }
+
+    @Test
+    fun staleTrialRemnantsInUnlockedFeaturesMustNotUnlockFeaturesWhenTrialIsExpired() {
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+        val now = LicenseManager.getCurrentServerTimeMs()
+        val expiredTrialTime = now - 3_600_000L
+
+        // Set expired trial
+        LicenseManager.setLicensingForTesting(
+            passTier = null,
+            passExpiry = 0L,
+            trialClaimed = expiredTrialTime - 172_800_000L,
+            trialExpiry = expiredTrialTime,
+            trialUsed = true,
+            removeAdsExpiry = 0L
+        )
+
+        assertFalse(LicenseManager.isAccessGranted())
+        assertFalse(LicenseManager.isPassActive)
+        assertFalse(LicenseManager.isTrialActive)
+        assertFalse(LicenseManager.isProMode())
+
+        // Backend had populated all 11 features matching the trial expiry
+        val all11Features = FeatureIds.ALL_FEATURES.map { it.id } + listOf(FeatureIds.FARE_FILTERS, FeatureIds.DISTANCE_FILTERS)
+        val staleMap = all11Features.associateWith { expiredTrialTime }
+
+        LicenseManager.setFeatureLocksForTesting(unlocked = staleMap)
+
+        // All 11 features must be filtered out as expired trial remnants
+        assertEquals(0, LicenseManager.unlockedFeatures.value.size)
+        for (fId in all11Features) {
+            assertFalse("Feature $fId must be locked when trial is expired!", LicenseManager.isFeatureUnlocked(fId))
+        }
+
+        // Toggles must be locked
+        AppSettings.publishEffectiveSettings(context)
+        assertFalse(AppSettings.isMinFareEnabled(context))
+        assertFalse(AppSettings.isMaxFareEnabled(context))
+        assertFalse(AppSettings.isAutoClickEnabled(context))
+    }
+
+    @Test
+    fun freeModeBannerAdsShownEvenWhenFiltersAreUnlockedWithPoints() {
+        LicenseManager.resetStateForTesting(context)
+        val now = LicenseManager.getCurrentServerTimeMs()
+
+        // User is in Free Mode (no pass, no active trial, no remove ads)
+        LicenseManager.setLicensingForTesting(
+            passTier = null,
+            passExpiry = 0L,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = false,
+            removeAdsExpiry = 0L
+        )
+
+        assertFalse(LicenseManager.isProMode())
+        assertFalse(LicenseManager.isRemoveAdsActive())
+        assertTrue("In clean Free Mode, banner ads must be shown", LicenseManager.shouldShowBannerAds())
+
+        // User unlocks 2 filters with Points for 1 hour
+        val futureExpiry = now + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.MAX_FARE to futureExpiry
+            )
+        )
+
+        assertTrue(LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE))
+        assertTrue(LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE))
+        assertFalse(LicenseManager.isProMode())
+        assertFalse(LicenseManager.isRemoveAdsActive())
+
+        // Unlocking individual filters with Points must NOT suppress banner ads!
+        assertTrue(
+            "Banner ads MUST reliably display in Free Mode even if filters are unlocked via Points!",
+            LicenseManager.shouldShowBannerAds()
+        )
+    }
+
+    @Test
+    fun proModeAndRemoveAdsPassCorrectlyControlBannerAdsVisibility() {
+        LicenseManager.resetStateForTesting(context)
+        val now = LicenseManager.getCurrentServerTimeMs()
+
+        // 1. Pro Pass Active (Daily Pass) hides banner ads
+        LicenseManager.setLicensingForTesting(
+            passTier = PassTier.DAILY,
+            passExpiry = now + 86_400_000L
+        )
+        assertTrue(LicenseManager.isPassActive)
+        assertTrue(LicenseManager.isProMode())
+        assertFalse("Pro Mode must hide banner ads", LicenseManager.shouldShowBannerAds())
+
+        // 2. Active Free Trial hides banner ads
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.setLicensingForTesting(
+            trialClaimed = now - 10_000L,
+            trialExpiry = now + 172_800_000L,
+            trialUsed = false
+        )
+        assertTrue(LicenseManager.isTrialActive)
+        assertTrue(LicenseManager.isProMode())
+        assertFalse("Active Free Trial must hide banner ads", LicenseManager.shouldShowBannerAds())
+
+        // 3. Remove Ads Pass hides banner ads in Free Mode
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.setLicensingForTesting(
+            removeAdsExpiry = now + 86_400_000L
+        )
+        assertFalse(LicenseManager.isProMode())
+        assertTrue(LicenseManager.isRemoveAdsActive())
+        assertFalse("Active Remove Ads pass must hide banner ads", LicenseManager.shouldShowBannerAds())
+    }
+
+    @Test
+    fun expiredFeatureTogglesResetCleanlyInPublishEffectiveSettings() {
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+
+        // Pre-save enabled states in SharedPreferences
+        val prefs = context.getSharedPreferences(AppSettings.USER_FILTER_PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putBoolean("user_min_fare_enabled", true)
+            .putBoolean("user_auto_click_enabled", true)
+            .commit()
+
+        // But user is in Free Mode with 0 unlocked features
+        LicenseManager.setLicensingForTesting()
+        LicenseManager.setFeatureLocksForTesting(emptyMap())
+
+        AppSettings.init(context)
+        AppSettings.publishEffectiveSettings(context)
+
+        assertFalse(AppSettings.isMinFareEnabled(context))
+        assertFalse(AppSettings.isAutoClickEnabled(context))
+        assertFalse("Persisted XML pref must be reset to false", prefs.getBoolean("user_min_fare_enabled", true))
+        assertFalse("Persisted XML pref must be reset to false", prefs.getBoolean("user_auto_click_enabled", true))
+    }
 }
 

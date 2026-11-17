@@ -31,14 +31,23 @@
 -keep class com.example.LicenseManager { *; }
 -keep class com.example.LicenseManager$** { *; }
 -keep class com.example.FeatureIds { *; }
+-keep class com.example.FeatureIds$** { *; }
+-keep class com.example.FeatureUnlockPricing { *; }
 -keep class com.example.PassTier { *; }
+-keep class com.example.PassTier$** { *; }
 -keep class com.example.AccessStatus { *; }
 -keep class com.example.AccessStatus$** { *; }
+-keep class com.example.ActivePassInfo { *; }
+-keep class com.example.TrialInfo { *; }
 -keep class com.example.GlobalAdminManager { *; }
 -keep class com.example.UserBanState { *; }
 -keep class com.example.UserBanState$** { *; }
 -keep class com.example.AppSettings { *; }
 -keep class com.example.DeviceUtils { *; }
+-keep class com.example.RewardedAdManager { *; }
+-keep class com.example.RewardedAdManager$** { *; }
+-keep class com.example.AdConfig { *; }
+-keep class com.example.ui.components.BannerAdViewKt { *; }
 
 # Kotlin Coroutines, Metadata & Flow rules
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}

@@ -462,6 +462,10 @@ object AppSettings {
             val serviceOnline = if (ctx != null) LicenseManager.isServiceActive(ctx) else LicenseManager.isServiceActive()
             val hasCapability = securityClean && LicenseManager.hasAnyAutoAcceptCapability()
 
+            if (LicenseManager.accessStatus.value is AccessStatus.Expired) {
+                cleanExpiredFeatureToggles(ctx)
+            }
+
             val effAutoAccept = serviceOnline && hasCapability && autoAcceptEnabled
             val effMinFare = rawMinFareEnabled &&
                 LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE) &&
@@ -515,47 +519,89 @@ object AppSettings {
 
     /**
      * Resets in-memory and persisted feature toggles to false for any feature that is no longer
-     * unlocked when accessStatus transitions to Expired.
+     * unlocked when accessStatus transitions to Expired. Cleans any customized_ flags for expired toggles.
      */
     fun cleanExpiredFeatureToggles(context: Context? = appContextRef) {
-        val ctx = context ?: appContextRef
+        val ctx = context ?: appContextRef ?: return
+        val prefs = getUserFilterPrefs(ctx)
+        val editor = prefs.edit()
+        var changed = false
         synchronized(settingsLock) {
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)) {
-                rawMinFareEnabled = false
-                persistUserFilterPref(ctx, FKEY_MIN_FARE_ENABLED) { putBoolean(FKEY_MIN_FARE_ENABLED, false) }
+                if (rawMinFareEnabled) {
+                    rawMinFareEnabled = false
+                    editor.putBoolean(FKEY_MIN_FARE_ENABLED, false)
+                    editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_MIN_FARE_ENABLED")
+                    changed = true
+                }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)) {
-                rawMaxFareEnabled = false
-                persistUserFilterPref(ctx, FKEY_MAX_FARE_ENABLED) { putBoolean(FKEY_MAX_FARE_ENABLED, false) }
+                if (rawMaxFareEnabled) {
+                    rawMaxFareEnabled = false
+                    editor.putBoolean(FKEY_MAX_FARE_ENABLED, false)
+                    editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_MAX_FARE_ENABLED")
+                    changed = true
+                }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)) {
-                rawMaxPickupDistEnabled = false
-                persistUserFilterPref(ctx, FKEY_MAX_PICKUP_ENABLED) { putBoolean(FKEY_MAX_PICKUP_ENABLED, false) }
+                if (rawMaxPickupDistEnabled) {
+                    rawMaxPickupDistEnabled = false
+                    editor.putBoolean(FKEY_MAX_PICKUP_ENABLED, false)
+                    editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_MAX_PICKUP_ENABLED")
+                    changed = true
+                }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)) {
-                rawMaxDropDistEnabled = false
-                persistUserFilterPref(ctx, FKEY_MAX_DROP_ENABLED) { putBoolean(FKEY_MAX_DROP_ENABLED, false) }
+                if (rawMaxDropDistEnabled) {
+                    rawMaxDropDistEnabled = false
+                    editor.putBoolean(FKEY_MAX_DROP_ENABLED, false)
+                    editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_MAX_DROP_ENABLED")
+                    changed = true
+                }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)) {
-                rawMinPerKmRateEnabled = false
-                persistUserFilterPref(ctx, FKEY_MIN_RATE_ENABLED) { putBoolean(FKEY_MIN_RATE_ENABLED, false) }
+                if (rawMinPerKmRateEnabled) {
+                    rawMinPerKmRateEnabled = false
+                    editor.putBoolean(FKEY_MIN_RATE_ENABLED, false)
+                    editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_MIN_RATE_ENABLED")
+                    changed = true
+                }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)) {
-                rawBlacklistEnabled = false
-                persistUserFilterPref(ctx, FKEY_BLACKLIST_ENABLED) { putBoolean(FKEY_BLACKLIST_ENABLED, false) }
+                if (rawBlacklistEnabled) {
+                    rawBlacklistEnabled = false
+                    editor.putBoolean(FKEY_BLACKLIST_ENABLED, false)
+                    editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_BLACKLIST_ENABLED")
+                    changed = true
+                }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE)) {
-                rawVoiceEnabled = false
-                persistUserFilterPref(ctx, FKEY_VOICE_ENABLED) { putBoolean(FKEY_VOICE_ENABLED, false) }
+                if (rawVoiceEnabled) {
+                    rawVoiceEnabled = false
+                    editor.putBoolean(FKEY_VOICE_ENABLED, false)
+                    editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_VOICE_ENABLED")
+                    changed = true
+                }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)) {
-                rawOverlayEnabled = false
-                persistUserFilterPref(ctx, FKEY_OVERLAY_ENABLED) { putBoolean(FKEY_OVERLAY_ENABLED, false) }
+                if (rawOverlayEnabled) {
+                    rawOverlayEnabled = false
+                    editor.putBoolean(FKEY_OVERLAY_ENABLED, false)
+                    editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_OVERLAY_ENABLED")
+                    changed = true
+                }
             }
             if (!LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK)) {
-                rawAutoClickEnabled = false
-                persistUserFilterPref(ctx, FKEY_AUTO_CLICK_ENABLED) { putBoolean(FKEY_AUTO_CLICK_ENABLED, false) }
+                if (rawAutoClickEnabled) {
+                    rawAutoClickEnabled = false
+                    editor.putBoolean(FKEY_AUTO_CLICK_ENABLED, false)
+                    editor.remove("${FKEY_USER_CUSTOMIZED_PREFIX}$FKEY_AUTO_CLICK_ENABLED")
+                    changed = true
+                }
             }
+        }
+        if (changed) {
+            editor.commit()
         }
     }
 

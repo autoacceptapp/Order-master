@@ -122,7 +122,8 @@ fun OrderMasterApp(
     val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
     val removeAdsExpiryMs by LicenseManager.removeAdsExpiryMs.collectAsState()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
-    val isAdsRemoved = remember(accessStatus, unlockedFeatures, removeAdsExpiryMs) { LicenseManager.isAdsRemoved() }
+    val isRemoveAdsActive = remember(accessStatus, unlockedFeatures, removeAdsExpiryMs) { LicenseManager.isRemoveAdsActive() }
+    val shouldShowBannerAds = remember(accessStatus, unlockedFeatures, removeAdsExpiryMs) { LicenseManager.shouldShowBannerAds() }
 
     // Sync cloud licensing and points whenever Gmail auth state updates
     LaunchedEffect(userAuthState.userEmail, userAuthState.uid) {
@@ -369,15 +370,15 @@ fun OrderMasterApp(
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text = if (isAdsRemoved) "Remove Ads (Active)" else "Remove Ads Pass",
+                                            text = if (isRemoveAdsActive) "Remove Ads (Active)" else "Remove Ads Pass",
                                             fontWeight = FontWeight.SemiBold
                                         )
                                     },
                                     leadingIcon = {
                                         Icon(
-                                            imageVector = if (isAdsRemoved) Icons.Filled.WorkspacePremium else Icons.Outlined.WorkspacePremium,
+                                            imageVector = if (isRemoveAdsActive) Icons.Filled.WorkspacePremium else Icons.Outlined.WorkspacePremium,
                                             contentDescription = null,
-                                            tint = if (isAdsRemoved) AmberAccent else Color(0xFF8B5CF6)
+                                            tint = if (isRemoveAdsActive) AmberAccent else Color(0xFF8B5CF6)
                                         )
                                     },
                                     onClick = {
@@ -458,7 +459,7 @@ fun OrderMasterApp(
         },
         bottomBar = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                if (!isAdsRemoved && currentRoute != Screen.PaymentVerification.route) {
+                if (shouldShowBannerAds && currentRoute != Screen.PaymentVerification.route) {
                     BannerAdView()
                 }
                 AnimatedVisibility(

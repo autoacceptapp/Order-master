@@ -75,10 +75,14 @@ fun BannerAdView(
     var isFallbackAttempted by remember(adUnitId) { mutableStateOf(false) }
     var isAdHidden by remember(adUnitId) { mutableStateOf(false) }
     var adViewRef by remember { mutableStateOf<AdView?>(null) }
+    val retryRunnableRef = remember { java.util.concurrent.atomic.AtomicReference<Runnable?>(null) }
 
     DisposableEffect(currentAdUnitId) {
         onDispose {
             try {
+                retryRunnableRef.getAndSet(null)?.let { r ->
+                    adViewRef?.removeCallbacks(r)
+                }
                 adViewRef?.destroy()
                 adViewRef = null
             } catch (e: Exception) {
@@ -112,8 +116,25 @@ fun BannerAdView(
                         }.getOrElse { AdSize.BANNER }
                         setAdSize(adaptiveSize)
                         this.adUnitId = currentAdUnitId
+
+                        var retryCount = 0
+                        val maxRetries = 3
+
+                        val retryRunnable = object : Runnable {
+                            override fun run() {
+                                try {
+                                    Log.d("BannerAdView", "Retrying Banner Ad load (attempt #$retryCount)...")
+                                    loadAd(AdRequest.Builder().build())
+                                } catch (e: Exception) {
+                                    Log.w("BannerAdView", "Banner ad retry failed: ${e.message}")
+                                }
+                            }
+                        }
+                        retryRunnableRef.set(retryRunnable)
+
                         adListener = object : AdListener() {
                             override fun onAdLoaded() {
+                                retryCount = 0
                                 isAdHidden = false
                                 Log.d("BannerAdView", "AdMob Banner Ad loaded successfully with unit: $currentAdUnitId")
                             }
@@ -128,7 +149,21 @@ fun BannerAdView(
                                     Log.i("BannerAdView", "Debug build: Attempting fallback to test banner ad unit.")
                                     isFallbackAttempted = true
                                     currentAdUnitId = AdConfig.fallbackBannerAdUnitId
-                                } else if (!BuildConfig.DEBUG || error.code == AdRequest.ERROR_CODE_NO_FILL) {
+                                    return
+                                }
+
+                                if (error.code == AdRequest.ERROR_CODE_NO_FILL) {
+                                    isAdHidden = true
+                                } else if (retryCount < maxRetries && (
+                                        error.code == AdRequest.ERROR_CODE_NETWORK_ERROR ||
+                                        error.code == AdRequest.ERROR_CODE_INTERNAL_ERROR ||
+                                        error.code == AdRequest.ERROR_CODE_INVALID_REQUEST
+                                    )) {
+                                    retryCount++
+                                    val delayMs = minOf(15000L * (1L shl (retryCount - 1)), 60000L)
+                                    Log.i("BannerAdView", "Transient ad error (code=${error.code}). Scheduling retry #$retryCount in ${delayMs / 1000}s.")
+                                    postDelayed(retryRunnable, delayMs)
+                                } else {
                                     isAdHidden = true
                                 }
                             }
