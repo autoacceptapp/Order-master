@@ -134,13 +134,14 @@ fun SubscriptionScreen(
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
     val userAuthState by GoogleAuthManager.userAuthState.collectAsState()
     val isPaymentSystemActive by GlobalAdminManager.isPaymentSystemActive.collectAsState()
+    val paymentConfig by com.example.data.repository.AppConfigRepository.currentPaymentConfig.collectAsState()
 
     var selectedPassForPointsPurchase by remember { mutableStateOf<PassTier?>(null) }
     var selectedPassForUpiPayment by remember { mutableStateOf<PassTier?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var isProcessing by remember { mutableStateOf(false) }
 
-    val hardwareId = remember { DeviceUtils.getDeviceHardwareId(context) }
+    val hardwareId = remember { com.example.HardwareIdManager.getPermanentHardwareId(context) }
 
     BackHandler(onBack = onNavigateBack)
 
@@ -302,16 +303,16 @@ fun SubscriptionScreen(
                 }
             }
 
-            // 4. Pass Cards (Daily, Weekly, Monthly) with Smart Dynamic Buttons
+            // 4. Pass Cards (Daily, Weekly, Monthly, Remove Ads) with Smart Dynamic Buttons
             PassTier.entries.forEach { tier ->
-                item(key = tier.id) {
+                item(key = "${tier.id}_${paymentConfig.dailyPriceInr}_${paymentConfig.weeklyPriceInr}_${paymentConfig.monthlyPriceInr}_${paymentConfig.removeAdsPriceInr}_${paymentConfig.dailyPoints}_${paymentConfig.weeklyPoints}_${paymentConfig.monthlyPoints}_${paymentConfig.removeAdsPoints}") {
                     PassCard(
                         passTier = tier,
                         pointsBalance = pointsBalance,
                         isProcessing = isProcessing,
                         isPaymentSystemActive = isPaymentSystemActive,
                         onBuyWithPoints = {
-                            if (isPaymentSystemActive && pointsBalance >= tier.pointsCost) {
+                            if (isPaymentSystemActive && pointsBalance >= tier.effectivePointsCost()) {
                                 selectedPassForPointsPurchase = tier
                             }
                         },
@@ -389,6 +390,7 @@ fun SubscriptionScreen(
 
     // Confirm Pass Purchase with Points Dialog
     selectedPassForPointsPurchase?.let { tier ->
+        val effectivePoints = remember(paymentConfig, tier) { tier.effectivePointsCost() }
         AlertDialog(
             onDismissRequest = { if (!isProcessing) selectedPassForPointsPurchase = null },
             icon = {
@@ -427,7 +429,7 @@ fun SubscriptionScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text("Pass Cost:", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${tier.pointsCost} Points", fontWeight = FontWeight.Bold, color = AmberAccent)
+                                Text("$effectivePoints Points", fontWeight = FontWeight.Bold, color = AmberAccent)
                             }
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -442,7 +444,7 @@ fun SubscriptionScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text("Balance After:", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("${pointsBalance - tier.pointsCost} Points", fontWeight = FontWeight.Bold, color = PrimaryEmerald)
+                                Text("${pointsBalance - effectivePoints} Points", fontWeight = FontWeight.Bold, color = PrimaryEmerald)
                             }
                         }
                     }
@@ -459,18 +461,25 @@ fun SubscriptionScreen(
                     onClick = {
                         isProcessing = true
                         coroutineScope.launch {
-                            val res = PassManager.activatePassWithPoints(context, tier)
-                            isProcessing = false
-                            selectedPassForPointsPurchase = null
-                            if (res.isSuccess) {
-                                val successMsg = if (tier == PassTier.REMOVE_ADS) {
-                                    "🎉 Remove Ads Pass Activated! Banner ads hidden for ${tier.durationDays} days."
+                            try {
+                                val res = PassManager.activatePassWithPoints(context, tier)
+                                if (res.isSuccess) {
+                                    val successMsg = if (tier == PassTier.REMOVE_ADS) {
+                                        "🎉 Remove Ads Pass Activated! Banner ads hidden for ${tier.durationDays} days."
+                                    } else {
+                                        "🎉 ${tier.title} Activated! Pro features unlocked."
+                                    }
+                                    Toast.makeText(context, successMsg, Toast.LENGTH_LONG).show()
                                 } else {
-                                    "🎉 ${tier.title} Activated! Pro features unlocked."
+                                    errorMessage = res.exceptionOrNull()?.message ?: "Points activation failed."
                                 }
-                                Toast.makeText(context, successMsg, Toast.LENGTH_LONG).show()
-                            } else {
-                                errorMessage = res.exceptionOrNull()?.message ?: "Points activation failed."
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                errorMessage = e.message ?: "Points activation failed."
+                            } finally {
+                                isProcessing = false
+                                selectedPassForPointsPurchase = null
                             }
                         }
                     },
@@ -481,7 +490,7 @@ fun SubscriptionScreen(
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
                         Spacer(modifier = Modifier.width(8.dp))
                     }
-                    Text("Redeem ${tier.pointsCost} Points", fontWeight = FontWeight.Bold)
+                    Text("Redeem $effectivePoints Points", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -1023,7 +1032,9 @@ private fun PassCard(
     onBuyWithPoints: () -> Unit,
     onPayViaUpi: () -> Unit
 ) {
-    val hasEnoughPoints = pointsBalance >= passTier.pointsCost
+    val effectivePoints = passTier.effectivePointsCost()
+    val effectivePrice = passTier.effectivePriceInInr()
+    val hasEnoughPoints = pointsBalance >= effectivePoints
     val isWeekly = passTier == PassTier.WEEKLY
     val isMonthly = passTier == PassTier.MONTHLY
     val isRemoveAds = passTier == PassTier.REMOVE_ADS
@@ -1093,14 +1104,14 @@ private fun PassCard(
                 // Dual Price Display: INR & Points
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        text = "₹${passTier.priceInInr}",
+                        text = "₹$effectivePrice",
                         style = MaterialTheme.typography.titleLarge.copy(
                             fontWeight = FontWeight.ExtraBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                     )
                     Text(
-                        text = "${passTier.pointsCost} Points",
+                        text = "$effectivePoints Points",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.SemiBold,
                             color = AmberAccent
@@ -1193,7 +1204,7 @@ private fun PassCard(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Buy with ${passTier.pointsCost} Points",
+                            text = "Buy with $effectivePoints Points",
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                         )
                     }
@@ -1217,7 +1228,7 @@ private fun PassCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Or Pay ₹${passTier.priceInInr} via UPI",
+                            text = "Or Pay ₹$effectivePrice via UPI",
                             style = MaterialTheme.typography.labelMedium.copy(
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -1249,7 +1260,7 @@ private fun PassCard(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Pay ₹${passTier.priceInInr} via UPI",
+                            text = "Pay ₹$effectivePrice via UPI",
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                         )
                     }
@@ -1276,7 +1287,7 @@ private fun PassCard(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "${passTier.pointsCost} Points Required (You have $pointsBalance pts)",
+                                text = "$effectivePoints Points Required (You have $pointsBalance pts)",
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1320,6 +1331,8 @@ private fun UpiPaymentDialog(
     onLaunchUpi: () -> Unit,
     onSimulateSuccess: () -> Unit
 ) {
+    val paymentConfig by com.example.data.repository.AppConfigRepository.currentPaymentConfig.collectAsState()
+    val effectivePrice = remember(paymentConfig, passTier) { passTier.effectivePriceInInr() }
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = {
@@ -1332,7 +1345,7 @@ private fun UpiPaymentDialog(
         },
         title = {
             Text(
-                text = "Pay ₹${passTier.priceInInr} via UPI",
+                text = "Pay ₹$effectivePrice via UPI",
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center
             )
@@ -1365,7 +1378,7 @@ private fun UpiPaymentDialog(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text("Amount to Pay:", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text("₹${passTier.priceInInr} INR", fontWeight = FontWeight.ExtraBold, color = PrimaryEmerald)
+                            Text("₹$effectivePrice INR", fontWeight = FontWeight.ExtraBold, color = PrimaryEmerald)
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),

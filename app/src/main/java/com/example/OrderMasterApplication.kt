@@ -24,33 +24,11 @@ class OrderMasterApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         // 1. Initialize FirebaseApp strictly from authentic configuration or fallback options
-        try {
-            if (FirebaseApp.getApps(this).isEmpty()) {
-                try {
-                    FirebaseApp.initializeApp(this)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Standard Firebase initialization notice: ${e.message}")
-                    val fallbackApiKey = BuildConfig.FIREBASE_FALLBACK_API_KEY
-                    if (fallbackApiKey.isNotBlank()) {
-                        val options = com.google.firebase.FirebaseOptions.Builder()
-                            .setApplicationId(packageName)
-                            .setProjectId("ordermaster-app")
-                            .setApiKey(fallbackApiKey)
-                            .build()
-                        FirebaseApp.initializeApp(this, options)
-                        Log.i(TAG, "Initialized Firebase with fallback options from BuildConfig.")
-                    } else {
-                        Log.w(TAG, "No Firebase fallback API key configured; skipping unauthenticated fallback.")
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize FirebaseApp: ${e.message}", e)
-        }
+        DeviceUtils.ensureFirebaseInitialized(this)
 
         // 2. Initialize Google Mobile Ads SDK explicitly immediately after Firebase
         try {
-            if (!isUnitTestEnvironment()) {
+            if (!DeviceUtils.isUnitTestEnvironment()) {
                 if (BuildConfig.DEBUG) {
                     val requestConfig = com.google.android.gms.ads.RequestConfiguration.Builder()
                         .setTestDeviceIds(listOf(com.google.android.gms.ads.AdRequest.DEVICE_ID_EMULATOR))
@@ -167,21 +145,6 @@ class OrderMasterApplication : Application() {
         }
     }
 
-    private fun isInstalledFromPlayStore(): Boolean {
-        return try {
-            val installer = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                packageManager.getInstallSourceInfo(packageName).installingPackageName
-            } else {
-                @Suppress("DEPRECATION")
-                packageManager.getInstallerPackageName(packageName)
-            }
-            installer == "com.android.vending"
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not inspect installer package: ${e.message}")
-            false
-        }
-    }
-
     /**
      * Configures Firestore offline persistent cache for zero-crash offline resilience.
      */
@@ -209,7 +172,7 @@ class OrderMasterApplication : Application() {
      * Runs asynchronously on Dispatchers.IO to prevent ANRs on slow network or heavy I/O.
      */
     private fun initCoreEngines() {
-        if (isUnitTestEnvironment()) {
+        if (DeviceUtils.isUnitTestEnvironment()) {
             try {
                 AppSettings.init(this)
                 LicenseManager.init(this)
@@ -235,13 +198,6 @@ class OrderMasterApplication : Application() {
                 Log.e(TAG, "Failed to initialize core engines in Application.onCreate: ${e.message}", e)
             }
         }
-    }
-
-    private fun isUnitTestEnvironment(): Boolean {
-        return BuildConfig.DEBUG && (
-            android.os.Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
-                runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
-        )
     }
 
     companion object {

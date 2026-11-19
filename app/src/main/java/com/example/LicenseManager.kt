@@ -17,6 +17,7 @@ import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -32,6 +33,7 @@ import javax.net.ssl.HttpsURLConnection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,13 +51,137 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
 /**
- * Pass Tiers Configuration:
+ * Single canonical source of truth for pass pricing (INR), points costs, and amount-to-tier mapping.
+ * Defaults are hardcoded for instant cold boot; remote overrides from `admin_settings/payment_config`
+ * are applied on top at runtime when available.
+ */
+object PassPricingConfig {
+    const val DAILY_PRICE_INR = 9
+    const val WEEKLY_PRICE_INR = 49
+    const val MONTHLY_PRICE_INR = 179
+    const val REMOVE_ADS_PRICE_INR = 199
+
+    const val DAILY_POINTS = 100
+    const val WEEKLY_POINTS = 500
+    const val MONTHLY_POINTS = 1500
+    const val REMOVE_ADS_POINTS = 1600
+
+    @Volatile
+    var effectiveDailyPriceInr: Int = DAILY_PRICE_INR
+        private set
+
+    @Volatile
+    var effectiveWeeklyPriceInr: Int = WEEKLY_PRICE_INR
+        private set
+
+    @Volatile
+    var effectiveMonthlyPriceInr: Int = MONTHLY_PRICE_INR
+        private set
+
+    @Volatile
+    var effectiveRemoveAdsPriceInr: Int = REMOVE_ADS_PRICE_INR
+        private set
+
+    @Volatile
+    var effectiveDailyPoints: Int = DAILY_POINTS
+        private set
+
+    @Volatile
+    var effectiveWeeklyPoints: Int = WEEKLY_POINTS
+        private set
+
+    @Volatile
+    var effectiveMonthlyPoints: Int = MONTHLY_POINTS
+        private set
+
+    @Volatile
+    var effectiveRemoveAdsPoints: Int = REMOVE_ADS_POINTS
+        private set
+
+    @Volatile
+    var effectiveValidPassAmountsInr: List<Int> = listOf(
+        DAILY_PRICE_INR,
+        WEEKLY_PRICE_INR,
+        MONTHLY_PRICE_INR,
+        REMOVE_ADS_PRICE_INR
+    )
+        private set
+
+    fun applyOverrides(
+        dailyPriceInr: Int? = null,
+        weeklyPriceInr: Int? = null,
+        monthlyPriceInr: Int? = null,
+        removeAdsPriceInr: Int? = null,
+        dailyPoints: Int? = null,
+        weeklyPoints: Int? = null,
+        monthlyPoints: Int? = null,
+        removeAdsPoints: Int? = null,
+        validPassAmountsInr: List<Int>? = null
+    ) {
+        effectiveDailyPriceInr = dailyPriceInr?.takeIf { it > 0 } ?: DAILY_PRICE_INR
+        effectiveWeeklyPriceInr = weeklyPriceInr?.takeIf { it > 0 } ?: WEEKLY_PRICE_INR
+        effectiveMonthlyPriceInr = monthlyPriceInr?.takeIf { it > 0 } ?: MONTHLY_PRICE_INR
+        effectiveRemoveAdsPriceInr = removeAdsPriceInr?.takeIf { it > 0 } ?: REMOVE_ADS_PRICE_INR
+
+        effectiveDailyPoints = dailyPoints?.takeIf { it > 0 } ?: DAILY_POINTS
+        effectiveWeeklyPoints = weeklyPoints?.takeIf { it > 0 } ?: WEEKLY_POINTS
+        effectiveMonthlyPoints = monthlyPoints?.takeIf { it > 0 } ?: MONTHLY_POINTS
+        effectiveRemoveAdsPoints = removeAdsPoints?.takeIf { it > 0 } ?: REMOVE_ADS_POINTS
+
+        val sanitizedValidAmounts = validPassAmountsInr
+            ?.filter { it > 0 }
+            ?.distinct()
+            ?.takeIf { it.isNotEmpty() }
+        effectiveValidPassAmountsInr = sanitizedValidAmounts ?: listOf(
+            effectiveDailyPriceInr,
+            effectiveWeeklyPriceInr,
+            effectiveMonthlyPriceInr,
+            effectiveRemoveAdsPriceInr
+        ).distinct()
+    }
+
+    fun resetDefaultsForTesting() {
+        applyOverrides()
+    }
+
+    fun effectivePriceFor(tier: PassTier): Int = when (tier) {
+        PassTier.DAILY -> effectiveDailyPriceInr
+        PassTier.WEEKLY -> effectiveWeeklyPriceInr
+        PassTier.MONTHLY -> effectiveMonthlyPriceInr
+        PassTier.REMOVE_ADS -> effectiveRemoveAdsPriceInr
+    }
+
+    fun effectivePointsFor(tier: PassTier): Int = when (tier) {
+        PassTier.DAILY -> effectiveDailyPoints
+        PassTier.WEEKLY -> effectiveWeeklyPoints
+        PassTier.MONTHLY -> effectiveMonthlyPoints
+        PassTier.REMOVE_ADS -> effectiveRemoveAdsPoints
+    }
+
+    fun mapAmountToPassTier(amount: Long): PassTier? {
+        return when (amount) {
+            effectiveDailyPriceInr.toLong() -> PassTier.DAILY
+            effectiveWeeklyPriceInr.toLong() -> PassTier.WEEKLY
+            effectiveMonthlyPriceInr.toLong() -> PassTier.MONTHLY
+            effectiveRemoveAdsPriceInr.toLong() -> PassTier.REMOVE_ADS
+            else -> null
+        }
+    }
+
+    fun isExactPassAmount(amount: Long): Boolean =
+        amount > 0L && (mapAmountToPassTier(amount) != null || effectiveValidPassAmountsInr.any { it.toLong() == amount })
+}
+
+/**
+ * Pass Tiers Configuration (defaults, overridable via `admin_settings/payment_config`):
  * - Daily Pass: ₹9 INR OR 100 Points (Valid 24 hours / 1 Day)
  * - Weekly Pass: ₹49 INR OR 500 Points (Valid 7 days)
  * - Monthly Pass: ₹179 INR OR 1500 Points (Valid 28 days)
+ * - Remove Ads Pass: ₹199 INR OR 1600 Points (Valid 28 days, ads-only)
  */
 enum class PassTier(
     val id: String,
+    val canonicalId: String,
     val title: String,
     val priceInInr: Int,
     val pointsCost: Int,
@@ -66,9 +192,10 @@ enum class PassTier(
 ) {
     DAILY(
         id = "daily_pass",
+        canonicalId = "daily",
         title = "Daily Pass",
-        priceInInr = 9,
-        pointsCost = 100,
+        priceInInr = PassPricingConfig.DAILY_PRICE_INR,
+        pointsCost = PassPricingConfig.DAILY_POINTS,
         durationDays = 1,
         durationMs = 24L * 3600L * 1000L,
         tag = "Short Shift",
@@ -76,9 +203,10 @@ enum class PassTier(
     ),
     WEEKLY(
         id = "weekly_pass",
+        canonicalId = "weekly",
         title = "Weekly Pass",
-        priceInInr = 49,
-        pointsCost = 500,
+        priceInInr = PassPricingConfig.WEEKLY_PRICE_INR,
+        pointsCost = PassPricingConfig.WEEKLY_POINTS,
         durationDays = 7,
         durationMs = 7L * 24L * 3600L * 1000L,
         tag = "Most Popular",
@@ -86,9 +214,10 @@ enum class PassTier(
     ),
     MONTHLY(
         id = "monthly_pass",
+        canonicalId = "monthly",
         title = "Monthly Pass",
-        priceInInr = 179,
-        pointsCost = 1500,
+        priceInInr = PassPricingConfig.MONTHLY_PRICE_INR,
+        pointsCost = PassPricingConfig.MONTHLY_POINTS,
         durationDays = 28,
         durationMs = 28L * 24L * 3600L * 1000L,
         tag = "Best Value",
@@ -96,9 +225,10 @@ enum class PassTier(
     ),
     REMOVE_ADS(
         id = "remove_ads_pass",
+        canonicalId = "remove_ads",
         title = "Remove Ads Pass",
-        priceInInr = 199,
-        pointsCost = 1600,
+        priceInInr = PassPricingConfig.REMOVE_ADS_PRICE_INR,
+        pointsCost = PassPricingConfig.REMOVE_ADS_POINTS,
         durationDays = 28,
         durationMs = 28L * 24L * 3600L * 1000L,
         tag = "Ad Free",
@@ -108,8 +238,40 @@ enum class PassTier(
     val isProPass: Boolean
         get() = this != REMOVE_ADS
 
+    fun effectivePriceInInr(): Int = PassPricingConfig.effectivePriceFor(this)
+
+    fun effectivePointsCost(): Int = PassPricingConfig.effectivePointsFor(this)
+
     companion object {
-        fun fromId(id: String?): PassTier? = entries.firstOrNull { it.id.equals(id, ignoreCase = true) }
+        val VALID_CANONICAL_PASS_TIERS: Set<String> = setOf("daily", "weekly", "monthly", "remove_ads")
+
+        fun fromId(id: String?): PassTier? {
+            val normalized = id?.trim()?.lowercase(Locale.ROOT)
+            if (normalized.isNullOrEmpty() ||
+                normalized == "none" ||
+                normalized == "null" ||
+                normalized == "free"
+            ) {
+                return null
+            }
+            return entries.firstOrNull {
+                it.canonicalId.equals(normalized, ignoreCase = true) ||
+                    it.id.equals(normalized, ignoreCase = true)
+            }
+        }
+
+        fun canonicalPassTierOrNull(id: String?): String? = fromId(id)?.canonicalId
+
+        fun isPaidPassActive(
+            activePassType: String?,
+            passExpiryTimestamp: Long,
+            now: Long = System.currentTimeMillis()
+        ): Boolean {
+            val parsed = fromId(activePassType) ?: return false
+            return parsed.isProPass && passExpiryTimestamp > now
+        }
+
+        fun fromAmountInInr(amount: Long): PassTier? = PassPricingConfig.mapAmountToPassTier(amount)
     }
 }
 
@@ -267,29 +429,53 @@ object FeatureIds {
         )
     )
 
+    @Volatile
+    private var dynamicHourlyRates: Map<String, Int> = emptyMap()
+
+    fun applyRateOverrides(rates: Map<String, Int>) {
+        dynamicHourlyRates = rates.entries
+            .mapNotNull { (k, v) ->
+                val cleanKey = k.trim().lowercase()
+                if (cleanKey.isNotEmpty() && v > 0) cleanKey to v else null
+            }
+            .toMap()
+    }
+
+    fun resetRatesForTesting() {
+        dynamicHourlyRates = emptyMap()
+    }
+
     fun parentGroupFor(featureId: String): String? = when (featureId.lowercase()) {
         MIN_FARE, MAX_FARE, MIN_PER_KM_RATE -> FARE_FILTERS
         MAX_PICKUP_DISTANCE, MAX_DROP_DISTANCE -> DISTANCE_FILTERS
         else -> null
     }
 
-    fun getPricing(featureId: String): FeatureUnlockPricing? =
-        ALL_FEATURES.firstOrNull { it.id.equals(featureId, ignoreCase = true) }
+    fun getPricing(featureId: String): FeatureUnlockPricing? {
+        val base = ALL_FEATURES.firstOrNull { it.id.equals(featureId, ignoreCase = true) }
             ?: BUNDLE_PRICING[featureId.lowercase()]
+            ?: return null
+        val override = dynamicHourlyRates[base.id.lowercase()]
+        return if (override != null && override > 0) base.copy(pointsPerHour = override) else base
+    }
+
+    fun getEffectivePointsPerHour(featureId: String): Int =
+        getPricing(featureId)?.pointsPerHour ?: 10
 }
 
 
 /**
  * LicenseManager
  *
- * Zero-Trust Client Architecture:
- * 100% strictly managed by Firebase Firestore & Cloud Functions with ZERO local storage fallbacks.
+ * Zero-Trust Thin-Client Architecture:
+ * All authoritative licensing state (`users/{uid}`) is server-managed by the Order Master Admin App
+ * via Firestore `pending_actions` and `pending_verifications` queues, with zero direct client writes.
  *
- * 1. Hardware-Locked 2-Day Free Trial (managed by secure Callable Cloud Function claimHardwareTrial).
- * 2. Gmail Account-Synced Pass & Points System (managed by Cloud Functions addPoints, purchasePassWithPoints).
- * 3. Monotonic Server Clock Synchronization (SystemClock.elapsedRealtime) immune to client clock tampering.
+ * 1. Hardware-Locked 2-Day Free Trial (initialized and verified by Admin App via `INIT_PROFILE`).
+ * 2. Account-Synced Pass & Points System (processed by Admin App via `pending_actions`).
+ * 3. Monotonic Server Clock Synchronization (`SystemClock.elapsedRealtime`) immune to client clock tampering.
  * 4. Maximum 2-Hour Offline Grace Period enforcement.
- * 5. Reactive StateFlow Access gating for accessibility automation and overlay services.
+ * 5. Reactive `StateFlow` Access gating for accessibility automation and overlay services.
  */
 object LicenseManager {
 
@@ -298,19 +484,19 @@ object LicenseManager {
     // 2-Day Free Trial Duration: 48 Hours
     private const val TRIAL_DURATION_MS = 48L * 3600L * 1000L
 
-    // Welcome Bonus Points for new users upon registration
-    private const val WELCOME_BONUS_POINTS = 50
-
     // Maximum allowed offline validity before forcing cloud sync re-check
     const val OFFLINE_GRACE_PERIOD_MS = 2L * 3600L * 1000L // 2 Hours
 
     // Firestore Collections
     private const val COLL_USERS = "users"
-    private const val COLL_RECEIVED_PAYMENTS = "received_payments"
     private const val COLL_PENDING_ACTIONS = "pending_actions"
 
     // Action Queue request timeout: 60 Seconds
     private const val ACTION_TIMEOUT_MS = 60_000L
+
+    // Action Queue Firestore rate-limit cooldown: 13.5 Seconds (12s Firestore rule + 1.5s network/clock buffer)
+    internal const val ACTION_RATE_LIMIT_COOLDOWN_MS = 13_500L
+    internal const val ACTION_COOLDOWN_FRIENDLY_MESSAGE = "Please wait a few seconds before trying again."
 
     // Local UI Fast-Boot Licensing Cache (SharedPreferences)
     const val LICENSE_CACHE_PREFS = "LICENSE_CACHE_PREFS"
@@ -491,13 +677,95 @@ object LicenseManager {
     private var hasLoadedTrial: Boolean = false
 
     private var userDocListener: ListenerRegistration? = null
-    private var globalSettingsListener: ListenerRegistration? = null
     private var currentUserKey: String? = null
     private var activeUserDocUid: String? = null
     private val authLock = Any()
     private val syncMutex = Mutex()
+    private val actionDispatchMutex = Mutex()
     private val docInitAttempted = AtomicBoolean(false)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    @Volatile
+    private var lastActionCompletedAtMs: Long = 0L
+    private val actionInFlight = AtomicBoolean(false)
+
+    @VisibleForTesting
+    internal fun getLastActionDispatchElapsedForTesting(): Long = lastActionCompletedAtMs
+
+    @VisibleForTesting
+    internal fun getLastActionCompletedAtMsForTesting(): Long = lastActionCompletedAtMs
+
+    @VisibleForTesting
+    internal fun isActionInFlightForTesting(): Boolean = actionInFlight.get()
+
+    @VisibleForTesting
+    internal fun setActionInFlightForTesting(inFlight: Boolean) {
+        actionInFlight.set(inFlight)
+    }
+
+    /**
+     * Anchors the client-side 13.5s rate-limit cooldown to an action's terminal completion
+     * (`COMPLETED`, `REJECTED`, or `FAILED`), matching Admin App Step 7A which writes
+     * `users/{uid}.lastActionTime = FieldValue.serverTimestamp()` on terminal transition.
+     */
+    @VisibleForTesting
+    internal fun recordActionTerminalCompletion(nowElapsed: Long = safeElapsedRealtime()) {
+        val marker = if (nowElapsed == 0L) -1L else nowElapsed
+        if (lastActionCompletedAtMs == 0L || marker > lastActionCompletedAtMs) {
+            lastActionCompletedAtMs = marker
+        }
+    }
+
+    /**
+     * Synchronizes the client-side action queue cooldown from the server `lastActionTime`
+     * (or `processedAt`) field so rapid back-to-back actions respect Firestore's 12s rule
+     * plus 1.5s clock/network buffer (`13_500L` ms).
+     */
+    @VisibleForTesting
+    internal fun updateLastActionCooldownFromServerTimestamp(
+        lastActionServerMs: Long?,
+        nowServerMs: Long = getCurrentServerTimeMs(),
+        nowElapsed: Long = safeElapsedRealtime()
+    ) {
+        if (lastActionServerMs == null || lastActionServerMs <= 0L) return
+        val ageMs = (nowServerMs - lastActionServerMs).coerceAtLeast(0L)
+        if (ageMs < ACTION_RATE_LIMIT_COOLDOWN_MS) {
+            val rawEstimatedElapsed = nowElapsed - ageMs
+            val estimatedElapsed = if (rawEstimatedElapsed == 0L) -1L else rawEstimatedElapsed
+            if (lastActionCompletedAtMs == 0L || estimatedElapsed > lastActionCompletedAtMs) {
+                lastActionCompletedAtMs = estimatedElapsed
+            }
+        }
+    }
+
+    /**
+     * Returns remaining milliseconds in the local 13.5s cooldown window anchored to
+     * `lastActionCompletedAtMs`, or `0L` if a new action may be submitted immediately.
+     */
+    @VisibleForTesting
+    internal fun computeActionCooldownRemainingMs(nowElapsed: Long = safeElapsedRealtime()): Long {
+        val anchor = lastActionCompletedAtMs
+        if (anchor == 0L) return 0L
+        val elapsed = nowElapsed - anchor
+        return if (elapsed in 0L until ACTION_RATE_LIMIT_COOLDOWN_MS) {
+            ACTION_RATE_LIMIT_COOLDOWN_MS - elapsed
+        } else {
+            0L
+        }
+    }
+
+    /**
+     * Checks whether a new action submission is permitted right now (neither in-flight nor
+     * inside the 13.5s post-completion cooldown window). Returns a friendly local message
+     * instead of hitting Firestore `PERMISSION_DENIED`.
+     */
+    @VisibleForTesting
+    internal fun checkActionSubmissionAllowed(nowElapsed: Long = safeElapsedRealtime()): Result<Unit> {
+        if (actionInFlight.get() || computeActionCooldownRemainingMs(nowElapsed) > 0L) {
+            return Result.failure(IllegalStateException(ACTION_COOLDOWN_FRIENDLY_MESSAGE))
+        }
+        return Result.success(Unit)
+    }
 
     @Volatile
     internal var onEntitlementsChanged: (() -> Unit)? = null
@@ -506,7 +774,51 @@ object LicenseManager {
     private var profileUpdateDispatchedHash: String? = null
     private val profileUpdateLock = Any()
 
-    private fun shouldDispatchProfileUpdate(userKey: String, fields: Map<String, Any>): Boolean {
+    @VisibleForTesting
+    internal fun computeNeededProfileUpdates(
+        snapshotFirebaseUid: String?,
+        snapshotHardwareId: String?,
+        snapshotEmail: String?,
+        expectedFirebaseUid: String,
+        currentHardwareId: String,
+        authEmail: String
+    ): Map<String, Any> {
+        val updatesNeeded = mutableMapOf<String, Any>()
+        if (expectedFirebaseUid.isNotBlank() && snapshotFirebaseUid.orEmpty() != expectedFirebaseUid) {
+            updatesNeeded["firebaseUid"] = expectedFirebaseUid
+        }
+        if (currentHardwareId.isNotBlank() && snapshotHardwareId.orEmpty() != currentHardwareId) {
+            updatesNeeded["linkedHardwareId"] = currentHardwareId
+        }
+        if (authEmail.isNotBlank() && snapshotEmail.orEmpty() != authEmail) {
+            updatesNeeded["userEmail"] = authEmail
+        }
+        if (updatesNeeded.isNotEmpty() && expectedFirebaseUid.isNotBlank()) {
+            updatesNeeded["firebaseUid"] = expectedFirebaseUid
+        }
+        return updatesNeeded
+    }
+
+    @VisibleForTesting
+    internal fun buildInitProfilePayload(
+        firebaseUid: String,
+        userEmail: String,
+        hardwareId: String,
+        legacyCustomId: String? = null
+    ): Map<String, Any> {
+        val initPayload = mutableMapOf<String, Any>(
+            "firebaseUid" to firebaseUid,
+            "userEmail" to userEmail,
+            "linkedHardwareId" to hardwareId
+        )
+        if (!legacyCustomId.isNullOrBlank() && legacyCustomId != firebaseUid) {
+            initPayload["legacyCustomUserId"] = legacyCustomId
+        }
+        return initPayload
+    }
+
+    @VisibleForTesting
+    internal fun shouldDispatchProfileUpdate(userKey: String, fields: Map<String, Any>): Boolean {
         if (fields.isEmpty()) return false
         val normalized = fields.entries
             .filter { it.key != "userId" }
@@ -524,29 +836,11 @@ object LicenseManager {
     }
 
     /**
-     * Real-time listener for app_settings/global to read isServiceActive.
+     * Delegates real-time listener for app_settings/global to GlobalAdminManager
+     * so only a single Firestore snapshot listener is attached to app_settings/global.
      */
     fun startGlobalSettingsListener() {
-        val ctx = appContext ?: return
-        if (FirebaseApp.getApps(ctx).isEmpty()) return
-        synchronized(authLock) {
-            if (globalSettingsListener != null) return
-            try {
-                val db = FirebaseFirestore.getInstance()
-                globalSettingsListener = db.collection("app_settings").document("global")
-                    .addSnapshotListener { snapshot, error ->
-                        if (error != null) {
-                            Log.w(TAG, "Global settings listener error: ${error.message}")
-                            return@addSnapshotListener
-                        }
-                        val isActive = snapshot?.getBoolean("isServiceActive") ?: true
-                        setServiceActiveState(isActive)
-                        Log.d(TAG, "LicenseManager: isServiceActive updated to $isActive")
-                    }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to start global settings listener: ${e.message}")
-            }
-        }
+        GlobalAdminManager.startGlobalServiceListener()
     }
 
     /**
@@ -605,38 +899,48 @@ object LicenseManager {
         return if (lastServerTs > 0L) maxOf(wallNow, lastServerTs) else wallNow
     }
 
+    @VisibleForTesting
+    internal enum class ClockTamperStatus {
+        NONE,
+        FORWARD_DRIFT,
+        HARD_TAMPER
+    }
+
     /**
-     * Mathematically evaluates whether local wall-clock time, authoritative server UTC time,
-     * and monotonic elapsedRealtime have diverged beyond acceptable physical limits.
+     * Classifies clock discrepancies into NONE, FORWARD_DRIFT (wall clock moved ahead of monotonic elapsed),
+     * or HARD_TAMPER (clock rollback, reboot rollback, or offline cold-start skew).
      */
-    fun isClockTamperingDetected(context: Context? = null): Boolean {
-        val ctx = context ?: appContext ?: return false
+    @VisibleForTesting
+    internal fun classifyClockTampering(context: Context? = null): ClockTamperStatus {
+        val ctx = context ?: appContext ?: return ClockTamperStatus.NONE
         val prefs = try {
             ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
-        } catch (_: Exception) { return false }
+        } catch (_: Exception) { return ClockTamperStatus.NONE }
 
         val syncWall = prefs.getLong(KEY_LAST_SERVER_SYNC_TIME, 0L)
         val syncElapsed = prefs.getLong(KEY_LAST_SERVER_SYNC_ELAPSED, 0L)
         val lastServerTs = prefs.getLong(KEY_LAST_SERVER_TIMESTAMP, 0L)
 
-        // Check in-memory server baseline even if prefs were cleared before check
         val currentWall = System.currentTimeMillis()
         val currentElapsed = safeElapsedRealtime()
 
         if (serverTimeBaselineMs > 0L && serverTimeBaselineElapsedMs > 0L) {
             val expectedUtcNow = serverTimeBaselineMs + (currentElapsed - serverTimeBaselineElapsedMs)
-            val wallVsServerSkew = kotlin.math.abs(currentWall - expectedUtcNow)
-            if (wallVsServerSkew > MAX_ALLOWED_CLOCK_DRIFT_MS) {
-                Log.w(TAG, "Pre-launch/runtime clock tampering detected: wall=$currentWall vs expectedServerUtc=$expectedUtcNow (skew=${wallVsServerSkew}ms)")
-                return true
+            if (currentWall < expectedUtcNow - MAX_ALLOWED_CLOCK_DRIFT_MS) {
+                Log.w(TAG, "Pre-launch/runtime clock rollback detected: wall=$currentWall < expectedServerUtc=$expectedUtcNow")
+                return ClockTamperStatus.HARD_TAMPER
+            }
+            if (currentWall > expectedUtcNow + MAX_ALLOWED_CLOCK_DRIFT_MS) {
+                Log.w(TAG, "Forward clock drift vs server baseline detected: wall=$currentWall > expectedServerUtc=$expectedUtcNow")
+                return ClockTamperStatus.FORWARD_DRIFT
             }
         } else if (lastServerTs > 0L && currentWall < lastServerTs - MAX_ALLOWED_CLOCK_DRIFT_MS) {
             Log.w(TAG, "Offline cold-start clock rollback detected: wall=$currentWall < lastServerTs=$lastServerTs")
-            return true
+            return ClockTamperStatus.HARD_TAMPER
         }
 
         // If no persisted server sync exists yet, stop here
-        if (syncWall <= 0L || syncElapsed <= 0L) return false
+        if (syncWall <= 0L || syncElapsed <= 0L) return ClockTamperStatus.NONE
 
         val deltaWall = currentWall - syncWall
         val deltaElapsed = currentElapsed - syncElapsed
@@ -644,7 +948,7 @@ object LicenseManager {
         // 1. Clock turned backwards into the past (rollback exploit)
         if (deltaWall < -60_000L) {
             Log.w(TAG, "Clock tampering detected: Wall clock wound back by ${-deltaWall}ms")
-            return true
+            return ClockTamperStatus.HARD_TAMPER
         }
 
         // 2. Device reboot detection: elapsedRealtime resets near 0 after a device reboot.
@@ -652,38 +956,53 @@ object LicenseManager {
         if (hasRebooted) {
             if (currentWall < syncWall - MAX_ALLOWED_CLOCK_DRIFT_MS) {
                 Log.w(TAG, "Clock tampering detected after reboot: wall=$currentWall < syncWall=$syncWall")
-                return true
+                return ClockTamperStatus.HARD_TAMPER
             }
             if (lastServerTs > 0L && currentWall < lastServerTs - MAX_ALLOWED_CLOCK_DRIFT_MS) {
                 Log.w(TAG, "Clock tampering detected after reboot: wall=$currentWall < lastServerTs=$lastServerTs")
-                return true
+                return ClockTamperStatus.HARD_TAMPER
             }
             if (deltaWall > OFFLINE_GRACE_PERIOD_MS) {
                 Log.w(TAG, "Post-reboot offline wall delta exceeds grace period: ${deltaWall}ms")
-                return true
+                return ClockTamperStatus.HARD_TAMPER
             }
             // Wall clock stayed consistent and within offline grace across reboot; skip elapsed delta drift check
-            return false
+            return ClockTamperStatus.NONE
         }
 
         // 3. Cross-check against persisted authoritative UTC server timestamp across restarts
         if (lastServerTs > 0L && deltaElapsed >= 0L && deltaElapsed < OFFLINE_GRACE_PERIOD_MS) {
             val expectedWallFromServer = lastServerTs + deltaElapsed
-            val serverSkew = kotlin.math.abs(currentWall - expectedWallFromServer)
-            if (serverSkew > MAX_ALLOWED_CLOCK_DRIFT_MS) {
-                Log.w(TAG, "Clock tampering vs server UTC detected: wall=$currentWall vs expected=$expectedWallFromServer (skew=${serverSkew}ms)")
-                return true
+            if (currentWall < expectedWallFromServer - MAX_ALLOWED_CLOCK_DRIFT_MS) {
+                Log.w(TAG, "Clock rollback vs server UTC detected: wall=$currentWall < expected=$expectedWallFromServer")
+                return ClockTamperStatus.HARD_TAMPER
+            }
+            if (currentWall > expectedWallFromServer + MAX_ALLOWED_CLOCK_DRIFT_MS) {
+                Log.w(TAG, "Forward clock drift vs server UTC detected: wall=$currentWall > expected=$expectedWallFromServer")
+                return ClockTamperStatus.FORWARD_DRIFT
             }
         }
 
         // 4. Mathematical discrepancy between elapsed realtime and wall-clock time
-        val drift = kotlin.math.abs(deltaWall - deltaElapsed)
-        if (drift > MAX_ALLOWED_CLOCK_DRIFT_MS) {
-            Log.w(TAG, "Clock tampering mathematically detected: deltaWall=$deltaWall, deltaElapsed=$deltaElapsed, drift=$drift > max=$MAX_ALLOWED_CLOCK_DRIFT_MS")
-            return true
+        val signedDrift = deltaWall - deltaElapsed
+        if (signedDrift < -MAX_ALLOWED_CLOCK_DRIFT_MS) {
+            Log.w(TAG, "Clock tampering (negative drift) detected: deltaWall=$deltaWall, deltaElapsed=$deltaElapsed")
+            return ClockTamperStatus.HARD_TAMPER
+        }
+        if (signedDrift > MAX_ALLOWED_CLOCK_DRIFT_MS) {
+            Log.w(TAG, "Forward clock drift detected: deltaWall=$deltaWall, deltaElapsed=$deltaElapsed, drift=$signedDrift > max=$MAX_ALLOWED_CLOCK_DRIFT_MS")
+            return ClockTamperStatus.FORWARD_DRIFT
         }
 
-        return false
+        return ClockTamperStatus.NONE
+    }
+
+    /**
+     * Mathematically evaluates whether local wall-clock time, authoritative server UTC time,
+     * and monotonic elapsedRealtime have diverged beyond acceptable physical limits.
+     */
+    fun isClockTamperingDetected(context: Context? = null): Boolean {
+        return classifyClockTampering(context) != ClockTamperStatus.NONE
     }
 
     private fun clearUserSessionStateLocked(preserveTrialUsed: Boolean = false) {
@@ -696,6 +1015,8 @@ object LicenseManager {
             serverTrialUsed = false
         }
         docInitAttempted.set(false)
+        lastActionCompletedAtMs = 0L
+        actionInFlight.set(false)
         _pointsBalance.value = 0
         _hasClaimedReferral.value = false
         _referralCount.value = 0
@@ -706,6 +1027,10 @@ object LicenseManager {
         _activePassInfo.value = null
         _trialInfo.value = null
         _currentFolder.value = "free_mod"
+        _isBannedFlow.value = false
+        _banUntilTimestampFlow.value = null
+        _banReasonFlow.value = null
+        GlobalAdminManager.syncBanStateFromLicenseManager(null, null)
     }
 
     /**
@@ -769,19 +1094,46 @@ object LicenseManager {
 
     /**
      * Performs timestamp cross-check every 30 minutes.
-     * Evaluates clock tampering and forces mandatory cloud re-sync if delta deviates drastically,
-     * while preserving legitimate offline users within the 2-hour grace period.
+     * - Immediate invalidation on hard clock rollback / offline cold-start skew.
+     * - For forward (deltaWall - deltaElapsed) drift while online, triggers fetchServerTimeBaseline()
+     *   to re-calibrate the authoritative server clock before invalidating the user's license cache.
      */
-    fun performTimestampIntegrityCrossCheck(context: Context) {
-        Log.d(TAG, "Executing periodic 30-minute timestamp integrity cross-check...")
+    suspend fun performTimestampIntegrityCrossCheckSuspend(context: Context) {
+        Log.d(TAG, "Executing periodic timestamp integrity cross-check...")
 
-        // 1. Mathematical tampering check:
-        if (isClockTamperingDetected(context)) {
-            invalidateAndForceCloudResync(
-                context,
-                "Periodic cross-check: Mathematical clock tampering / elapsed time hooking detected"
-            )
-            return
+        when (classifyClockTampering(context)) {
+            ClockTamperStatus.HARD_TAMPER -> {
+                invalidateAndForceCloudResync(
+                    context,
+                    "Periodic cross-check: Mathematical clock rollback / elapsed time hooking detected"
+                )
+                return
+            }
+            ClockTamperStatus.FORWARD_DRIFT -> {
+                if (DeviceUtils.isNetworkAvailable(context)) {
+                    Log.i(TAG, "Forward clock drift detected while online; re-calibrating server clock baseline first.")
+                    try {
+                        fetchServerTimeBaseline()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Forward-drift server baseline re-calibration failed: ${e.message}")
+                    }
+                    if (isClockTamperingDetected(context)) {
+                        invalidateAndForceCloudResync(
+                            context,
+                            "Periodic cross-check: Clock tampering confirmed after server time re-calibration"
+                        )
+                        return
+                    }
+                    Log.i(TAG, "Forward clock drift resolved via server time baseline re-calibration.")
+                } else {
+                    invalidateAndForceCloudResync(
+                        context,
+                        "Periodic cross-check: Forward clock drift detected offline"
+                    )
+                    return
+                }
+            }
+            ClockTamperStatus.NONE -> Unit
         }
 
         // 2. Check offline grace period expiration (> 2 hours without server sync):
@@ -795,6 +1147,48 @@ object LicenseManager {
         }
 
         // 3. If online, perform normal cloud re-sync:
+        val authState = GoogleAuthManager.userAuthState.value
+        if (authState.isLoggedIn) {
+            try {
+                syncHardwareTrialAndLicensing()
+            } catch (e: Exception) {
+                Log.d(TAG, "Periodic cloud re-sync skipped (offline/network error): ${e.message}")
+            }
+        }
+    }
+
+    fun performTimestampIntegrityCrossCheck(context: Context) {
+        when (classifyClockTampering(context)) {
+            ClockTamperStatus.HARD_TAMPER -> {
+                invalidateAndForceCloudResync(
+                    context,
+                    "Periodic cross-check: Mathematical clock rollback / elapsed time hooking detected"
+                )
+                return
+            }
+            ClockTamperStatus.FORWARD_DRIFT -> {
+                if (DeviceUtils.isNetworkAvailable(context)) {
+                    scope.launch { performTimestampIntegrityCrossCheckSuspend(context) }
+                } else {
+                    invalidateAndForceCloudResync(
+                        context,
+                        "Periodic cross-check: Forward clock drift detected offline"
+                    )
+                }
+                return
+            }
+            ClockTamperStatus.NONE -> Unit
+        }
+
+        if (isOfflineGracePeriodExpired(context)) {
+            Log.w(TAG, "Periodic cross-check: Offline grace period (2 hours) expired.")
+            invalidateAndForceCloudResync(
+                context,
+                "Offline grace period (2 hours) expired without server confirmation"
+            )
+            return
+        }
+
         val authState = GoogleAuthManager.userAuthState.value
         if (authState.isLoggedIn) {
             scope.launch {
@@ -817,12 +1211,7 @@ object LicenseManager {
         }
     }
 
-    private fun isUnitTestEnvironment(): Boolean {
-        return BuildConfig.DEBUG && (
-            Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
-                runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
-        )
-    }
+    private fun isUnitTestEnvironment(): Boolean = DeviceUtils.isUnitTestEnvironment()
 
     private const val KEYSTORE_HMAC_ALIAS = "order_master_license_cache_hmac_key"
     private val hmacKeyLock = Any()
@@ -1016,6 +1405,8 @@ object LicenseManager {
         hasLoadedLicensing = false
         hasLoadedTrial = false
         lastSuccessfulServerSyncElapsedMs = 0L
+        lastActionCompletedAtMs = 0L
+        actionInFlight.set(false)
         profileUpdateDispatchedHash = null
         activeUserDocUid = null
         _accessStatus.value = AccessStatus.Loading
@@ -1023,6 +1414,8 @@ object LicenseManager {
         _trialInfo.value = null
         _unlockedFeatures.value = emptyMap()
         _lockedFeatures.value = emptySet()
+        PassPricingConfig.resetDefaultsForTesting()
+        FeatureIds.resetRatesForTesting()
     }
 
     fun setLastServerSyncForTesting(elapsedMs: Long, wallClockMs: Long? = null) {
@@ -1161,7 +1554,7 @@ object LicenseManager {
 
         // 5. Asynchronously initialize background listeners and cloud sync off the Main Thread
         scope.launch(Dispatchers.IO) {
-            performTimestampIntegrityCrossCheck(ctx)
+            performTimestampIntegrityCrossCheckSuspend(ctx)
             startGlobalSettingsListener()
             val customKey = resolveUserKey(ctx)
             currentUserKey = customKey
@@ -1204,8 +1597,7 @@ object LicenseManager {
             userDocListener?.remove()
             userDocListener = null
             activeUserDocUid = null
-            globalSettingsListener?.remove()
-            globalSettingsListener = null
+            GlobalAdminManager.detachGlobalServiceListener()
             try {
                 mainHandler.removeCallbacks(periodicTimestampCrossCheckRunnable)
             } catch (_: Exception) {}
@@ -1279,9 +1671,214 @@ object LicenseManager {
         }
     }
 
+    @VisibleForTesting
+    internal val PENDING_ACTION_ALLOWED_TYPES: Set<String> = setOf(
+        "INIT_PROFILE",
+        "UPDATE_PROFILE",
+        "MIGRATE_PROFILE",
+        "CLAIM_REFERRAL",
+        "PURCHASE_PASS",
+        "ACTIVATE_PASS_PAYMENT",
+        "UNLOCK_FEATURE",
+        "UNLOCK_MULTIPLE_FEATURES",
+        "CLAIM_TRIAL",
+        "REWARD_AD_WATCHED"
+    )
+
+    @VisibleForTesting
+    internal val PENDING_ACTION_ALLOWED_KEYS: Set<String> = setOf(
+        "uid", "firebaseUid", "userId",
+        "userEmail", "displayName", "photoUrl",
+        "actionType", "status",
+        "createdAt", "timestamp",
+        "appVersion", "versionCode", "appSignatureSha256", "deviceIntegrityOk",
+        "linkedHardwareId", "hardwareId", "deviceId",
+        "newHardwareId", "new_hardware_id",
+        "oldHardwareId", "old_hardware_id", "previousHardwareId",
+        "oldEmail", "old_email", "previousEmail",
+        "oldFirebaseUid", "old_uid", "previousUid",
+        "legacyCustomUserId", "oldDocumentId", "old_document_id",
+        "previousDocumentId", "migratedFromDocId",
+        "referralCode", "code",
+        "passTier", "passType", "pass_type",
+        "utr", "transactionId", "paymentRef", "refNo",
+        "amount", "paymentAmount",
+        "featureId", "featureKey", "featureName", "feature", "featureIds", "hours",
+        "pointsCost", "durationDays", "durationMs", "condition",
+        "autoAcceptEnabled", "isAutoAcceptEnabled",
+        "isFloatingOverlayEnabled", "isVoiceAnnouncerEnabled", "isAutoClickEnabled",
+        "isMinFareEnabled", "minFare", "isMaxFareEnabled", "maxFare",
+        "isMaxPickupDistanceEnabled", "maxPickupDistance",
+        "isMaxDropDistanceEnabled", "maxDropDistance",
+        "isMinPerKmRateEnabled", "minPerKmRate", "clickDelayMs",
+        "isDestinationBlacklistEnabled", "blockedLocations", "blacklistedDestinations",
+        "currentFolder", "current_folder"
+    )
+
+    @VisibleForTesting
+    internal val FORBIDDEN_LEGACY_PAYLOAD_KEYS = setOf(
+        "email",
+        "hardwareId",
+        "deviceId",
+        "blockedLocations",
+        "points",
+        "userId",
+        "payload",
+        "data"
+    )
+
+    @VisibleForTesting
+    internal fun buildActionQueuePayload(
+        firebaseUid: String,
+        userEmail: String,
+        hardwareId: String,
+        deviceIntegrityOk: Boolean,
+        appSignatureSha256: String,
+        actionType: String,
+        payload: Map<String, Any>,
+        createdAtValue: Any = FieldValue.serverTimestamp()
+    ): Map<String, Any> {
+        val actionData = hashMapOf<String, Any>()
+        for ((k, v) in payload) {
+            if (k in FORBIDDEN_LEGACY_PAYLOAD_KEYS) continue
+            if (k !in PENDING_ACTION_ALLOWED_KEYS) continue
+            if (actionType == "REWARD_AD_WATCHED" && k == "amount") continue
+            actionData[k] = v
+        }
+        actionData["uid"] = firebaseUid
+        actionData["firebaseUid"] = firebaseUid
+        actionData["userEmail"] = userEmail
+        actionData["linkedHardwareId"] = hardwareId
+        actionData["deviceIntegrityOk"] = deviceIntegrityOk
+        actionData["appSignatureSha256"] = DeviceUtils.normalizeSha256(appSignatureSha256)
+        actionData["actionType"] = actionType
+        actionData["status"] = "PENDING"
+        actionData["createdAt"] = createdAtValue
+        return actionData
+    }
+
+    private fun extractServerTimestampMs(obj: Any?): Long? = when (obj) {
+        is Timestamp -> obj.toDate().time
+        is java.util.Date -> obj.time
+        is Number -> obj.toLong()
+        else -> null
+    }
+
+    @VisibleForTesting
+    internal sealed class ActionQueueOutcome {
+        data object Pending : ActionQueueOutcome()
+        data object Completed : ActionQueueOutcome()
+        data class Failed(val errorMessage: String) : ActionQueueOutcome()
+    }
+
+    @VisibleForTesting
+    internal fun formatActionQueueErrorMessage(
+        actionType: String,
+        rawError: String?,
+        errorCode: String? = null
+    ): String {
+        val combined = listOfNotNull(rawError?.trim(), errorCode?.trim())
+            .filter { it.isNotEmpty() }
+            .joinToString(" ")
+        if (combined.contains("UNTRUSTED_APP_SIGNATURE", ignoreCase = true)) {
+            return "App signature verification failed. Please install the official Order Master APK release."
+        }
+        if (combined.contains("SECURITY_CONFIG_MISSING_APP_SHA256", ignoreCase = true)) {
+            return "Server app signature verification is not configured yet. Please contact the Admin to complete security setup."
+        }
+        if (combined.contains("PAYMENT_NOT_RECEIVED_YET", ignoreCase = true)) {
+            return "UTR submitted. Waiting for bank SMS confirmation — your pass will activate automatically once received."
+        }
+        if (combined.contains("UTR_ALREADY_USED", ignoreCase = true)) {
+            return "UTR already claimed by another user."
+        }
+        if (combined.contains("AMOUNT_MISMATCH", ignoreCase = true)) {
+            return "Payment amount does not match the selected Pass plan. Please select the exact plan you paid for and try again."
+        }
+        if (combined.contains("INVALID_PASS_TIER", ignoreCase = true)) {
+            return "Invalid or missing pass plan selected. Please select Daily, Weekly, Monthly, or Remove Ads and try again."
+        }
+        if (!rawError.isNullOrBlank()) return rawError.trim()
+        if (!errorCode.isNullOrBlank()) return "Action rejected by server ($errorCode)."
+        return "Action $actionType failed on server."
+    }
+
+    @VisibleForTesting
+    internal fun evaluateActionQueueSnapshot(
+        actionType: String,
+        status: String?,
+        errorMessage: String? = null,
+        error: String? = null,
+        reason: String? = null,
+        errorCode: String? = null,
+        nowElapsed: Long = safeElapsedRealtime(),
+        recordCooldownOnTerminal: Boolean = true
+    ): ActionQueueOutcome {
+        val cleanStatus = status?.trim()?.uppercase(Locale.ROOT) ?: "PENDING"
+        if (cleanStatus == "COMPLETED") {
+            if (recordCooldownOnTerminal) {
+                recordActionTerminalCompletion(nowElapsed)
+            }
+            return ActionQueueOutcome.Completed
+        }
+        if (cleanStatus == "FAILED" || cleanStatus == "REJECTED") {
+            if (recordCooldownOnTerminal) {
+                recordActionTerminalCompletion(nowElapsed)
+            }
+            val rawError = errorMessage?.takeIf { it.isNotBlank() }
+                ?: error?.takeIf { it.isNotBlank() }
+                ?: reason?.takeIf { it.isNotBlank() }
+            return ActionQueueOutcome.Failed(
+                formatActionQueueErrorMessage(actionType, rawError, errorCode)
+            )
+        }
+        return ActionQueueOutcome.Pending
+    }
+
+    @VisibleForTesting
+    internal fun selectResolvedUserDocumentPath(
+        uid: String,
+        canonicalExists: Boolean,
+        fallbackDocIds: List<String>
+    ): String? {
+        if (canonicalExists && uid.isNotBlank()) return uid
+        return fallbackDocIds.firstOrNull { it.isNotBlank() }
+    }
+
+    /**
+     * Resolves a user document by canonical `users/{uid}` first, falling back to a single
+     * `whereEqualTo("firebaseUid", uid)` query only if the canonical document does not exist.
+     */
+    internal suspend fun resolveUserDocumentSnapshot(
+        db: FirebaseFirestore,
+        uid: String
+    ): DocumentSnapshot? {
+        if (uid.isBlank()) return null
+        val canonicalSnap = try {
+            db.collection(COLL_USERS).document(uid).get().await()
+        } catch (_: Exception) {
+            null
+        }
+        if (canonicalSnap != null && canonicalSnap.exists()) {
+            return canonicalSnap
+        }
+        val fallbackSnap = try {
+            db.collection(COLL_USERS)
+                .whereEqualTo("firebaseUid", uid)
+                .limit(1)
+                .get()
+                .await()
+                ?.documents
+                ?.firstOrNull()
+        } catch (_: Exception) {
+            null
+        }
+        return fallbackSnap?.takeIf { it.exists() } ?: canonicalSnap
+    }
+
     /**
      * Dispatches an action request to the Zero-Trust `pending_actions` queue and suspends
-     * until the background Admin Server processes the action, marking it COMPLETED or FAILED.
+     * until the background Admin Server processes the action, marking it COMPLETED, FAILED, or REJECTED.
      * Enforces strict timeout of 60 seconds with automatic listener cleanup.
      * Does NOT perform direct writes/transactions on `users` or `received_payments`.
      */
@@ -1299,100 +1896,201 @@ object LicenseManager {
             return@withContext Result.failure(IllegalStateException("Please sign in with Google to perform this action."))
         }
 
-        val customUserId = resolveUserKey(ctx)
+        if (actionType !in PENDING_ACTION_ALLOWED_TYPES) {
+            return@withContext Result.failure(IllegalArgumentException("Unsupported actionType: $actionType"))
+        }
+
+        val effectivePayload = if (actionType.equals("PURCHASE_PASS", ignoreCase = true)) {
+            val rawTier = payload["passTier"] as? String
+            val resolvedTier = PassTier.fromId(rawTier)
+                ?: return@withContext Result.failure(
+                    IllegalArgumentException("Please select a valid pass plan (Daily, Weekly, Monthly, or Remove Ads).")
+                )
+            val canonicalTier = resolvedTier.canonicalId
+            if (canonicalTier !in PassTier.VALID_CANONICAL_PASS_TIERS) {
+                return@withContext Result.failure(
+                    IllegalArgumentException("Please select a valid pass plan (Daily, Weekly, Monthly, or Remove Ads).")
+                )
+            }
+            payload.toMutableMap().apply { put("passTier", canonicalTier) }
+        } else {
+            payload
+        }
+
         val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
         val db = FirebaseFirestore.getInstance()
 
-        val actionData = hashMapOf<String, Any>(
-            "userId" to customUserId,
-            "firebaseUid" to currentUser.uid,
-            "userEmail" to (currentUser.email ?: ""),
-            "linkedHardwareId" to hwId,
-            "deviceIntegrityOk" to DeviceUtils.isFreeTrialAllowed(ctx),
-            "appSignatureSha256" to DeviceUtils.getApkSignatureSha256(ctx),
-            "actionType" to actionType,
-            "status" to "PENDING",
-            "createdAt" to FieldValue.serverTimestamp()
+        val actionData = buildActionQueuePayload(
+            firebaseUid = currentUser.uid,
+            userEmail = currentUser.email ?: "",
+            hardwareId = hwId,
+            deviceIntegrityOk = DeviceUtils.isFreeTrialAllowed(ctx),
+            appSignatureSha256 = DeviceUtils.getApkSignatureSha256(ctx),
+            actionType = actionType,
+            payload = effectivePayload
         )
-        actionData.putAll(payload)
 
-        val docRef = try {
-            db.collection(COLL_PENDING_ACTIONS).add(actionData).await()
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to submit action $actionType to $COLL_PENDING_ACTIONS: ${e.message}", e)
-            return@withContext Result.failure(e)
+        val canSubmit = actionDispatchMutex.withLock {
+            val gate = checkActionSubmissionAllowed()
+            if (gate.isFailure) {
+                gate
+            } else {
+                actionInFlight.set(true)
+                Result.success(Unit)
+            }
+        }
+        if (canSubmit.isFailure) {
+            return@withContext Result.failure(
+                canSubmit.exceptionOrNull() ?: IllegalStateException(ACTION_COOLDOWN_FRIENDLY_MESSAGE)
+            )
         }
 
-        var listenerRegistration: ListenerRegistration? = null
-        val isResumed = AtomicBoolean(false)
-
-        val outcome = try {
-            withTimeoutOrNull(ACTION_TIMEOUT_MS) {
-                suspendCancellableCoroutine<Result<DocumentSnapshot>> { continuation ->
-                    listenerRegistration = docRef.addSnapshotListener { snapshot, error ->
-                        if (error != null) {
-                            Log.w(TAG, "Action $actionType snapshot listener error: ${error.message}")
-                            if (isResumed.compareAndSet(false, true)) {
-                                listenerRegistration?.remove()
-                                continuation.resume(Result.failure(error))
-                            }
-                            return@addSnapshotListener
+        try {
+            val docRef = try {
+                db.collection(COLL_PENDING_ACTIONS).add(actionData).await()
+            } catch (e: FirebaseFirestoreException) {
+                if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                    Log.w(TAG, "Action $actionType hit PERMISSION_DENIED on add; syncing lastActionTime and enforcing local cooldown.")
+                    try {
+                        val userSnap = resolveUserDocumentSnapshot(db, currentUser.uid)
+                        if (userSnap != null && userSnap.exists()) {
+                            val lastActionMs = extractServerTimestampMs(userSnap.get("lastActionTime"))
+                            updateLastActionCooldownFromServerTimestamp(lastActionMs)
                         }
-
-                        if (snapshot != null && snapshot.exists()) {
-                            snapshot.getTimestamp("createdAt")?.toDate()?.time?.let { serverActionTs ->
-                                if (serverTimeBaselineMs == 0L) {
-                                    recordServerTimeSync(serverActionTs)
-                                }
-                            }
-                            val status = snapshot.getString("status") ?: "PENDING"
-                            if (status.equals("COMPLETED", ignoreCase = true)) {
-                                Log.i(TAG, "Action $actionType (doc ${docRef.id}) marked COMPLETED by Admin server.")
-                                if (isResumed.compareAndSet(false, true)) {
-                                    listenerRegistration?.remove()
-                                    continuation.resume(Result.success(snapshot))
-                                }
-                            } else if (status.equals("FAILED", ignoreCase = true)) {
-                                val errorMsg = snapshot.getString("errorMessage")
-                                    ?: snapshot.getString("error")
-                                    ?: "Action $actionType failed on server."
-                                Log.w(TAG, "Action $actionType (doc ${docRef.id}) marked FAILED: $errorMsg")
-                                if (isResumed.compareAndSet(false, true)) {
-                                    listenerRegistration?.remove()
-                                    continuation.resume(Result.failure(Exception(errorMsg)))
-                                }
-                            }
-                        }
+                    } catch (syncErr: Exception) {
+                        Log.w(TAG, "Failed syncing lastActionTime after PERMISSION_DENIED: ${syncErr.message}")
                     }
+                    if (computeActionCooldownRemainingMs() == 0L) {
+                        recordActionTerminalCompletion()
+                    }
+                    return@withContext Result.failure(
+                        IllegalStateException(ACTION_COOLDOWN_FRIENDLY_MESSAGE, e)
+                    )
+                } else {
+                    Log.e(TAG, "Failed to submit action $actionType to $COLL_PENDING_ACTIONS: ${e.message}", e)
+                    return@withContext Result.failure(e)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to submit action $actionType to $COLL_PENDING_ACTIONS: ${e.message}", e)
+                return@withContext Result.failure(e)
+            }
 
-                    continuation.invokeOnCancellation {
-                        Log.d(TAG, "Detaching snapshot listener for action $actionType (doc ${docRef.id}) due to cancellation/timeout")
-                        listenerRegistration?.remove()
+            var listenerRegistration: ListenerRegistration? = null
+            val isResumed = AtomicBoolean(false)
+
+            val outcome = try {
+                withTimeoutOrNull(ACTION_TIMEOUT_MS) {
+                    suspendCancellableCoroutine<Result<DocumentSnapshot>> { continuation ->
+                        listenerRegistration = docRef.addSnapshotListener { snapshot, error ->
+                            if (error != null) {
+                                Log.w(TAG, "Action $actionType snapshot listener error: ${error.message}")
+                                if (isResumed.compareAndSet(false, true)) {
+                                    listenerRegistration?.remove()
+                                    continuation.resume(Result.failure(error))
+                                }
+                                return@addSnapshotListener
+                            }
+
+                            if (snapshot != null && snapshot.exists()) {
+                                snapshot.getTimestamp("createdAt")?.toDate()?.time?.let { serverActionTs ->
+                                    if (serverTimeBaselineMs == 0L) {
+                                        recordServerTimeSync(serverActionTs)
+                                    }
+                                }
+                                when (val snapOutcome = evaluateActionQueueSnapshot(
+                                    actionType = actionType,
+                                    status = snapshot.getString("status"),
+                                    errorMessage = snapshot.getString("errorMessage"),
+                                    error = snapshot.getString("error"),
+                                    reason = snapshot.getString("reason"),
+                                    errorCode = snapshot.getString("errorCode")
+                                )) {
+                                    ActionQueueOutcome.Completed -> {
+                                        updateLastActionCooldownFromServerTimestamp(
+                                            extractServerTimestampMs(snapshot.get("processedAt"))
+                                        )
+                                        Log.i(TAG, "Action $actionType (doc ${docRef.id}) marked COMPLETED by Admin server.")
+                                        if (isResumed.compareAndSet(false, true)) {
+                                            listenerRegistration?.remove()
+                                            continuation.resume(Result.success(snapshot))
+                                        }
+                                    }
+                                    is ActionQueueOutcome.Failed -> {
+                                        updateLastActionCooldownFromServerTimestamp(
+                                            extractServerTimestampMs(snapshot.get("processedAt"))
+                                        )
+                                        Log.w(TAG, "Action $actionType (doc ${docRef.id}) marked FAILED/REJECTED: ${snapOutcome.errorMessage}")
+                                        if (isResumed.compareAndSet(false, true)) {
+                                            listenerRegistration?.remove()
+                                            continuation.resume(Result.failure(IllegalStateException(snapOutcome.errorMessage)))
+                                        }
+                                    }
+                                    ActionQueueOutcome.Pending -> Unit
+                                }
+                            }
+                        }
+
+                        continuation.invokeOnCancellation {
+                            Log.d(TAG, "Detaching snapshot listener for action $actionType (doc ${docRef.id}) due to cancellation/timeout")
+                            listenerRegistration?.remove()
+                        }
                     }
                 }
+            } finally {
+                listenerRegistration?.remove()
             }
+
+            if (outcome == null) {
+                Log.w(TAG, "Action $actionType (doc ${docRef.id}) timed out after ${ACTION_TIMEOUT_MS}ms. Checking final doc status before fallback.")
+                isResumed.set(true)
+                listenerRegistration?.remove()
+
+                val finalSnap = try {
+                    docRef.get().await()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Post-timeout final doc check failed for ${docRef.id}: ${e.message}")
+                    null
+                }
+                if (finalSnap != null && finalSnap.exists()) {
+                    when (val finalOutcome = evaluateActionQueueSnapshot(
+                        actionType = actionType,
+                        status = finalSnap.getString("status"),
+                        errorMessage = finalSnap.getString("errorMessage"),
+                        error = finalSnap.getString("error"),
+                        reason = finalSnap.getString("reason"),
+                        errorCode = finalSnap.getString("errorCode")
+                    )) {
+                        ActionQueueOutcome.Completed -> {
+                            updateLastActionCooldownFromServerTimestamp(
+                                extractServerTimestampMs(finalSnap.get("processedAt"))
+                            )
+                            Log.i(TAG, "Action $actionType (doc ${docRef.id}) confirmed COMPLETED on post-timeout check.")
+                            return@withContext Result.success(finalSnap)
+                        }
+                        is ActionQueueOutcome.Failed -> {
+                            updateLastActionCooldownFromServerTimestamp(
+                                extractServerTimestampMs(finalSnap.get("processedAt"))
+                            )
+                            return@withContext Result.failure(IllegalStateException(finalOutcome.errorMessage))
+                        }
+                        ActionQueueOutcome.Pending -> Unit
+                    }
+                }
+
+                try {
+                    refreshUserPassStatusFromServer(ctx)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Timeout recovery refresh failed: ${e.message}")
+                }
+                return@withContext Result.failure(
+                    TimeoutException("Server is taking longer than usual. Your status will sync automatically in a moment.")
+                )
+            }
+
+            outcome
         } finally {
-            listenerRegistration?.remove()
+            actionInFlight.set(false)
         }
-
-        if (outcome == null) {
-            Log.w(TAG, "Action $actionType (doc ${docRef.id}) timed out after ${ACTION_TIMEOUT_MS}ms. Explicitly marking request result as FAILED_TIMEOUT.")
-            isResumed.set(true)
-            listenerRegistration?.remove()
-            return@withContext Result.failure(TimeoutException("FAILED_TIMEOUT"))
-        }
-
-        outcome
-    }
-
-    /**
-     * Client-side arbitrary point top-ups are disabled under Zero-Trust architecture.
-     * Points may only be earned via server-verified Rewarded Ads or Referrals.
-     */
-    @Suppress("UNUSED_PARAMETER")
-    suspend fun addPoints(amount: Int): Result<Int> = withContext(Dispatchers.IO) {
-        Log.w(TAG, "Blocked client addPoints call under Zero-Trust security policy.")
-        Result.failure(UnsupportedOperationException("Client-side point grants are disabled."))
     }
 
     /**
@@ -1419,10 +2117,14 @@ object LicenseManager {
         )
         result.fold(
             onSuccess = { snap ->
-                val newBalance = snap.getLong("newPointsBalance")?.toInt()
+                var newBalance = snap.getLong("newPointsBalance")?.toInt()
                     ?: snap.getLong("newBalance")?.toInt()
                     ?: snap.getLong("pointsBalance")?.toInt()
-                    ?: (_pointsBalance.value + WELCOME_BONUS_POINTS)
+                    ?: snap.getLong("points")?.toInt()
+                if (newBalance == null) {
+                    appContext?.let { refreshUserPassStatusFromServer(it) }
+                    newBalance = _pointsBalance.value
+                }
                 notifyReferralClaimed(newBalance)
                 Result.success(newBalance)
             },
@@ -1433,7 +2135,7 @@ object LicenseManager {
     }
 
     /**
-     * Securely claims 5 points for watching a Rewarded Ad via the Zero-Trust Action Queue.
+     * Securely claims points for watching a Rewarded Ad via the Zero-Trust Action Queue.
      * Enqueues REWARD_AD_WATCHED request to `pending_actions` with empty payload and awaits server completion.
      */
     suspend fun claimAdReward(): Result<Int> = withContext(Dispatchers.IO) {
@@ -1444,11 +2146,16 @@ object LicenseManager {
 
         result.fold(
             onSuccess = { snap ->
-                val newBalance = snap.getLong("newPointsBalance")?.toInt()
+                var newBalance = snap.getLong("newPointsBalance")?.toInt()
                     ?: snap.getLong("newBalance")?.toInt()
                     ?: snap.getLong("pointsBalance")?.toInt()
-                    ?: (_pointsBalance.value + 5)
-                _pointsBalance.value = newBalance
+                    ?: snap.getLong("points")?.toInt()
+                if (newBalance == null) {
+                    appContext?.let { refreshUserPassStatusFromServer(it) }
+                    newBalance = _pointsBalance.value
+                } else {
+                    _pointsBalance.value = newBalance
+                }
                 Log.i(TAG, "REWARD_AD_WATCHED action completed via Action Queue. New balance: $newBalance")
                 Result.success(newBalance)
             },
@@ -1461,7 +2168,11 @@ object LicenseManager {
 
     @VisibleForTesting
     internal fun buildPurchasePassPayload(passTier: PassTier): Map<String, Any> {
-        return mapOf("passTier" to passTier.id)
+        val canonical = passTier.canonicalId.trim().lowercase(Locale.ROOT)
+        require(canonical in PassTier.VALID_CANONICAL_PASS_TIERS && canonical != "none") {
+            "Invalid canonical passTier '$canonical' for PURCHASE_PASS"
+        }
+        return mapOf("passTier" to canonical)
     }
 
     @VisibleForTesting
@@ -1478,10 +2189,11 @@ object LicenseManager {
      */
     suspend fun purchasePassWithPoints(passTier: PassTier): Result<Unit> = withContext(Dispatchers.IO) {
         val currentBalance = _pointsBalance.value
-        if (currentBalance < passTier.pointsCost) {
-            val shortfall = passTier.pointsCost - currentBalance
+        val requiredPoints = passTier.effectivePointsCost()
+        if (currentBalance < requiredPoints) {
+            val shortfall = requiredPoints - currentBalance
             return@withContext Result.failure(
-                IllegalStateException("Insufficient Points. You have $currentBalance pts, but ${passTier.title} requires ${passTier.pointsCost} pts (Need $shortfall more pts).")
+                IllegalStateException("Insufficient Points. You have $currentBalance pts, but ${passTier.title} requires $requiredPoints pts (Need $shortfall more pts).")
             )
         }
 
@@ -1540,62 +2252,14 @@ object LicenseManager {
      * Cross-user/legacy migration (`legacyCustomUserId` / `linkedHardwareId` matching) is executed
      * strictly server-side inside `INIT_PROFILE` so clients never query other user documents.
      */
-    private suspend fun checkAndMigrateUserData(
-        context: Context,
-        customUserId: String,
-        currentUser: FirebaseUser?,
-        hardwareId: String
-    ): Boolean = withContext(Dispatchers.IO) {
-        if (currentUser == null || currentUser.uid.isBlank()) {
-            Log.d(TAG, "checkAndMigrateUserData: No authenticated Firebase user; skipping migration check.")
-            return@withContext true
-        }
-
-        val db = FirebaseFirestore.getInstance()
-        val firebaseUid = currentUser.uid
-        val userEmail = currentUser.email ?: ""
-        val targetDocRef = db.collection(COLL_USERS).document(customUserId)
-
-        try {
-            val targetSnap = targetDocRef.get().await()
-            if (targetSnap != null && targetSnap.exists()) {
-                val updates = mutableMapOf<String, Any>()
-                val targetHw = targetSnap.getString("linkedHardwareId") ?: ""
-                val targetUid = targetSnap.getString("firebaseUid") ?: ""
-                if (targetHw != hardwareId && hardwareId.isNotBlank()) {
-                    updates["linkedHardwareId"] = hardwareId
-                }
-                if (targetUid != firebaseUid) {
-                    updates["firebaseUid"] = firebaseUid
-                    updates["userEmail"] = userEmail
-                }
-                if (updates.isNotEmpty() && shouldDispatchProfileUpdate(customUserId, updates)) {
-                    val updateResult = executeActionQueueRequest("UPDATE_PROFILE", updates)
-                    return@withContext updateResult.isSuccess
-                }
-            }
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "checkAndMigrateUserData notice: ${e.message}")
-            false
-        }
-    }
-
     /**
      * Performs cloud sync for trial and user licensing directly with Firestore in the single "users" collection.
+     * Relies on the single real-time snapshot listener in syncUserLicensingDocument to avoid duplicate .get() reads.
      */
     private suspend fun syncHardwareTrialAndLicensing() {
         val ctx = appContext ?: return
 
-        if (FirebaseApp.getApps(ctx).isEmpty()) {
-            try {
-                FirebaseApp.initializeApp(ctx)
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not initialize FirebaseApp in syncHardwareTrialAndLicensing: ${e.message}")
-            }
-        }
-
-        if (FirebaseApp.getApps(ctx).isEmpty()) {
+        if (!DeviceUtils.ensureFirebaseInitialized(ctx)) {
             Log.w(TAG, "Default FirebaseApp is not initialized in this process; skipping Firestore cloud sync.")
             refreshAccessStatus()
             return
@@ -1624,128 +2288,15 @@ object LicenseManager {
 
             val customUserId = currentUser.uid
             currentUserKey = customUserId
-            val hwId = HardwareIdManager.getPermanentHardwareId(ctx)
 
-            // 2. Perform device/UID alignment check before reading/syncing
+            // 2. Attach/ensure real-time snapshot listener on users/{customUserId} (single authoritative read stream)
             try {
-                checkAndMigrateUserData(ctx, customUserId, currentUser, hwId)
+                syncUserLicensingDocument(customUserId, currentUser.email)
             } catch (e: Exception) {
-                Log.w(TAG, "Profile alignment check notice: ${e.message}")
-            }
-
-            // 3. Load authoritative user document from Firestore
-            try {
-                val db = FirebaseFirestore.getInstance()
-                val userDocRef = db.collection(COLL_USERS).document(customUserId)
-
-                val snapshot = userDocRef.get().await()
-                val now = getCurrentServerTimeMs()
-
-                if (snapshot != null && snapshot.exists()) {
-                    val trialClaimed = snapshot.getLong("trialClaimed") ?: snapshot.getLong("firstClaimedTimestamp") ?: 0L
-                    val trialExpiry = snapshot.getLong("trialExpiry")
-                        ?: snapshot.getLong("trialExpiryTimestamp")
-                        ?: snapshot.getLong("freeTrialExpiry")
-                        ?: snapshot.getLong("trialExpiresAt")
-                        ?: 0L
-                    val isUsed = snapshot.getBoolean("trialUsed") ?: snapshot.getBoolean("isUsed") ?: (trialClaimed > 0L)
-                    val passType = snapshot.getString("activePassType") ?: snapshot.getString("passType")
-                    val passExpiry = snapshot.getLong("passExpiryTimestamp") ?: snapshot.getLong("passExpiry") ?: 0L
-                    val removeAdsExpiry = snapshot.getLong("removeAdsExpiryTimestamp")
-                        ?: snapshot.getLong("removeAdsExpiry")
-                        ?: snapshot.getLong("removeAdsExpiryMs")
-                        ?: 0L
-                    val tier = PassTier.fromId(passType)
-
-                    if (trialClaimed > 0L) {
-                        serverTrialClaimed = trialClaimed
-                        serverTrialExpiry = trialExpiry
-                        serverTrialUsed = isUsed
-                        hasLoadedTrial = true
-                        Log.i(TAG, "Loaded trial directly from users doc for $customUserId: claimed=$trialClaimed, expiry=$trialExpiry, isUsed=$isUsed")
-                    } else {
-                        serverTrialClaimed = 0L
-                        serverTrialExpiry = 0L
-                        serverTrialUsed = false
-                        hasLoadedTrial = true
-                    }
-
-                    serverPassTier = tier?.takeIf { it.isProPass }
-                    serverPassExpiry = if (tier?.isProPass == true) passExpiry else 0L
-
-                    serverRemoveAdsExpiry = maxOf(
-                        removeAdsExpiry,
-                        if (tier == PassTier.REMOVE_ADS) passExpiry else 0L
-                    )
-                    _removeAdsExpiryMs.value = if (serverRemoveAdsExpiry > now) serverRemoveAdsExpiry else 0L
-
-                    // Parse Pay-Per-Use & Admin feature unlocks map, filtering out expired remnants
-                    val rawFeatures = (snapshot.get("unlockedFeatures") as? Map<*, *>)
-                        ?: (snapshot.get("unlocked_features") as? Map<*, *>)
-                    val parsedFeatures = rawFeatures?.mapNotNull { (k, v) ->
-                        val featureKey = k as? String ?: return@mapNotNull null
-                        val exp = when (v) {
-                            is Number -> v.toLong()
-                            true -> -1L
-                            else -> return@mapNotNull null
-                        }
-                        featureKey to exp
-                    }?.toMap() ?: emptyMap()
-                    _unlockedFeatures.value = filterAuthoritativeUnlockedFeatures(
-                        rawMap = parsedFeatures,
-                        now = now,
-                        passActive = tier?.isProPass == true && passExpiry > now,
-                        trialActive = trialClaimed > 0L && trialExpiry > now,
-                        trialUsed = isUsed,
-                        trialExpiry = trialExpiry,
-                        passExpiry = if (tier?.isProPass == true) passExpiry else 0L
-                    )
-
-                    val folder = computeCurrentFolder(tier, passExpiry, serverTrialClaimed, serverTrialExpiry, now)
-                    _currentFolder.value = folder
-                    val savedFolder = snapshot.getString("currentFolder") ?: snapshot.getString("current_folder")
-                    val savedHwId = snapshot.getString("linkedHardwareId")
-
-                    if (savedFolder != folder || savedHwId != hwId) {
-                        val updateData = mutableMapOf<String, Any>(
-                            "userId" to customUserId,
-                            "currentFolder" to folder,
-                            "linkedHardwareId" to hwId
-                        )
-                        if (currentUser != null && currentUser.uid.isNotBlank()) {
-                            updateData["firebaseUid"] = currentUser.uid
-                        }
-                        if (!currentUser?.email.isNullOrBlank()) {
-                            updateData["userEmail"] = currentUser?.email ?: ""
-                        }
-                        if (shouldDispatchProfileUpdate(customUserId, updateData)) {
-                            scope.launch {
-                                try {
-                                    executeActionQueueRequest("UPDATE_PROFILE", updateData)
-                                } catch (e: Exception) {
-                                    Log.w(TAG, "Failed updating profile in syncHardwareTrialAndLicensing: ${e.message}")
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    hasLoadedTrial = true
-                    hasLoadedLicensing = true
-                    _currentFolder.value = "free_mod"
-                }
-                refreshAccessStatus()
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not sync user document from Firestore: ${e.message}")
+                Log.w(TAG, "Could not sync user licensing: ${e.message}")
                 hasLoadedTrial = true
                 hasLoadedLicensing = true
                 refreshAccessStatus()
-            }
-
-            // 4. Sync real-time snapshot listener on users/{customUserId}
-            try {
-                syncUserLicensingDocument(customUserId, currentUser?.email)
-            } catch (e: Exception) {
-                Log.w(TAG, "Could not sync user licensing: ${e.message}")
             }
         }
     }
@@ -1753,7 +2304,6 @@ object LicenseManager {
     /**
      * Listens in real-time to the user document in Firestore "users" collection.
      * Updates in-memory StateFlows directly from snapshot. Zero local storage.
-     * Document initialization is handled directly via Firestore SDK.
      */
     private fun syncUserLicensingDocument(userKey: String, userEmail: String?) {
         val ctx = appContext
@@ -1797,6 +2347,201 @@ object LicenseManager {
         try {
             val db = FirebaseFirestore.getInstance()
             val userDocRef = db.collection(COLL_USERS).document(customUserId)
+            val fallbackQueryAttempted = AtomicBoolean(false)
+
+            fun handleExistingUserSnapshot(snapshot: DocumentSnapshot) {
+                val parsed = parseUserProfileSnapshotMap(snapshot.data)
+                updateLastActionCooldownFromServerTimestamp(parsed.lastActionTimeMs)
+
+                val points = parsed.points
+                val passType = parsed.activePassType
+                val passExpiry = parsed.passExpiryTimestamp
+                val removeAdsExpiry = parsed.removeAdsExpiryTimestamp
+                val code = parsed.referralCode
+                val hasClaimed = parsed.hasClaimedReferral ?: false
+                val refCount = parsed.referralCount ?: 0
+                val trialClaimed = parsed.trialClaimed ?: 0L
+                val trialExpiry = parsed.trialExpiry ?: 0L
+                val isTrialUsed = parsed.trialUsed ?: (trialClaimed > 0L)
+                val serverFolder = parsed.currentFolder
+
+                // Always sync trial and licensing state unconditionally for real-time Firestore updates
+                serverTrialClaimed = trialClaimed
+                serverTrialExpiry = trialExpiry
+                serverTrialUsed = isTrialUsed
+                hasLoadedTrial = true
+
+                // Update in-memory reactive state directly from Firestore snapshot
+                _pointsBalance.value = points
+                _hasClaimedReferral.value = hasClaimed
+                _referralCount.value = refCount
+                val parsedTier = PassTier.fromId(passType)
+                serverPassTier = parsedTier?.takeIf { it.isProPass }
+                serverPassExpiry = if (parsedTier?.isProPass == true) passExpiry else 0L
+                serverRemoveAdsExpiry = maxOf(
+                    removeAdsExpiry,
+                    if (parsedTier == PassTier.REMOVE_ADS) passExpiry else 0L
+                )
+                val currentTimeNow = getCurrentServerTimeMs()
+                _removeAdsExpiryMs.value = if (serverRemoveAdsExpiry > currentTimeNow) serverRemoveAdsExpiry else 0L
+
+                // Save authoritative data to local SharedPreferences cache
+                ctx?.let { c ->
+                    saveAuthoritativeLicensingCache(
+                        context = c,
+                        passTier = serverPassTier,
+                        passExpiry = serverPassExpiry,
+                        trialClaimed = serverTrialClaimed,
+                        trialExpiry = serverTrialExpiry,
+                        trialUsed = serverTrialUsed,
+                        removeAdsExpiry = serverRemoveAdsExpiry
+                    )
+                }
+
+                val expectedFolder = computeCurrentFolder(
+                    passTier = serverPassTier,
+                    passExpiry = serverPassExpiry,
+                    trialClaimed = serverTrialClaimed,
+                    trialExpiry = serverTrialExpiry
+                ).ifBlank { serverFolder ?: "free_mod" }
+                _currentFolder.value = expectedFolder
+
+                applyParsedUnlockedAndLockedFeatures(
+                    parsed = parsed,
+                    now = currentTimeNow,
+                    passActive = parsedTier?.isProPass == true && passExpiry > currentTimeNow,
+                    trialActive = trialClaimed > 0L && trialExpiry > currentTimeNow,
+                    trialUsed = isTrialUsed,
+                    trialExpiry = trialExpiry,
+                    passExpiry = if (parsedTier?.isProPass == true) passExpiry else 0L
+                )
+
+                // Read canonical `isBanned` + `banUntil` (with legacy `banUntilTimestamp` fallback) and sync to GlobalAdminManager
+                val currentNowMs = getCurrentServerTimeMs()
+                val effectiveBanUntilMs = resolveEffectiveBanUntilMs(parsed, currentNowMs)
+                val banReason = parsed.banReason
+
+                if (effectiveBanUntilMs != null && effectiveBanUntilMs > currentNowMs) {
+                    _isBannedFlow.value = true
+                    _banUntilTimestampFlow.value = effectiveBanUntilMs
+                    _banReasonFlow.value = banReason
+                    Log.w(TAG, "User $customUserId is BANNED until $effectiveBanUntilMs (now=$currentNowMs). Reason: $banReason")
+                } else {
+                    _isBannedFlow.value = false
+                    _banUntilTimestampFlow.value = null
+                    _banReasonFlow.value = null
+                }
+                GlobalAdminManager.syncBanStateFromLicenseManager(effectiveBanUntilMs, banReason)
+
+                hasLoadedLicensing = true
+
+                val currentHwId = ctx?.let { HardwareIdManager.getPermanentHardwareId(it) } ?: ""
+                // Check canonical keys strictly so unmigrated docs get canonical UPDATE_PROFILE fields populated
+                val existingLinkedHw = snapshot.getString("linkedHardwareId")
+                val existingEmail = snapshot.getString("userEmail")
+                val existingFirebaseUid = snapshot.getString("firebaseUid")
+                val authEmail = try {
+                    FirebaseAuth.getInstance().currentUser?.email.orEmpty()
+                } catch (_: Exception) {
+                    ""
+                }
+
+                val updatesNeeded = computeNeededProfileUpdates(
+                    snapshotFirebaseUid = existingFirebaseUid,
+                    snapshotHardwareId = existingLinkedHw,
+                    snapshotEmail = existingEmail,
+                    expectedFirebaseUid = customUserId,
+                    currentHardwareId = currentHwId,
+                    authEmail = authEmail
+                )
+                _referralCode.value = code?.takeIf { it.isNotBlank() }
+
+                // Only dispatch UPDATE_PROFILE when firebaseUid, linkedHardwareId, or userEmail differ from server doc
+                if (updatesNeeded.isNotEmpty() && shouldDispatchProfileUpdate(customUserId, updatesNeeded)) {
+                    scope.launch {
+                        try {
+                            executeActionQueueRequest("UPDATE_PROFILE", updatesNeeded)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed updating user document fields via Action Queue: ${e.message}")
+                        }
+                    }
+                }
+
+                refreshAccessStatus()
+                Log.d(TAG, "Synced user from Firestore (${snapshot.id}, v${parsed.schemaVersion}): points=$points, passType=$passType, folder=$expectedFolder, code=${_referralCode.value}")
+            }
+
+            fun dispatchInitProfileOnce() {
+                if (docInitAttempted.compareAndSet(false, true)) {
+                    scope.launch {
+                        try {
+                            val currentAuthUser = try {
+                                FirebaseAuth.getInstance().currentUser
+                            } catch (_: Exception) {
+                                null
+                            }
+                            val context = ctx ?: return@launch
+                            val permanentHardwareId = HardwareIdManager.getPermanentHardwareId(context)
+                            val legacyCustomId = DeviceUtils.getSavedCustomUserIdOrNull(context)
+                            val email = userEmail ?: (currentAuthUser?.email ?: "")
+
+                            Log.i(TAG, "User document does not exist. Dispatching INIT_PROFILE to Action Queue for $customUserId...")
+                            val initPayload = buildInitProfilePayload(
+                                firebaseUid = customUserId,
+                                userEmail = email,
+                                hardwareId = permanentHardwareId,
+                                legacyCustomId = legacyCustomId
+                            )
+                            val actionResult = executeActionQueueRequest(
+                                actionType = "INIT_PROFILE",
+                                payload = initPayload
+                            )
+
+                            if (actionResult.isSuccess) {
+                                val actionDoc = actionResult.getOrNull()
+                                val newPoints = (actionDoc?.getLong("pointsBalance")
+                                    ?: actionDoc?.getLong("points"))?.toInt() ?: 0
+                                val newReferral = actionDoc?.getString("referralCode") ?: generateReferralCode()
+                                _referralCode.value = newReferral
+                                _pointsBalance.value = newPoints
+                                val now = getCurrentServerTimeMs()
+                                val serverTrialClaimedMs = actionDoc?.getLong("trialClaimed") ?: 0L
+                                val serverTrialExpiryMs = actionDoc?.getLong("trialExpiry") ?: 0L
+                                if (serverTrialClaimedMs > 0L && serverTrialExpiryMs > now && DeviceUtils.isFreeTrialAllowed(context)) {
+                                    serverTrialClaimed = serverTrialClaimedMs
+                                    serverTrialExpiry = serverTrialExpiryMs
+                                    serverTrialUsed = true
+                                    _currentFolder.value = "trials"
+                                } else {
+                                    serverTrialClaimed = serverTrialClaimedMs
+                                    serverTrialExpiry = serverTrialExpiryMs
+                                    serverTrialUsed = actionDoc?.getBoolean("trialUsed") ?: true
+                                    _currentFolder.value = "free_mod"
+                                }
+                                hasLoadedLicensing = true
+                                refreshAccessStatus()
+                                if (!legacyCustomId.isNullOrBlank()) {
+                                    DeviceUtils.clearSavedCustomUserId(context)
+                                }
+                                Log.i(TAG, "INIT_PROFILE successfully completed via Action Queue for $customUserId")
+                            } else {
+                                Log.w(TAG, "INIT_PROFILE action failed: ${actionResult.exceptionOrNull()?.message}")
+                                docInitAttempted.set(false)
+                                hasLoadedLicensing = true
+                                refreshAccessStatus()
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Could not initialize user doc via Action Queue: ${e.message}")
+                            docInitAttempted.set(false)
+                            hasLoadedLicensing = true
+                            refreshAccessStatus()
+                        }
+                    }
+                } else {
+                    hasLoadedLicensing = true
+                    refreshAccessStatus()
+                }
+            }
 
             val registration = userDocRef.addSnapshotListener { snapshot, error ->
                 if (error != null) {
@@ -1807,249 +2552,52 @@ object LicenseManager {
                 }
 
                 if (snapshot != null && snapshot.exists()) {
-                    val points = snapshot.getLong("pointsBalance")?.toInt()
-                        ?: snapshot.getLong("points")?.toInt()
-                        ?: 0
-                    val passType = snapshot.getString("activePassType")
-                        ?: snapshot.getString("passType")
-                    val passExpiry = snapshot.getLong("passExpiryTimestamp")
-                        ?: snapshot.getLong("passExpiry")
-                        ?: 0L
-                    val removeAdsExpiry = snapshot.getLong("removeAdsExpiryTimestamp")
-                        ?: snapshot.getLong("removeAdsExpiry")
-                        ?: snapshot.getLong("removeAdsExpiryMs")
-                        ?: 0L
-                    val code = snapshot.getString("referralCode")
-                    val hasClaimed = snapshot.getBoolean("hasClaimedReferral") ?: false
-                    val refCount = snapshot.getLong("referralCount")?.toInt() ?: 0
-                    val trialClaimed = snapshot.getLong("trialClaimed") ?: snapshot.getLong("firstClaimedTimestamp") ?: 0L
-                    val trialExpiry = snapshot.getLong("trialExpiry")
-                        ?: snapshot.getLong("trialExpiryTimestamp")
-                        ?: snapshot.getLong("freeTrialExpiry")
-                        ?: snapshot.getLong("trialExpiresAt")
-                        ?: 0L
-                    val isTrialUsed = snapshot.getBoolean("trialUsed") ?: snapshot.getBoolean("isUsed") ?: (trialClaimed > 0L)
-
-                    // Always sync trial and licensing state unconditionally for real-time Firestore updates
-                    serverTrialClaimed = trialClaimed
-                    serverTrialExpiry = trialExpiry
-                    serverTrialUsed = isTrialUsed
-                    hasLoadedTrial = true
-
-                    // Update in-memory reactive state directly from Firestore snapshot
-                    _pointsBalance.value = points
-                    _hasClaimedReferral.value = hasClaimed
-                    _referralCount.value = refCount
-                    val parsedTier = PassTier.fromId(passType)
-                    serverPassTier = parsedTier?.takeIf { it.isProPass }
-                    serverPassExpiry = if (parsedTier?.isProPass == true) passExpiry else 0L
-                    serverRemoveAdsExpiry = maxOf(
-                        removeAdsExpiry,
-                        if (parsedTier == PassTier.REMOVE_ADS) passExpiry else 0L
-                    )
-                    val currentTimeNow = getCurrentServerTimeMs()
-                    _removeAdsExpiryMs.value = if (serverRemoveAdsExpiry > currentTimeNow) serverRemoveAdsExpiry else 0L
-
-                    // Save authoritative data to local SharedPreferences cache
-                    ctx?.let { c ->
-                        saveAuthoritativeLicensingCache(
-                            context = c,
-                            passTier = serverPassTier,
-                            passExpiry = serverPassExpiry,
-                            trialClaimed = serverTrialClaimed,
-                            trialExpiry = serverTrialExpiry,
-                            trialUsed = serverTrialUsed,
-                            removeAdsExpiry = serverRemoveAdsExpiry
-                        )
-                    }
-
-                    val expectedFolder = computeCurrentFolder(
-                        passTier = serverPassTier,
-                        passExpiry = serverPassExpiry,
-                        trialClaimed = serverTrialClaimed,
-                        trialExpiry = serverTrialExpiry
-                    )
-                    _currentFolder.value = expectedFolder
-
-                    // Parse Pay-Per-Use & Admin feature unlocks map, filtering out expired remnants
-                    val rawFeatures = (snapshot.get("unlockedFeatures") as? Map<*, *>)
-                        ?: (snapshot.get("unlocked_features") as? Map<*, *>)
-                    val parsedFeatures = rawFeatures?.mapNotNull { (k, v) ->
-                        val featureKey = k as? String ?: return@mapNotNull null
-                        val exp = when (v) {
-                            is Number -> v.toLong()
-                            true -> -1L
-                            else -> return@mapNotNull null
-                        }
-                        featureKey to exp
-                    }?.toMap() ?: emptyMap()
-                    _unlockedFeatures.value = filterAuthoritativeUnlockedFeatures(
-                        rawMap = parsedFeatures,
-                        now = currentTimeNow,
-                        passActive = parsedTier?.isProPass == true && passExpiry > currentTimeNow,
-                        trialActive = trialClaimed > 0L && trialExpiry > currentTimeNow,
-                        trialUsed = isTrialUsed,
-                        trialExpiry = trialExpiry,
-                        passExpiry = if (parsedTier?.isProPass == true) passExpiry else 0L
-                    )
-
-                    // Parse explicit Admin Lock list/map (lockedFeatures canonical, fallback locked_features)
-                    val rawLocked = snapshot.get("lockedFeatures") ?: snapshot.get("locked_features")
-                    val parsedLocked: Set<String> = when (rawLocked) {
-                        is List<*> -> rawLocked.mapNotNull { (it as? String)?.trim()?.lowercase() }
-                            .filter { it.isNotEmpty() }.toSet()
-                        is Map<*, *> -> rawLocked.mapNotNull { (k, v) ->
-                            val key = (k as? String)?.trim()?.lowercase() ?: return@mapNotNull null
-                            if (v == true) key else null
-                        }.toSet()
-                        else -> emptySet()
-                    }
-                    _lockedFeatures.value = parsedLocked
-
-                    // Read banUntil (Timestamp) field from user's document
-                    val banUntilObj = snapshot.get("banUntil")
-                    val banUntilMs: Long? = when (banUntilObj) {
-                        is Timestamp -> banUntilObj.toDate().time
-                        is java.util.Date -> banUntilObj.time
-                        is Number -> banUntilObj.toLong()
-                        else -> null
-                    }
-                    val banReason = snapshot.getString("banReason")
-                    val currentNowMs = getCurrentServerTimeMs()
-
-                    if (banUntilMs != null && banUntilMs > currentNowMs) {
-                        _isBannedFlow.value = true
-                        _banUntilTimestampFlow.value = banUntilMs
-                        _banReasonFlow.value = banReason
-                        Log.w(TAG, "User $customUserId is BANNED until $banUntilMs (now=$currentNowMs). Reason: $banReason")
-                    } else {
-                        _isBannedFlow.value = false
-                        _banUntilTimestampFlow.value = null
-                        _banReasonFlow.value = null
-                    }
-
-                    hasLoadedLicensing = true
-
-                    val currentHwId = ctx?.let { HardwareIdManager.getPermanentHardwareId(it) } ?: ""
-                    val existingLinkedHw = snapshot.getString("linkedHardwareId")
-                    val existingFolder = snapshot.getString("currentFolder") ?: snapshot.getString("current_folder")
-
-                    val updatesNeeded = mutableMapOf<String, Any>()
-                    if (currentHwId.isNotBlank() && existingLinkedHw != currentHwId) {
-                        updatesNeeded["linkedHardwareId"] = currentHwId
-                    }
-                    if (existingFolder != expectedFolder) {
-                        updatesNeeded["currentFolder"] = expectedFolder
-                    }
-                    if (code.isNullOrBlank()) {
-                        val generated = _referralCode.value?.takeIf { it.isNotBlank() } ?: generateReferralCode()
-                        updatesNeeded["referralCode"] = generated
-                        _referralCode.value = generated
-                    } else {
-                        _referralCode.value = code
-                    }
-
-                    // Check if current user's UID or Email differs from the ones stored in snapshot
-                    val currentAuthUser = try {
-                        FirebaseAuth.getInstance().currentUser
-                    } catch (_: Exception) {
-                        null
-                    }
-                    val currentUid = currentAuthUser?.uid ?: ""
-                    val currentEmail = currentAuthUser?.email ?: (userEmail ?: "")
-                    val storedUid = snapshot.getString("firebaseUid") ?: ""
-                    val storedEmail = snapshot.getString("userEmail") ?: ""
-
-                    if (currentUid.isNotBlank() && storedUid != currentUid) {
-                        updatesNeeded["firebaseUid"] = currentUid
-                    }
-                    if (currentEmail.isNotBlank() && storedEmail != currentEmail) {
-                        updatesNeeded["userEmail"] = currentEmail
-                    }
-
-                    if (updatesNeeded.isNotEmpty() && shouldDispatchProfileUpdate(customUserId, updatesNeeded)) {
-                        scope.launch {
-                            try {
-                                executeActionQueueRequest("UPDATE_PROFILE", updatesNeeded)
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Failed updating user document fields via Action Queue: ${e.message}")
-                            }
-                        }
-                    }
-
-                    refreshAccessStatus()
-                    Log.d(TAG, "Synced user from Firestore: points=$points, passType=$passType, folder=$expectedFolder, code=${_referralCode.value}")
+                    handleExistingUserSnapshot(snapshot)
                 } else if (snapshot != null && !snapshot.exists()) {
-                    // Prevent infinite loop: initialize document strictly once per session
-                    if (docInitAttempted.compareAndSet(false, true)) {
+                    if (fallbackQueryAttempted.compareAndSet(false, true)) {
                         scope.launch {
-                            try {
-                                val currentAuthUser = try {
-                                    FirebaseAuth.getInstance().currentUser
-                                } catch (_: Exception) {
-                                    null
-                                }
-                                val context = ctx ?: return@launch
-                                val permanentHardwareId = HardwareIdManager.getPermanentHardwareId(context)
-                                val legacyCustomId = DeviceUtils.getSavedCustomUserIdOrNull(context)
-                                val email = userEmail ?: (currentAuthUser?.email ?: "")
-
-                                Log.i(TAG, "User document does not exist. Dispatching INIT_PROFILE to Action Queue for $customUserId...")
-                                val initPayload = mutableMapOf<String, Any>(
-                                    "userEmail" to email,
-                                    "linkedHardwareId" to permanentHardwareId,
-                                    "firebaseUid" to (currentAuthUser?.uid ?: "")
-                                )
-                                if (!legacyCustomId.isNullOrBlank() && legacyCustomId != customUserId) {
-                                    initPayload["legacyCustomUserId"] = legacyCustomId
-                                }
-                                val actionResult = executeActionQueueRequest(
-                                    actionType = "INIT_PROFILE",
-                                    payload = initPayload
-                                )
-
-                                if (actionResult.isSuccess) {
-                                    val actionDoc = actionResult.getOrNull()
-                                    val newPoints = actionDoc?.getLong("pointsBalance")?.toInt() ?: 0
-                                    val newReferral = actionDoc?.getString("referralCode") ?: generateReferralCode()
-                                    _referralCode.value = newReferral
-                                    _pointsBalance.value = newPoints
-                                    val now = getCurrentServerTimeMs()
-                                    val serverTrialClaimedMs = actionDoc?.getLong("trialClaimed") ?: 0L
-                                    val serverTrialExpiryMs = actionDoc?.getLong("trialExpiry") ?: 0L
-                                    if (serverTrialClaimedMs > 0L && serverTrialExpiryMs > now && DeviceUtils.isFreeTrialAllowed(context)) {
-                                        serverTrialClaimed = serverTrialClaimedMs
-                                        serverTrialExpiry = serverTrialExpiryMs
-                                        serverTrialUsed = true
-                                        _currentFolder.value = "trials"
-                                    } else {
-                                        serverTrialClaimed = serverTrialClaimedMs
-                                        serverTrialExpiry = serverTrialExpiryMs
-                                        serverTrialUsed = actionDoc?.getBoolean("trialUsed") ?: true
-                                        _currentFolder.value = "free_mod"
-                                    }
-                                    hasLoadedLicensing = true
-                                    refreshAccessStatus()
-                                    if (!legacyCustomId.isNullOrBlank()) {
-                                        DeviceUtils.clearSavedCustomUserId(context)
-                                    }
-                                    Log.i(TAG, "INIT_PROFILE successfully completed via Action Queue for $customUserId")
-                                } else {
-                                    Log.w(TAG, "INIT_PROFILE action failed: ${actionResult.exceptionOrNull()?.message}")
-                                    docInitAttempted.set(false)
-                                    hasLoadedLicensing = true
-                                    refreshAccessStatus()
-                                }
+                            val fallbackDoc = try {
+                                db.collection(COLL_USERS)
+                                    .whereEqualTo("firebaseUid", customUserId)
+                                    .limit(1)
+                                    .get()
+                                    .await()
+                                    ?.documents
+                                    ?.firstOrNull()
                             } catch (e: Exception) {
-                                Log.w(TAG, "Could not initialize user doc via Action Queue: ${e.message}")
-                                docInitAttempted.set(false)
-                                hasLoadedLicensing = true
-                                refreshAccessStatus()
+                                Log.w(TAG, "Fallback firebaseUid query skipped: ${e.message}")
+                                null
+                            }
+
+                            if (fallbackDoc != null && fallbackDoc.exists() && fallbackDoc.id != customUserId) {
+                                Log.i(TAG, "Resolved legacy user document ${fallbackDoc.id} via firebaseUid fallback for $customUserId")
+                                val fallbackReg = fallbackDoc.reference.addSnapshotListener { fbSnap, fbErr ->
+                                    if (fbErr != null) {
+                                        Log.w(TAG, "Fallback user snapshot listener error: ${fbErr.message}")
+                                        hasLoadedLicensing = true
+                                        refreshAccessStatus()
+                                        return@addSnapshotListener
+                                    }
+                                    if (fbSnap != null && fbSnap.exists()) {
+                                        handleExistingUserSnapshot(fbSnap)
+                                    } else {
+                                        dispatchInitProfileOnce()
+                                    }
+                                }
+                                synchronized(authLock) {
+                                    if (activeUserDocUid == customUserId) {
+                                        userDocListener?.remove()
+                                        userDocListener = fallbackReg
+                                    } else {
+                                        fallbackReg.remove()
+                                    }
+                                }
+                            } else {
+                                dispatchInitProfileOnce()
                             }
                         }
                     } else {
-                        hasLoadedLicensing = true
-                        refreshAccessStatus()
+                        dispatchInitProfileOnce()
                     }
                 }
             }
@@ -2106,6 +2654,298 @@ object LicenseManager {
     fun refreshAccessStatus(context: Context? = null) {
         recomputeAccessStatus(context)
         onEntitlementsChanged?.invoke()
+    }
+
+    /**
+     * Resolves user points balance consistently across `LicenseManager` and `AppSettings`:
+     * prefers `pointsBalance` (authoritative field written by Admin App), falls back to `points`,
+     * and defaults to `0L`.
+     */
+    @VisibleForTesting
+    internal fun resolvePointsBalanceFromMap(data: Map<String, Any?>?): Long {
+        if (data == null) return 0L
+        val raw = (data["pointsBalance"] as? Number) ?: (data["points"] as? Number)
+        return raw?.toLong() ?: 0L
+    }
+
+    @VisibleForTesting
+    internal data class ParsedUserProfileSnapshot(
+        val schemaVersion: Int = 1,
+        val firebaseUid: String? = null,
+        val userEmail: String? = null,
+        val linkedHardwareId: String? = null,
+        val pointsBalance: Long = 0L,
+        val points: Int = pointsBalance.toInt(),
+        val hasPointsField: Boolean = false,
+        val activePassType: String? = null,
+        val passExpiryTimestamp: Long = 0L,
+        val removeAdsExpiryTimestamp: Long = 0L,
+        val unlockedFeatures: Map<String, Long> = emptyMap(),
+        val lockedFeatures: Set<String> = emptySet(),
+        val blacklistedDestinations: List<String>? = null,
+        val isBanned: Boolean = false,
+        val banUntilTimestamp: Long? = null,
+        val banReason: String? = null,
+        val referralCode: String? = null,
+        val hasClaimedReferral: Boolean? = null,
+        val referralCount: Int? = null,
+        val trialClaimed: Long? = null,
+        val trialExpiry: Long? = null,
+        val trialUsed: Boolean? = null,
+        val currentFolder: String? = null,
+        val lastActionTimeMs: Long? = null
+    )
+
+    /**
+     * Canonical `users/{uid}` parser aligned with Admin App Steps 4A–7A (`schemaVersion = 2`).
+     * Reads `pointsBalance` first with fallback to `points` (defaulting to `0L`) identically to
+     * `AppSettings`, and prefers canonical keys with read-only legacy fallbacks.
+     */
+    @VisibleForTesting
+    internal fun parseUserProfileSnapshotMap(data: Map<String, Any?>?): ParsedUserProfileSnapshot {
+        if (data == null) return ParsedUserProfileSnapshot()
+
+        val schemaVersion = (data["schemaVersion"] as? Number)?.toInt() ?: 1
+        val firebaseUid = (data["firebaseUid"] as? String)?.takeIf { it.isNotBlank() }
+            ?: (data["uid"] as? String)?.takeIf { it.isNotBlank() }
+        val userEmail = (data["userEmail"] as? String)?.takeIf { it.isNotBlank() }
+            ?: (data["email"] as? String)?.takeIf { it.isNotBlank() }
+        val linkedHardwareId = (data["linkedHardwareId"] as? String)?.takeIf { it.isNotBlank() }
+            ?: (data["hardwareId"] as? String)?.takeIf { it.isNotBlank() }
+            ?: (data["deviceId"] as? String)?.takeIf { it.isNotBlank() }
+
+        val rawPoints = (data["pointsBalance"] as? Number) ?: (data["points"] as? Number)
+        val pointsBalance = resolvePointsBalanceFromMap(data)
+        val points = pointsBalance.toInt()
+
+        val activePassType = data["activePassType"] as? String
+        val passExpiryTimestamp = extractServerTimestampMs(data["passExpiryTimestamp"])
+            ?: extractServerTimestampMs(data["pass_expiry_date"])
+            ?: extractServerTimestampMs(data["passExpiry"])
+            ?: 0L
+        val removeAdsExpiryTimestamp = extractServerTimestampMs(data["removeAdsExpiryTimestamp"])
+            ?: extractServerTimestampMs(data["removeAdsExpiryMs"])
+            ?: extractServerTimestampMs(data["remove_ads_expiry_timestamp"])
+            ?: 0L
+
+        val rawUnlocked = (data["unlockedFeatures"] as? Map<*, *>)
+            ?: (data["unlocked_features"] as? Map<*, *>)
+            ?: (data["featureExpiries"] as? Map<*, *>)
+        val unlockedFeatures = rawUnlocked?.mapNotNull { (k, v) ->
+            val featureKey = k as? String ?: return@mapNotNull null
+            val exp = when (v) {
+                is Number -> v.toLong()
+                is Timestamp -> v.toDate().time
+                is java.util.Date -> v.time
+                true -> -1L
+                else -> return@mapNotNull null
+            }
+            featureKey to exp
+        }?.toMap() ?: emptyMap()
+
+        val rawLocked = data["lockedFeatures"] ?: data["locked_features"]
+        val lockedFeatures: Set<String> = when (rawLocked) {
+            is List<*> -> rawLocked.mapNotNull { (it as? String)?.trim()?.lowercase(Locale.ROOT) }
+                .filter { it.isNotEmpty() }.toSet()
+            is Map<*, *> -> rawLocked.mapNotNull { (k, v) ->
+                val key = (k as? String)?.trim()?.lowercase(Locale.ROOT) ?: return@mapNotNull null
+                if (v == true) key else null
+            }.toSet()
+            else -> emptySet()
+        }
+
+        val hasBlacklistKey = data.containsKey("blacklistedDestinations") || data.containsKey("blockedLocations")
+        val blacklistedDestinations = if (hasBlacklistKey) {
+            val rawBlacklist = if (data.containsKey("blacklistedDestinations")) {
+                data["blacklistedDestinations"]
+            } else {
+                data["blockedLocations"]
+            }
+            (rawBlacklist as? List<*>)
+                ?.mapNotNull { (it as? String)?.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?.distinctBy { it.lowercase(Locale.ROOT) }
+                ?.sorted()
+                ?: emptyList()
+        } else {
+            null
+        }
+
+        val isBanned = data["isBanned"] as? Boolean ?: false
+        val banUntilTimestamp = extractServerTimestampMs(data["banUntil"])
+            ?: extractServerTimestampMs(data["banUntilTimestamp"])
+        val banReason = (data["banReason"] as? String)?.takeIf { it.isNotBlank() }
+            ?: (data["reason"] as? String)?.takeIf { it.isNotBlank() }
+
+        val referralCode = (data["referralCode"] as? String)?.takeIf { it.isNotBlank() }
+        val hasClaimedReferral = data["hasClaimedReferral"] as? Boolean
+        val referralCount = (data["referralCount"] as? Number)?.toInt()
+        val trialClaimed = extractServerTimestampMs(data["trialClaimed"])
+        val trialExpiry = extractServerTimestampMs(data["trialExpiry"])
+        val trialUsed = data["trialUsed"] as? Boolean
+        val currentFolder = (data["currentFolder"] as? String)?.takeIf { it.isNotBlank() }
+        val lastActionTimeMs = extractServerTimestampMs(data["lastActionTime"])
+
+        return ParsedUserProfileSnapshot(
+            schemaVersion = schemaVersion,
+            firebaseUid = firebaseUid,
+            userEmail = userEmail,
+            linkedHardwareId = linkedHardwareId,
+            pointsBalance = pointsBalance,
+            points = points,
+            hasPointsField = rawPoints != null,
+            activePassType = activePassType,
+            passExpiryTimestamp = passExpiryTimestamp,
+            removeAdsExpiryTimestamp = removeAdsExpiryTimestamp,
+            unlockedFeatures = unlockedFeatures,
+            lockedFeatures = lockedFeatures,
+            blacklistedDestinations = blacklistedDestinations,
+            isBanned = isBanned,
+            banUntilTimestamp = banUntilTimestamp,
+            banReason = banReason,
+            referralCode = referralCode,
+            hasClaimedReferral = hasClaimedReferral,
+            referralCount = referralCount,
+            trialClaimed = trialClaimed,
+            trialExpiry = trialExpiry,
+            trialUsed = trialUsed,
+            currentFolder = currentFolder,
+            lastActionTimeMs = lastActionTimeMs
+        )
+    }
+
+    @VisibleForTesting
+    internal fun resolveEffectiveBanUntilMs(
+        parsed: ParsedUserProfileSnapshot,
+        nowMs: Long
+    ): Long? {
+        val explicitBanUntil = parsed.banUntilTimestamp
+        if (explicitBanUntil != null && explicitBanUntil > nowMs) {
+            return explicitBanUntil
+        }
+        if (parsed.isBanned) {
+            return Long.MAX_VALUE
+        }
+        return explicitBanUntil
+    }
+
+    private fun applyParsedUnlockedAndLockedFeatures(
+        parsed: ParsedUserProfileSnapshot,
+        now: Long,
+        passActive: Boolean,
+        trialActive: Boolean,
+        trialUsed: Boolean,
+        trialExpiry: Long,
+        passExpiry: Long
+    ) {
+        _unlockedFeatures.value = filterAuthoritativeUnlockedFeatures(
+            rawMap = parsed.unlockedFeatures,
+            now = now,
+            passActive = passActive,
+            trialActive = trialActive,
+            trialUsed = trialUsed,
+            trialExpiry = trialExpiry,
+            passExpiry = passExpiry
+        )
+        _lockedFeatures.value = parsed.lockedFeatures
+    }
+
+    /**
+     * One-shot authoritative read of `users/{uid}` after server-side payment approval or action
+     * completion so in-memory licensing, points, remove-ads expiry, and unlocked features reflect
+     * server state immediately even if the real-time listener hasn't delivered its update yet.
+     */
+    suspend fun refreshUserPassStatusFromServer(context: Context): Pair<PassTier?, Long> = withContext(Dispatchers.IO) {
+        val ctx = appContext ?: context.applicationContext
+        if (FirebaseApp.getApps(ctx).isEmpty()) {
+            withContext(Dispatchers.Main) { refreshAccessStatus(ctx) }
+            return@withContext null to 0L
+        }
+        val uid = try {
+            FirebaseAuth.getInstance().currentUser?.uid
+        } catch (_: Exception) {
+            null
+        } ?: return@withContext null to 0L
+
+        return@withContext try {
+            val snapshot = resolveUserDocumentSnapshot(FirebaseFirestore.getInstance(), uid)
+            val now = getCurrentServerTimeMs()
+            if (snapshot != null && snapshot.exists()) {
+                val parsed = parseUserProfileSnapshotMap(snapshot.data)
+                updateLastActionCooldownFromServerTimestamp(parsed.lastActionTimeMs, nowServerMs = now)
+                if (parsed.hasPointsField) _pointsBalance.value = parsed.points
+                parsed.hasClaimedReferral?.let { _hasClaimedReferral.value = it }
+                parsed.referralCount?.let { _referralCount.value = it }
+                parsed.referralCode?.let { _referralCode.value = it }
+
+                val passType = parsed.activePassType
+                val passExpiry = parsed.passExpiryTimestamp
+                val removeAdsExpiry = parsed.removeAdsExpiryTimestamp
+                val trialClaimed = parsed.trialClaimed ?: serverTrialClaimed
+                val trialExpiry = parsed.trialExpiry ?: serverTrialExpiry
+                val isTrialUsed = parsed.trialUsed ?: serverTrialUsed
+                val tier = PassTier.fromId(passType)
+                val proTier = tier?.takeIf { it.isProPass }
+                val proExpiry = if (proTier != null) passExpiry else 0L
+                val effectiveRemoveAds = maxOf(
+                    removeAdsExpiry,
+                    if (tier == PassTier.REMOVE_ADS) passExpiry else 0L
+                )
+
+                serverPassTier = proTier
+                serverPassExpiry = proExpiry
+                serverTrialClaimed = trialClaimed
+                serverTrialExpiry = trialExpiry
+                serverTrialUsed = isTrialUsed
+                serverRemoveAdsExpiry = effectiveRemoveAds
+                _removeAdsExpiryMs.value = if (effectiveRemoveAds > now) effectiveRemoveAds else 0L
+
+                val effectiveBanUntilMs = resolveEffectiveBanUntilMs(parsed, now)
+                if (effectiveBanUntilMs != null && effectiveBanUntilMs > now) {
+                    _isBannedFlow.value = true
+                    _banUntilTimestampFlow.value = effectiveBanUntilMs
+                    _banReasonFlow.value = parsed.banReason
+                } else {
+                    _isBannedFlow.value = false
+                    _banUntilTimestampFlow.value = null
+                    _banReasonFlow.value = null
+                }
+                GlobalAdminManager.syncBanStateFromLicenseManager(effectiveBanUntilMs, parsed.banReason)
+
+                applyParsedUnlockedAndLockedFeatures(
+                    parsed = parsed,
+                    now = now,
+                    passActive = proTier != null && proExpiry > now,
+                    trialActive = trialClaimed > 0L && trialExpiry > now,
+                    trialUsed = isTrialUsed,
+                    trialExpiry = trialExpiry,
+                    passExpiry = proExpiry
+                )
+                hasLoadedTrial = true
+                hasLoadedLicensing = true
+
+                saveAuthoritativeLicensingCache(
+                    context = ctx,
+                    passTier = serverPassTier,
+                    passExpiry = serverPassExpiry,
+                    trialClaimed = serverTrialClaimed,
+                    trialExpiry = serverTrialExpiry,
+                    trialUsed = serverTrialUsed,
+                    removeAdsExpiry = serverRemoveAdsExpiry
+                )
+
+                withContext(Dispatchers.Main) { refreshAccessStatus(ctx) }
+                val resolvedExpiry = if (tier == PassTier.REMOVE_ADS) effectiveRemoveAds else proExpiry
+                tier to resolvedExpiry
+            } else {
+                withContext(Dispatchers.Main) { refreshAccessStatus(ctx) }
+                null to 0L
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "refreshUserPassStatusFromServer notice: ${e.message}")
+            withContext(Dispatchers.Main) { refreshAccessStatus(ctx) }
+            null to 0L
+        }
     }
 
     private fun recomputeAccessStatus(context: Context? = null) {
@@ -2310,6 +3150,7 @@ object LicenseManager {
                     _isBannedFlow.value = false
                     _banUntilTimestampFlow.value = null
                     _banReasonFlow.value = null
+                    GlobalAdminManager.syncBanStateFromLicenseManager(null, null)
                 }
                 refreshAccessStatus()
                 mainHandler.postDelayed(this, 10000L) // updates every 10 seconds
@@ -2353,27 +3194,6 @@ object LicenseManager {
     }
 
     /**
-     * Updates in-memory state with standard 50-point bonus when no balance is explicitly passed.
-     */
-    fun notifyReferralClaimed() {
-        notifyReferralClaimed(_pointsBalance.value + 50)
-    }
-
-    /**
-     * Executes the secure, ACID cloud transaction to claim an invite referral code.
-     * Atomically adds 50 points to the current user (Referee), 50 points to the invite code owner (Referrer),
-     * increments the referrer's referralCount, and marks hasClaimedReferral = true.
-     */
-    suspend fun claimReferralCode(inviteCode: String): Result<Unit> {
-        val ctx = appContext
-        return if (ctx != null) {
-            ReferralManager.claimReferralCode(ctx, inviteCode)
-        } else {
-            ReferralManager.claimReferralCode(inviteCode)
-        }
-    }
-
-    /**
      * Returns true if the Admin app explicitly locked this feature (or its parent group) for the user.
      * Explicit Admin locks override Pro Passes, Trials, and Point unlocks.
      */
@@ -2388,10 +3208,9 @@ object LicenseManager {
 
     /**
      * Authoritative Feature Unlock Filter:
-     * - Keeps Admin permanent unlocks (-1L or Long.MAX_VALUE).
-     * - Excludes any expired timestamps (exp <= now).
-     * - If trial is expired/used and no active Pro Pass or Trial, excludes residual timestamps matching trialExpiry (within 5s).
-     * - If pass is expired and no active Pro Pass, excludes residual timestamps matching passExpiry (within 5s).
+     * - Keeps Admin permanent unlocks (`-1L` or `Long.MAX_VALUE`).
+     * - Strictly excludes any expired timestamps (`exp <= now`).
+     * - Strictly excludes entries bounded by an expired/dead trial or expired pass.
      */
     fun filterAuthoritativeUnlockedFeatures(
         rawMap: Map<String, Long>,
@@ -2417,12 +3236,12 @@ object LicenseManager {
             if (exp <= now) {
                 return@filter false
             }
-            // 3. If trial is dead/expired and entry matches trialExpiry within 5s tolerance, exclude as trial remnant
-            if (isTrialDead && trialExpiry > 0L && kotlin.math.abs(exp - trialExpiry) <= 5000L) {
+            // 3. Strictly exclude entries bounded by a dead/expired trial
+            if (isTrialDead && trialExpiry > 0L && exp <= trialExpiry) {
                 return@filter false
             }
-            // 4. If pass is dead/expired and entry matches passExpiry within 5s tolerance, exclude as pass remnant
-            if (isPassDead && passExpiry > 0L && kotlin.math.abs(exp - passExpiry) <= 5000L) {
+            // 4. Strictly exclude entries bounded by an expired pass
+            if (isPassDead && passExpiry > 0L && exp <= passExpiry) {
                 return@filter false
             }
             true
@@ -2443,10 +3262,11 @@ object LicenseManager {
         if (exp != -1L && exp != Long.MAX_VALUE) {
             if (exp <= now) return null
             if (!isPassActive && !isTrialActive) {
-                if ((serverTrialUsed || serverTrialExpiry <= now) && serverTrialExpiry > 0L && kotlin.math.abs(exp - serverTrialExpiry) <= 5000L) {
+                val isTrialDead = serverTrialUsed || (serverTrialExpiry in 1L..now)
+                if (isTrialDead && serverTrialExpiry > 0L && exp <= serverTrialExpiry) {
                     return null
                 }
-                if (serverPassExpiry in 1L..now && kotlin.math.abs(exp - serverPassExpiry) <= 5000L) {
+                if (serverPassExpiry in 1L..now && exp <= serverPassExpiry) {
                     return null
                 }
             }
@@ -2604,6 +3424,22 @@ object LicenseManager {
         return (expiry - now).coerceAtLeast(0L)
     }
 
+    @VisibleForTesting
+    internal fun buildUnlockFeaturePayload(featureId: String, hours: Int): Map<String, Any> {
+        return mapOf(
+            "featureId" to featureId,
+            "hours" to hours
+        )
+    }
+
+    @VisibleForTesting
+    internal fun buildUnlockMultipleFeaturesPayload(featureIds: List<String>, hours: Int): Map<String, Any> {
+        return mapOf(
+            "featureIds" to featureIds,
+            "hours" to hours
+        )
+    }
+
     /**
      * Purchases an hourly micro-transaction unlock for a specific feature using wallet points
      * via the Zero-Trust Action Queue.
@@ -2628,29 +3464,35 @@ object LicenseManager {
 
         val result = executeActionQueueRequest(
             actionType = "UNLOCK_FEATURE",
-            payload = mapOf(
-                "featureId" to pricing.id,
-                "hours" to hours,
-                "pointsCost" to totalCost,
-                "durationMs" to (hours * 3600L * 1000L)
-            )
+            payload = buildUnlockFeaturePayload(pricing.id, hours)
         )
 
         result.fold(
             onSuccess = { snap ->
-                val newExpiry = snap.getLong("expiryTimestamp")
-                    ?: snap.getLong("featureExpiry")
-                    ?: snap.getLong("newExpiry")
-                    ?: (getCurrentServerTimeMs() + (hours * 3600L * 1000L))
                 snap.getLong("newPointsBalance")?.toInt()?.let { updatedBal ->
                     _pointsBalance.value = updatedBal
                 }
-                val updatedMap = _unlockedFeatures.value.toMutableMap()
-                updatedMap[pricing.id] = newExpiry
-                _unlockedFeatures.value = updatedMap
-                onEntitlementsChanged?.invoke()
-                Log.i(TAG, "UNLOCK_FEATURE completed via Action Queue for ${pricing.id}. New expiry: $newExpiry")
-                Result.success(newExpiry)
+                var newExpiry = snap.getLong("expiryTimestamp")
+                    ?: snap.getLong("featureExpiry")
+                    ?: snap.getLong("newExpiry")
+                if (newExpiry != null) {
+                    val updatedMap = _unlockedFeatures.value.toMutableMap()
+                    updatedMap[pricing.id] = newExpiry
+                    _unlockedFeatures.value = filterAuthoritativeUnlockedFeatures(updatedMap)
+                    onEntitlementsChanged?.invoke()
+                } else {
+                    appContext?.let { refreshUserPassStatusFromServer(it) }
+                    newExpiry = findFeatureUnlockExpiry(pricing.id)
+                }
+
+                if (newExpiry == null) {
+                    Result.failure(
+                        IllegalStateException("Feature unlock completed on server, awaiting profile sync.")
+                    )
+                } else {
+                    Log.i(TAG, "UNLOCK_FEATURE completed via Action Queue for ${pricing.id}. New expiry: $newExpiry")
+                    Result.success(newExpiry)
+                }
             },
             onFailure = { err ->
                 Log.e(TAG, "UNLOCK_FEATURE action failed: ${err.message}", err)
@@ -2693,32 +3535,41 @@ object LicenseManager {
 
         val result = executeActionQueueRequest(
             actionType = "UNLOCK_MULTIPLE_FEATURES",
-            payload = mapOf(
-                "featureIds" to distinctIds,
-                "hours" to hours,
-                "pointsCost" to totalCost,
-                "durationMs" to (hours * 3600L * 1000L)
-            )
+            payload = buildUnlockMultipleFeaturesPayload(distinctIds, hours)
         )
 
         result.fold(
             onSuccess = { snap ->
-                val rawExpiries = snap.get("unlockedExpiries") as? Map<*, *>
-                val fallbackExpiry = getCurrentServerTimeMs() + (hours * 3600L * 1000L)
-                val unlockedResults = mutableMapOf<String, Long>()
-                val updatedMap = _unlockedFeatures.value.toMutableMap()
-                for (pricing in pricings) {
-                    val serverExp = (rawExpiries?.get(pricing.id) as? Number)?.toLong() ?: fallbackExpiry
-                    updatedMap[pricing.id] = serverExp
-                    unlockedResults[pricing.id] = serverExp
-                }
-                _unlockedFeatures.value = updatedMap
                 (snap.getLong("newPointsBalance"))?.let { newBal ->
                     _pointsBalance.value = newBal.toInt()
                 }
+                val rawExpiries = snap.get("unlockedExpiries") as? Map<*, *>
+                val allPresentOnActionDoc = rawExpiries != null &&
+                    pricings.all { (rawExpiries[it.id] as? Number)?.toLong() != null }
+                if (!allPresentOnActionDoc) {
+                    appContext?.let { refreshUserPassStatusFromServer(it) }
+                }
+
+                val unlockedResults = mutableMapOf<String, Long>()
+                val updatedMap = _unlockedFeatures.value.toMutableMap()
+                for (pricing in pricings) {
+                    val serverExp = (rawExpiries?.get(pricing.id) as? Number)?.toLong()
+                        ?: findFeatureUnlockExpiry(pricing.id)
+                    if (serverExp != null) {
+                        updatedMap[pricing.id] = serverExp
+                        unlockedResults[pricing.id] = serverExp
+                    }
+                }
+                _unlockedFeatures.value = filterAuthoritativeUnlockedFeatures(updatedMap)
                 onEntitlementsChanged?.invoke()
-                Log.i(TAG, "UNLOCK_MULTIPLE_FEATURES completed atomically for ${pricings.size} feature(s).")
-                Result.success(unlockedResults)
+                if (unlockedResults.isEmpty()) {
+                    Result.failure(
+                        IllegalStateException("Feature unlock completed on server, awaiting profile sync.")
+                    )
+                } else {
+                    Log.i(TAG, "UNLOCK_MULTIPLE_FEATURES completed atomically for ${unlockedResults.size} feature(s).")
+                    Result.success(unlockedResults)
+                }
             },
             onFailure = { err ->
                 Log.e(TAG, "UNLOCK_MULTIPLE_FEATURES action failed: ${err.message}", err)

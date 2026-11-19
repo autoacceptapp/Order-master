@@ -297,8 +297,8 @@ class RideOfferParserTest {
             "Auto-Accept"
         )
         for (action in validAcceptActions) {
-            assertTrue("Expected ACCEPT_REGEX match for '$action'", MyAccessibilityService.ACCEPT_REGEX.containsMatchIn(action))
-            assertFalse("Expected CHAT_OR_NOTIFICATION_REGEX not to match '$action'", MyAccessibilityService.CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(action))
+            assertTrue("Expected ACCEPT_REGEX match for '$action'", RapidoAccessibilityService.ACCEPT_REGEX.containsMatchIn(action))
+            assertFalse("Expected CHAT_OR_NOTIFICATION_REGEX not to match '$action'", RapidoAccessibilityService.CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(action))
         }
 
         val chatAndNoiseMessages = listOf(
@@ -310,7 +310,7 @@ class RideOfferParserTest {
             "order delivered successfully"
         )
         for (msg in chatAndNoiseMessages) {
-            assertTrue("Expected CHAT_OR_NOTIFICATION_REGEX to match '$msg'", MyAccessibilityService.CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(msg))
+            assertTrue("Expected CHAT_OR_NOTIFICATION_REGEX to match '$msg'", RapidoAccessibilityService.CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(msg))
         }
     }
 
@@ -351,5 +351,126 @@ class RideOfferParserTest {
         assertNotNull(parsedOffer)
         assertEquals(57.0, parsedOffer?.totalFare ?: 0.0, 0.01)
     }
+
+    @Test
+    fun `test simultaneous cards with identical fare and pickup distance are NOT deduplicated`() {
+        @Suppress("DEPRECATION")
+        val root = AccessibilityNodeInfo.obtain()
+
+        fun buildCard(top: Int, bottom: Int, dropText: String): AccessibilityNodeInfo {
+            @Suppress("DEPRECATION")
+            val card = AccessibilityNodeInfo.obtain()
+            card.className = "androidx.cardview.widget.CardView"
+            card.viewIdResourceName = "com.rapido.rider:id/order_card"
+            card.setBoundsInScreen(Rect(50, top, 1030, bottom))
+
+            @Suppress("DEPRECATION")
+            val fare = AccessibilityNodeInfo.obtain()
+            fare.text = "₹95"
+            @Suppress("DEPRECATION")
+            val pickup = AccessibilityNodeInfo.obtain()
+            pickup.text = "Pickup 1.2 km"
+            @Suppress("DEPRECATION")
+            val drop = AccessibilityNodeInfo.obtain()
+            drop.text = dropText
+            @Suppress("DEPRECATION")
+            val accept = AccessibilityNodeInfo.obtain()
+            accept.text = "Accept"
+            accept.isClickable = true
+            accept.isEnabled = true
+
+            org.robolectric.Shadows.shadowOf(card).addChild(fare)
+            org.robolectric.Shadows.shadowOf(card).addChild(pickup)
+            org.robolectric.Shadows.shadowOf(card).addChild(drop)
+            org.robolectric.Shadows.shadowOf(card).addChild(accept)
+            return card
+        }
+
+        val card1 = buildCard(100, 450, "Drop 3.4 km")
+        val card2 = buildCard(500, 850, "Drop 6.8 km")
+
+        org.robolectric.Shadows.shadowOf(root).addChild(card1)
+        org.robolectric.Shadows.shadowOf(root).addChild(card2)
+
+        val offers = RideOfferParser.parseCards(listOf(root))
+        assertEquals(2, offers.size)
+        assertEquals(3.4, offers[0].dropDistanceKm ?: 0.0, 0.01)
+        assertEquals(6.8, offers[1].dropDistanceKm ?: 0.0, 0.01)
+    }
+
+    @Test
+    fun `test drop_location node does not overwrite extracted drop distance`() {
+        assertFalse(RideOfferParser.isDropNode("Sector 14 Market, Near Bus Stand", "com.rapido.rider:id/drop_location"))
+        assertTrue(RideOfferParser.isDropNode("4.2 km", "com.rapido.rider:id/drop_distance"))
+
+        @Suppress("DEPRECATION")
+        val card = AccessibilityNodeInfo.obtain()
+        card.className = "androidx.cardview.widget.CardView"
+        card.setBoundsInScreen(Rect(50, 100, 1030, 600))
+
+        @Suppress("DEPRECATION")
+        val fare = AccessibilityNodeInfo.obtain()
+        fare.text = "₹140"
+        @Suppress("DEPRECATION")
+        val pickup = AccessibilityNodeInfo.obtain()
+        pickup.text = "1.0 km"
+        pickup.viewIdResourceName = "com.rapido.rider:id/pickup_distance"
+        @Suppress("DEPRECATION")
+        val dropDist = AccessibilityNodeInfo.obtain()
+        dropDist.text = "5.5 km"
+        dropDist.viewIdResourceName = "com.rapido.rider:id/drop_distance"
+        @Suppress("DEPRECATION")
+        val dropAddr = AccessibilityNodeInfo.obtain()
+        dropAddr.text = "10 m from Main Gate, Sir C.V. Raman Road"
+        dropAddr.viewIdResourceName = "com.rapido.rider:id/drop_location"
+        @Suppress("DEPRECATION")
+        val accept = AccessibilityNodeInfo.obtain()
+        accept.text = "Accept"
+        accept.isClickable = true
+        accept.isEnabled = true
+
+        org.robolectric.Shadows.shadowOf(card).addChild(fare)
+        org.robolectric.Shadows.shadowOf(card).addChild(pickup)
+        org.robolectric.Shadows.shadowOf(card).addChild(dropDist)
+        org.robolectric.Shadows.shadowOf(card).addChild(dropAddr)
+        org.robolectric.Shadows.shadowOf(card).addChild(accept)
+
+        val parsed = RideOfferParser.parseCardContainer(card)
+        assertNotNull(parsed)
+        assertEquals("5.5 km", parsed?.dropText)
+        assertEquals(5.5, parsed?.dropDistanceKm ?: 0.0, 0.01)
+    }
+
+    @Test
+    fun `test offer events containing Sir or Bhai in location pass prefilter while pure chat drops`() {
+        val service = RapidoAccessibilityService()
+
+        @Suppress("DEPRECATION")
+        val offerEvent = android.view.accessibility.AccessibilityEvent.obtain(
+            android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        )
+        offerEvent.packageName = RapidoAccessibilityService.TARGET_PACKAGE
+        offerEvent.className = "android.widget.FrameLayout"
+        offerEvent.text.add("₹120 • 1.2 km • Pickup Sir C.V. Raman Nagar, Drop Bhai Parmanand Colony!")
+
+        assertTrue(
+            "Offer event with fare/km signals must NOT be dropped when location contains Sir/Bhai/!",
+            service.isPotentialOfferEvent(offerEvent)
+        )
+
+        @Suppress("DEPRECATION")
+        val chatEvent = android.view.accessibility.AccessibilityEvent.obtain(
+            android.view.accessibility.AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        )
+        chatEvent.packageName = RapidoAccessibilityService.TARGET_PACKAGE
+        chatEvent.className = "android.widget.FrameLayout"
+        chatEvent.text.add("Bhaiya jaldi aao please sir?")
+
+        assertFalse(
+            "Pure chat notification without offer signal must still be dropped",
+            service.isPotentialOfferEvent(chatEvent)
+        )
+    }
 }
+
 

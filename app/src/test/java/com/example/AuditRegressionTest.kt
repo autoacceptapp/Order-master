@@ -241,7 +241,8 @@ class AuditRegressionTest {
     fun `action queue pass payloads omit client-forged prices or durations`() {
         val purchasePayload = LicenseManager.buildPurchasePassPayload(PassTier.WEEKLY)
         assertEquals(setOf("passTier"), purchasePayload.keys)
-        assertEquals(PassTier.WEEKLY.id, purchasePayload["passTier"])
+        assertEquals(PassTier.WEEKLY.canonicalId, purchasePayload["passTier"])
+        assertEquals("weekly", purchasePayload["passTier"])
         assertFalse(purchasePayload.containsKey("pointsCost"))
         assertFalse(purchasePayload.containsKey("durationDays"))
         assertFalse(purchasePayload.containsKey("durationMs"))
@@ -254,9 +255,80 @@ class AuditRegressionTest {
         assertFalse(paymentPayload.containsKey("durationDays"))
         assertFalse(paymentPayload.containsKey("durationMs"))
         assertFalse(paymentPayload.containsKey("transactionId"))
+
+        val unlockSinglePayload = LicenseManager.buildUnlockFeaturePayload(FeatureIds.MIN_FARE, 2)
+        assertEquals(setOf("featureId", "hours"), unlockSinglePayload.keys)
+        assertEquals(FeatureIds.MIN_FARE, unlockSinglePayload["featureId"])
+        assertEquals(2, unlockSinglePayload["hours"])
+        assertFalse(unlockSinglePayload.containsKey("pointsCost"))
+        assertFalse(unlockSinglePayload.containsKey("durationMs"))
+
+        val unlockMultiPayload = LicenseManager.buildUnlockMultipleFeaturesPayload(
+            listOf(FeatureIds.MIN_FARE, FeatureIds.MAX_FARE),
+            3
+        )
+        assertEquals(setOf("featureIds", "hours"), unlockMultiPayload.keys)
+        assertEquals(listOf(FeatureIds.MIN_FARE, FeatureIds.MAX_FARE), unlockMultiPayload["featureIds"])
+        assertEquals(3, unlockMultiPayload["hours"])
+        assertFalse(unlockMultiPayload.containsKey("pointsCost"))
+        assertFalse(unlockMultiPayload.containsKey("durationMs"))
     }
 
-    @Suppress("DEPRECATION")
+    @Test
+    fun `server lastActionTime syncs client rate-limit cooldown and clock drift distinguishes forward drift from rollback`() {
+        // 1. Server lastActionTime 4s ago sets cooldown elapsed timestamp accurately
+        LicenseManager.resetStateForTesting(context)
+        val nowServer = 1_800_000_000_000L
+        val nowElapsed = 500_000L
+        LicenseManager.updateLastActionCooldownFromServerTimestamp(
+            lastActionServerMs = nowServer - 4_000L,
+            nowServerMs = nowServer,
+            nowElapsed = nowElapsed
+        )
+        assertEquals(nowElapsed - 4_000L, LicenseManager.getLastActionDispatchElapsedForTesting())
+
+        // Older lastActionTime (> 12.5s ago) after reset leaves cooldown at 0L
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.updateLastActionCooldownFromServerTimestamp(
+            lastActionServerMs = nowServer - 20_000L,
+            nowServerMs = nowServer,
+            nowElapsed = nowElapsed
+        )
+        assertEquals(0L, LicenseManager.getLastActionDispatchElapsedForTesting())
+
+        // 2. Forward drift vs backward rollback classification
+        val nowWall = System.currentTimeMillis()
+        val currentElapsed = android.os.SystemClock.elapsedRealtime()
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = PassTier.DAILY,
+            passExpiry = nowWall + 86_400_000L,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = false
+        )
+        // Wall clock jumped forward 20 mins relative to monotonic elapsed
+        LicenseManager.setLastServerSyncForTesting(
+            elapsedMs = currentElapsed,
+            wallClockMs = nowWall - (20L * 60L * 1000L)
+        )
+        assertEquals(
+            LicenseManager.ClockTamperStatus.FORWARD_DRIFT,
+            LicenseManager.classifyClockTampering(context)
+        )
+        assertTrue(LicenseManager.isClockTamperingDetected(context))
+
+        // Wall clock wound backward 10 mins triggers immediate HARD_TAMPER
+        LicenseManager.setLastServerSyncForTesting(
+            elapsedMs = currentElapsed,
+            wallClockMs = nowWall + (10L * 60L * 1000L)
+        )
+        assertEquals(
+            LicenseManager.ClockTamperStatus.HARD_TAMPER,
+            LicenseManager.classifyClockTampering(context)
+        )
+    }
+
     @Test
     fun `pass manager isPassActiveFlow is strictly read-only from LicenseManager accessStatus`() {
         val futureExpiry = System.currentTimeMillis() + 86_400_000L
@@ -264,10 +336,7 @@ class AuditRegressionTest {
         LicenseManager.resetStateForTesting(context)
         LicenseManager.forceReleaseLoadingState()
         assertFalse(PassManager.isPassActiveFlow.value)
-
-        // Calling legacy setPassStatus(true) must remain ignored
-        PassManager.setPassStatus(context, true)
-        assertFalse(PassManager.isPassActiveFlow.value)
+        assertFalse(PassManager::class.java.declaredMethods.any { it.name == "setPassStatus" })
         assertFalse(PassManager.isPassActive(context))
 
         // Active Trial -> true
@@ -355,8 +424,7 @@ class AuditRegressionTest {
                 pickupLocation = "Expired Pickup",
                 dropLocation = "Expired Drop",
                 isAccepted = false,
-                decisionReason = "Rejected",
-                rawText = "expired"
+                decisionReason = "Rejected"
             )
         )
         dao.insertOrder(
@@ -368,8 +436,7 @@ class AuditRegressionTest {
                 pickupLocation = "Fresh Pickup",
                 dropLocation = "Fresh Drop",
                 isAccepted = true,
-                decisionReason = "Accepted",
-                rawText = "fresh"
+                decisionReason = "Accepted"
             )
         )
 
@@ -381,6 +448,161 @@ class AuditRegressionTest {
         assertEquals(0, repo.pruneExpiredOrdersIfNeeded(nowMs))
 
         dao.clearAll()
+    }
+
+    @Test
+    fun `PassTier fromId accepts canonical and legacy IDs and rejects none blank or unknown without remove_ads conflation`() {
+        assertEquals(PassTier.DAILY, PassTier.fromId("daily"))
+        assertEquals(PassTier.DAILY, PassTier.fromId(" DAILY_PASS "))
+        assertEquals(PassTier.WEEKLY, PassTier.fromId("weekly"))
+        assertEquals(PassTier.WEEKLY, PassTier.fromId("weekly_pass"))
+        assertEquals(PassTier.MONTHLY, PassTier.fromId("monthly"))
+        assertEquals(PassTier.MONTHLY, PassTier.fromId("monthly_pass"))
+        assertEquals(PassTier.REMOVE_ADS, PassTier.fromId("remove_ads"))
+        assertEquals(PassTier.REMOVE_ADS, PassTier.fromId("remove_ads_pass"))
+
+        listOf(null, "", "   ", "none", "NONE", "null", "free", "unknown", "vip").forEach { nonPass ->
+            assertEquals("Expected null PassTier for '$nonPass'", null, PassTier.fromId(nonPass))
+            assertEquals("Expected null canonicalId for '$nonPass'", null, PassTier.canonicalPassTierOrNull(nonPass))
+        }
+        assertFalse(LicenseManager.isRemoveAdsActive())
+    }
+
+    @Test
+    fun `non-pass activePassType with stale future passExpiryTimestamp never grants paid access`() {
+        LicenseManager.forceReleaseLoadingState()
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L
+
+        listOf("none", "", "   ", null, "unknown_tier").forEach { rawPassType ->
+            assertFalse(
+                "PassTier.isPaidPassActive must be false for '$rawPassType'",
+                PassTier.isPaidPassActive(rawPassType, futureExpiry, System.currentTimeMillis())
+            )
+
+            AppSettings.applyFirestoreSnapshotForTest(
+                context,
+                mapOf(
+                    "activePassType" to rawPassType,
+                    "passExpiryTimestamp" to futureExpiry,
+                    "isAutoAcceptEnabled" to true
+                )
+            )
+            LicenseManager.setLicensingForTesting(
+                passTier = PassTier.fromId(rawPassType),
+                passExpiry = futureExpiry
+            )
+
+            assertFalse("AppSettings.isPassActive must be false for '$rawPassType'", AppSettings.isPassActive(context))
+            assertFalse("AppSettings.isPassActiveFlow must be false for '$rawPassType'", AppSettings.isPassActiveFlow.value)
+            assertEquals("AppSettings.getPassExpiryTimestamp must be 0L for '$rawPassType'", 0L, AppSettings.getPassExpiryTimestamp(context))
+            assertEquals(
+                "settingsState.passExpiryTimestamp must zero out stale expiry for '$rawPassType'",
+                0L,
+                AppSettings.settingsState.value.passExpiryTimestamp
+            )
+            assertFalse("LicenseManager.isPassActive must be false for '$rawPassType'", LicenseManager.isPassActive)
+            assertFalse("LicenseManager.isAccessGranted must be false for '$rawPassType'", LicenseManager.isAccessGranted())
+            assertFalse("LicenseManager.isRemoveAdsActive must not conflate '$rawPassType'", LicenseManager.isRemoveAdsActive())
+            assertFalse("PassManager.isPassActive must be false for '$rawPassType'", PassManager.isPassActive(context))
+        }
+    }
+
+    @Test
+    fun `firebaseUid is populated on INIT_PROFILE and preserved in UPDATE_PROFILE without write loops`() {
+        val initPayload = LicenseManager.buildInitProfilePayload(
+            firebaseUid = "uid_abc_123",
+            userEmail = "captain@example.com",
+            hardwareId = "hw_xyz",
+            legacyCustomId = "OM-USER-OLD"
+        )
+        assertEquals("uid_abc_123", initPayload["firebaseUid"])
+        assertEquals("captain@example.com", initPayload["userEmail"])
+        assertEquals("hw_xyz", initPayload["linkedHardwareId"])
+        assertEquals("OM-USER-OLD", initPayload["legacyCustomUserId"])
+
+        // Canonical document already in sync -> zero UPDATE_PROFILE writes (no write loop)
+        val noUpdates = LicenseManager.computeNeededProfileUpdates(
+            snapshotFirebaseUid = "uid_abc_123",
+            snapshotHardwareId = "hw_xyz",
+            snapshotEmail = "captain@example.com",
+            expectedFirebaseUid = "uid_abc_123",
+            currentHardwareId = "hw_xyz",
+            authEmail = "captain@example.com"
+        )
+        assertTrue("Already-canonical doc must trigger zero updates", noUpdates.isEmpty())
+
+        // Document missing firebaseUid -> repaired once while preserving UID
+        val missingUidRepair = LicenseManager.computeNeededProfileUpdates(
+            snapshotFirebaseUid = null,
+            snapshotHardwareId = "hw_xyz",
+            snapshotEmail = "captain@example.com",
+            expectedFirebaseUid = "uid_abc_123",
+            currentHardwareId = "hw_xyz",
+            authEmail = "captain@example.com"
+        )
+        assertEquals(mapOf("firebaseUid" to "uid_abc_123"), missingUidRepair)
+        assertTrue(LicenseManager.shouldDispatchProfileUpdate("uid_abc_123", missingUidRepair))
+        assertFalse("Duplicate hash suppresses repeated dispatch", LicenseManager.shouldDispatchProfileUpdate("uid_abc_123", missingUidRepair))
+
+        // Canonical lookup wins when present; fallback firebaseUid doc used when canonical missing
+        assertEquals(
+            "uid_abc_123",
+            LicenseManager.selectResolvedUserDocumentPath("uid_abc_123", canonicalExists = true, fallbackDocIds = listOf("legacy_1"))
+        )
+        assertEquals(
+            "legacy_1",
+            LicenseManager.selectResolvedUserDocumentPath("uid_abc_123", canonicalExists = false, fallbackDocIds = listOf("legacy_1"))
+        )
+    }
+
+    @Test
+    fun `PURCHASE_PASS sends canonical passTier values and action queue handles REJECTED and FAILED immediately`() {
+        val expectedCanonical = mapOf(
+            PassTier.DAILY to "daily",
+            PassTier.WEEKLY to "weekly",
+            PassTier.MONTHLY to "monthly",
+            PassTier.REMOVE_ADS to "remove_ads"
+        )
+        PassTier.entries.forEach { tier ->
+            val payload = LicenseManager.buildPurchasePassPayload(tier)
+            val wireTier = payload["passTier"] as? String
+            assertEquals(expectedCanonical[tier], wireTier)
+            assertTrue(wireTier in PassTier.VALID_CANONICAL_PASS_TIERS)
+            assertFalse(wireTier.isNullOrBlank())
+            assertFalse(wireTier.equals("none", ignoreCase = true))
+        }
+
+        assertEquals(
+            LicenseManager.ActionQueueOutcome.Completed,
+            LicenseManager.evaluateActionQueueSnapshot("PURCHASE_PASS", status = "COMPLETED")
+        )
+        assertEquals(
+            LicenseManager.ActionQueueOutcome.Pending,
+            LicenseManager.evaluateActionQueueSnapshot("PURCHASE_PASS", status = "PENDING")
+        )
+
+        val rejectedInvalidTier = LicenseManager.evaluateActionQueueSnapshot(
+            actionType = "PURCHASE_PASS",
+            status = "REJECTED",
+            error = "INVALID_PASS_TIER"
+        )
+        assertTrue(rejectedInvalidTier is LicenseManager.ActionQueueOutcome.Failed)
+        val errMsg = (rejectedInvalidTier as LicenseManager.ActionQueueOutcome.Failed).errorMessage
+        assertTrue(
+            "Expected friendly invalid pass plan message, got: $errMsg",
+            errMsg.contains("Daily, Weekly, Monthly, or Remove Ads")
+        )
+
+        val failedWithReason = LicenseManager.evaluateActionQueueSnapshot(
+            actionType = "PURCHASE_PASS",
+            status = "FAILED",
+            reason = "Insufficient points balance"
+        )
+        assertTrue(failedWithReason is LicenseManager.ActionQueueOutcome.Failed)
+        assertEquals(
+            "Insufficient points balance",
+            (failedWithReason as LicenseManager.ActionQueueOutcome.Failed).errorMessage
+        )
     }
 }
 

@@ -1273,8 +1273,9 @@ fun FeatureUnlockDialog(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    val pricing = FeatureIds.getPricing(featureId)
-    val pointsPerHour = pricing?.pointsPerHour ?: 10
+    val paymentConfig by com.example.data.repository.AppConfigRepository.currentPaymentConfig.collectAsState()
+    val pricing = remember(paymentConfig, featureId) { FeatureIds.getPricing(featureId) }
+    val pointsPerHour = remember(paymentConfig, featureId) { FeatureIds.getEffectivePointsPerHour(featureId) }
     var hours by remember { mutableStateOf(1) }
     var isLoading by remember { mutableStateOf(false) }
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
@@ -1534,6 +1535,7 @@ fun MultiFilterUnlockDialog(
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
     val lockedFeatures by LicenseManager.lockedFeatures.collectAsState()
     val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
+    val paymentConfig by com.example.data.repository.AppConfigRepository.currentPaymentConfig.collectAsState()
 
     var selectedIds by remember(initiallySelectedIds, lockedFeatures) {
         mutableStateOf(
@@ -1544,7 +1546,9 @@ fun MultiFilterUnlockDialog(
     var isLoading by remember { mutableStateOf(false) }
 
     val selectedPricings = FeatureIds.ALL_FEATURES.filter { selectedIds.contains(it.id) }
-    val hourlyCost = selectedPricings.sumOf { it.pointsPerHour }
+    val hourlyCost = remember(paymentConfig, selectedIds) {
+        selectedPricings.sumOf { FeatureIds.getEffectivePointsPerHour(it.id) }
+    }
     val totalCost = hourlyCost * hours
     val hasEnoughPoints = selectedPricings.isNotEmpty() && pointsBalance >= totalCost
 
@@ -1615,11 +1619,14 @@ fun MultiFilterUnlockDialog(
                                         text = item.title,
                                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
                                     )
+                                    val effectiveRate = remember(paymentConfig, item.id) {
+                                        FeatureIds.getEffectivePointsPerHour(item.id)
+                                    }
                                     Text(
                                         text = when {
                                             isAdminLocked -> "Locked by Admin"
-                                            alreadyUnlocked -> "${item.pointsPerHour} Pts/Hr • Active (extend)"
-                                            else -> "${item.pointsPerHour} Pts/Hr"
+                                            alreadyUnlocked -> "$effectiveRate Pts/Hr • Active (extend)"
+                                            else -> "$effectiveRate Pts/Hr"
                                         },
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             color = if (isAdminLocked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,

@@ -123,6 +123,17 @@ fun FilterSettingsScreen(
     val unlockedFeatures by LicenseManager.unlockedFeatures.collectAsState()
     val lockedFeatures by LicenseManager.lockedFeatures.collectAsState()
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
+    val paymentConfig by com.example.data.repository.AppConfigRepository.currentPaymentConfig.collectAsState()
+
+    val minFareRate = remember(paymentConfig) { FeatureIds.getEffectivePointsPerHour(FeatureIds.MIN_FARE) }
+    val maxFareRate = remember(paymentConfig) { FeatureIds.getEffectivePointsPerHour(FeatureIds.MAX_FARE) }
+    val maxPickupRate = remember(paymentConfig) { FeatureIds.getEffectivePointsPerHour(FeatureIds.MAX_PICKUP_DISTANCE) }
+    val maxDropRate = remember(paymentConfig) { FeatureIds.getEffectivePointsPerHour(FeatureIds.MAX_DROP_DISTANCE) }
+    val minPerKmRatePts = remember(paymentConfig) { FeatureIds.getEffectivePointsPerHour(FeatureIds.MIN_PER_KM_RATE) }
+    val blacklistRate = remember(paymentConfig) { FeatureIds.getEffectivePointsPerHour(FeatureIds.DESTINATION_BLACKLIST) }
+    val ttsRate = remember(paymentConfig) { FeatureIds.getEffectivePointsPerHour(FeatureIds.TTS_VOICE) }
+    val overlayRate = remember(paymentConfig) { FeatureIds.getEffectivePointsPerHour(FeatureIds.FLOATING_OVERLAY) }
+    val autoClickRate = remember(paymentConfig) { FeatureIds.getEffectivePointsPerHour(FeatureIds.AUTO_CLICK) }
 
     val isProMode = when (val s = accessStatus) {
         is AccessStatus.PassActive -> s.passTier.isProPass && s.remainingTimeMs > 0
@@ -499,7 +510,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.MIN_FARE,
                     onUnlockClick = { if (!isMinFareAdminLocked) featureToUnlock = FeatureIds.MIN_FARE },
                     remainingTimeText = getRemainingTime(FeatureIds.MIN_FARE),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MIN_FARE)?.pointsPerHour ?: 10
+                    pointsPerHour = minFareRate
                 )
             }
 
@@ -531,7 +542,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.MAX_FARE,
                     onUnlockClick = { if (!isMaxFareAdminLocked) featureToUnlock = FeatureIds.MAX_FARE },
                     remainingTimeText = getRemainingTime(FeatureIds.MAX_FARE),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_FARE)?.pointsPerHour ?: 10
+                    pointsPerHour = maxFareRate
                 )
             }
 
@@ -552,7 +563,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.MAX_PICKUP_DISTANCE,
                     onUnlockClick = { if (!isPickupAdminLocked) featureToUnlock = FeatureIds.MAX_PICKUP_DISTANCE },
                     remainingTimeText = getRemainingTime(FeatureIds.MAX_PICKUP_DISTANCE),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_PICKUP_DISTANCE)?.pointsPerHour ?: 10
+                    pointsPerHour = maxPickupRate
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -642,7 +653,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.MAX_DROP_DISTANCE,
                     onUnlockClick = { if (!isDropAdminLocked) featureToUnlock = FeatureIds.MAX_DROP_DISTANCE },
                     remainingTimeText = getRemainingTime(FeatureIds.MAX_DROP_DISTANCE),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MAX_DROP_DISTANCE)?.pointsPerHour ?: 10
+                    pointsPerHour = maxDropRate
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -729,7 +740,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.MIN_PER_KM_RATE,
                     onUnlockClick = { if (!isMinRateAdminLocked) featureToUnlock = FeatureIds.MIN_PER_KM_RATE },
                     remainingTimeText = getRemainingTime(FeatureIds.MIN_PER_KM_RATE),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.MIN_PER_KM_RATE)?.pointsPerHour ?: 15
+                    pointsPerHour = minPerKmRatePts
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
@@ -816,7 +827,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.DESTINATION_BLACKLIST,
                     onUnlockClick = { if (!isBlacklistAdminLocked) featureToUnlock = FeatureIds.DESTINATION_BLACKLIST },
                     remainingTimeText = getRemainingTime(FeatureIds.DESTINATION_BLACKLIST),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.DESTINATION_BLACKLIST)?.pointsPerHour ?: 5
+                    pointsPerHour = blacklistRate
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(
@@ -913,7 +924,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.TTS_VOICE,
                     onUnlockClick = { if (!isTtsAdminLocked) featureToUnlock = FeatureIds.TTS_VOICE },
                     remainingTimeText = getRemainingTime(FeatureIds.TTS_VOICE),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.TTS_VOICE)?.pointsPerHour ?: 10
+                    pointsPerHour = ttsRate
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
@@ -1011,7 +1022,7 @@ fun FilterSettingsScreen(
                     featureId = FeatureIds.FLOATING_OVERLAY,
                     onUnlockClick = { if (!isOverlayAdminLocked) featureToUnlock = FeatureIds.FLOATING_OVERLAY },
                     remainingTimeText = getRemainingTime(FeatureIds.FLOATING_OVERLAY),
-                    pointsPerHour = FeatureIds.getPricing(FeatureIds.FLOATING_OVERLAY)?.pointsPerHour ?: 10
+                    pointsPerHour = overlayRate
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         // Permission Alert Banner if missing
@@ -1187,7 +1198,7 @@ fun FilterSettingsScreen(
                                         )
                                         Spacer(modifier = Modifier.width(3.dp))
                                         Text(
-                                            text = "300ms Boost (15 Pts/Hr)",
+                                            text = "300ms Boost ($autoClickRate Pts/Hr)",
                                             maxLines = 1,
                                             softWrap = false,
                                             fontSize = 10.sp,

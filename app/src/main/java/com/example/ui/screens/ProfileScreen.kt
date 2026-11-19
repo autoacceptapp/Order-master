@@ -41,7 +41,6 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material3.IconButton
 import com.google.firebase.auth.FirebaseAuth
 import androidx.compose.ui.platform.LocalContext
-import com.example.data.UserReferralRepository
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -103,6 +102,7 @@ fun ProfileScreen(
     val removeAdsExpiryMs by LicenseManager.removeAdsExpiryMs.collectAsState()
     val isAdsRemoved = remember(accessStatus, unlockedFeatures, removeAdsExpiryMs) { LicenseManager.isAdsRemoved() }
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
+    val referralCode by LicenseManager.referralCode.collectAsState()
     val totalOrders by viewModel.totalOrdersCount.collectAsState()
     val acceptedOrders by viewModel.acceptedOrdersCount.collectAsState()
     val acceptanceRateDisplay = if (totalOrders > 0) {
@@ -607,16 +607,6 @@ fun ProfileScreen(
 
         // 2. Refer & Earn Card
         item {
-            val context = LocalContext.current
-            val profileState by UserReferralRepository.observeUserProfile(context).collectAsState(
-                initial = remember {
-                    UserReferralRepository.readLocalProfile(
-                        context,
-                        com.example.HardwareIdManager.getPermanentHardwareId(context)
-                    )
-                }
-            )
-
             Card(
                 onClick = onNavigateToReferAndEarn,
                 modifier = Modifier
@@ -672,7 +662,7 @@ fun ProfileScreen(
                                     color = MaterialTheme.colorScheme.primaryContainer
                                 ) {
                                     Text(
-                                        text = "${profileState.points} PTS",
+                                        text = "$pointsBalance PTS",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Black,
                                             fontSize = 10.sp,
@@ -683,7 +673,7 @@ fun ProfileScreen(
                                 }
                             }
                             Text(
-                                text = "Code: ${profileState.referralCode} • Earn 20 pts per invite",
+                                text = "Code: ${referralCode.orEmpty()} • Earn 20 pts per invite",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

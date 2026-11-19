@@ -1,16 +1,14 @@
 package com.example
 
 import android.app.Activity
-import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import android.widget.Toast
+import com.example.data.PaymentVerificationRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,42 +19,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.tasks.await
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeoutOrNull
-import com.google.firebase.FirebaseApp
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.DocumentReference
-import com.google.firebase.firestore.DocumentSnapshot
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.FirebaseFirestoreException
-import com.google.firebase.firestore.ListenerRegistration
-import com.example.data.PaymentVerificationRepository
 import java.util.Locale
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.coroutines.resume
 
 /**
  * PassManager - Central Manager for Subscription Passes, Points Conversion,
  * and Payment Gateway Integrations.
  *
- * Pricing & Conversion:
+ * Pricing & Conversion (configured in PassPricingConfig):
  * - Daily Pass: ₹9 INR OR 100 Points (Validity: 24 Hours / 1 Day)
  * - Weekly Pass: ₹49 INR OR 500 Points (Validity: 7 Days)
  * - Monthly Pass: ₹179 INR OR 1500 Points (Validity: 28 Days)
  */
 object PassManager {
     private const val TAG = "PassManager"
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private val mainHandler = Handler(Looper.getMainLooper())
-
-    // Throttle timestamp for access-expired alerts to prevent spamming active order loops
-    private var lastExpiredAlertTimestamp = 0L
-    private const val ALERT_THROTTLE_WINDOW_MS = 30_000L
 
     const val PREFS_UTR_RATE_LIMIT = "utr_rate_limit_prefs"
     const val KEY_UTR_ATTEMPT_TIMESTAMPS = "utr_attempt_timestamps"
@@ -113,15 +89,6 @@ object PassManager {
         }
     }
 
-    fun resetUtrRateLimit(context: Context) {
-        try {
-            context.getSharedPreferences(PREFS_UTR_RATE_LIMIT, Context.MODE_PRIVATE)
-                .edit().clear().commit()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error clearing UTR rate limit prefs: ${e.message}")
-        }
-    }
-
     private val readOnlyPassScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
 
     private fun isStatusProOrTrialActive(status: AccessStatus): Boolean {
@@ -155,16 +122,6 @@ object PassManager {
     }
 
     /**
-     * Neutralized no-op kept only for backward compatibility with legacy callers.
-     * Pass status is strictly read-only and derived from server-authoritative [LicenseManager.accessStatus],
-     * so local callers can never override or spoof active pass state.
-     */
-    @Deprecated("Pass status is strictly read-only and derived from LicenseManager.accessStatus.")
-    fun setPassStatus(context: Context? = null, status: Boolean) {
-        Log.d(TAG, "Ignoring local setPassStatus($status): PassManager.isPassActiveFlow is strictly server-derived.")
-    }
-
-    /**
      * Checks if user access is granted based on active pass or trial status.
      * Evaluates strictly from in-memory StateFlow and LicenseManager.
      */
@@ -184,368 +141,23 @@ object PassManager {
     }
 
     /**
-     * 1. Payment Response Verification (Frontend & Backend):
-     * Pass ka status (isPassActive = true) sirf aur sirf tabhi update karein
-     * jab Firestore backend se verified Success signal aaye.
-     */
-    fun onPaymentSuccess(
-        context: Context,
-        paymentId: String,
-        preferredTier: PassTier? = null,
-        onComplete: ((Boolean) -> Unit)? = null
-    ) {
-        verifyPaymentWithBackend(context, paymentId, preferredTier) { isSuccess ->
-            LicenseManager.refreshAccessStatus(context)
-            if (isSuccess) {
-                val isPro = preferredTier?.isProPass != false
-                val toastText = if (isPro) "Pass Activated!" else "Ad-Free Pass Activated!"
-                Toast.makeText(context, toastText, Toast.LENGTH_SHORT).show()
-                onComplete?.invoke(true)
-            } else {
-                Toast.makeText(context, "Payment not verified yet. Please wait a minute or check your UTR", Toast.LENGTH_SHORT).show()
-                onComplete?.invoke(false)
-            }
-        }
-    }
-
-    /**
-     * Double-checks payment response with Backend (Firebase Firestore / Server).
-     * Only returns true if backend confirms successful transaction.
-     */
-    fun verifyPaymentWithBackend(
-        context: Context,
-        paymentId: String,
-        preferredTier: PassTier? = null,
-        onResult: (Boolean) -> Unit
-    ) {
-        scope.launch {
-            val isSuccess = verifyPaymentWithBackendSuspend(context, paymentId, preferredTier)
-            withContext(Dispatchers.Main) {
-                onResult(isSuccess)
-            }
-        }
-    }
-
-    fun verifyPaymentWithBackend(
-        context: Context,
-        paymentId: String,
-        onResult: (Boolean) -> Unit
-    ) {
-        verifyPaymentWithBackend(context, paymentId, null, onResult)
-    }
-
-    private class AlreadyClaimedException(message: String) : Exception(message)
-
-    private sealed interface RealtimeWaitOutcome {
-        data object VerifiedReadyToClaim : RealtimeWaitOutcome
-        data class EarlyResult(val result: VerificationResult) : RealtimeWaitOutcome
-    }
-
-    /**
-     * Executes the secure Cloud Function verifyUtrAndActivatePass to claim an already verified UTR payment,
-     * update the user's pass expiry on server, and unlock pass access locally.
-     */
-    /**
-     * Executes the payment claim via the Zero-Trust Action Queue.
-     * Delegates activation to LicenseManager.activatePassViaPayment which enqueues
-     * an ACTIVATE_PASS_PAYMENT request in pending_actions and awaits server processing.
-     */
-    private suspend fun executeClaimTransaction(
-        firestore: FirebaseFirestore,
-        paymentDocRef: DocumentReference,
-        userDocRef: DocumentReference,
-        userId: String,
-        cleanUtr: String,
-        preferredTier: PassTier?,
-        context: Context
-    ): VerificationResult = withContext(Dispatchers.IO) {
-        val tier = preferredTier ?: PassTier.DAILY
-        try {
-            val result = LicenseManager.activatePassViaPayment(tier, cleanUtr)
-            if (result.isSuccess) {
-                val now = LicenseManager.getCurrentServerTimeMs()
-                val currentExpiry = LicenseManager.activePassInfo.value?.expiryTimestamp ?: 0L
-                val finalExpiryTimestamp = if (currentExpiry > now) currentExpiry else (now + tier.durationMs)
-
-                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
-                    LicenseManager.refreshAccessStatus(context)
-                    AppSettings.addLog(
-                        title = "Pass Activated",
-                        message = "${tier.title} activated via UTR $cleanUtr. Valid for ${tier.durationDays} day(s).",
-                        severity = LogSeverity.MATCH_ACCEPTED
-                    )
-                }
-
-                VerificationResult.Success(tier, finalExpiryTimestamp)
-            } else {
-                val err = result.exceptionOrNull()
-                val msg = err?.message ?: "Action Queue verification failed"
-                if (msg.contains("already been claimed", ignoreCase = true) || msg.contains("already claimed", ignoreCase = true) || msg.contains("ALREADY_USED", ignoreCase = true)) {
-                    VerificationResult.AlreadyUsed("This UTR has already been claimed on another account.")
-                } else if (msg.contains("not confirmed", ignoreCase = true) || msg.contains("not found", ignoreCase = true) || msg.contains("not verified", ignoreCase = true)) {
-                    VerificationResult.NotFound("Payment not verified yet. Please wait a minute or check your UTR")
-                } else {
-                    VerificationResult.Error(msg)
-                }
-            }
-        } catch (e: Exception) {
-            val msg = e.message ?: ""
-            if (msg.contains("already been claimed", ignoreCase = true) || msg.contains("already claimed", ignoreCase = true)) {
-                return@withContext VerificationResult.AlreadyUsed("This UTR has already been claimed on another account.")
-            }
-            if (msg.contains("not confirmed", ignoreCase = true) || msg.contains("not found", ignoreCase = true) || msg.contains("not verified", ignoreCase = true)) {
-                return@withContext VerificationResult.NotFound("Payment not verified yet. Please wait a minute or check your UTR")
-            }
-            Log.e(TAG, "Zero-Trust Action Queue claim failed: $msg", e)
-            VerificationResult.Error("Verification failed: $msg")
-        }
-    }
-
-    /**
      * Detailed verification of the user's inputted UTR string with Firestore.
-     * Implements a Real-time Waiting & Claiming architecture:
-     * - SCENARIO A (Backend verified first): Claims immediately if already "Verified" and unused.
-     * - SCENARIO B (App came first): Sets status to "Pending", attaches a real-time snapshot listener,
-     *   waits up to 120 seconds (2 minutes) for Backend to mark "Verified", and claims instantly when confirmed.
+     * Delegates to PaymentVerificationRepository.defaultInstance.verifyUtrDetailed to avoid duplicate implementations.
      */
     suspend fun verifyPaymentWithBackendDetailed(
         context: Context,
         utr: String,
         preferredTier: PassTier? = null
-    ): VerificationResult = withContext(Dispatchers.IO) {
-        val cleanUtr = utr.trim()
-        if (!PaymentVerificationRepository.isValidUtr(cleanUtr)) {
-            return@withContext VerificationResult.Invalid("Please enter a valid 12-digit numeric UTR / UPI reference number.")
-        }
-
-        // Local client-side rate limit: Max 3 verification attempts per minute to prevent UTR spamming
-        if (!checkAndRecordUtrRateLimit(context)) {
-            Log.w(TAG, "UTR verification rate limit exceeded for attempt on $cleanUtr")
-            return@withContext VerificationResult.Error("Too many attempts. Please try again after 1 minute.")
-        }
-
-        try {
-            if (FirebaseApp.getApps(context).isEmpty()) {
-                Log.w(TAG, "FirebaseApp is not initialized; cannot verify payment.")
-                return@withContext VerificationResult.Error("Firebase service is not initialized.")
-            }
-            val firestore = FirebaseFirestore.getInstance()
-            val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
-            if (userId.isBlank()) {
-                return@withContext VerificationResult.Error("Please sign in with Google to verify payment.")
-            }
-            val paymentDocRef = firestore.collection(PaymentVerificationRepository.COLL_RECEIVED_PAYMENTS).document(cleanUtr)
-            val pendingDocRef = firestore.collection("pending_verifications").document(cleanUtr)
-            val userDocRef = firestore.collection("users").document(userId)
-            val tier = preferredTier ?: PassTier.DAILY
-
-            // Step 1: Check existing document in received_payments/{cleanUtr} or pending_verifications/{cleanUtr}
-            val snapshot = try {
-                paymentDocRef.get().await()
-            } catch (e: Exception) {
-                Log.d(TAG, "Direct get on received_payments suppressed (collection locked down in zero-trust): ${e.message}")
-                null
-            }
-            val pendingSnapshot = try {
-                pendingDocRef.get().await()
-            } catch (e: Exception) {
-                Log.w(TAG, "Direct get on pending_verifications failed: ${e.message}")
-                null
-            }
-
-            val existingSnap = when {
-                snapshot != null && snapshot.exists() -> snapshot
-                pendingSnapshot != null && pendingSnapshot.exists() -> pendingSnapshot
-                else -> null
-            }
-
-            if (existingSnap != null) {
-                val status = existingSnap.getString("status") ?: ""
-                val isUsed = existingSnap.getBoolean("isUsed") ?: (existingSnap.getBoolean("claimed") ?: false)
-                val claimedBy = existingSnap.getString("claimedBy") ?: existingSnap.getString("claimedByUserId")
-
-                if (isUsed && claimedBy != null && claimedBy.isNotBlank() && claimedBy != userId) {
-                    Log.w(TAG, "Payment $cleanUtr already claimed by another user: '$claimedBy'.")
-                    return@withContext VerificationResult.AlreadyUsed(
-                        "This UTR has already been claimed on another account."
-                    )
-                }
-
-                // SCENARIO A: Server verified first (status == "Verified" && !isUsed)
-                if (status.equals("Verified", ignoreCase = true) && !isUsed) {
-                    Log.i(TAG, "Scenario A: Server verified $cleanUtr first. Claiming immediately...")
-                    return@withContext executeClaimTransaction(
-                        firestore = firestore,
-                        paymentDocRef = paymentDocRef,
-                        userDocRef = userDocRef,
-                        userId = userId,
-                        cleanUtr = cleanUtr,
-                        preferredTier = tier,
-                        context = context
-                    )
-                }
-            }
-
-            // SCENARIO B: App came first OR status == "Pending" / not yet "Verified"
-            Log.i(TAG, "Scenario B: Real-time listener waiting for server confirmation for $cleanUtr...")
-
-            // 1. Create pending entry in pending_verifications only if absent (satisfies strict create rule)
-            if (pendingSnapshot == null || !pendingSnapshot.exists()) {
-                val authUser = try {
-                    FirebaseAuth.getInstance().currentUser
-                } catch (_: Exception) {
-                    null
-                }
-                val firebaseUid = authUser?.uid ?: userId
-                val userEmail = authUser?.email ?: ""
-                val linkedHwId = HardwareIdManager.getPermanentHardwareId(context)
-                try {
-                    pendingDocRef.set(
-                        mapOf(
-                            "status" to "PENDING",
-                            "passTier" to tier.id,
-                            "amount" to tier.priceInInr,
-                            "isUsed" to false,
-                            "utr" to cleanUtr,
-                            "userId" to userId,
-                            "firebaseUid" to firebaseUid,
-                            "userEmail" to userEmail,
-                            "linkedHardwareId" to linkedHwId,
-                            "createdAt" to FieldValue.serverTimestamp()
-                        )
-                    ).await()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Recording pending verification ignored or suppressed: ${e.message}")
-                }
-            }
-
-            // 2. Suspend with real-time snapshot listener wrapped in 120-second (2 minutes) timeout
-            // Wait until status equals "Verified" AND isUsed equals false
-            val waitOutcome = withTimeoutOrNull(120_000L) {
-                suspendCancellableCoroutine<RealtimeWaitOutcome> { continuation ->
-                    var paymentListener: ListenerRegistration? = null
-                    var pendingListener: ListenerRegistration? = null
-                    val isResumed = AtomicBoolean(false)
-
-                    fun removeListeners() {
-                        paymentListener?.remove()
-                        pendingListener?.remove()
-                        paymentListener = null
-                        pendingListener = null
-                    }
-
-                    fun handleSnapshot(docSnap: DocumentSnapshot?) {
-                        if (docSnap != null && docSnap.exists()) {
-                            val currentStatus = docSnap.getString("status") ?: ""
-                            val currentUsed = docSnap.getBoolean("isUsed") ?: (docSnap.getBoolean("claimed") ?: false)
-                            val currentClaimedBy = docSnap.getString("claimedBy") ?: docSnap.getString("claimedByUserId")
-
-                            // Check if claimed by another user
-                            if (currentUsed && currentClaimedBy != null && currentClaimedBy.isNotBlank() && currentClaimedBy != userId) {
-                                if (isResumed.compareAndSet(false, true)) {
-                                    removeListeners()
-                                    continuation.resume(
-                                        RealtimeWaitOutcome.EarlyResult(
-                                            VerificationResult.AlreadyUsed("This UTR has already been claimed on another account.")
-                                        )
-                                    )
-                                }
-                                return
-                            }
-
-                            // Fail fast if payment was explicitly rejected or failed
-                            if (currentStatus.equals("REJECTED", ignoreCase = true) ||
-                                currentStatus.equals("FAILED", ignoreCase = true) ||
-                                currentStatus.equals("INVALID", ignoreCase = true)
-                            ) {
-                                if (isResumed.compareAndSet(false, true)) {
-                                    removeListeners()
-                                    val errReason = docSnap.getString("errorMessage")
-                                        ?: docSnap.getString("reason")
-                                        ?: "Payment verification was rejected. Please check your UTR."
-                                    continuation.resume(
-                                        RealtimeWaitOutcome.EarlyResult(
-                                            VerificationResult.Error(errReason)
-                                        )
-                                    )
-                                }
-                                return
-                            }
-
-                            // The moment status equals "Verified" AND isUsed equals false
-                            if (currentStatus.equals("Verified", ignoreCase = true) && !currentUsed) {
-                                if (isResumed.compareAndSet(false, true)) {
-                                    removeListeners()
-                                    continuation.resume(RealtimeWaitOutcome.VerifiedReadyToClaim)
-                                }
-                            }
-                        }
-                    }
-
-                    try {
-                        paymentListener = paymentDocRef.addSnapshotListener { docSnap, error ->
-                            if (error != null) {
-                                Log.w(TAG, "Real-time payment snapshot listener error for $cleanUtr: ${error.message}")
-                                return@addSnapshotListener
-                            }
-                            handleSnapshot(docSnap)
-                        }
-                    } catch (e: Exception) {
-                        Log.d(TAG, "Attaching listener to received_payments suppressed: ${e.message}")
-                    }
-
-                    pendingListener = pendingDocRef.addSnapshotListener { docSnap, error ->
-                        if (error != null) {
-                            Log.w(TAG, "Real-time pending snapshot listener error for $cleanUtr: ${error.message}")
-                            return@addSnapshotListener
-                        }
-                        handleSnapshot(docSnap)
-                    }
-
-                    continuation.invokeOnCancellation {
-                        Log.d(TAG, "Detaching real-time snapshot listener on cancellation/timeout for $cleanUtr")
-                        removeListeners()
-                    }
-                }
-            }
-
-            when (waitOutcome) {
-                is RealtimeWaitOutcome.VerifiedReadyToClaim -> {
-                    Log.i(TAG, "Real-time listener received 'Verified' & isUsed=false. Executing claim transaction for $cleanUtr...")
-                    executeClaimTransaction(
-                        firestore = firestore,
-                        paymentDocRef = paymentDocRef,
-                        userDocRef = userDocRef,
-                        userId = userId,
-                        cleanUtr = cleanUtr,
-                        preferredTier = tier,
-                        context = context
-                    )
-                }
-                is RealtimeWaitOutcome.EarlyResult -> {
-                    waitOutcome.result
-                }
-                null -> {
-                    // 120-second (2 minutes) timeout expired
-                    Log.w(TAG, "Real-time verification timed out after 120 seconds (2 minutes) for $cleanUtr")
-                    VerificationResult.NotFound("Verification timed out after 2 minutes. Please check your UTR or try again later.")
-                }
-            }
-
-        } catch (e: AlreadyClaimedException) {
-            Log.w(TAG, "Already claimed notice: ${e.message}")
-            VerificationResult.AlreadyUsed(e.message ?: "This UTR has already been claimed.")
-        } catch (e: Exception) {
-            Log.e(TAG, "verifyPaymentWithBackendDetailed failed for $cleanUtr: ${e.message}", e)
-            val msg = e.localizedMessage ?: "Network or verification error. Please retry."
-            VerificationResult.Error("Error verifying payment: $msg")
-        }
+    ): VerificationResult {
+        return PaymentVerificationRepository.defaultInstance.verifyUtrDetailed(
+            context = context,
+            utr = utr,
+            preferredTier = preferredTier
+        )
     }
 
     /**
      * Asynchronous suspend verification of UTR with Firestore backend.
-     * Returns true if document exists, status == "Verified", isUsed == false,
-     * and transaction completes successfully.
      */
     suspend fun verifyPaymentWithBackendSuspend(
         context: Context,
@@ -559,114 +171,18 @@ object PassManager {
     }
 
     /**
-     * Checks if active network connectivity is available.
+     * Checks if active network connectivity is available via centralized DeviceUtils.
      */
-    fun isNetworkAvailable(context: Context): Boolean {
-        return try {
-            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
-            val activeNetwork = cm.activeNetwork ?: return false
-            val capabilities = cm.getNetworkCapabilities(activeNetwork) ?: return false
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-        } catch (_: Exception) {
-            false
-        }
-    }
+    fun isNetworkAvailable(context: Context): Boolean = DeviceUtils.isNetworkAvailable(context)
 
     /**
-     * 3. Server-Side / Expiry Date Check:
-     * User ID ke saath payment_status aur pass_expiry_date store karein.
-     * Jab user app khole (chahe Accessibility ON ho ya OFF), Server check karein:
-     * if (currentTime < passExpiryDate && paymentStatus == "SUCCESS") -> Pass Active.
-     * else -> Pass Expired / Inactive.
+     * Server-Side / Expiry Date Check:
+     * Delegates to PaymentVerificationRepository.defaultInstance.checkIsPaymentVerified and checks active trial fallback.
      */
     suspend fun verifyServerPassStatus(context: Context): Boolean = withContext(Dispatchers.IO) {
-        if (!isNetworkAvailable(context)) {
-            Log.d(TAG, "Device is offline. Keeping cached local pass status.")
-            return@withContext isPassActive(context)
-        }
-
-        try {
-            if (FirebaseApp.getApps(context).isEmpty()) {
-                Log.w(TAG, "FirebaseApp is not initialized; skipping verifyServerPassStatus.")
-                return@withContext isPassActive(context)
-            }
-            val userId = PaymentVerificationRepository.defaultInstance.resolveUserId(context)
-            if (userId.isBlank()) {
-                return@withContext isPassActive(context)
-            }
-            val doc = FirebaseFirestore.getInstance()
-                .collection("users")
-                .document(userId)
-                .get()
-                .await()
-
-            val currentTime = LicenseManager.getCurrentServerTimeMs()
-            if (doc.exists()) {
-                val passTypeStr = doc.getString("activePassType") ?: doc.getString("passType")
-                val parsedTier = PassTier.fromId(passTypeStr)
-                val isProTier = parsedTier?.isProPass == true
-
-                val paymentStatus = doc.getString("paymentStatus")
-                    ?: doc.getString("payment_status")
-                    ?: if (doc.getBoolean("isPaymentVerified") == true || (!passTypeStr.isNullOrBlank() && isProTier)) "SUCCESS" else "FAILED"
-
-                val passExpiryDate: Long = doc.getLong("passExpiryTimestamp")
-                    ?: doc.getLong("pass_expiry_date")
-                    ?: doc.getLong("passExpiryDate")
-                    ?: doc.getLong("passExpiry")
-                    ?: doc.getLong("subscriptionExpiryTimestamp")
-                    ?: doc.getDate("subscriptionExpiry")?.time
-                    ?: 0L
-
-                val isSuccess = paymentStatus.equals("SUCCESS", ignoreCase = true) || paymentStatus.equals("VERIFIED", ignoreCase = true)
-                val isPaidProActive = isProTier && currentTime < passExpiryDate && isSuccess
-                val isTrialActive = (LicenseManager.accessStatus.value as? AccessStatus.TrialActive)?.let { it.remainingTimeMs > 0 } ?: false
-                val isActive = isPaidProActive || isTrialActive
-
-                withContext(Dispatchers.Main) {
-                    LicenseManager.refreshAccessStatus(context)
-                    if (isActive) {
-                        Log.i(TAG, "Server check: Pro/Trial access is ACTIVE (paidExpiry=$passExpiryDate, tier=$passTypeStr) for user $userId")
-                    } else {
-                        Log.w(TAG, "Server check: Pro pass INACTIVE (expiry=$passExpiryDate, tier=$passTypeStr, status=$paymentStatus) for user $userId")
-                    }
-                }
-                isActive
-            } else {
-                withContext(Dispatchers.Main) {
-                    LicenseManager.refreshAccessStatus(context)
-                }
-                false
-            }
-        } catch (e: FirebaseFirestoreException) {
-            if (e.code == FirebaseFirestoreException.Code.UNAVAILABLE ||
-                e.message?.contains("offline", ignoreCase = true) == true
-            ) {
-                Log.w(TAG, "Firestore unavailable or client offline: ${e.message}.")
-            } else {
-                Log.w(TAG, "Firestore exception in verifyServerPassStatus: ${e.message}")
-            }
-            withContext(Dispatchers.Main) {
-                isPassActive(context)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "verifyServerPassStatus error: ${e.message}")
-            withContext(Dispatchers.Main) {
-                isPassActive(context)
-            }
-        }
-    }
-
-    /**
-     * Background sync of server pass status with callback.
-     */
-    fun syncPassStatusWithServer(context: Context, onComplete: ((Boolean) -> Unit)? = null) {
-        scope.launch {
-            val isActive = verifyServerPassStatus(context)
-            withContext(Dispatchers.Main) {
-                onComplete?.invoke(isActive)
-            }
-        }
+        val isPaidProActive = PaymentVerificationRepository.defaultInstance.checkIsPaymentVerified(context)
+        val isTrialActive = (LicenseManager.accessStatus.value as? AccessStatus.TrialActive)?.let { it.remainingTimeMs > 0 } ?: false
+        isPaidProActive || isTrialActive
     }
 
     /**
@@ -682,26 +198,16 @@ object PassManager {
     }
 
     /**
-     * Formats remaining time for the current pass into a human-readable string.
-     */
-    fun getFormattedTimeRemaining(context: Context? = null): String {
-        return when (val status = LicenseManager.accessStatus.value) {
-            is AccessStatus.PassActive -> if (status.passTier.isProPass) status.formattedRemaining else "Expired"
-            is AccessStatus.TrialActive -> status.formattedRemaining
-            else -> "Expired"
-        }
-    }
-
-    /**
      * Activates a pass by deducting points from the user's wallet.
      * Evaluates that userPoints >= pass.pointsCost.
      */
     suspend fun activatePassWithPoints(context: Context, passTier: PassTier): Result<Unit> {
         val currentPoints = LicenseManager.pointsBalance.value
-        if (currentPoints < passTier.pointsCost) {
-            val needed = passTier.pointsCost - currentPoints
+        val requiredPoints = passTier.effectivePointsCost()
+        if (currentPoints < requiredPoints) {
+            val needed = requiredPoints - currentPoints
             return Result.failure(
-                IllegalStateException("Insufficient points. You need ${passTier.pointsCost} points, but have $currentPoints ($needed more required).")
+                IllegalStateException("Insufficient points. You need $requiredPoints points, but have $currentPoints ($needed more required).")
             )
         }
 
@@ -710,7 +216,7 @@ object PassManager {
             val newExpiry = getPassExpiryTimestamp(context)
             AppSettings.addLog(
                 title = "Pass Activated",
-                message = "${passTier.title} activated with ${passTier.pointsCost} Points. Valid for ${passTier.durationDays} day(s).",
+                message = "${passTier.title} activated with $requiredPoints Points. Valid for ${passTier.durationDays} day(s).",
                 severity = LogSeverity.MATCH_ACCEPTED
             )
             Log.i(TAG, "Pass ${passTier.title} activated with points successfully on Firestore. Expiry: $newExpiry")
@@ -732,7 +238,7 @@ object PassManager {
         if (result.isSuccess) {
             AppSettings.addLog(
                 title = "Pass Purchased via UPI",
-                message = "${passTier.title} activated for ₹${passTier.priceInInr} (Txn: $txn). Valid for ${passTier.durationDays} day(s).",
+                message = "${passTier.title} activated for ₹${passTier.effectivePriceInInr()} (Txn: $txn). Valid for ${passTier.durationDays} day(s).",
                 severity = LogSeverity.MATCH_ACCEPTED
             )
             Log.i(TAG, "Pass ${passTier.title} activated via payment successfully.")
@@ -750,10 +256,6 @@ object PassManager {
         return LicenseManager.activatePassViaPayment(passTier, transactionId)
     }
 
-    // =========================================================================
-    // UPI & PAYMENT GATEWAY INTEGRATION STUBS
-    // =========================================================================
-
     /**
      * Constructs a standard Indian UPI payment URI according to NPCI specifications:
      * upi://pay?pa=<vpa>&pn=<name>&am=<amount>&cu=INR&tn=<note>&tr=<txnRef>
@@ -764,7 +266,7 @@ object PassManager {
         payeeName: String = "OrderMaster Captain Store",
         transactionRef: String = "ORDER_${passTier.id}_${System.currentTimeMillis()}"
     ): Uri {
-        val formattedAmount = java.lang.String.format(java.util.Locale.US, "%.2f", passTier.priceInInr.toDouble())
+        val formattedAmount = String.format(Locale.US, "%.2f", passTier.effectivePriceInInr().toDouble())
         return Uri.Builder()
             .scheme("upi")
             .authority("pay")
@@ -815,12 +317,6 @@ object PassManager {
     /**
      * Launches standard UPI Intent (Google Pay, PhonePe, Paytm, BHIM, etc.) for the user
      * to complete the payment.
-     *
-     * Features multi-tier fallbacks:
-     * 1. System Chooser intent
-     * 2. Direct ACTION_VIEW intent
-     * 3. Explicit installed UPI package targeting (GPay/PhonePe/Paytm/BHIM/Cred)
-     * 4. Clipboard copy fallback with guidance if intent cannot resolve
      */
     fun initiateUpiPayment(
         activity: Activity,
@@ -837,7 +333,6 @@ object PassManager {
         val pm = activity.packageManager
         val baseIntent = createUpiPaymentIntent(passTier, payeeVpa = payeeVpa, payeeName = payeeName)
 
-        // Find which known UPI apps are installed
         val installedPackages = KNOWN_UPI_PACKAGES.filter { pkg ->
             try {
                 pm.getPackageInfo(pkg, 0)
@@ -849,7 +344,7 @@ object PassManager {
 
         // Attempt 1: Try Intent Chooser
         try {
-            val chooser = Intent.createChooser(baseIntent, "Pay ₹${passTier.priceInInr} for ${passTier.title}")
+            val chooser = Intent.createChooser(baseIntent, "Pay ₹${passTier.effectivePriceInInr()} for ${passTier.title}")
             activity.startActivity(chooser)
             return
         } catch (e: Exception) {
@@ -879,83 +374,26 @@ object PassManager {
 
         // Attempt 4: Fallback - copy UPI ID to clipboard so user can pay manually
         try {
-            val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+            val clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
             if (clipboard != null) {
-                val clip = android.content.ClipData.newPlainText("UPI ID", payeeVpa)
+                val clip = ClipData.newPlainText("UPI ID", payeeVpa)
                 clipboard.setPrimaryClip(clip)
             }
-            android.widget.Toast.makeText(
+            Toast.makeText(
                 activity,
-                "UPI ID copied: $payeeVpa. Please open your UPI app to pay ₹${passTier.priceInInr}.",
-                android.widget.Toast.LENGTH_LONG
+                "UPI ID copied: $payeeVpa. Please open your UPI app to pay ₹${passTier.effectivePriceInInr()}.",
+                Toast.LENGTH_LONG
             ).show()
             onFailed("UPI ID copied: $payeeVpa. Please pay in your UPI app and enter UTR.")
         } catch (e: Exception) {
             Log.w(TAG, "UPI intent launch and fallback failed: ${e.message}")
-            android.widget.Toast.makeText(
+            Toast.makeText(
                 activity,
                 "Please pay to UPI ID: $payeeVpa",
-                android.widget.Toast.LENGTH_LONG
+                Toast.LENGTH_LONG
             ).show()
             onFailed("Please pay to UPI ID: $payeeVpa")
         }
-    }
-
-    /**
-     * Centralized callback hook when payment gateway completes successfully.
-     * Extends pass duration and returns new expiry timestamp.
-     */
-    fun handlePaymentSuccess(
-        context: Context,
-        passTier: PassTier,
-        transactionId: String
-    ): Long {
-        val now = LicenseManager.getCurrentServerTimeMs()
-        val currentExpiry = AppSettings.getPassExpiryTimestamp(context)
-        val baseTime = if (currentExpiry > now) currentExpiry else now
-        val newExpiry = baseTime + passTier.durationMs
-
-        scope.launch {
-            LicenseManager.activatePassViaPayment(passTier, transactionId)
-        }
-        return newExpiry
-    }
-
-    // =========================================================================
-    // ACCESSIBILITY AUTOMATION ENFORCEMENT & WARNINGS
-    // =========================================================================
-
-    /**
-     * Throttled notification when an order trigger is blocked due to expired pass.
-     * 1. Speaks via TTS voice announcer (if enabled)
-     * 2. Shows a Toast
-     * 3. Logs warning to AppSettings
-     */
-    fun notifyAccessExpired(context: Context) {
-        val now = LicenseManager.getCurrentServerTimeMs()
-        if (now - lastExpiredAlertTimestamp < ALERT_THROTTLE_WINDOW_MS) {
-            return
-        }
-        lastExpiredAlertTimestamp = now
-
-        mainHandler.post {
-            Toast.makeText(
-                context,
-                "⚠️ Pass Expired! Auto-acceptance paused. Renew pass in Captain Store.",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-
-        // Voice alert if voice announcer is enabled
-        if (AppSettings.isVoiceAnnouncerEnabled(context)) {
-            TTSManager.speak(context, "Pass expired. Auto acceptance paused. Please renew your pass.")
-        }
-
-        AppSettings.addLog(
-            title = "Auto-Accept Blocked",
-            message = "Ride offer detected, but automation is blocked because your pass has expired. Renew pass in Captain Store.",
-            severity = LogSeverity.WARNING
-        )
     }
 
     /**

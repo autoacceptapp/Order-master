@@ -397,11 +397,11 @@ private fun OrderHistoryCard(
         }
     }
 
-    val orderType = remember(order.rawText) {
+    val orderType = remember(order.decisionReason) {
         when {
-            order.rawText.contains("Auto Boost", ignoreCase = true) -> "Auto Boost"
-            order.rawText.contains("Auto", ignoreCase = true) -> "Auto"
-            order.rawText.contains("Bike", ignoreCase = true) -> "Bike"
+            order.decisionReason.contains("Auto Boost", ignoreCase = true) -> "Auto Boost"
+            order.decisionReason.contains("Auto", ignoreCase = true) -> "Auto"
+            order.decisionReason.contains("Bike", ignoreCase = true) -> "Bike"
             else -> "Rapido Ride"
         }
     }
@@ -892,28 +892,6 @@ private fun OrderHistoryCard(
                             color = if (isAccepted) Color(0xFF047857) else Color(0xFFB91C1C)
                         )
                     )
-
-                    // Raw screen text if present
-                    if (order.rawText.isNotBlank()) {
-                        Text(
-                            text = "Raw Screen Text:",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = order.rawText,
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontSize = 10.sp,
-                                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-                                ),
-                                modifier = Modifier.padding(6.dp)
-                            )
-                        }
-                    }
                 }
             },
             confirmButton = {

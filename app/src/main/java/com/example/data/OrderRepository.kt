@@ -1,6 +1,7 @@
 package com.example.data
 
 import android.content.Context
+import com.example.LicenseManager
 import kotlinx.coroutines.flow.Flow
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -33,7 +34,7 @@ class OrderRepository(context: Context) {
     /**
      * Deletes order history rows older than 30 days once per app session.
      */
-    suspend fun pruneExpiredOrdersIfNeeded(nowMs: Long = System.currentTimeMillis()): Int {
+    suspend fun pruneExpiredOrdersIfNeeded(nowMs: Long = LicenseManager.getCurrentServerTimeMs()): Int {
         if (!hasPrunedExpiredThisSession.compareAndSet(false, true)) {
             return 0
         }
@@ -44,14 +45,6 @@ class OrderRepository(context: Context) {
             hasPrunedExpiredThisSession.set(false)
             0
         }
-    }
-
-    /**
-     * Explicitly prunes order history rows older than 30 days relative to [nowMs].
-     */
-    suspend fun pruneOrdersOlderThan30Days(nowMs: Long = System.currentTimeMillis()): Int {
-        val cutoffMs = (nowMs - RETENTION_PERIOD_MS).coerceAtLeast(0L)
-        return orderDao.pruneOrdersOlderThan(cutoffMs)
     }
 
     suspend fun clearHistory() {
@@ -82,11 +75,6 @@ class OrderRepository(context: Context) {
                 INSTANCE = instance
                 instance
             }
-        }
-
-        @Suppress("UNUSED_PARAMETER")
-        fun seedInitialDataIfEmpty(context: Context) {
-            // No-op: Fresh installs start with an empty, authentic Room order history.
         }
     }
 }

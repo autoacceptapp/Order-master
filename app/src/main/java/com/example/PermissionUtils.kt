@@ -136,13 +136,6 @@ object PermissionUtils {
     }
 
     /**
-     * Checks if normal install-time permissions (WAKE_LOCK, VIBRATE) are present.
-     */
-    fun hasNormalPermission(context: Context, permission: String): Boolean {
-        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-    }
-
-    /**
      * Compiles a full list of permission items with live granted status for the UI.
      */
     fun getPermissionStatusList(context: Context): List<AppPermissionItem> {

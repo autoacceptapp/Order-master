@@ -1,51 +1,7 @@
 package com.example
 
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.util.Log
-import android.widget.Toast
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.example.ui.theme.PrimaryEmerald
 import java.util.Locale
 
 /**
@@ -63,7 +19,6 @@ import java.util.Locale
 object HardwareIdManager {
 
     private const val TAG = "HardwareIdManager"
-    private const val LEGACY_PREFS_NAME = "hardware_id_prefs"
 
     @Volatile
     private var cachedHardwareId: String? = null
@@ -99,31 +54,7 @@ object HardwareIdManager {
     fun getHardwareDetails(context: Context): HardwareDetails {
         cachedHardwareDetails?.let { return it }
 
-        // Ensure DeviceUtils validates & persists the unified fingerprint in device_security_prefs
-        DeviceUtils.getDeviceHardwareId(context)
-        cleanupLegacyPrefsIfPresent(context)
-
-        val details = generatePermanentHardwareId(context)
-        cachedHardwareDetails = details
-        cachedHardwareId = details.formattedId
-        return details
-    }
-
-    private fun cleanupLegacyPrefsIfPresent(context: Context) {
-        try {
-            val appCtx = context.applicationContext ?: context
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                appCtx.deleteSharedPreferences(LEGACY_PREFS_NAME)
-            }
-        } catch (_: Throwable) {}
-    }
-
-    /**
-     * Derives the permanent hardware ID from the single unified deterministic hardware fingerprint
-     * shared with DeviceUtils (Widevine DRM ID if non-empty + ANDROID_ID + immutable Build properties).
-     */
-    private fun generatePermanentHardwareId(context: Context): HardwareDetails {
-        val fingerprint = DeviceUtils.buildUnifiedHardwareFingerprint(context)
+        val fingerprint = DeviceUtils.getOrVerifyHardwareFingerprint(context)
         val fullSha256 = fingerprint.sha256Hex.uppercase(Locale.US)
         val formatted = formatHardwareCode(fullSha256)
         val source = if (fingerprint.hasWidevineDrm) {
@@ -132,12 +63,15 @@ object HardwareIdManager {
             "Unified Hardware Fingerprint (Device)"
         }
         Log.i(TAG, "Generated permanent hardware ID ($source): $formatted")
-        return HardwareDetails(
+        val details = HardwareDetails(
             formattedId = formatted,
             fullSha256 = fullSha256,
             source = source,
             isHardwareDrm = fingerprint.hasWidevineDrm
         )
+        cachedHardwareDetails = details
+        cachedHardwareId = details.formattedId
+        return details
     }
 
     /**
@@ -150,192 +84,5 @@ object HardwareIdManager {
         val p2 = clean.drop(4).take(4).padEnd(4, '0')
         val p3 = clean.drop(8).take(4).padEnd(4, '0')
         return "OM-$p1-$p2-$p3"
-    }
-
-    /**
-     * Copies text to the system clipboard and displays a standard confirmation Toast.
-     */
-    fun copyToClipboard(context: Context, text: String, label: String = context.getString(R.string.hwid_clipboard_label)) {
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        val clip = ClipData.newPlainText(label, text)
-        clipboard?.setPrimaryClip(clip)
-        Toast.makeText(context, context.getString(R.string.hwid_toast_copied, label), Toast.LENGTH_SHORT).show()
-    }
-}
-
-/**
- * Purely informational Jetpack Compose UI card displaying the Permanent Device Hardware ID.
- */
-@Composable
-fun HardwareIdCard(
-    modifier: Modifier = Modifier
-) {
-    val context = LocalContext.current
-    val details = remember { HardwareIdManager.getHardwareDetails(context) }
-    var copiedRecently by remember { mutableStateOf(false) }
-
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .testTag("hardware_id_card"),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            // Header Row: Icon + Title + Status Pill
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Memory,
-                            contentDescription = stringResource(R.string.hwid_card_title),
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
-
-                    Column {
-                        Text(
-                            text = stringResource(R.string.hwid_card_title),
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold
-                            ),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = stringResource(R.string.hwid_card_subtitle),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Text(
-                            text = stringResource(R.string.hwid_badge_permanent),
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.ExtraBold,
-                                color = MaterialTheme.colorScheme.primary,
-                                fontSize = 10.sp
-                            )
-                        )
-                    }
-                }
-            }
-
-            // Monospace Hardware ID Container
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = details.formattedId,
-                        style = MaterialTheme.typography.headlineSmall.copy(
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 2.sp,
-                            color = MaterialTheme.colorScheme.primary
-                        ),
-                        modifier = Modifier.testTag("hardware_id_value_text")
-                    )
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    Text(
-                        text = stringResource(R.string.hwid_source_label, details.source),
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 11.sp
-                        )
-                    )
-                }
-            }
-
-            // Description note
-            Text(
-                text = stringResource(R.string.hwid_description),
-                style = MaterialTheme.typography.bodySmall.copy(
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                ),
-                lineHeight = 16.sp
-            )
-
-            // Action Buttons: Copy ID Button
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                val clipboardLabel = stringResource(R.string.hwid_clipboard_label)
-                Button(
-                    onClick = {
-                        HardwareIdManager.copyToClipboard(context, details.formattedId, clipboardLabel)
-                        copiedRecently = true
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(46.dp)
-                        .testTag("copy_hardware_id_button"),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
-                    )
-                ) {
-                    Icon(
-                        imageVector = if (copiedRecently) Icons.Default.CheckCircle else Icons.Default.ContentCopy,
-                        contentDescription = stringResource(R.string.hwid_btn_copy),
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = stringResource(if (copiedRecently) R.string.hwid_btn_copied else R.string.hwid_btn_copy),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
-                }
-            }
-        }
     }
 }

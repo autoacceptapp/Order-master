@@ -111,8 +111,8 @@ class SecurityHardeningTest {
 
     @Test
     fun addPointsDirectGrantIsDisabledInZeroTrustClient() = runTest {
-        val result = LicenseManager.addPoints(5000)
-        assertTrue("Client addPoints must strictly fail", result.isFailure)
+        val hasAddPointsMethod = LicenseManager::class.java.declaredMethods.any { it.name == "addPoints" }
+        assertFalse("Client addPoints method must not exist on LicenseManager", hasAddPointsMethod)
     }
 
     @Test
@@ -376,7 +376,7 @@ class SecurityHardeningTest {
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf(
-                "autoAcceptEnabled" to true,
+                "isAutoAcceptEnabled" to true,
                 "isMinFareEnabled" to true,
                 "minFare" to 80.0,
                 "isMaxFareEnabled" to true,
@@ -537,7 +537,7 @@ class SecurityHardeningTest {
         val futureExpiry = System.currentTimeMillis() + 86_400_000L
 
         // Local PassManager flag alone must NEVER grant Pro access or expiry
-        PassManager.setPassStatus(context, true)
+        assertFalse("PassManager must not expose a setPassStatus mutator", PassManager::class.java.declaredMethods.any { it.name == "setPassStatus" })
         assertFalse("PassManager fallback must not activate AppSettings.isPassActive", AppSettings.isPassActive(context))
         assertEquals("PassManager fallback must not leak expiry", 0L, AppSettings.getPassExpiryTimestamp(context))
 
@@ -547,7 +547,7 @@ class SecurityHardeningTest {
             mapOf(
                 "activePassType" to "unknown_tier",
                 "passExpiryTimestamp" to futureExpiry,
-                "autoAcceptEnabled" to true
+                "isAutoAcceptEnabled" to true
             )
         )
         assertFalse("Unknown pass type must NOT activate isPassActiveFlow", AppSettings.isPassActiveFlow.value)
@@ -564,13 +564,12 @@ class SecurityHardeningTest {
             mapOf(
                 "activePassType" to PassTier.REMOVE_ADS.id,
                 "passExpiryTimestamp" to futureExpiry,
-                "autoAcceptEnabled" to true
+                "isAutoAcceptEnabled" to true
             )
         )
         assertFalse("Remove Ads pass must NOT unlock Pro pass state", AppSettings.isPassActive(context))
         assertFalse("Remove Ads pass must NOT grant auto-accept capability", AppSettings.isAutoAcceptEnabled(context))
 
-        PassManager.setPassStatus(context, false)
         AppSettings.resetBusinessStateForTest(context)
     }
 
@@ -800,7 +799,7 @@ class SecurityHardeningTest {
     }
 
     @Test
-    fun firestoreBlacklistSyncMergesAndDeduplicatesBothBlockedLocationsAndBlacklistedDestinations() {
+    fun firestoreBlacklistSyncDeduplicatesAndSortsCanonicalBlockedLocations() {
         AppSettings.init(context)
         LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
@@ -811,23 +810,22 @@ class SecurityHardeningTest {
             unlocked = mapOf(FeatureIds.DESTINATION_BLACKLIST to futureExpiry)
         )
 
-        // 1. Admin writes only blacklistedDestinations
+        // 1. Canonical blockedLocations trims, deduplicates case-insensitively, and sorts
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf(
                 "isDestinationBlacklistEnabled" to true,
-                "blacklistedDestinations" to listOf("  Airport ", "Toll Gate", "airport")
+                "blockedLocations" to listOf("  Airport ", "Toll Gate", "airport")
             )
         )
         assertEquals(listOf("Airport", "Toll Gate"), AppSettings.getBlockedLocations(context))
 
-        // 2. Both blockedLocations and blacklistedDestinations present -> merge & deduplicate cleanly
+        // 2. Subsequent canonical blockedLocations update replaces list cleanly
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf(
                 "isDestinationBlacklistEnabled" to true,
-                "blockedLocations" to listOf("Highway Toll", "Railway Station"),
-                "blacklistedDestinations" to listOf("highway toll", "Slum Area")
+                "blockedLocations" to listOf("Highway Toll", "Railway Station", "highway toll", "Slum Area")
             )
         )
         assertEquals(
@@ -877,7 +875,7 @@ class SecurityHardeningTest {
             context,
             mapOf(
                 "minFare" to 75.0,
-                "blacklistedDestinations" to listOf("AdminZone")
+                "blockedLocations" to listOf("AdminZone")
             )
         )
         assertEquals(75f, AppSettings.getMinFare(context), 0.01f)
@@ -1199,7 +1197,7 @@ class SecurityHardeningTest {
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf(
-                "autoAcceptEnabled" to false,
+                "isAutoAcceptEnabled" to false,
                 "isMinFareEnabled" to false,
                 "minFare" to 50.0,
                 "isAutoClickEnabled" to false
@@ -1232,5 +1230,460 @@ class SecurityHardeningTest {
         assertFalse(fPrefs.getBoolean("user_min_fare_enabled", true))
         assertFalse(fPrefs.getBoolean("user_auto_click_enabled", true))
     }
+
+    @Test
+    fun authoritativeUnlockedFeaturesFilterStrictlyExcludesDeadTrialAndPassEntries() {
+        LicenseManager.resetStateForTesting(context)
+        val now = LicenseManager.getCurrentServerTimeMs()
+        val deadTrialExpiry = now + 30_000L // edge case: server marked trialUsed=true with un-zeroed future trialExpiry
+        val activePointUnlockExpiry = now + 3_600_000L
+
+        val filtered = LicenseManager.filterAuthoritativeUnlockedFeatures(
+            rawMap = mapOf(
+                FeatureIds.MIN_FARE to deadTrialExpiry,
+                FeatureIds.MAX_FARE to (now - 1000L),
+                FeatureIds.AUTO_CLICK to activePointUnlockExpiry,
+                FeatureIds.TTS_VOICE to -1L
+            ),
+            now = now,
+            passActive = false,
+            trialActive = false,
+            trialUsed = true,
+            trialExpiry = deadTrialExpiry,
+            passExpiry = 0L
+        )
+
+        assertFalse("Expired entry must be excluded", filtered.containsKey(FeatureIds.MAX_FARE))
+        assertFalse("Entry bounded by dead trial must be excluded", filtered.containsKey(FeatureIds.MIN_FARE))
+        assertEquals(activePointUnlockExpiry, filtered[FeatureIds.AUTO_CLICK])
+        assertEquals(-1L, filtered[FeatureIds.TTS_VOICE])
+    }
+
+    @Test
+    fun deviceUtilsNormalizeSha256HandlesColonLowercaseAndRejectsMalformed() {
+        val canonicalHex = "A1B2C3D4E5F60718293A4B5C6D7E8F90A1B2C3D4E5F60718293A4B5C6D7E8F90"
+        val colonLower = canonicalHex.lowercase().chunked(2).joinToString(":")
+        val whitespaceMixed = "  ${canonicalHex.lowercase().substring(0, 32)} \n ${canonicalHex.substring(32)}  "
+
+        assertEquals(canonicalHex, DeviceUtils.normalizeSha256(canonicalHex))
+        assertEquals(canonicalHex, DeviceUtils.normalizeSha256(colonLower))
+        assertEquals(canonicalHex, DeviceUtils.normalizeSha256(whitespaceMixed))
+
+        // Malformed inputs must fail closed to ""
+        assertEquals("", DeviceUtils.normalizeSha256(null))
+        assertEquals("", DeviceUtils.normalizeSha256(""))
+        assertEquals("", DeviceUtils.normalizeSha256("   "))
+        assertEquals("", DeviceUtils.normalizeSha256("sha256_test"))
+        assertEquals("", DeviceUtils.normalizeSha256(canonicalHex.dropLast(1))) // 63 chars
+        assertEquals("", DeviceUtils.normalizeSha256(canonicalHex + "A")) // 65 chars
+        assertEquals("", DeviceUtils.normalizeSha256("G" + canonicalHex.drop(1))) // non-hex
+
+        val runtimeSig = DeviceUtils.getApkSignatureSha256(context)
+        assertTrue(
+            "Unit test APK signature must be valid 64-char uppercase hex, got: $runtimeSig",
+            Regex("^[0-9A-F]{64}$").matches(runtimeSig)
+        )
+
+        // buildActionQueuePayload normalizes colon-separated lowercase SHA-256 and clears malformed values
+        val normalizedPayload = LicenseManager.buildActionQueuePayload(
+            firebaseUid = "uid_sig_1",
+            userEmail = "sig@example.com",
+            hardwareId = "HW-SIG-1",
+            deviceIntegrityOk = true,
+            appSignatureSha256 = colonLower,
+            actionType = "CLAIM_TRIAL",
+            payload = emptyMap()
+        )
+        assertEquals(canonicalHex, normalizedPayload["appSignatureSha256"])
+
+        val malformedPayload = LicenseManager.buildActionQueuePayload(
+            firebaseUid = "uid_sig_1",
+            userEmail = "sig@example.com",
+            hardwareId = "HW-SIG-1",
+            deviceIntegrityOk = true,
+            appSignatureSha256 = "not-a-valid-sha256",
+            actionType = "CLAIM_TRIAL",
+            payload = emptyMap()
+        )
+        assertEquals("", malformedPayload["appSignatureSha256"])
+    }
+
+    @Test
+    fun signatureRejectionCodesFailFastWithoutTimeoutInActionQueueAndPaymentRepo() {
+        val untrustedOutcome = LicenseManager.evaluateActionQueueSnapshot(
+            actionType = "PURCHASE_PASS",
+            status = "REJECTED",
+            errorCode = "UNTRUSTED_APP_SIGNATURE"
+        )
+        assertTrue(untrustedOutcome is LicenseManager.ActionQueueOutcome.Failed)
+        val untrustedMsg = (untrustedOutcome as LicenseManager.ActionQueueOutcome.Failed).errorMessage
+        assertTrue(
+            "Expected friendly official APK guidance, got: $untrustedMsg",
+            untrustedMsg.contains("signature verification failed", ignoreCase = true) &&
+                untrustedMsg.contains("official", ignoreCase = true)
+        )
+
+        val missingConfigOutcome = LicenseManager.evaluateActionQueueSnapshot(
+            actionType = "ACTIVATE_PASS_PAYMENT",
+            status = "FAILED",
+            errorMessage = "SECURITY_CONFIG_MISSING_APP_SHA256"
+        )
+        assertTrue(missingConfigOutcome is LicenseManager.ActionQueueOutcome.Failed)
+        val missingConfigMsg = (missingConfigOutcome as LicenseManager.ActionQueueOutcome.Failed).errorMessage
+        assertTrue(
+            "Expected friendly server config guidance, got: $missingConfigMsg",
+            missingConfigMsg.contains("not configured", ignoreCase = true) &&
+                missingConfigMsg.contains("Admin", ignoreCase = true)
+        )
+
+        // PaymentVerificationRepository classifies both as terminal (cancels active listeners immediately)
+        val repoUntrusted = com.example.data.PaymentVerificationRepository.classifyVerificationRejection(
+            rawError = "UNTRUSTED_APP_SIGNATURE"
+        )
+        assertTrue(repoUntrusted.isTerminal)
+        assertFalse(repoUntrusted.canRetry)
+        assertTrue(repoUntrusted.message.contains("official", ignoreCase = true))
+
+        val repoMissingCfg = com.example.data.PaymentVerificationRepository.classifyVerificationRejection(
+            rawError = null,
+            errorCode = "SECURITY_CONFIG_MISSING_APP_SHA256"
+        )
+        assertTrue(repoMissingCfg.isTerminal)
+        assertTrue(repoMissingCfg.canRetry)
+        assertTrue(repoMissingCfg.message.contains("not configured", ignoreCase = true))
+    }
+
+    @Test
+    fun canonicalSchemaVersion2ParsingPrefersCanonicalKeysAndFallsBackToLegacy() {
+        AppSettings.init(context)
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+        LicenseManager.forceReleaseLoadingState()
+
+        val now = System.currentTimeMillis()
+        val canonicalPassExp = now + 86_400_000L * 7
+        val legacyPassExp = now + 86_400_000L
+        val canonicalFeatureExp = now + 7_200_000L
+        val legacyFeatureExp = now + 3_600_000L
+        val canonicalRemoveAdsExp = now + 86_400_000L * 30
+        val legacyRemoveAdsExp = now + 86_400_000L * 5
+
+        // 1. AppSettings: canonical schemaVersion=2 keys win over legacy keys when both exist
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "schemaVersion" to 2,
+                "activePassType" to "weekly",
+                "passExpiryTimestamp" to canonicalPassExp,
+                "pass_expiry_date" to legacyPassExp,
+                "unlockedFeatures" to mapOf(FeatureIds.MIN_FARE to canonicalFeatureExp),
+                "featureExpiries" to mapOf(FeatureIds.MAX_FARE to legacyFeatureExp),
+                "lockedFeatures" to listOf(FeatureIds.AUTO_CLICK),
+                "locked_features" to listOf(FeatureIds.TTS_VOICE),
+                "blacklistedDestinations" to listOf("Airport", "airport", " Railway Station "),
+                "blockedLocations" to listOf("Legacy Place")
+            )
+        )
+        assertEquals(canonicalPassExp, AppSettings.passExpiryTimestampFlow.value)
+        assertEquals(mapOf(FeatureIds.MIN_FARE to canonicalFeatureExp), AppSettings.unlockedFeaturesFlow.value)
+        assertEquals(setOf(FeatureIds.AUTO_CLICK), AppSettings.lockedFeaturesFlow.value)
+        assertEquals(listOf("Airport", "Railway Station"), AppSettings.getBlockedLocations(context))
+
+        // 2. AppSettings: graceful fallback to legacy keys for unmigrated pre-v2 documents
+        AppSettings.resetBusinessStateForTest(context)
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "activePassType" to "daily",
+                "pass_expiry_date" to legacyPassExp,
+                "featureExpiries" to mapOf(FeatureIds.MAX_FARE to legacyFeatureExp),
+                "locked_features" to listOf(FeatureIds.TTS_VOICE),
+                "blockedLocations" to listOf("Old Bus Stand", "Airport")
+            )
+        )
+        assertEquals(legacyPassExp, AppSettings.passExpiryTimestampFlow.value)
+        assertEquals(mapOf(FeatureIds.MAX_FARE to legacyFeatureExp), AppSettings.unlockedFeaturesFlow.value)
+        assertEquals(setOf(FeatureIds.TTS_VOICE), AppSettings.lockedFeaturesFlow.value)
+        assertEquals(listOf("Airport", "Old Bus Stand"), AppSettings.getBlockedLocations(context))
+
+        // 3. LicenseManager.parseUserProfileSnapshotMap: canonical v2 precedence
+        val parsedV2 = LicenseManager.parseUserProfileSnapshotMap(
+            mapOf(
+                "schemaVersion" to 2,
+                "uid" to "uid_v2",
+                "firebaseUid" to "uid_v2",
+                "userEmail" to "canonical@example.com",
+                "email" to "legacy@example.com",
+                "linkedHardwareId" to "HW-CANONICAL",
+                "hardwareId" to "HW-LEGACY",
+                "points" to 10,
+                "pointsBalance" to 250,
+                "activePassType" to "monthly",
+                "passExpiryTimestamp" to canonicalPassExp,
+                "passExpiry" to legacyPassExp,
+                "removeAdsExpiryTimestamp" to canonicalRemoveAdsExp,
+                "removeAdsExpiryMs" to legacyRemoveAdsExp,
+                "unlockedFeatures" to mapOf(FeatureIds.MIN_FARE to canonicalFeatureExp),
+                "featureExpiries" to mapOf(FeatureIds.MAX_FARE to legacyFeatureExp),
+                "lockedFeatures" to listOf(FeatureIds.AUTO_CLICK),
+                "locked_features" to listOf(FeatureIds.TTS_VOICE),
+                "blacklistedDestinations" to listOf("Sector 18", "Noida"),
+                "blockedLocations" to listOf("Old Zone"),
+                "isBanned" to true,
+                "banReason" to "Tampering detected"
+            )
+        )
+        assertEquals(2, parsedV2.schemaVersion)
+        assertEquals("uid_v2", parsedV2.firebaseUid)
+        assertEquals("canonical@example.com", parsedV2.userEmail)
+        assertEquals("HW-CANONICAL", parsedV2.linkedHardwareId)
+        assertEquals(250L, parsedV2.pointsBalance)
+        assertEquals(250, parsedV2.points)
+        assertTrue(parsedV2.hasPointsField)
+        assertEquals(canonicalPassExp, parsedV2.passExpiryTimestamp)
+        assertEquals(canonicalRemoveAdsExp, parsedV2.removeAdsExpiryTimestamp)
+        assertEquals(mapOf(FeatureIds.MIN_FARE to canonicalFeatureExp), parsedV2.unlockedFeatures)
+        assertEquals(setOf(FeatureIds.AUTO_CLICK), parsedV2.lockedFeatures)
+        assertEquals(listOf("Noida", "Sector 18"), parsedV2.blacklistedDestinations)
+        assertTrue(parsedV2.isBanned)
+
+        // Canonical isBanned=true without future banUntil resolves to permanent ban (Long.MAX_VALUE)
+        val permanentBanUntil = LicenseManager.resolveEffectiveBanUntilMs(parsedV2, now)
+        assertEquals(Long.MAX_VALUE, permanentBanUntil)
+        GlobalAdminManager.syncBanStateFromLicenseManager(permanentBanUntil, parsedV2.banReason)
+        val banState = GlobalAdminManager.banState.value
+        assertTrue(banState is UserBanState.Banned)
+        assertEquals("Permanent", (banState as UserBanState.Banned).formattedDateTime)
+        GlobalAdminManager.syncBanStateFromLicenseManager(null, null)
+
+        // 4. LicenseManager.parseUserProfileSnapshotMap: legacy pre-v2 fallback (points fallback when pointsBalance absent)
+        val parsedLegacy = LicenseManager.parseUserProfileSnapshotMap(
+            mapOf(
+                "uid" to "uid_legacy",
+                "email" to "legacy@example.com",
+                "deviceId" to "DEV-LEGACY",
+                "points" to 85,
+                "passExpiry" to legacyPassExp,
+                "removeAdsExpiryMs" to legacyRemoveAdsExp,
+                "featureExpiries" to mapOf(FeatureIds.MAX_FARE to legacyFeatureExp),
+                "locked_features" to listOf(FeatureIds.TTS_VOICE),
+                "blockedLocations" to listOf("Legacy Drop"),
+                "banUntilTimestamp" to (now + 60_000L)
+            )
+        )
+        assertEquals(1, parsedLegacy.schemaVersion)
+        assertEquals("uid_legacy", parsedLegacy.firebaseUid)
+        assertEquals("legacy@example.com", parsedLegacy.userEmail)
+        assertEquals("DEV-LEGACY", parsedLegacy.linkedHardwareId)
+        assertEquals(85L, parsedLegacy.pointsBalance)
+        assertEquals(85, parsedLegacy.points)
+        assertEquals(legacyPassExp, parsedLegacy.passExpiryTimestamp)
+        assertEquals(legacyRemoveAdsExp, parsedLegacy.removeAdsExpiryTimestamp)
+        assertEquals(mapOf(FeatureIds.MAX_FARE to legacyFeatureExp), parsedLegacy.unlockedFeatures)
+        assertEquals(setOf(FeatureIds.TTS_VOICE), parsedLegacy.lockedFeatures)
+        assertEquals(listOf("Legacy Drop"), parsedLegacy.blacklistedDestinations)
+        assertEquals(now + 60_000L, LicenseManager.resolveEffectiveBanUntilMs(parsedLegacy, now))
+
+        AppSettings.resetBusinessStateForTest(context)
+    }
+
+    @Test
+    fun profilePayloadsEmitOnlyCanonicalSchemaVersion2Keys() {
+        val forbiddenLegacyKeys = setOf(
+            "email", "hardwareId", "deviceId", "userId",
+            "blacklistedDestinations", "blockedLocations"
+        )
+
+        val initPayload = LicenseManager.buildInitProfilePayload(
+            firebaseUid = "uid_clean_01",
+            userEmail = "driver@example.com",
+            hardwareId = "HW-CLEAN-01",
+            legacyCustomId = "OM-USER-OLD1"
+        )
+        assertEquals(
+            setOf("firebaseUid", "userEmail", "linkedHardwareId", "legacyCustomUserId"),
+            initPayload.keys
+        )
+        assertTrue(initPayload.keys.intersect(forbiddenLegacyKeys).isEmpty())
+
+        val updatePayload = LicenseManager.computeNeededProfileUpdates(
+            snapshotFirebaseUid = null,
+            snapshotHardwareId = null,
+            snapshotEmail = null,
+            expectedFirebaseUid = "uid_clean_01",
+            currentHardwareId = "HW-CLEAN-01",
+            authEmail = "driver@example.com"
+        )
+        assertEquals(
+            setOf("firebaseUid", "userEmail", "linkedHardwareId"),
+            updatePayload.keys
+        )
+        assertTrue(updatePayload.keys.intersect(forbiddenLegacyKeys).isEmpty())
+
+        val validSig = "A".repeat(64)
+        val initActionDoc = LicenseManager.buildActionQueuePayload(
+            firebaseUid = "uid_clean_01",
+            userEmail = "driver@example.com",
+            hardwareId = "HW-CLEAN-01",
+            deviceIntegrityOk = true,
+            appSignatureSha256 = validSig,
+            actionType = "INIT_PROFILE",
+            payload = initPayload
+        )
+        assertTrue(initActionDoc.keys.intersect(forbiddenLegacyKeys).isEmpty())
+        assertEquals(validSig, initActionDoc["appSignatureSha256"])
+
+        val updateActionDoc = LicenseManager.buildActionQueuePayload(
+            firebaseUid = "uid_clean_01",
+            userEmail = "driver@example.com",
+            hardwareId = "HW-CLEAN-01",
+            deviceIntegrityOk = true,
+            appSignatureSha256 = validSig,
+            actionType = "UPDATE_PROFILE",
+            payload = updatePayload
+        )
+        assertTrue(updateActionDoc.keys.intersect(forbiddenLegacyKeys).isEmpty())
+        assertEquals(validSig, updateActionDoc["appSignatureSha256"])
+    }
+
+    @Test
+    fun actionRateLimitCooldownEnforces13500MsAnchoredToTerminalCompletionAndServerLastActionTime() {
+        LicenseManager.resetStateForTesting(context)
+        assertEquals(13_500L, LicenseManager.ACTION_RATE_LIMIT_COOLDOWN_MS)
+
+        // 1. PENDING status must NOT prematurely start the completion cooldown
+        val t0 = 1_000_000L
+        val pendingOutcome = LicenseManager.evaluateActionQueueSnapshot(
+            actionType = "PURCHASE_PASS",
+            status = "PENDING",
+            nowElapsed = t0
+        )
+        assertEquals(LicenseManager.ActionQueueOutcome.Pending, pendingOutcome)
+        assertEquals(0L, LicenseManager.getLastActionCompletedAtMsForTesting())
+        assertTrue(LicenseManager.checkActionSubmissionAllowed(nowElapsed = t0 + 1_000L).isSuccess)
+
+        // 2. Terminal COMPLETED, REJECTED, and FAILED each anchor cooldown to completion time for 13_500L ms
+        listOf("COMPLETED", "REJECTED", "FAILED").forEachIndexed { idx, terminalStatus ->
+            LicenseManager.resetStateForTesting(context)
+            val completionElapsed = 2_000_000L + (idx * 50_000L)
+            LicenseManager.evaluateActionQueueSnapshot(
+                actionType = "PURCHASE_PASS",
+                status = terminalStatus,
+                errorMessage = if (terminalStatus == "COMPLETED") null else "Server rejected",
+                nowElapsed = completionElapsed
+            )
+            assertEquals(completionElapsed, LicenseManager.getLastActionCompletedAtMsForTesting())
+
+            // Blocked at +12_000ms (still inside 13.5s safety buffer) and +13_499ms
+            assertEquals(1_500L, LicenseManager.computeActionCooldownRemainingMs(completionElapsed + 12_000L))
+            assertEquals(1L, LicenseManager.computeActionCooldownRemainingMs(completionElapsed + 13_499L))
+            val blockedResult = LicenseManager.checkActionSubmissionAllowed(completionElapsed + 12_500L)
+            assertTrue("Status $terminalStatus must block premature follow-up action", blockedResult.isFailure)
+            assertTrue(
+                "Expected friendly cooldown message, got: ${blockedResult.exceptionOrNull()?.message}",
+                blockedResult.exceptionOrNull()?.message?.contains("Please wait a few seconds before trying again", ignoreCase = true) == true
+            )
+
+            // Permitted cleanly once 13_500L ms has elapsed since terminal completion
+            assertEquals(0L, LicenseManager.computeActionCooldownRemainingMs(completionElapsed + 13_500L))
+            assertTrue(LicenseManager.checkActionSubmissionAllowed(completionElapsed + 13_500L).isSuccess)
+        }
+
+        // 3. In-flight lock prevents duplicate concurrent action submissions with friendly message
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.setActionInFlightForTesting(true)
+        val inFlightResult = LicenseManager.checkActionSubmissionAllowed(nowElapsed = 5_000_000L)
+        assertTrue(inFlightResult.isFailure)
+        assertEquals(LicenseManager.ACTION_COOLDOWN_FRIENDLY_MESSAGE, inFlightResult.exceptionOrNull()?.message)
+        LicenseManager.setActionInFlightForTesting(false)
+        assertTrue(LicenseManager.checkActionSubmissionAllowed(nowElapsed = 5_000_000L).isSuccess)
+
+        // 4. Server users/{uid}.lastActionTime enforces the 13_500L ms window
+        LicenseManager.resetStateForTesting(context)
+        val nowServer = 1_900_000_000_000L
+        val nowElapsed = 6_000_000L
+        LicenseManager.updateLastActionCooldownFromServerTimestamp(
+            lastActionServerMs = nowServer - 12_500L,
+            nowServerMs = nowServer,
+            nowElapsed = nowElapsed
+        )
+        assertEquals(1_000L, LicenseManager.computeActionCooldownRemainingMs(nowElapsed))
+        assertTrue(LicenseManager.checkActionSubmissionAllowed(nowElapsed).isFailure)
+        assertEquals(0L, LicenseManager.computeActionCooldownRemainingMs(nowElapsed + 1_000L))
+        assertTrue(LicenseManager.checkActionSubmissionAllowed(nowElapsed + 1_000L).isSuccess)
+    }
+
+    @Test
+    fun pointsBalanceAndPointsResolveIdenticallyAcrossLicenseManagerAndAppSettings() {
+        AppSettings.init(context)
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+
+        // Case 1: Both pointsBalance and points exist -> pointsBalance wins identically in both
+        val bothDoc: Map<String, Any?> = mapOf(
+            "pointsBalance" to 420L,
+            "points" to 90L
+        )
+        AppSettings.applyFirestoreSnapshotForTest(context, bothDoc)
+        val parsedBoth = LicenseManager.parseUserProfileSnapshotMap(bothDoc)
+        assertEquals(420L, LicenseManager.resolvePointsBalanceFromMap(bothDoc))
+        assertEquals(420L, parsedBoth.pointsBalance)
+        assertEquals(420, parsedBoth.points)
+        assertEquals(420L, AppSettings.pointsBalanceFlow.value)
+
+        // Case 2: Only points exists -> falls back to points identically in both
+        val pointsOnlyDoc: Map<String, Any?> = mapOf(
+            "points" to 175
+        )
+        AppSettings.applyFirestoreSnapshotForTest(context, pointsOnlyDoc)
+        val parsedPointsOnly = LicenseManager.parseUserProfileSnapshotMap(pointsOnlyDoc)
+        assertEquals(175L, LicenseManager.resolvePointsBalanceFromMap(pointsOnlyDoc))
+        assertEquals(175L, parsedPointsOnly.pointsBalance)
+        assertEquals(175, parsedPointsOnly.points)
+        assertEquals(175L, AppSettings.pointsBalanceFlow.value)
+
+        // Case 3: Neither field exists -> defaults to 0L identically in both
+        val emptyDoc: Map<String, Any?> = mapOf("activePassType" to "none")
+        AppSettings.applyFirestoreSnapshotForTest(context, emptyDoc)
+        val parsedEmpty = LicenseManager.parseUserProfileSnapshotMap(emptyDoc)
+        assertEquals(0L, LicenseManager.resolvePointsBalanceFromMap(emptyDoc))
+        assertEquals(0L, parsedEmpty.pointsBalance)
+        assertEquals(0, parsedEmpty.points)
+        assertEquals(0L, AppSettings.pointsBalanceFlow.value)
+
+        AppSettings.resetBusinessStateForTest(context)
+    }
+
+    @Test
+    fun passTierFromIdRoundTripsBothCanonicalWireIdsAndStoredCodes() {
+        val expectedPairs = listOf(
+            Triple(PassTier.DAILY, "daily", "daily_pass"),
+            Triple(PassTier.WEEKLY, "weekly", "weekly_pass"),
+            Triple(PassTier.MONTHLY, "monthly", "monthly_pass"),
+            Triple(PassTier.REMOVE_ADS, "remove_ads", "remove_ads_pass")
+        )
+
+        expectedPairs.forEach { (tier, canonicalWireId, storedCode) ->
+            assertEquals(canonicalWireId, tier.canonicalId)
+            assertEquals(storedCode, tier.id)
+
+            // Exact canonical wire ID & stored code round-trips
+            assertEquals(tier, PassTier.fromId(canonicalWireId))
+            assertEquals(tier, PassTier.fromId(storedCode))
+            assertEquals(tier, PassTier.fromId(tier.canonicalId))
+            assertEquals(tier, PassTier.fromId(tier.id))
+
+            // Case-insensitive & whitespace-trimmed inputs
+            assertEquals(tier, PassTier.fromId("  ${canonicalWireId.uppercase()}  "))
+            assertEquals(tier, PassTier.fromId("  ${storedCode.uppercase()}  "))
+        }
+
+        // Non-pass / invalid values strictly return null
+        listOf(null, "", "  ", "none", "NONE", "null", "free", "invalid_tier").forEach { invalid ->
+            assertNull("Expected null for '$invalid'", PassTier.fromId(invalid))
+        }
+    }
 }
+
+
 

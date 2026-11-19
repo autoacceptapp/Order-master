@@ -215,8 +215,7 @@ class OrderMasterTest {
             pickupLocation = "Test Station",
             dropLocation = "Test Airport",
             isAccepted = true,
-            decisionReason = "MATCHED: Valid fare and distance",
-            rawText = "₹250 Test Station to Test Airport"
+            decisionReason = "MATCHED: Valid fare and distance"
         )
 
         dao.insertOrder(testOrder)

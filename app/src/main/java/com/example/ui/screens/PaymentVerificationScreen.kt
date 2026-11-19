@@ -121,17 +121,14 @@ import com.example.PassTier
 import com.example.data.PaymentVerificationState
 import com.example.ui.theme.AmberAccent
 import com.example.ui.theme.PrimaryEmerald
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * PaymentVerificationScreen
  *
  * Automated UPI Payment Verification Screen via Firebase Firestore.
  * Handles:
- * - Scenario A: Server updated /received_payments/{utr} first (Instant Match).
- * - Scenario B: User entered UTR first (Real-time snapshot listener on /received_payments/{utr}).
+ * - Scenario A: Server updated pending_verifications/{utr} first (Instant Match).
+ * - Scenario B: User entered UTR first (Real-time snapshot listener on pending_verifications/{utr}).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -151,6 +148,7 @@ fun PaymentVerificationScreen(
     val selectedTier by viewModel.selectedTier.collectAsState()
     val isUtrValid by viewModel.isUtrValid.collectAsState()
     val isPaymentSystemActive by GlobalAdminManager.isPaymentSystemActive.collectAsState()
+    val paymentConfig by com.example.data.repository.AppConfigRepository.currentPaymentConfig.collectAsState()
 
     var merchantVpa by remember { mutableStateOf("") }
     var merchantName by remember { mutableStateOf("OrderMaster Captain Store") }
@@ -319,12 +317,13 @@ fun PaymentVerificationScreen(
                         ) {
                             PassTier.entries.forEach { tier ->
                                 val isSelected = selectedTier == tier
+                                val chipPrice = remember(paymentConfig, tier) { tier.effectivePriceInInr() }
                                 FilterChip(
                                     selected = isSelected,
                                     onClick = { viewModel.onSelectTier(tier) },
                                     label = {
                                         Text(
-                                            text = "${tier.title} (₹${tier.priceInInr})",
+                                            text = "${tier.title} (₹$chipPrice)",
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
                                         )
                                     },
@@ -352,6 +351,7 @@ fun PaymentVerificationScreen(
                 item {
                     MerchantPaymentQrCard(
                         selectedTier = selectedTier,
+                        effectiveAmountInr = remember(paymentConfig, selectedTier) { selectedTier.effectivePriceInInr() },
                         merchantVpa = merchantVpa,
                         merchantName = merchantName,
                         onCopyVpa = {
@@ -492,6 +492,7 @@ fun ScannableUpiQrCode(
 @Composable
 private fun MerchantPaymentQrCard(
     selectedTier: PassTier,
+    effectiveAmountInr: Int,
     merchantVpa: String,
     merchantName: String,
     onCopyVpa: () -> Unit,
@@ -537,7 +538,7 @@ private fun MerchantPaymentQrCard(
                     color = PrimaryEmerald.copy(alpha = 0.15f)
                 ) {
                     Text(
-                        text = "₹${selectedTier.priceInInr}",
+                        text = "₹$effectiveAmountInr",
                         style = MaterialTheme.typography.headlineSmall.copy(
                             fontWeight = FontWeight.ExtraBold,
                             color = PrimaryEmerald
@@ -547,12 +548,12 @@ private fun MerchantPaymentQrCard(
                 }
             }
 
-            val upiUri = remember(merchantVpa, selectedTier) {
+            val upiUri = remember(merchantVpa, selectedTier, effectiveAmountInr) {
                 if (merchantVpa.isNotBlank()) {
                     QrCodeGenerator.getUpiUriString(
                         vpa = merchantVpa,
                         name = merchantName,
-                        amount = selectedTier.priceInInr.toDouble(),
+                        amount = effectiveAmountInr.toDouble(),
                         note = "Pass ${selectedTier.title}"
                     )
                 } else {
@@ -574,7 +575,7 @@ private fun MerchantPaymentQrCard(
                     ScannableUpiQrCode(
                         upiUri = upiUri,
                         modifier = Modifier.size(190.dp),
-                        contentDescription = "Scan to pay ₹${selectedTier.priceInInr} to $merchantVpa"
+                        contentDescription = "Scan to pay ₹$effectiveAmountInr to $merchantVpa"
                     )
 
                     Spacer(modifier = Modifier.height(10.dp))
@@ -655,7 +656,7 @@ private fun MerchantPaymentQrCard(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Pay ₹${selectedTier.priceInInr} Directly in UPI App",
+                    text = "Pay ₹$effectiveAmountInr Directly in UPI App",
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                 )
             }
@@ -915,13 +916,23 @@ private fun PendingVerificationBanner(
                     modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    if (pendingState.message.isNotBlank()) {
+                        Text(
+                            text = pendingState.message,
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            ),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                     Text(
                         text = "• Logged under /pending_verifications/${pendingState.utr}",
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = "• As soon as the payment confirmation is processed, our secure server will update Firestore and this screen will unlock instantly.",
+                        text = "• As soon as the bank SMS confirmation arrives, our secure server will update Firestore and activate your pass automatically.",
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1037,8 +1048,10 @@ private fun VerificationSuccessCard(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text("Access Valid Until:", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        val df = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault())
-                        Text(df.format(Date(successState.expiryTimestamp)), fontWeight = FontWeight.Bold)
+                        val formattedExpiry = remember(successState.expiryTimestamp) {
+                            GlobalAdminManager.formatDateTime(successState.expiryTimestamp)
+                        }
+                        Text(formattedExpiry, fontWeight = FontWeight.Bold)
                     }
                 }
             }

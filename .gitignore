@@ -22,4 +22,4 @@ app/google-services.json
 release.jks
 app/release.jks
 *-debug.log
-
+/.build-outputs/

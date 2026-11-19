@@ -1,60 +1,8 @@
 <resources>
     <string name="app_name">Order Master</string>
     <string name="default_web_client_id">14592259076-qak6f3tv5feuabvovsvt7s9roj1skgjt.apps.googleusercontent.com</string>
-    <string name="accessibility_service_name">Smart Text Notification &amp; Analysis Service</string>
-    <string name="accessibility_service_description">Educational smart accessibility service for notification and on-screen text analysis, evaluating currency values and distance thresholds.</string>
-
-    <!-- Language Identifiers in UTF-8 -->
-    <string name="language_english">English (en-IN)</string>
-    <string name="language_hindi">Hindi (हिन्दी)</string>
-    <string name="test_voice_announcement_en">Test Voice Announcement</string>
-    <string name="test_voice_announcement_hi">Test Speech (परीक्षण आवाज़ सुनें)</string>
-
-    <!-- Dashboard Headers and Titles -->
-    <string name="app_header_title">Captain Auto-Accept</string>
-    <string name="app_header_subtitle">Ride Request Automation</string>
-    <string name="title_filter_settings">Decision Thresholds</string>
-    <string name="title_acceptance_criteria">Acceptance Criteria</string>
-    <string name="title_voice_announcer">Voice Announcer (TTS)</string>
-    <string name="subtitle_voice_announcer">Speaks ride fare, pickup distance &amp; status</string>
-    <string name="title_ride_simulator">Ride Request Sandbox</string>
-    <string name="subtitle_ride_simulator">Test live string parsing and validation without waiting for an actual on-road ride request:</string>
-    <string name="title_activity_logs">Live Activity &amp; Action Feed</string>
-    <string name="no_events_logged">No events logged yet. Screen activity and evaluations will appear here.</string>
-
-    <!-- Permissions and Readiness -->
-    <string name="status_service_active">● Accessibility Service is ACTIVE</string>
-    <string name="status_service_inactive">○ Accessibility Service is INACTIVE (Tap button below to grant permission)</string>
-    <string name="background_readiness_title">Background Readiness</string>
-    <string name="badge_ready">READY</string>
-    <string name="badge_attention">ATTENTION</string>
-    <string name="perm_accessibility_title">Accessibility</string>
-    <string name="perm_overlay_title">Overlay</string>
-    <string name="perm_battery_title">Battery Saver</string>
-    <string name="btn_manage_all_permissions">Manage All Permissions &amp; Auto-Start</string>
-    <string name="btn_enable">Enable</string>
-
-    <!-- Automation Controls -->
-    <string name="label_enable_service_switch">Auto-Accept Automation</string>
-    <string name="desc_enable_service_switch_on">Automated click triggers automatically when offer criteria are satisfied.</string>
-    <string name="desc_enable_service_switch_off">Automation is paused. Screen requests will be evaluated and logged only.</string>
-    <string name="btn_open_accessibility_settings">Open Accessibility Settings</string>
-
-    <!-- Filter Labels & Hints -->
-    <string name="label_min_value_filter">Minimum Value Filter (₹ / $)</string>
-    <string name="hint_min_value_filter">e.g. 150</string>
-    <string name="label_max_distance_filter">Maximum Distance Filter (km)</string>
-    <string name="hint_max_distance_filter">e.g. 8.5</string>
-    <string name="filter_title">Minimum Value Filter (₹ / $)</string>
-    <string name="filter_desc">Extracts ₹, Rs., $ patterns (e.g. ₹100 + ₹50, Rs. 150, $75)</string>
-    <string name="filter_condition">requires sum &gt;= this value</string>
-
-    <!-- Educational Live Demo -->
-    <string name="educational_demo_title">Educational Live Sandbox</string>
-    <string name="educational_demo_desc">Test on-screen regex parsing and auto-action directly:</string>
-    <string name="demo_order_text">New Offer: ₹180 + ₹40 • Distance: 4.2 km</string>
-    <string name="demo_accept_button">Accept</string>
-    <string name="demo_result_idle">Tap or edit test offer to evaluate hierarchy</string>
+    <string name="accessibility_service_name">Order Master Ride Evaluation Service</string>
+    <string name="accessibility_service_description">Evaluates incoming Rapido Captain ride offers against your configured fare, distance, and route rules for real-time voice alerts and auto-acceptance.</string>
 
     <!-- AppSettingsScreen Localized Strings -->
     <string name="settings_title_permissions_setup">Permissions &amp; System Setup</string>
@@ -70,7 +18,6 @@
     <string name="settings_section_critical_permissions">CRITICAL FOR ORDER ACCEPTANCE</string>
     <string name="settings_section_background_survival">BACKGROUND SURVIVAL &amp; NOTIFICATIONS</string>
     <string name="settings_section_in_app_updater">IN-APP UPDATER &amp; RELEASES</string>
-    <string name="settings_section_hardware_id">PERMANENT DEVICE HARDWARE ID</string>
     <string name="settings_banner_ready_title">Ready for Auto-Acceptance</string>
     <string name="settings_banner_action_required_title">Action Required</string>
     <string name="settings_banner_ready_desc">All critical background guards are active</string>
@@ -82,8 +29,6 @@
     <string name="settings_btn_manage">Manage</string>
     <string name="settings_btn_enable">Enable</string>
     <string name="settings_oem_title">💡 Xiaomi / Realme / Oppo / Vivo Captains</string>
-    <string name="settings_oem_desc">Aggressive OEM battery savers often kill background apps when the screen turns off. Ensure \'Auto-Start\' is switched ON and Battery Saver is set to \'No Restrictions\'.</string>
-    <string name="settings_oem_btn_open">Open OEM Device Manager / Auto-Start</string>
     <string name="settings_updater_title">Release Updates</string>
     <string name="settings_updater_version_format">v%1$s (Build %2$d)</string>
     <string name="settings_updater_checking">Checking...</string>
@@ -93,65 +38,4 @@
     <string name="settings_updater_error_format">Unable to check updates: %1$s</string>
     <string name="settings_updater_auto_check_title">Automatic Update Check</string>
     <string name="settings_updater_auto_check_desc">Silently check for newer captain builds on app launch</string>
-    <string name="settings_toast_pass_activated">Pass Activated!</string>
-    <string name="settings_toast_payment_failed">Payment Failed/Not Verified</string>
-
-    <!-- HardwareIdManager Localized Strings -->
-    <string name="hwid_card_title">Device Hardware ID</string>
-    <string name="hwid_card_subtitle">Permanent DRM Hardware UUID</string>
-    <string name="hwid_badge_permanent">PERMANENT</string>
-    <string name="hwid_source_label">Source: %1$s</string>
-    <string name="hwid_description">Tied to physical crypto-hardware. This identifier never changes, even after factory reset or app uninstallation.</string>
-    <string name="hwid_btn_copy">Copy Hardware ID</string>
-    <string name="hwid_btn_copied">Copied to Clipboard!</string>
-    <string name="hwid_clipboard_label">Device Hardware ID</string>
-    <string name="hwid_toast_copied">%1$s copied to clipboard!</string>
-
-    <!-- PaymentActivity Localized Strings -->
-    <string name="payment_screen_title">UPI Payment &amp; Verification</string>
-    <string name="payment_cd_back">Back</string>
-    <string name="payment_header_title">Secure Automated Verification</string>
-    <string name="payment_header_desc">Pay via any UPI app, then submit the 12-digit UTR / UPI Ref number to unlock your pass.</string>
-    <string name="payment_step_1_title">1. Select Pass Plan</string>
-    <string name="payment_price_format">₹%1$d</string>
-    <string name="payment_duration_single_day">%1$d Day</string>
-    <string name="payment_duration_multi_day">%1$d Days</string>
-    <string name="payment_step_2_title">2. Pay ₹%1$d via UPI</string>
-    <string name="payment_admin_upi_badge">Admin UPI ID</string>
-    <string name="payment_qr_cd_format">Scan to pay ₹%1$d via UPI</string>
-    <string name="payment_qr_fetching">Fetching payment details...</string>
-    <string name="payment_system_unavailable">Payment system temporarily unavailable. Please try again later.</string>
-    <string name="payment_qr_scan_caption">Scan QR with any UPI App (GPay / PhonePe / Paytm / BHIM)</string>
-    <string name="payment_loading_upi_details">Loading UPI details...</string>
-    <string name="payment_payee_label">Payee: %1$s</string>
-    <string name="payment_btn_copy">Copy</string>
-    <string name="payment_toast_upi_copied">UPI ID copied: %1$s</string>
-    <string name="payment_btn_checking_upi">Checking UPI Config...</string>
-    <string name="payment_btn_unavailable">Payment Unavailable</string>
-    <string name="payment_btn_open_upi">Open UPI App (GPay / PhonePe / Paytm)</string>
-    <string name="payment_upi_hint">• Click to pay directly, or copy the UPI ID into your preferred payment app.</string>
-    <string name="payment_step_3_title">3. Enter 12-Digit UTR / UPI Ref Number</string>
-    <string name="payment_step_3_desc">After completing your payment, copy the 12-digit UTR / UPI Ref number from the payment receipt and enter it below.</string>
-    <string name="payment_utr_label">12-Digit UTR / UPI Ref No.</string>
-    <string name="payment_utr_placeholder">e.g. 426719823451</string>
-    <string name="payment_cd_paste">Paste from clipboard</string>
-    <string name="payment_toast_pasted">Pasted: %1$s</string>
-    <string name="payment_toast_no_clip">No 12-digit UTR found in clipboard</string>
-    <string name="payment_utr_need_more">Enter all 12 digits (%1$d more)</string>
-    <string name="payment_utr_hint">Found on GPay/PhonePe receipt</string>
-    <string name="payment_char_count_format">%1$d/12</string>
-    <string name="payment_verifying_msg">Waiting for bank confirmation... This may take up to 2 minutes.</string>
-    <string name="payment_success_msg">Pass Activated! Valid for %1$d day(s).</string>
-    <string name="payment_toast_success">✅ Pass Activated Successfully!</string>
-    <string name="payment_btn_verify">Verify Payment</string>
-    <string name="payment_status_verifying_title">Verifying... Please wait</string>
-    <string name="payment_status_success_title">Verification Success</string>
-    <string name="payment_status_pending_title">Pending Verification</string>
-    <string name="payment_status_claimed_title">Already Claimed</string>
-    <string name="payment_status_notice_title">Verification Notice</string>
-    <string name="payment_status_default_title">Status</string>
-    <string name="payment_tip_pending">Tip: Our secure backend verifies bank confirmations in seconds. If you just paid, please wait 30 to 60 seconds and tap \'Verify Payment\' again.</string>
-    <string name="payment_help_title">Where to find the 12-digit UTR?</string>
-    <string name="payment_help_desc">• Google Pay: Tap the payment &gt; Look for \'UPI transaction ID\'\n• PhonePe: View History &gt; Payment Details &gt; \'UTR\'\n• Paytm: Passbook / Transaction History &gt; \'UPI Ref No.\'\n• Any Bank: Look for 12 digits starting with the current day/month sequence.</string>
-    <string name="payment_default_payee_name">OrderMaster Captain Store</string>
 </resources>

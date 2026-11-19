@@ -59,10 +59,9 @@ object GlobalAdminManager {
 
     private val isInitialized = AtomicBoolean(false)
 
-    // Listener registrations
+    // Listener registration for app_settings/global
     private val listenerLock = Any()
     private var globalSettingsListener: ListenerRegistration? = null
-    private var userDocListener: ListenerRegistration? = null
 
     // State: Global Kill Switch
     private val _isServiceActive = MutableStateFlow(true)
@@ -79,7 +78,7 @@ object GlobalAdminManager {
     private val _isInAppUpdateActive = MutableStateFlow(true)
     val isInAppUpdateActive: StateFlow<Boolean> = _isInAppUpdateActive.asStateFlow()
 
-    // State: User Ban
+    // State: User Ban (synchronized from LicenseManager's single users/{uid} listener)
     private val _banState = MutableStateFlow<UserBanState>(UserBanState.NotBanned)
     val banState: StateFlow<UserBanState> = _banState.asStateFlow()
 
@@ -87,36 +86,13 @@ object GlobalAdminManager {
     private val _isBlocked = MutableStateFlow(false)
     val isBlocked: StateFlow<Boolean> = _isBlocked.asStateFlow()
 
-    @Volatile
-    private var trackedUid: String? = null
-
-    // Periodic ticker to automatically unban once banUntil timestamp passes
-    private val banExpiryTicker = object : Runnable {
-        override fun run() {
-            evaluateCurrentBanState()
-            mainHandler.postDelayed(this, 10000L) // checks every 10 seconds
-        }
-    }
-
     /**
-     * Initializes GlobalAdminManager with application context.
-     * Starts listening to global service switch and attaches auth listener for ban tracking.
+     * Initializes GlobalAdminManager with application context and starts listening to app_settings/global.
      */
     fun init(context: Context) {
         appContext = context.applicationContext
         if (isInitialized.compareAndSet(false, true)) {
             startGlobalServiceListener()
-            mainHandler.post(banExpiryTicker)
-
-            // Attach Firebase Auth state change observer
-            try {
-                FirebaseAuth.getInstance().addAuthStateListener { auth ->
-                    val user = auth.currentUser
-                    onUserAuthChanged(user?.uid)
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed adding auth state listener: ${e.message}")
-            }
         }
     }
 
@@ -124,7 +100,7 @@ object GlobalAdminManager {
      * Attaches real-time snapshot listener on `app_settings/global`.
      */
     fun startGlobalServiceListener() {
-        val ctx = appContext ?: return
+        val ctx = appContext ?: LicenseManager.getAppContext() ?: return
         if (FirebaseApp.getApps(ctx).isEmpty()) {
             Log.w(TAG, "FirebaseApp is not initialized; delaying global settings listener.")
             return
@@ -175,114 +151,36 @@ object GlobalAdminManager {
     }
 
     /**
-     * Re-attaches user ban listener whenever the signed-in Firebase user changes.
+     * Detaches global settings listener during teardown/tests.
      */
-    fun onUserAuthChanged(uid: String?) {
-        val ctx = appContext
+    fun detachGlobalServiceListener() {
         synchronized(listenerLock) {
-            if (!uid.isNullOrBlank() && trackedUid == uid && userDocListener != null) {
-                return
-            }
-            trackedUid = uid
-            userDocListener?.remove()
-            userDocListener = null
-
-            if (ctx == null || FirebaseApp.getApps(ctx).isEmpty()) {
-                if (uid.isNullOrBlank()) {
-                    _banState.value = UserBanState.NotBanned
-                    updateBlockedState()
-                }
-                return
-            }
-
-            if (uid.isNullOrBlank()) {
-                _banState.value = UserBanState.NotBanned
-                updateBlockedState()
-                return
-            }
-
-            try {
-                val firestore = FirebaseFirestore.getInstance()
-                val userDocRef = firestore.collection(COLL_USERS).document(uid)
-                userDocListener = userDocRef.addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        Log.w(TAG, "User ban listener error on users/$uid: ${error.message}")
-                        return@addSnapshotListener
-                    }
-                    processUserBanSnapshot(snapshot)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed attaching user ban listener: ${e.message}", e)
-            }
+            globalSettingsListener?.remove()
+            globalSettingsListener = null
         }
     }
 
     /**
-     * Evaluates ban status from a user document snapshot.
+     * Synchronizes user ban state directly from LicenseManager's single `users/{uid}` snapshot listener and ticker,
+     * eliminating duplicate Firestore listeners and duplicate periodic handlers on `users/{uid}`.
      */
-    private fun processUserBanSnapshot(snapshot: DocumentSnapshot?) {
-        if (snapshot == null || !snapshot.exists()) {
-            _banState.value = UserBanState.NotBanned
-            updateBlockedState()
-            return
-        }
-
-        val banUntilTimestamp = extractBanUntilTimestamp(snapshot)
+    fun syncBanStateFromLicenseManager(banUntilTimestamp: Long?, reason: String?) {
         val now = LicenseManager.getCurrentServerTimeMs()
-
         if (banUntilTimestamp != null && banUntilTimestamp > now) {
-            val formatted = formatDateTime(banUntilTimestamp)
-            val reason = snapshot.getString("banReason") ?: snapshot.getString("reason")
+            val formatted = if (banUntilTimestamp == Long.MAX_VALUE) {
+                "Permanent"
+            } else {
+                formatDateTime(banUntilTimestamp)
+            }
             _banState.value = UserBanState.Banned(
                 banUntilTimestamp = banUntilTimestamp,
                 formattedDateTime = formatted,
                 reason = reason
             )
-            Log.w(TAG, "User is currently BANNED until $formatted (ts: $banUntilTimestamp). Reason: $reason")
         } else {
             _banState.value = UserBanState.NotBanned
         }
         updateBlockedState()
-    }
-
-    /**
-     * Safely parses `banUntil` field from Firestore.
-     * Supports Firestore Timestamp, java.util.Date, Long epoch ms, or Number.
-     * Null or absent fields return null (treated as not banned).
-     */
-    private fun extractBanUntilTimestamp(snapshot: DocumentSnapshot): Long? {
-        return try {
-            val timestampObj = snapshot.getTimestamp("banUntil")
-            if (timestampObj != null) {
-                return timestampObj.toDate().time
-            }
-            val dateObj = snapshot.getDate("banUntil")
-            if (dateObj != null) {
-                return dateObj.time
-            }
-            val longObj = snapshot.getLong("banUntil")
-            if (longObj != null && longObj > 0L) {
-                return longObj
-            }
-            val numberObj = snapshot.get("banUntil") as? Number
-            numberObj?.toLong()
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Ticker check: if user was banned but banUntil has now passed, automatically lift the ban.
-     */
-    private fun evaluateCurrentBanState() {
-        val current = _banState.value
-        if (current is UserBanState.Banned) {
-            if (LicenseManager.getCurrentServerTimeMs() >= current.banUntilTimestamp) {
-                Log.i(TAG, "User ban expired naturally at timestamp ${current.banUntilTimestamp}. Lifting ban.")
-                _banState.value = UserBanState.NotBanned
-                updateBlockedState()
-            }
-        }
     }
 
     private fun updateBlockedState() {

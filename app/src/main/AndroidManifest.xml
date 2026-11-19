@@ -158,12 +158,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".PaymentActivity"
-            android:exported="false"
-            android:label="Payment Verification"
-            android:windowSoftInputMode="adjustResize" />
-
         <!-- Dedicated RapidoAccessibilityService -->
         <service
             android:name=".RapidoAccessibilityService"
@@ -202,6 +196,7 @@
         <!-- System DownloadManager completion receiver -->
         <receiver
             android:name=".DownloadCompleteReceiver"
+            android:permission="android.permission.SEND_DOWNLOAD_COMPLETED_INTENTS"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />

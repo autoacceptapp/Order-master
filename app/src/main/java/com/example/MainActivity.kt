@@ -210,6 +210,10 @@ class MainActivity : ComponentActivity() {
                     )
                 } else {
                     val appConfig by AppConfigRepository.observeAppConfig().collectAsState(initial = AppConfig())
+                    @Suppress("UNUSED_VARIABLE")
+                    val paymentConfig by AppConfigRepository.observePaymentConfig().collectAsState(
+                        initial = com.example.data.repository.PaymentConfig()
+                    )
                     val isForceUpdateRequired = BuildConfig.VERSION_CODE < appConfig.minSupportedVersionCode
 
                     // 1. Force Update Dialog (Strict, non-dismissible, blocks the app if version is too old)

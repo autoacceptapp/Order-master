@@ -1,7 +1,6 @@
 package com.example
 
 import android.content.Context
-import android.content.Intent
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
@@ -15,6 +14,7 @@ import androidx.compose.runtime.Immutable
 import com.example.data.OrderEntity
 import com.example.data.OrderRepository
 import com.google.firebase.FirebaseApp
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.DocumentSnapshot
@@ -32,9 +32,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.tasks.await
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 @Immutable
 data class SupportedLanguage(
@@ -103,13 +105,7 @@ data class SettingsState(
     val passExpiryTimestamp: Long = 0L,
     val unlockedFeatures: Map<String, Long> = emptyMap(),
     val lockedFeatures: Set<String> = emptySet()
-) {
-    val autoAcceptEnabled: Boolean get() = isAutoAcceptEnabled
-    val minPrice: Float get() = minFare
-    val maxPrice: Float get() = maxFare
-    val maxDistance: Float get() = maxPickupDistance
-    val selectedLanguage: String get() = voiceLanguage
-}
+)
 
 @Immutable
 data class UserAuthState(
@@ -148,7 +144,6 @@ object AppSettings {
     const val KEY_HOME_TUTORIAL_COMPLETED = "key_home_tutorial_completed"
     const val KEY_SPEECH_RATE = "key_speech_rate"
     const val KEY_SPEECH_PITCH = "key_speech_pitch"
-    const val KEY_LOGIN_DISMISSED = "key_login_dismissed"
 
     // User-Controlled Filter Preferences & Toggle Keys (stored in USER_FILTER_PREFS_NAME, never grant entitlements)
     private const val FKEY_AUTO_ACCEPT = "user_auto_accept_enabled"
@@ -177,39 +172,7 @@ object AppSettings {
         KEY_ONBOARDING_COMPLETED,
         KEY_HOME_TUTORIAL_COMPLETED,
         KEY_SPEECH_RATE,
-        KEY_SPEECH_PITCH,
-        KEY_LOGIN_DISMISSED
-    )
-
-    // Legacy business/auth keys purged from PREFS_NAME on init
-    private val LEGACY_KEYS_TO_PURGE = listOf(
-        "key_auto_accept_enabled",
-        "key_min_fare_enabled",
-        "key_min_fare",
-        "key_max_fare_enabled",
-        "key_max_fare",
-        "key_max_pickup_dist_enabled",
-        "key_max_pickup_distance",
-        "key_max_drop_dist_enabled",
-        "key_max_drop_distance",
-        "key_click_delay_ms",
-        "key_min_per_km_rate_enabled",
-        "key_min_per_km_rate",
-        "key_destination_blacklist_enabled",
-        "key_blocked_locations",
-        "key_voice_announcer_enabled",
-        "key_floating_overlay_enabled",
-        "key_auto_click_enabled",
-        "key_user_is_logged_in",
-        "key_user_email",
-        "key_user_name",
-        "key_user_photo_url",
-        "key_user_uid",
-        "key_user_id_token",
-        "key_service_enabled",
-        "key_min_value",
-        "key_max_value",
-        "key_max_distance"
+        KEY_SPEECH_PITCH
     )
 
     // Broadcast actions for service logging
@@ -394,12 +357,15 @@ object AppSettings {
     private val _userAuthState = MutableStateFlow(UserAuthState())
     val userAuthState: StateFlow<UserAuthState> = _userAuthState.asStateFlow()
 
-    // Reactive StateFlows for Subscription Pass Expiry (RAM-only)
+    // Reactive StateFlows for Subscription Pass Expiry & Points Balance (RAM-only)
     private val _passExpiryTimestampFlow = MutableStateFlow(0L)
     val passExpiryTimestampFlow: StateFlow<Long> = _passExpiryTimestampFlow.asStateFlow()
 
     private val _isPassActiveFlow = MutableStateFlow(false)
     val isPassActiveFlow: StateFlow<Boolean> = _isPassActiveFlow.asStateFlow()
+
+    private val _pointsBalanceFlow = MutableStateFlow(0L)
+    val pointsBalanceFlow: StateFlow<Long> = _pointsBalanceFlow.asStateFlow()
 
     // Reactive StateFlows for App & Voice Language Selection (Local UI Prefs)
     private val _isLanguageSelectedFlow = MutableStateFlow(false)
@@ -671,24 +637,6 @@ object AppSettings {
         editor.apply()
     }
 
-    private fun purgeLegacyBusinessPrefs(prefs: SharedPreferences) {
-        var needsEdit = false
-        for (legacyKey in LEGACY_KEYS_TO_PURGE) {
-            if (prefs.contains(legacyKey)) {
-                needsEdit = true
-                break
-            }
-        }
-        if (needsEdit) {
-            val editor = prefs.edit()
-            for (legacyKey in LEGACY_KEYS_TO_PURGE) {
-                editor.remove(legacyKey)
-            }
-            editor.apply()
-            Log.i(TAG, "Purged legacy business/auth keys from SharedPreferences.")
-        }
-    }
-
     private fun loadUserFilterPreferencesIntoRam(context: Context) {
         val fPrefs = getUserFilterPrefs(context)
         val userAutoAccept = fPrefs.getBoolean(FKEY_AUTO_ACCEPT, RESTRICTED_AUTO_ACCEPT_ENABLED)
@@ -753,7 +701,6 @@ object AppSettings {
         appContextRef = appCtx
 
         val prefs = getPrefs(appCtx)
-        purgeLegacyBusinessPrefs(prefs)
         loadUserFilterPreferencesIntoRam(appCtx)
 
         // Load ONLY safe, purely local UI preferences
@@ -843,32 +790,34 @@ object AppSettings {
                 ) { status, _, _, _ ->
                     status
                 }.collect { status ->
-                    when (status) {
-                        is AccessStatus.PassActive -> {
-                            if (status.passTier.isProPass && status.expiryTimestamp > 0L) {
-                                _passExpiryTimestampFlow.value = status.expiryTimestamp
-                                _isPassActiveFlow.value = status.remainingTimeMs > 0
+                    synchronized(settingsLock) {
+                        when (status) {
+                            is AccessStatus.PassActive -> {
+                                if (status.passTier.isProPass && status.expiryTimestamp > 0L) {
+                                    _passExpiryTimestampFlow.value = status.expiryTimestamp
+                                    _isPassActiveFlow.value = status.remainingTimeMs > 0
+                                }
                             }
-                        }
-                        is AccessStatus.TrialActive -> {
-                            if (status.expiryTimestamp > 0L) {
-                                _passExpiryTimestampFlow.value = status.expiryTimestamp
-                                _isPassActiveFlow.value = status.remainingTimeMs > 0
+                            is AccessStatus.TrialActive -> {
+                                if (status.expiryTimestamp > 0L) {
+                                    _passExpiryTimestampFlow.value = status.expiryTimestamp
+                                    _isPassActiveFlow.value = status.remainingTimeMs > 0
+                                }
                             }
-                        }
-                        is AccessStatus.Expired -> {
-                            _isPassActiveFlow.value = false
-                            if (_passExpiryTimestampFlow.value <= LicenseManager.getCurrentServerTimeMs()) {
-                                _passExpiryTimestampFlow.value = 0L
-                            }
-                            if (LicenseManager.hasLoadedLicensing) {
-                                cleanExpiredFeatureToggles(appCtx)
-                            }
-                        }
-                        else -> {
-                            if (!_isFirestoreSyncedFlow.value) {
-                                _passExpiryTimestampFlow.value = 0L
+                            is AccessStatus.Expired -> {
                                 _isPassActiveFlow.value = false
+                                if (_passExpiryTimestampFlow.value <= LicenseManager.getCurrentServerTimeMs()) {
+                                    _passExpiryTimestampFlow.value = 0L
+                                }
+                                if (LicenseManager.hasLoadedLicensing) {
+                                    cleanExpiredFeatureToggles(appCtx)
+                                }
+                            }
+                            else -> {
+                                if (!_isFirestoreSyncedFlow.value) {
+                                    _passExpiryTimestampFlow.value = 0L
+                                    _isPassActiveFlow.value = false
+                                }
                             }
                         }
                     }
@@ -911,6 +860,7 @@ object AppSettings {
 
                 val db = FirebaseFirestore.getInstance()
                 val docRef = db.collection(COLL_USERS).document(uid)
+                val fallbackChecked = AtomicBoolean(false)
 
                 val registration = docRef.addSnapshotListener(firestoreExecutor) { snapshot, error ->
                     if (error != null) {
@@ -924,6 +874,52 @@ object AppSettings {
 
                     if (snapshot != null && snapshot.exists()) {
                         applySnapshotDataToRam(context, snapshot)
+                    } else if (fallbackChecked.compareAndSet(false, true)) {
+                        appScope.launch(Dispatchers.IO) {
+                            val fallbackDoc = try {
+                                db.collection(COLL_USERS)
+                                    .whereEqualTo("firebaseUid", uid)
+                                    .limit(1)
+                                    .get()
+                                    .await()
+                                    ?.documents
+                                    ?.firstOrNull()
+                            } catch (e: Exception) {
+                                Log.w(TAG, "AppSettings firebaseUid fallback query failed: ${e.message}")
+                                null
+                            }
+
+                            if (fallbackDoc != null && fallbackDoc.exists() && fallbackDoc.id != uid) {
+                                Log.i(TAG, "AppSettings resolved user config ${fallbackDoc.id} via firebaseUid fallback")
+                                val fbReg = fallbackDoc.reference.addSnapshotListener(firestoreExecutor) { fbSnap, fbErr ->
+                                    if (fbErr != null) {
+                                        Log.w(TAG, "Fallback Firestore snapshot error on users/${fallbackDoc.id}: ${fbErr.message}")
+                                        return@addSnapshotListener
+                                    }
+                                    if (fbSnap != null && fbSnap.exists()) {
+                                        applySnapshotDataToRam(context, fbSnap)
+                                    } else {
+                                        _isFirestoreSyncedFlow.value = false
+                                        resetBusinessStateToRestrictedDefaults(context)
+                                    }
+                                }
+                                synchronized(listenerLock) {
+                                    if (activeListeningUid == uid) {
+                                        userConfigListener?.remove()
+                                        userConfigListener = fbReg
+                                    } else {
+                                        fbReg.remove()
+                                    }
+                                }
+                            } else {
+                                Log.i(
+                                    TAG,
+                                    "Firestore users/$uid document missing; falling back to strict safe defaults in RAM."
+                                )
+                                _isFirestoreSyncedFlow.value = false
+                                resetBusinessStateToRestrictedDefaults(context)
+                            }
+                        }
                     } else {
                         Log.i(
                             TAG,
@@ -973,6 +969,13 @@ object AppSettings {
         applyRawMapToRam(context, data, docExists = true)
     }
 
+    private fun extractTimestampMs(obj: Any?): Long? = when (obj) {
+        is Timestamp -> obj.toDate().time
+        is Date -> obj.time
+        is Number -> obj.toLong()
+        else -> null
+    }
+
     private fun applyRawMapToRam(context: Context?, data: Map<String, Any?>?, docExists: Boolean) {
         if (!docExists || data == null) {
             _isFirestoreSyncedFlow.value = false
@@ -980,17 +983,22 @@ object AppSettings {
             return
         }
 
-        val passTypeVal = (data["activePassType"] as? String) ?: (data["passType"] as? String)
-        val passExpiryVal = (data["passExpiryTimestamp"] as? Number)?.toLong()
-            ?: (data["passExpiry"] as? Number)?.toLong()
+        val passTypeVal = data["activePassType"] as? String
+        val passExpiryVal = extractTimestampMs(data["passExpiryTimestamp"])
+            ?: extractTimestampMs(data["pass_expiry_date"])
+            ?: extractTimestampMs(data["passExpiry"])
             ?: 0L
+        val pointsBalanceVal = LicenseManager.resolvePointsBalanceFromMap(data)
 
         val rawFeatures = (data["unlockedFeatures"] as? Map<*, *>)
             ?: (data["unlocked_features"] as? Map<*, *>)
+            ?: (data["featureExpiries"] as? Map<*, *>)
         val unlockedFeaturesVal = rawFeatures?.mapNotNull { (k, v) ->
             val featureKey = k as? String ?: return@mapNotNull null
             val exp = when (v) {
                 is Number -> v.toLong()
+                is Timestamp -> v.toDate().time
+                is Date -> v.time
                 true -> -1L
                 else -> return@mapNotNull null
             }
@@ -1016,8 +1024,8 @@ object AppSettings {
             val current = _settingsState.value
             val fPrefs = (context ?: appContextRef)?.let { getUserFilterPrefs(it) }
 
-            val serverAutoAccept = if (data.containsKey("autoAcceptEnabled") || data.containsKey("isAutoAcceptEnabled")) {
-                (data["autoAcceptEnabled"] as? Boolean) ?: (data["isAutoAcceptEnabled"] as? Boolean) ?: autoAcceptEnabled
+            val serverAutoAccept = if (data.containsKey("isAutoAcceptEnabled")) {
+                (data["isAutoAcceptEnabled"] as? Boolean) ?: autoAcceptEnabled
             } else autoAcceptEnabled
             val finalAutoAccept = if (hasLocalUserFilterPref(context, FKEY_AUTO_ACCEPT)) {
                 fPrefs?.takeIf { it.contains(FKEY_AUTO_ACCEPT) }?.getBoolean(FKEY_AUTO_ACCEPT, autoAcceptEnabled) ?: autoAcceptEnabled
@@ -1107,15 +1115,18 @@ object AppSettings {
                     ?: rawBlacklistEnabled
             }
 
-            val hasBlockedLocationsField = data.containsKey("blockedLocations") || data.containsKey("blacklistedDestinations")
-            val finalBlockedList = if (hasBlockedLocationsField && !hasLocalUserFilterPref(context, FKEY_BLOCKED_LOCATIONS)) {
-                val blockedLocationsList = (data["blockedLocations"] as? List<*>)
+            val hasCanonicalBlacklist = data.containsKey("blacklistedDestinations")
+            val hasLegacyBlacklist = data.containsKey("blockedLocations")
+            val finalBlockedList = if ((hasCanonicalBlacklist || hasLegacyBlacklist) && !hasLocalUserFilterPref(context, FKEY_BLOCKED_LOCATIONS)) {
+                val rawBlacklist = if (hasCanonicalBlacklist) {
+                    data["blacklistedDestinations"]
+                } else {
+                    data["blockedLocations"]
+                }
+                val blockedLocationsList = (rawBlacklist as? List<*>)
                     ?.mapNotNull { it as? String }
                     ?: emptyList()
-                val blacklistedDestinationsList = (data["blacklistedDestinations"] as? List<*>)
-                    ?.mapNotNull { it as? String }
-                    ?: emptyList()
-                (blockedLocationsList + blacklistedDestinationsList)
+                blockedLocationsList
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
                     .distinctBy { it.lowercase(Locale.ROOT) }
@@ -1142,10 +1153,10 @@ object AppSettings {
                     ?: rawVoiceEnabled
             }
 
-            val finalAutoClickEnabled = if ((data.containsKey("isAutoClickEnabled") || data.containsKey("autoClickEnabled")) &&
+            val finalAutoClickEnabled = if (data.containsKey("isAutoClickEnabled") &&
                 !hasLocalUserFilterPref(context, FKEY_AUTO_CLICK_ENABLED)
             ) {
-                (data["isAutoClickEnabled"] as? Boolean) ?: (data["autoClickEnabled"] as? Boolean) ?: rawAutoClickEnabled
+                (data["isAutoClickEnabled"] as? Boolean) ?: rawAutoClickEnabled
             } else {
                 fPrefs?.takeIf { it.contains(FKEY_AUTO_CLICK_ENABLED) }?.getBoolean(FKEY_AUTO_CLICK_ENABLED, rawAutoClickEnabled)
                     ?: rawAutoClickEnabled
@@ -1172,11 +1183,13 @@ object AppSettings {
             _activePassTypeFlow.value = passTypeVal
             val parsedPassTier = PassTier.fromId(passTypeVal)
             val isProPassType = parsedPassTier != null && parsedPassTier.isProPass
-            _passExpiryTimestampFlow.value = if (isProPassType) passExpiryVal else 0L
+            val effectivePassExpiry = if (isProPassType) passExpiryVal else 0L
+            _isFirestoreSyncedFlow.value = true
+            _passExpiryTimestampFlow.value = effectivePassExpiry
             _isPassActiveFlow.value = isProPassType && passExpiryVal > LicenseManager.getCurrentServerTimeMs()
+            _pointsBalanceFlow.value = pointsBalanceVal
             _unlockedFeaturesFlow.value = unlockedFeaturesVal
             _lockedFeaturesFlow.value = lockedFeaturesVal
-            _isFirestoreSyncedFlow.value = true
 
             _settingsState.update { state ->
                 state.copy(
@@ -1188,7 +1201,7 @@ object AppSettings {
                     minPerKmRate = finalMinRate,
                     blockedLocations = finalBlockedList,
                     activePassType = passTypeVal,
-                    passExpiryTimestamp = passExpiryVal,
+                    passExpiryTimestamp = effectivePassExpiry,
                     unlockedFeatures = unlockedFeaturesVal,
                     lockedFeatures = lockedFeaturesVal
                 )
@@ -1236,6 +1249,7 @@ object AppSettings {
             _activePassTypeFlow.value = null
             _passExpiryTimestampFlow.value = 0L
             _isPassActiveFlow.value = false
+            _pointsBalanceFlow.value = 0L
             _unlockedFeaturesFlow.value = emptyMap()
             _lockedFeaturesFlow.value = emptySet()
 
@@ -1313,29 +1327,6 @@ object AppSettings {
         }
     }
 
-    /**
-     * Legacy delegation wrapper ensuring state never contradicts FirebaseAuth.
-     */
-    fun updateUserAuth(
-        context: Context,
-        isLoggedIn: Boolean,
-        email: String?,
-        name: String?,
-        photoUrl: String?,
-        uid: String? = null
-    ) {
-        val currentFirebaseUser = try {
-            FirebaseAuth.getInstance().currentUser
-        } catch (_: Exception) {
-            null
-        }
-        if (!isLoggedIn || currentFirebaseUser == null) {
-            updateUserAuthFromFirebase(context, null)
-        } else {
-            updateUserAuthFromFirebase(context, currentFirebaseUser)
-        }
-    }
-
     fun signOut(context: Context) {
         stopUserConfigSnapshotListener()
         try {
@@ -1350,16 +1341,6 @@ object AppSettings {
     }
 
     // --- Purely Local UI Preferences (Kept in SharedPreferences) ---
-
-    fun setLoginDismissed(context: Context, dismissed: Boolean) {
-        persistLocalUiPref(context, KEY_LOGIN_DISMISSED) {
-            putBoolean(KEY_LOGIN_DISMISSED, dismissed)
-        }
-    }
-
-    fun isLoginDismissed(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_LOGIN_DISMISSED, false)
-    }
 
     fun isLanguageSelected(context: Context): Boolean {
         val prefs = getPrefs(context)
@@ -1436,25 +1417,7 @@ object AppSettings {
         return getPrefs(context).getFloat(KEY_SPEECH_PITCH, DEFAULT_SPEECH_PITCH)
     }
 
-    fun setSpeechPitch(context: Context, pitch: Float) {
-        _settingsState.update { it.copy(speechPitch = pitch) }
-        persistLocalUiPref(context, KEY_SPEECH_PITCH) {
-            putFloat(KEY_SPEECH_PITCH, pitch)
-        }
-    }
-
     // --- Subscription & Pass Expiry Management (100% RAM-Only, Server-Driven, Read-Only) ---
-
-    private fun showAdminManagedToast(context: Context?) {
-        val ctx = context ?: return
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            Toast.makeText(ctx, "Settings are managed by Admin app", Toast.LENGTH_SHORT).show()
-        } else {
-            mainHandler.post {
-                Toast.makeText(ctx, "Settings are managed by Admin app", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
 
     fun getPassExpiryTimestamp(context: Context? = null): Long {
         if (LicenseManager.isClockTamperingDetected(context) ||
@@ -1473,11 +1436,6 @@ object AppSettings {
         }
     }
 
-    fun setPassExpiryTimestamp(context: Context? = null, expiryTimestamp: Long, tierId: String? = null) {
-        Log.w(TAG, "setPassExpiryTimestamp blocked: Settings are managed by Admin app.")
-        showAdminManagedToast(context)
-    }
-
     fun isPassActive(context: Context? = null): Boolean {
         if (LicenseManager.isClockTamperingDetected(context) ||
             LicenseManager.isOfflineGracePeriodExpired(context) ||
@@ -1489,25 +1447,6 @@ object AppSettings {
             (LicenseManager.accessStatus.value is AccessStatus.Loading &&
                 _isPassActiveFlow.value &&
                 _passExpiryTimestampFlow.value > LicenseManager.getCurrentServerTimeMs())
-    }
-
-    fun extendPass(context: Context? = null, durationMs: Long, tierId: String? = null): Long {
-        Log.w(TAG, "extendPass blocked: Settings are managed by Admin app.")
-        showAdminManagedToast(context)
-        return getPassExpiryTimestamp(context)
-    }
-
-    fun getActivePassTierId(context: Context? = null): String? {
-        val tier = _activePassTypeFlow.value ?: LicenseManager.activePassInfo.value?.passTier?.id
-        if (tier == null || tier.equals("remove_ads_pass", ignoreCase = true) || tier.equals(PassTier.REMOVE_ADS.id, ignoreCase = true)) {
-            return null
-        }
-        return tier
-    }
-
-    fun clearPass(context: Context? = null) {
-        Log.w(TAG, "clearPass blocked: Settings are managed by Admin app.")
-        showAdminManagedToast(context)
     }
 
     private fun showToast(context: Context?, msg: String) {
@@ -1777,11 +1716,6 @@ object AppSettings {
         FloatingOverlayService.updateFare(context, fare)
     }
 
-    fun clearSessionFare() {
-        _lastAcceptedFareFlow.value = null
-        _settingsState.update { it.copy(lastAcceptedFare = null) }
-    }
-
     /**
      * Synchronizes FloatingOverlayService lifecycle with RAM settings, locks, & overlay permission.
      */
@@ -1978,30 +1912,6 @@ object AppSettings {
 
     fun getClickDelayMs(context: Context): Long = _settingsState.value.clickDelayMs
 
-    fun setClickDelayMs(context: Context, delay: Long) {
-        if (LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) {
-            showToast(context, "Auto-Click is locked by Admin")
-            return
-        }
-        val clamped = delay.coerceIn(100L, 5000L)
-        _settingsState.update { it.copy(clickDelayMs = clamped) }
-        persistUserFilterPref(context, FKEY_CLICK_DELAY_MS) { putLong(FKEY_CLICK_DELAY_MS, clamped) }
-    }
-
-    // Legacy method aliases
-    fun isServiceEnabled(context: Context): Boolean = isAutoAcceptEnabled(context)
-    fun setServiceEnabled(context: Context, enabled: Boolean) = setAutoAcceptEnabled(context, enabled)
-    fun getMinValue(context: Context): Float = getMinFare(context)
-    fun setMinValue(context: Context, value: Float) = setMinFare(context, value)
-    fun getMaxDistance(context: Context): Float = getMaxPickupDistance(context)
-    fun setMaxDistance(context: Context, value: Float) = setMaxPickupDistance(context, value)
-    fun getMinPrice(context: Context): Float = getMinFare(context)
-    fun setMinPrice(context: Context, value: Float) = setMinFare(context, value)
-    fun getMaxPrice(context: Context): Float = getMaxFare(context)
-    fun setMaxPrice(context: Context, value: Float) = setMaxFare(context, value)
-    fun getSelectedLanguage(context: Context): String = getVoiceLanguage(context)
-    fun setSelectedLanguage(context: Context, lang: String) = setVoiceLanguage(context, lang)
-
     /**
      * Appends an activity log entry to the reactive live feed (purely volatile in-memory).
      */
@@ -2041,8 +1951,14 @@ object AppSettings {
     fun recordEvaluation(context: Context, evaluation: RideEvaluation) {
         appScope.launch {
             evaluationMutex.withLock {
+                val sanitizedEvaluation = evaluation.copy(
+                    offer = evaluation.offer.copy(
+                        rawText = "",
+                        acceptButton = null
+                    )
+                )
                 val current = _recentEvaluationsFlow.value.toMutableList()
-                current.add(0, evaluation)
+                current.add(0, sanitizedEvaluation)
                 if (current.size > 25) {
                     current.removeAt(current.lastIndex)
                 }
@@ -2062,8 +1978,7 @@ object AppSettings {
                         pickupLocation = pickupLoc,
                         dropLocation = dropLoc,
                         isAccepted = evaluation.isAccepted,
-                        decisionReason = evaluation.decisionReason,
-                        rawText = offer.rawText
+                        decisionReason = evaluation.decisionReason
                     )
                     OrderRepository.getInstance(context).insertOrder(orderEntity)
                 } catch (e: Exception) {
@@ -2083,14 +1998,12 @@ object AppSettings {
      * Inspects system settings to check if our Accessibility Service is currently active.
      */
     fun isAccessibilityServiceEnabled(context: Context): Boolean {
-        if (MyAccessibilityService.isServiceRunning) {
+        if (RapidoAccessibilityService.isServiceRunning) {
             return true
         }
 
-        val expectedService1 = "${context.packageName}/${MyAccessibilityService::class.java.canonicalName}"
-        val expectedService3 = "${context.packageName}/${RapidoAccessibilityService::class.java.canonicalName}"
-        val expectedShort1 = "${context.packageName}/.MyAccessibilityService"
-        val expectedShort3 = "${context.packageName}/.RapidoAccessibilityService"
+        val expectedService = "${context.packageName}/${RapidoAccessibilityService::class.java.canonicalName}"
+        val expectedShort = "${context.packageName}/.RapidoAccessibilityService"
 
         try {
             val enabledServices = Settings.Secure.getString(
@@ -2103,10 +2016,8 @@ object AppSettings {
 
             while (colonSplitter.hasNext()) {
                 val service = colonSplitter.next()
-                if (service.equals(expectedService1, ignoreCase = true) ||
-                    service.equals(expectedService3, ignoreCase = true) ||
-                    service.equals(expectedShort1, ignoreCase = true) ||
-                    service.equals(expectedShort3, ignoreCase = true)
+                if (service.equals(expectedService, ignoreCase = true) ||
+                    service.equals(expectedShort, ignoreCase = true)
                 ) {
                     return true
                 }
@@ -2121,7 +2032,7 @@ object AppSettings {
      * Checks if a specific Accessibility Service class is currently active.
      */
     fun isAccessibilityServiceEnabled(context: Context, serviceClass: Class<*>): Boolean {
-        if (serviceClass == MyAccessibilityService::class.java && MyAccessibilityService.isServiceRunning) {
+        if (serviceClass == RapidoAccessibilityService::class.java && RapidoAccessibilityService.isServiceRunning) {
             return true
         }
         val expectedCanonical = "${context.packageName}/${serviceClass.canonicalName}"
@@ -2148,11 +2059,5 @@ object AppSettings {
             return false
         }
         return false
-    }
-
-    fun createAccessibilitySettingsIntent(): Intent {
-        return Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
     }
 }

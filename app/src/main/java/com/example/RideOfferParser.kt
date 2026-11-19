@@ -61,7 +61,9 @@ object RideOfferParser {
                 try {
                     val offer = parseCardContainer(container)
                     if (offer != null) {
-                        val deduplicationKey = "${offer.totalFare?.toInt()}_${String.format(Locale.US, "%.1f", offer.pickupDistanceKm ?: 0.0)}"
+                        val pickupKey = String.format(Locale.US, "%.1f", offer.pickupDistanceKm ?: 0.0)
+                        val dropKey = String.format(Locale.US, "%.1f", offer.dropDistanceKm ?: 0.0)
+                        val deduplicationKey = "${offer.totalFare?.toInt()}_${pickupKey}_${dropKey}_${offer.bounds.top}_${offer.bounds.left}"
                         if (!seenCardKeys.contains(deduplicationKey)) {
                             seenCardKeys.add(deduplicationKey)
                             parsedOffers.add(offer)
@@ -387,12 +389,12 @@ object RideOfferParser {
                     }
 
                     // 3. Extract Pickup Node
-                    if (isPickupNode(effectiveText, viewId)) {
+                    if (pickupText.isEmpty() && isPickupNode(effectiveText, viewId)) {
                         pickupText = effectiveText
                     }
 
                     // 4. Extract Drop Node
-                    if (isDropNode(effectiveText, viewId)) {
+                    if (dropText.isEmpty() && isDropNode(effectiveText, viewId)) {
                         dropText = effectiveText
                     }
 
@@ -533,7 +535,7 @@ object RideOfferParser {
     fun isDropNode(text: String, viewId: String): Boolean {
         if (text.isEmpty()) return false
         val lower = text.lowercase(Locale.ROOT)
-        if (viewId.contains("drop_dist") || viewId.contains("drop_distance") || viewId.contains("drop_location")) return true
+        if (viewId.contains("drop_dist") || viewId.contains("drop_distance")) return true
         return (lower.contains("drop") || lower.contains("drop off") || lower.contains("drop-off") || lower.contains("destination")) &&
                 DISTANCE_PATTERN.matcher(text).find()
     }
@@ -584,12 +586,12 @@ object RideOfferParser {
     private fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
-        return MyAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)
+        return RapidoAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)
     }
 
     private fun isRapidoAcceptId(viewId: String): Boolean {
         if (viewId.isEmpty()) return false
-        return MyAccessibilityService.RAPIDO_ACCEPT_ID_REGEX.containsMatchIn(viewId)
+        return RapidoAccessibilityService.RAPIDO_ACCEPT_ID_REGEX.containsMatchIn(viewId)
     }
 
     private fun findAcceptNodeInSubtree(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {

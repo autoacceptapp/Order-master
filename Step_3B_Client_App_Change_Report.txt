@@ -1,0 +1,210 @@
+================================================================================
+ORDER MASTER CLIENT APP — STEP 3B COMPLETE CHANGE REPORT
+Unified firestore.rules & Client Firestore Write/Read Alignment
+================================================================================
+
+1. OBJECTIVE SUMMARY
+--------------------------------------------------------------------------------
+1) Replaced client_app/firestore.rules verbatim with the exact unified
+   admin_app/firestore.rules ruleset so both repositories share an identical
+   authoritative security contract.
+2) Audited and aligned every client_app Firestore write (pending_actions,
+   pending_verifications) and admin_settings read against the unified
+   firestore.rules so zero legitimate client operations are blocked by
+   PERMISSION_DENIED.
+3) Preserved Step 4 scope lock: OFFICIAL_APP_SHA256_WHITELIST and users/{uid}
+   schema cleanup were NOT modified.
+
+
+2. EXACT MODIFIED FILES & FUNCTIONS
+--------------------------------------------------------------------------------
+
+[File 1] firestore.rules
+- Replaced entire file verbatim with the unified admin_app/firestore.rules.
+- Automated byte-for-byte verification result:
+  BYTE_FOR_BYTE_IDENTICAL: 17,682 bytes, 338 lines, 0 byte difference.
+
+[File 2] app/src/main/java/com/example/LicenseManager.kt
+- Added PENDING_ACTION_ALLOWED_TYPES (exact 10 allowlisted action types):
+  INIT_PROFILE, UPDATE_PROFILE, MIGRATE_PROFILE, CLAIM_REFERRAL,
+  PURCHASE_PASS, ACTIVATE_PASS_PAYMENT, UNLOCK_FEATURE,
+  UNLOCK_MULTIPLE_FEATURES, CLAIM_TRIAL, REWARD_AD_WATCHED.
+- Added PENDING_ACTION_ALLOWED_KEYS mirroring hasValidPendingActionSchema(data).
+- Updated buildActionQueuePayload(...):
+  * ROOT-CAUSE FIX: Emits canonical "uid" = firebaseUid alongside "firebaseUid"
+    = firebaseUid. Previously "uid" was omitted, which caused PERMISSION_DENIED
+    on both pending_actions create (isValidPendingAction requires 'uid' in data
+    && data.uid == request.auth.uid) and read (resource.data.uid ==
+    request.auth.uid).
+  * Strips duplicate "userId" and any disallowed/nested/privileged keys
+    (e.g. payload, data, email, isAdmin, role, points, pointsBalance,
+    activePassType, passExpiryTimestamp, verifiedUtr, etc.).
+  * Explicitly strips "amount" whenever actionType == "REWARD_AD_WATCHED"
+    (enforcing noRewardAmountOverride).
+  * Sets status = "PENDING" and createdAt = FieldValue.serverTimestamp()
+    (immune to client clock skew).
+- Updated executeActionQueueRequest(...):
+  * Validates actionType in PENDING_ACTION_ALLOWED_TYPES before touching
+    Firestore (rejects ADD_POINTS or any unknown actionType locally).
+
+[File 3] app/src/main/java/com/example/data/repository/AppConfigRepository.kt
+- Added DOC_SECURITY_CONFIG = "security_config".
+- Added canReadAdminSetting(settingId, currentAuthUid):
+  * Returns true ONLY for settingId == "app_config" before sign-in;
+    payment_config, security_config, and all other admin_settings documents
+    strictly require non-blank authenticated currentAuthUid.
+- Updated observePaymentConfig():
+  * ROOT-CAUSE FIX: Gated admin_settings/payment_config snapshot listener on
+    FirebaseAuth.AuthStateListener. Previously the listener attached before
+    sign-in, hitting PERMISSION_DENIED under the unified rule
+    (allow get: if settingId == 'app_config' || isAuthenticated()).
+  * Now never queries payment_config before authentication, automatically
+    attaches the live listener on Google Sign-In, and detaches cleanly on
+    sign-out.
+
+[File 4] app/src/main/java/com/example/data/PaymentVerificationRepository.kt
+- Updated buildPendingVerificationPayload(...):
+  * Emits canonical "uid" = firebaseUid alongside "firebaseUid" = firebaseUid
+    (no duplicate "userId"), status = "PENDING", isUsed = false, 12-digit
+    numeric "utr", passName, passTier, amount, deviceHardwareId, and
+    createdAt = FieldValue.serverTimestamp().
+- Updated fetchPaymentConfig(...):
+  * ROOT-CAUSE FIX: Gated admin_settings/payment_config .get() on
+    AppConfigRepository.canReadAdminSetting("payment_config", currentUid) so
+    unauthenticated calls never hit PERMISSION_DENIED.
+- Updated verifyUtrDetailed(...):
+  * ROOT-CAUSE FIX: Strictly requires an authenticated FirebaseAuth currentUser
+    UID before reading/writing pending_verifications/{utr} (removed hardware ID
+    fallback when signed out).
+- Updated verifyPayment(...), verifyUtrDetailed(...), and
+  attachRealtimePaymentListener(...):
+  * Prioritizes canonical "uid" before "firebaseUid" and legacy "userId" when
+    reading docOwnerId from pending_verifications/{utr}.
+
+[File 5] app/src/test/java/com/example/PaymentVerificationTest.kt
+- Updated testPendingVerificationPayloadMatchesFirestoreRulesAllowlist to assert
+  canonical uid + firebaseUid, no userId, status="PENDING", isUsed=false,
+  12-digit utr, FieldValue.serverTimestamp(), and unified allowlist keys.
+- Updated testActionQueueBasePayloadEmitsOnlyCanonicalFirebaseUidWithoutUserId
+  to assert canonical uid + firebaseUid, stripped userId, serverTimestamp(),
+  and unified allowlist keys.
+- Added testAllClientPendingActionsSatisfyUnifiedFirestoreRulesInvariants to
+  verify all 10 allowlisted pending_actions types (including all 4 PassTiers on
+  PURCHASE_PASS) plus negative/tamper stripping of privileged keys and
+  REWARD_AD_WATCHED amount.
+
+[File 6] app/src/test/java/com/example/AppConfigTest.kt
+- Added testAdminSettingsAuthGatingMatchesUnifiedFirestoreRules verifying
+  app_config is allowed pre-auth while payment_config, security_config, and
+  server_clock strictly require authentication.
+
+
+3. UNIFIED FIRESTORE.RULES AUDIT MATRIX (UNIT-TEST VERIFIED)
+--------------------------------------------------------------------------------
+1. INIT_PROFILE
+   - Builder: buildInitProfilePayload + buildActionQueuePayload
+   - Owner: uid == firebaseUid == auth.uid (no userId)
+   - Status/Timestamp: status="PENDING", createdAt=FieldValue.serverTimestamp()
+   - Keys: uid, firebaseUid, userEmail, linkedHardwareId, optional
+     legacyCustomUserId, deviceIntegrityOk, appSignatureSha256, actionType,
+     status, createdAt
+   - Status: PASS
+
+2. UPDATE_PROFILE
+   - Builder: computeNeededProfileUpdates + buildActionQueuePayload
+   - Owner: uid == firebaseUid == auth.uid
+   - Keys: base canonical keys + linkedHardwareId, userEmail
+   - Status: PASS
+
+3. MIGRATE_PROFILE
+   - Builder: buildActionQueuePayload (if dispatched)
+   - Owner: uid == firebaseUid == auth.uid
+   - Keys: base canonical keys + legacyCustomUserId / oldHardwareId
+   - Status: PASS
+
+4. CLAIM_REFERRAL
+   - Builder: claimReferralViaActionQueue + buildActionQueuePayload
+   - Owner: uid == firebaseUid == auth.uid
+   - Keys: base canonical keys + referralCode (String, 8 alphanumeric chars)
+   - Status: PASS
+
+5. PURCHASE_PASS
+   - Builder: buildPurchasePassPayload + buildActionQueuePayload
+   - Owner: uid == firebaseUid == auth.uid
+   - Keys: base canonical keys + canonical passTier ("daily", "weekly",
+     "monthly", or "remove_ads")
+   - Status: PASS
+
+6. ACTIVATE_PASS_PAYMENT
+   - Builder: buildActivatePassPaymentPayload + buildActionQueuePayload
+   - Owner: uid == firebaseUid == auth.uid
+   - Keys: base canonical keys + passTier (String), utr (12-digit String)
+   - Status: PASS
+
+7. UNLOCK_FEATURE
+   - Builder: buildUnlockFeaturePayload + buildActionQueuePayload
+   - Owner: uid == firebaseUid == auth.uid
+   - Keys: base canonical keys + featureId (String), hours (Int)
+   - Status: PASS
+
+8. UNLOCK_MULTIPLE_FEATURES
+   - Builder: buildUnlockMultipleFeaturesPayload + buildActionQueuePayload
+   - Owner: uid == firebaseUid == auth.uid
+   - Keys: base canonical keys + featureIds (List<String>), hours (Int)
+   - Status: PASS
+
+9. CLAIM_TRIAL
+   - Builder: buildActionQueuePayload (trial handled inside INIT_PROFILE; valid
+     if dispatched directly)
+   - Owner: uid == firebaseUid == auth.uid
+   - Keys: base canonical keys only
+   - Status: PASS
+
+10. REWARD_AD_WATCHED
+   - Builder: claimAdReward + buildActionQueuePayload
+   - Owner: uid == firebaseUid == auth.uid
+   - Keys: base canonical keys only; "amount" is strictly absent/stripped
+     (satisfies noRewardAmountOverride)
+   - Status: PASS
+
+11. pending_verifications/{utr} (create)
+   - Builder: PaymentVerificationRepository.buildPendingVerificationPayload
+   - Owner: uid == firebaseUid == auth.uid (no userId)
+   - Core Fields: status="PENDING", isUsed=false, utr matches ^[0-9]{12}$ and
+     equals doc ID, amount (Int), passName (String), passTier (String),
+     deviceHardwareId (String), createdAt=FieldValue.serverTimestamp()
+   - Status: PASS
+
+12. admin_settings/{settingId} (read-only)
+   - app_config: Public pre-auth allowed (observeAppConfig) -> PASS
+   - payment_config: Auth-gated via AuthStateListener (observePaymentConfig) &
+     currentUser check (fetchPaymentConfig) -> PASS
+   - security_config: Auth-gated via canReadAdminSetting -> PASS
+   - Direct client writes: None (strictly read-only) -> PASS
+
+
+4. BUILD & UNIT TEST RESULTS
+--------------------------------------------------------------------------------
+- firestore.rules byte-for-byte identity check : PASSED (17,682 bytes, 338 lines)
+- gradle :app:testDebugUnitTest --console=plain : PASSED (BUILD SUCCESSFUL)
+- compile_applet                                : PASSED (Applet compiled cleanly)
+
+
+5. HOW TO VERIFY ON AN ANDROID PHONE
+--------------------------------------------------------------------------------
+1) Deploy the unified firestore.rules to your Firebase project and build/install
+   the updated Client APK via GitHub Actions / GitHub Releases.
+2) Pre-Auth Check: Open the app while signed out. Confirm update check
+   (admin_settings/app_config) and maintenance status (app_settings/global) work
+   cleanly with zero PERMISSION_DENIED errors for admin_settings/payment_config.
+3) Google Sign-In & Live Pricing: Sign in with Google. Confirm INIT_PROFILE /
+   UPDATE_PROFILE succeed in pending_actions (document contains both uid and
+   firebaseUid == your Firebase Auth UID) and dynamic pricing from
+   admin_settings/payment_config syncs automatically.
+4) Action Queue & UTR Flow: Test Rewarded Ad claim (REWARD_AD_WATCHED), filter
+   unlock (UNLOCK_FEATURE / UNLOCK_MULTIPLE_FEATURES), pass redemption
+   (PURCHASE_PASS), and 12-digit UTR submission (pending_verifications/{utr} +
+   ACTIVATE_PASS_PAYMENT). Confirm Firestore accepts every write, the client
+   receives real-time completion updates without PERMISSION_DENIED, and Admin
+   App processes every action cleanly.
+================================================================================

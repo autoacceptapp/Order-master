@@ -39,6 +39,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlin.math.hypot
 import kotlin.math.roundToInt
@@ -711,9 +712,17 @@ class FloatingOverlayService : Service() {
         }
 
         serviceScope.launch {
-            LicenseManager.accessStatus.collectLatest { status ->
-                if (status is AccessStatus.Expired) {
-                    Log.w(TAG, "Access status is Expired (${status.message}). Removing overlay view and stopping service.")
+            combine(
+                LicenseManager.accessStatus,
+                LicenseManager.unlockedFeatures,
+                LicenseManager.lockedFeatures
+            ) { status, _, _ ->
+                status
+            }.collectLatest { status ->
+                if (status !is AccessStatus.Loading &&
+                    !LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY)
+                ) {
+                    Log.w(TAG, "Floating overlay access unavailable (status=$status). Removing overlay view and stopping service.")
                     removeOverlayView()
                     stopSelf()
                 } else {

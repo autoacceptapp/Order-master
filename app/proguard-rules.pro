@@ -6,8 +6,6 @@
 # Keep application Entry Points, Activities, Services, and Receivers
 -keep class com.example.OrderMasterApplication { *; }
 -keep class com.example.MainActivity { *; }
--keep class com.example.PaymentActivity { *; }
--keep class com.example.MyAccessibilityService { *; }
 -keep class com.example.RapidoAccessibilityService { *; }
 -keep class com.example.FloatingOverlayService { *; }
 -keep class com.example.DownloadCompleteReceiver { *; }

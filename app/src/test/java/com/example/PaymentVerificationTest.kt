@@ -3,9 +3,12 @@ package com.example
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.PaymentVerificationRepository
+import com.example.data.PaymentVerificationState
+import com.google.firebase.firestore.ListenerRegistration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -42,20 +45,44 @@ class PaymentVerificationTest {
 
     @Test
     fun testAmountToPassTierMapping() {
-        // Daily: ₹9
+        // Exact matches only: ₹9, ₹49, ₹179, ₹199
         assertEquals(PassTier.DAILY, PaymentVerificationRepository.mapAmountToPassTier(9L))
-        assertEquals(PassTier.DAILY, PaymentVerificationRepository.mapAmountToPassTier(20L))
-
-        // Weekly: ₹49
         assertEquals(PassTier.WEEKLY, PaymentVerificationRepository.mapAmountToPassTier(49L))
-        assertEquals(PassTier.WEEKLY, PaymentVerificationRepository.mapAmountToPassTier(100L))
-
-        // Monthly: ₹179
         assertEquals(PassTier.MONTHLY, PaymentVerificationRepository.mapAmountToPassTier(179L))
-        assertEquals(PassTier.MONTHLY, PaymentVerificationRepository.mapAmountToPassTier(500L))
-
-        // Remove Ads: ₹199
         assertEquals(PassTier.REMOVE_ADS, PaymentVerificationRepository.mapAmountToPassTier(199L))
+
+        assertEquals(PassTier.DAILY, PassTier.fromAmountInInr(9L))
+        assertEquals(PassTier.WEEKLY, PassTier.fromAmountInInr(49L))
+        assertEquals(PassTier.MONTHLY, PassTier.fromAmountInInr(179L))
+        assertEquals(PassTier.REMOVE_ADS, PassTier.fromAmountInInr(199L))
+
+        // Arbitrary/non-exact amounts must return null (no range-based false tier mapping)
+        assertNull(PaymentVerificationRepository.mapAmountToPassTier(0L))
+        assertNull(PaymentVerificationRepository.mapAmountToPassTier(20L))
+        assertNull(PaymentVerificationRepository.mapAmountToPassTier(50L))
+        assertNull(PaymentVerificationRepository.mapAmountToPassTier(100L))
+        assertNull(PaymentVerificationRepository.mapAmountToPassTier(200L))
+        assertNull(PaymentVerificationRepository.mapAmountToPassTier(500L))
+        assertNull(PassPricingConfig.mapAmountToPassTier(50L))
+        assertNull(PassTier.fromAmountInInr(200L))
+    }
+
+    @Test
+    fun testNullTierSelectionIsRejectedWithoutSilentDailyFallback() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        context.getSharedPreferences(PassManager.PREFS_UTR_RATE_LIMIT, Context.MODE_PRIVATE).edit().clear().commit()
+
+        val repo = PaymentVerificationRepository()
+        repo.verifyPayment(context, "426719823451", selectedTier = null)
+        val state = repo.verificationState.value
+        assertTrue("Expected Error state when selectedTier is null, got $state", state is PaymentVerificationState.Error)
+        val err = state as PaymentVerificationState.Error
+        assertEquals("Please select the Pass plan you paid for before submitting your UTR.", err.message)
+        assertTrue(err.canRetry)
+        assertEquals("426719823451", err.utr)
+
+        val detailed = repo.verifyUtrDetailed(context, "426719823451", preferredTier = null)
+        assertTrue("Expected VerificationResult.Invalid when preferredTier is null, got $detailed", detailed is PassManager.VerificationResult.Invalid)
     }
 
     @Test
@@ -109,10 +136,10 @@ class PaymentVerificationTest {
 
     @Test
     fun testRapidoAccessibilityServiceHierarchy() {
-        // Confirm RapidoAccessibilityService is a valid AccessibilityService and MyAccessibilityService subclass
+        // Confirm RapidoAccessibilityService is a valid, direct AccessibilityService implementation
         val rapidoClass = RapidoAccessibilityService::class.java
-        assertTrue(MyAccessibilityService::class.java.isAssignableFrom(rapidoClass))
         assertTrue(android.accessibilityservice.AccessibilityService::class.java.isAssignableFrom(rapidoClass))
+        assertEquals("com.rapido.rider", RapidoAccessibilityService.TARGET_PACKAGE)
     }
 
     @Test
@@ -125,18 +152,13 @@ class PaymentVerificationTest {
         assertFalse(PassManager.isPassActive(context))
     }
 
-    @Suppress("DEPRECATION")
     @Test
     fun testPassManagerReadOnlyAndSetPassStatusNeutralized() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         LicenseManager.resetStateForTesting(context)
         assertFalse(PassManager.isPassActive(context))
         assertFalse(PassManager.isPassActiveFlow.value)
-
-        // Local mutation call must NOT spoof or override server-derived pass status
-        PassManager.setPassStatus(context, true)
-        assertFalse(PassManager.isPassActive(context))
-        assertFalse(PassManager.isPassActiveFlow.value)
+        assertFalse(PassManager::class.java.declaredMethods.any { it.name == "setPassStatus" })
 
         // Authoritative Pro Pass in LicenseManager activates read-only flow
         val futureExpiry = System.currentTimeMillis() + 86_400_000L
@@ -149,11 +171,6 @@ class PaymentVerificationTest {
             trialUsed = true
         )
         LicenseManager.refreshAccessStatus(context)
-        assertTrue(PassManager.isPassActive(context))
-        assertTrue(PassManager.isPassActiveFlow.value)
-
-        // Local disable call must also NOT override authoritative LicenseManager state
-        PassManager.setPassStatus(context, false)
         assertTrue(PassManager.isPassActive(context))
         assertTrue(PassManager.isPassActiveFlow.value)
 
@@ -182,38 +199,31 @@ class PaymentVerificationTest {
     }
 
     @Test
-    fun testPaymentActivityDeclared() {
-        val activityClass = PaymentActivity::class.java
-        assertTrue(android.app.Activity::class.java.isAssignableFrom(activityClass))
-    }
+    fun testPaymentVerificationRepositoryAndPassManagerSupportPassTier() {
+        val repo = PaymentVerificationRepository.defaultInstance
+        assertNotNull("PaymentVerificationRepository defaultInstance should exist", repo)
 
-    @Test
-    fun testPaymentActivityPaymentMethodsSupportPassTier() {
-        val activityClass = PaymentActivity::class.java
-
-        // Verify onPaymentSuccess method exists with String and PassTier parameters
-        val onPaymentSuccessMethods = activityClass.declaredMethods.filter { it.name == "onPaymentSuccess" }
-        assertTrue("onPaymentSuccess must be declared", onPaymentSuccessMethods.isNotEmpty())
-
-        val hasTierParamOnPaymentSuccess = onPaymentSuccessMethods.any { method ->
+        // Verify verifyPayment method exists on PaymentVerificationRepository with PassTier parameter
+        val verifyPaymentMethods = PaymentVerificationRepository::class.java.declaredMethods.filter { it.name == "verifyPayment" }
+        assertTrue("verifyPayment must be declared on PaymentVerificationRepository", verifyPaymentMethods.isNotEmpty())
+        val hasTierParamOnRepo = verifyPaymentMethods.any { method ->
             method.parameterTypes.contains(PassTier::class.java)
         }
-        assertTrue("onPaymentSuccess must accept PassTier parameter", hasTierParamOnPaymentSuccess)
+        assertTrue("PaymentVerificationRepository.verifyPayment must accept PassTier parameter", hasTierParamOnRepo)
 
-        // Verify verifyPaymentWithBackend method exists with PassTier parameter
-        val verifyBackendMethods = activityClass.declaredMethods.filter { it.name == "verifyPaymentWithBackend" }
-        assertTrue("verifyPaymentWithBackend must be declared", verifyBackendMethods.isNotEmpty())
-
-        val hasTierParamVerifyBackend = verifyBackendMethods.any { method ->
-            method.parameterTypes.contains(PassTier::class.java)
-        }
-        assertTrue("verifyPaymentWithBackend must accept PassTier parameter", hasTierParamVerifyBackend)
+        // Verify verifyPaymentWithBackendDetailed method exists on PassManager and delegates to PaymentVerificationRepository
+        val verifyBackendDetailedMethods = PassManager::class.java.declaredMethods.filter { it.name == "verifyPaymentWithBackendDetailed" }
+        assertTrue("verifyPaymentWithBackendDetailed must be declared on PassManager", verifyBackendDetailedMethods.isNotEmpty())
+        assertTrue(
+            "Legacy PassManager.verifyPaymentWithBackend must be removed so PaymentVerificationRepository is the single source of truth",
+            PassManager::class.java.declaredMethods.none { it.name == "verifyPaymentWithBackend" }
+        )
     }
 
     @Test
     fun testUtrRateLimitingBlocksFourthAttemptWithinOneMinute() = runTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        PassManager.resetUtrRateLimit(context)
+        context.getSharedPreferences(PassManager.PREFS_UTR_RATE_LIMIT, Context.MODE_PRIVATE).edit().clear().commit()
 
         // Rapid attempts 1, 2, and 3 must be permitted locally
         assertTrue(PassManager.checkAndRecordUtrRateLimit(context))
@@ -232,7 +242,7 @@ class PaymentVerificationTest {
     @Test
     fun testUtrRateLimitingAllowsAttemptsAfterOneMinuteWindow() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        PassManager.resetUtrRateLimit(context)
+        context.getSharedPreferences(PassManager.PREFS_UTR_RATE_LIMIT, Context.MODE_PRIVATE).edit().clear().commit()
 
         val t0 = 1_000_000L
         assertTrue(PassManager.checkAndRecordUtrRateLimit(context, t0))
@@ -419,4 +429,547 @@ class PaymentVerificationTest {
             RewardedAdManager.setMockLoadedForTesting(false)
         }
     }
+
+    @Test
+    fun testUtrSnapshotEvaluationHandlesApprovedWithIsUsedWithoutDeadlock() {
+        val currentUser = "user_uid_123"
+
+        // Admin approves pending_verifications/{utr} -> status="APPROVED", isUsed=true, blank claimedBy
+        assertEquals(
+            PaymentVerificationRepository.UtrSnapshotDecision.APPROVED_ALREADY_APPLIED,
+            PaymentVerificationRepository.evaluateUtrSnapshot(
+                status = "APPROVED",
+                isUsed = true,
+                claimedBy = "",
+                docOwnerId = currentUser,
+                currentUserId = currentUser
+            )
+        )
+
+        // Approved with explicit claimedBy matching currentUser
+        assertEquals(
+            PaymentVerificationRepository.UtrSnapshotDecision.APPROVED_ALREADY_APPLIED,
+            PaymentVerificationRepository.evaluateUtrSnapshot(
+                status = "approved",
+                isUsed = true,
+                claimedBy = currentUser,
+                docOwnerId = currentUser,
+                currentUserId = currentUser
+            )
+        )
+
+        // VERIFIED + isUsed=true for current user -> already applied (not an error)
+        assertEquals(
+            PaymentVerificationRepository.UtrSnapshotDecision.APPROVED_ALREADY_APPLIED,
+            PaymentVerificationRepository.evaluateUtrSnapshot(
+                status = "VERIFIED",
+                isUsed = true,
+                claimedBy = currentUser,
+                docOwnerId = currentUser,
+                currentUserId = currentUser
+            )
+        )
+
+        // Verified + isUsed=false -> ready for ACTIVATE_PASS_PAYMENT claim transaction
+        assertEquals(
+            PaymentVerificationRepository.UtrSnapshotDecision.VERIFIED_READY_TO_CLAIM,
+            PaymentVerificationRepository.evaluateUtrSnapshot(
+                status = "Verified",
+                isUsed = false,
+                claimedBy = null,
+                docOwnerId = null,
+                currentUserId = currentUser
+            )
+        )
+
+        // Claimed by a DIFFERENT user MUST still return ALREADY_CLAIMED_BY_OTHER
+        assertEquals(
+            PaymentVerificationRepository.UtrSnapshotDecision.ALREADY_CLAIMED_BY_OTHER,
+            PaymentVerificationRepository.evaluateUtrSnapshot(
+                status = "APPROVED",
+                isUsed = true,
+                claimedBy = "other_user_999",
+                docOwnerId = "other_user_999",
+                currentUserId = currentUser
+            )
+        )
+    }
+
+    @Test
+    fun testPendingVerificationPayloadMatchesFirestoreRulesAllowlist() {
+        val unifiedAllowedKeys = setOf(
+            "deviceHardwareId", "hardwareId", "passName", "passTier", "passType",
+            "amount", "paymentAmount", "utr", "status", "isUsed", "userId",
+            "firebaseUid", "uid", "userEmail", "email", "timestamp", "createdAt", "submittedAt", "notes"
+        )
+        val utr = "426719823451"
+        val authUid = "uid_1"
+        val payload = PaymentVerificationRepository.buildPendingVerificationPayload(
+            utr = utr,
+            firebaseUid = authUid,
+            tier = PassTier.MONTHLY,
+            deviceHardwareId = "hw_test_1234"
+        )
+
+        // Core owner & state invariants of isValidPendingVerificationCreate()
+        assertEquals(authUid, payload["uid"])
+        assertEquals(authUid, payload["firebaseUid"])
+        assertFalse("Payload must not duplicate userId alongside canonical uid/firebaseUid", payload.containsKey("userId"))
+        assertEquals("PENDING", payload["status"])
+        assertEquals(false, payload["isUsed"])
+        assertEquals(utr, payload["utr"])
+        assertTrue((payload["utr"] as String).matches(Regex("^[0-9]{12}$")))
+        assertTrue(payload["amount"] is Int)
+        assertEquals("hw_test_1234", payload["deviceHardwareId"])
+        assertEquals(PassTier.MONTHLY.title, payload["passName"])
+        assertEquals(PassTier.MONTHLY.id, payload["passTier"])
+        assertEquals(com.google.firebase.firestore.FieldValue.serverTimestamp(), payload["createdAt"])
+        assertTrue(
+            "Unexpected keys outside unified firestore.rules allowlist: ${payload.keys - unifiedAllowedKeys}",
+            unifiedAllowedKeys.containsAll(payload.keys)
+        )
+        assertFalse(payload.containsKey("userEmail"))
+        assertFalse(payload.containsKey("linkedHardwareId"))
+    }
+
+    @Test
+    fun testRemoveAdsExpiryResolvesRemoveAdsExpiryInsteadOfActiveProPass() {
+        val now = 1_800_000_000_000L
+        val proExpiry = now + 86_400_000L
+        val stackedRemoveAdsExpiry = now + (56L * 86_400_000L)
+
+        // When user already holds an active Pro Pass and claims REMOVE_ADS, expiry must come from
+        // serverRemoveAdsExpiry / removeAdsExpiryMs rather than activePassInfo or default +28d
+        val resolvedStacked = PaymentVerificationRepository.resolveActivatedExpiryTimestamp(
+            tier = PassTier.REMOVE_ADS,
+            serverTier = PassTier.DAILY, // Pro pass remains primary activePassType
+            serverExpiry = proExpiry,
+            activePassExpiry = proExpiry,
+            removeAdsExpiry = stackedRemoveAdsExpiry,
+            now = now
+        )
+        assertEquals(stackedRemoveAdsExpiry, resolvedStacked)
+
+        // When serverTier == REMOVE_ADS directly, serverExpiry wins
+        val serverRemoveAds = now + (30L * 86_400_000L)
+        val resolvedDirect = PaymentVerificationRepository.resolveActivatedExpiryTimestamp(
+            tier = PassTier.REMOVE_ADS,
+            serverTier = PassTier.REMOVE_ADS,
+            serverExpiry = serverRemoveAds,
+            activePassExpiry = 0L,
+            removeAdsExpiry = 0L,
+            now = now
+        )
+        assertEquals(serverRemoveAds, resolvedDirect)
+
+        // When neither serverExpiry nor removeAdsExpiry is > now, safely falls back to now + durationMs
+        val resolvedFallback = PaymentVerificationRepository.resolveActivatedExpiryTimestamp(
+            tier = PassTier.REMOVE_ADS,
+            serverTier = null,
+            serverExpiry = 0L,
+            activePassExpiry = proExpiry,
+            removeAdsExpiry = 0L,
+            now = now
+        )
+        assertEquals(now + PassTier.REMOVE_ADS.durationMs, resolvedFallback)
+    }
+
+    @Test
+    fun testActionQueueBasePayloadEmitsOnlyCanonicalFirebaseUidWithoutUserId() {
+        val payload = LicenseManager.buildActionQueuePayload(
+            firebaseUid = "uid_canonical_99",
+            userEmail = "captain@example.com",
+            hardwareId = "hw_id_abc",
+            deviceIntegrityOk = true,
+            appSignatureSha256 = "sha256_test",
+            actionType = "ACTIVATE_PASS_PAYMENT",
+            payload = mapOf(
+                "userId" to "should_be_stripped",
+                "passTier" to PassTier.REMOVE_ADS.id,
+                "utr" to "123456789012"
+            )
+        )
+
+        assertEquals("uid_canonical_99", payload["uid"])
+        assertEquals("uid_canonical_99", payload["firebaseUid"])
+        assertFalse("Action queue payload must not include duplicate userId", payload.containsKey("userId"))
+        assertTrue(payload.keys.containsAll(setOf("uid", "firebaseUid", "actionType", "status", "createdAt")))
+        assertEquals(com.google.firebase.firestore.FieldValue.serverTimestamp(), payload["createdAt"])
+        assertTrue(
+            "Unexpected keys outside unified firestore.rules allowlist: ${payload.keys - LicenseManager.PENDING_ACTION_ALLOWED_KEYS}",
+            LicenseManager.PENDING_ACTION_ALLOWED_KEYS.containsAll(payload.keys)
+        )
+    }
+
+    @Test
+    fun testAllClientPendingActionsSatisfyUnifiedFirestoreRulesInvariants() {
+        val authUid = "auth_uid_unified_01"
+        val userEmail = "driver@example.com"
+        val hwId = "OM-TEST-HW-0001"
+        val sig = "abcdef0123456789"
+        val serverTs = com.google.firebase.firestore.FieldValue.serverTimestamp()
+
+        val forbiddenPrivilegedKeys = setOf(
+            "payload", "data", "email", "isAdmin", "role",
+            "points", "pointsBalance", "newPointsBalance", "pointsAdded", "pointsDeducted",
+            "activePassType", "passExpiryTimestamp", "verifiedUtr",
+            "processedBy", "processedAt", "completedAt", "failedAt", "errorMessage",
+            "resolvedUserId", "banUntil", "banUntilTimestamp", "isBanned", "hardwareBanned",
+            "isPaymentVerified", "locked_features", "lockedFeatures",
+            "unlocked_features", "unlockedFeatures", "featureExpiries",
+            "trialExpiry", "freeTrialExpiry", "trialExpiresAt", "trialClaimed", "trialUsed",
+            "hasUsedFreeTrial", "removeAdsExpiryTimestamp", "removeAdsExpiryMs",
+            "remove_ads_expiry_timestamp", "trialStartedAt", "hasClaimedReferral",
+            "referredBy", "lastSecurityViolation", "lastActionTime", "lastPendingActionAt", "lastActionAt"
+        )
+
+        fun assertPassesUnifiedPendingActionRules(doc: Map<String, Any>) {
+            // 1. Canonical owner check
+            assertEquals("uid must equal auth.uid", authUid, doc["uid"])
+            assertEquals("firebaseUid must equal auth.uid", authUid, doc["firebaseUid"])
+            assertFalse("userId must not be emitted", doc.containsKey("userId"))
+
+            // 2. Status & actionType allowlist
+            assertEquals("PENDING", doc["status"])
+            val actionType = doc["actionType"] as? String
+            assertNotNull(actionType)
+            assertTrue("actionType '$actionType' not allowlisted", actionType in LicenseManager.PENDING_ACTION_ALLOWED_TYPES)
+            assertFalse("ADD_POINTS must never be allowlisted", actionType == "ADD_POINTS")
+
+            // 3. No reward amount override on REWARD_AD_WATCHED
+            if (actionType == "REWARD_AD_WATCHED") {
+                assertFalse("REWARD_AD_WATCHED must never include amount", doc.containsKey("amount"))
+            }
+
+            // 4. Server timestamp createdAt (immune to client clock skew)
+            assertEquals("createdAt must use FieldValue.serverTimestamp()", serverTs, doc["createdAt"])
+
+            // 5. Flat canonical schema allowlist & privileged field blocklist
+            assertTrue(
+                "Disallowed keys in $actionType: ${doc.keys - LicenseManager.PENDING_ACTION_ALLOWED_KEYS}",
+                LicenseManager.PENDING_ACTION_ALLOWED_KEYS.containsAll(doc.keys)
+            )
+            assertTrue(
+                "Forbidden privileged/nested keys in $actionType: ${doc.keys.intersect(forbiddenPrivilegedKeys)}",
+                doc.keys.intersect(forbiddenPrivilegedKeys).isEmpty()
+            )
+
+            // 6. Flat canonical parameter types (hasValidPendingActionFields)
+            doc["userEmail"]?.let { assertTrue(it is String) }
+            doc["passTier"]?.let { assertTrue(it is String) }
+            doc["utr"]?.let { assertTrue(it is String) }
+            doc["referralCode"]?.let { assertTrue(it is String) }
+            doc["hardwareId"]?.let { assertTrue(it is String) }
+            doc["linkedHardwareId"]?.let { assertTrue(it is String) }
+            doc["featureId"]?.let { assertTrue(it is String) }
+            doc["featureIds"]?.let { assertTrue(it is List<*>) }
+            doc["hours"]?.let { assertTrue(it is Int || it is Long || it is Double || it is Float) }
+        }
+
+        val actionCases = listOf(
+            "INIT_PROFILE" to LicenseManager.buildInitProfilePayload(authUid, userEmail, hwId, "OM-USER-OLD1"),
+            "UPDATE_PROFILE" to LicenseManager.computeNeededProfileUpdates("", "", "", authUid, hwId, userEmail),
+            "MIGRATE_PROFILE" to mapOf("legacyCustomUserId" to "OM-USER-OLD1", "oldHardwareId" to "HW-OLD"),
+            "CLAIM_REFERRAL" to mapOf("referralCode" to "OMAB12CD"),
+            "PURCHASE_PASS" to LicenseManager.buildPurchasePassPayload(PassTier.DAILY),
+            "PURCHASE_PASS" to LicenseManager.buildPurchasePassPayload(PassTier.WEEKLY),
+            "PURCHASE_PASS" to LicenseManager.buildPurchasePassPayload(PassTier.MONTHLY),
+            "PURCHASE_PASS" to LicenseManager.buildPurchasePassPayload(PassTier.REMOVE_ADS),
+            "ACTIVATE_PASS_PAYMENT" to LicenseManager.buildActivatePassPaymentPayload(PassTier.WEEKLY, "123456789012"),
+            "UNLOCK_FEATURE" to LicenseManager.buildUnlockFeaturePayload(FeatureIds.MIN_FARE, 2),
+            "UNLOCK_MULTIPLE_FEATURES" to LicenseManager.buildUnlockMultipleFeaturesPayload(
+                listOf(FeatureIds.MIN_FARE, FeatureIds.AUTO_CLICK),
+                3
+            ),
+            "CLAIM_TRIAL" to emptyMap(),
+            "REWARD_AD_WATCHED" to emptyMap()
+        )
+
+        actionCases.forEach { (actionType, payload) ->
+            val built = LicenseManager.buildActionQueuePayload(
+                firebaseUid = authUid,
+                userEmail = userEmail,
+                hardwareId = hwId,
+                deviceIntegrityOk = true,
+                appSignatureSha256 = sig,
+                actionType = actionType,
+                payload = payload
+            )
+            assertPassesUnifiedPendingActionRules(built)
+        }
+
+        // Defense-in-depth: privileged/nested keys and REWARD_AD_WATCHED amount are stripped automatically
+        val sanitizedReward = LicenseManager.buildActionQueuePayload(
+            firebaseUid = authUid,
+            userEmail = userEmail,
+            hardwareId = hwId,
+            deviceIntegrityOk = true,
+            appSignatureSha256 = sig,
+            actionType = "REWARD_AD_WATCHED",
+            payload = mapOf(
+                "amount" to 9999,
+                "email" to "spoof@example.com",
+                "payload" to mapOf("nested" to true),
+                "data" to mapOf("points" to 5000),
+                "points" to 5000,
+                "activePassType" to "monthly",
+                "verifiedUtr" to "123456789012",
+                "isAdmin" to true
+            )
+        )
+        assertPassesUnifiedPendingActionRules(sanitizedReward)
+        assertFalse("ADD_POINTS must not be in PENDING_ACTION_ALLOWED_TYPES", "ADD_POINTS" in LicenseManager.PENDING_ACTION_ALLOWED_TYPES)
+    }
+
+    @Test
+    fun testDynamicPricingOverridesAndFallbackDefaults() {
+        try {
+            PassPricingConfig.applyOverrides(
+                dailyPriceInr = 15,
+                weeklyPriceInr = 69,
+                monthlyPriceInr = 199,
+                removeAdsPriceInr = 249,
+                dailyPoints = 150,
+                weeklyPoints = 650
+            )
+            assertEquals(15, PassTier.DAILY.effectivePriceInInr())
+            assertEquals(69, PassTier.WEEKLY.effectivePriceInInr())
+            assertEquals(199, PassTier.MONTHLY.effectivePriceInInr())
+            assertEquals(249, PassTier.REMOVE_ADS.effectivePriceInInr())
+            assertEquals(150, PassTier.DAILY.effectivePointsCost())
+            assertEquals(650, PassTier.WEEKLY.effectivePointsCost())
+            // Non-overridden points fall back cleanly to defaults
+            assertEquals(PassPricingConfig.MONTHLY_POINTS, PassTier.MONTHLY.effectivePointsCost())
+            assertEquals(PassTier.WEEKLY, PassPricingConfig.mapAmountToPassTier(69L))
+            assertNull(PassPricingConfig.mapAmountToPassTier(49L))
+
+            FeatureIds.applyRateOverrides(mapOf(FeatureIds.MIN_FARE to 20))
+            assertEquals(20, FeatureIds.getEffectivePointsPerHour(FeatureIds.MIN_FARE))
+            assertEquals(10, FeatureIds.getEffectivePointsPerHour(FeatureIds.MAX_FARE))
+        } finally {
+            PassPricingConfig.resetDefaultsForTesting()
+            FeatureIds.resetRatesForTesting()
+        }
+
+        // Defaults restored cleanly
+        assertEquals(9, PassTier.DAILY.effectivePriceInInr())
+        assertEquals(10, FeatureIds.getEffectivePointsPerHour(FeatureIds.MIN_FARE))
+    }
+
+    @Test
+    fun testPaymentNotReceivedYetIsNonTerminalAndKeepsListenerAlive() {
+        val expectedMsg =
+            "UTR submitted. Waiting for bank SMS confirmation — your pass will activate automatically once received."
+
+        // LicenseManager formats PAYMENT_NOT_RECEIVED_YET cleanly
+        val formatted = LicenseManager.formatActionQueueErrorMessage(
+            actionType = "ACTIVATE_PASS_PAYMENT",
+            rawError = "PAYMENT_NOT_RECEIVED_YET"
+        )
+        assertEquals(expectedMsg, formatted)
+
+        // Both raw server code and pre-formatted message classify as non-terminal pending
+        listOf(
+            PaymentVerificationRepository.classifyVerificationRejection("PAYMENT_NOT_RECEIVED_YET"),
+            PaymentVerificationRepository.classifyVerificationRejection(
+                rawError = null,
+                errorCode = "PAYMENT_NOT_RECEIVED_YET"
+            ),
+            PaymentVerificationRepository.classifyVerificationRejection(formatted)
+        ).forEach { decision ->
+            assertFalse("PAYMENT_NOT_RECEIVED_YET must be non-terminal", decision.isTerminal)
+            assertTrue("PAYMENT_NOT_RECEIVED_YET must keep isStillPending = true", decision.isStillPending)
+            assertTrue("PAYMENT_NOT_RECEIVED_YET must keep canRetry = true", decision.canRetry)
+            assertFalse("PAYMENT_NOT_RECEIVED_YET must not mark alreadyClaimed", decision.isAlreadyClaimed)
+            assertEquals(expectedMsg, decision.message)
+        }
+
+        // Listener on pending_verifications/{utr} stays attached and state transitions to Pending
+        val repo = PaymentVerificationRepository()
+        var removeCount = 0
+        val fakeRegistration = ListenerRegistration { removeCount++ }
+        val utr = "426719823451"
+        repo.attachListenerForTesting(utr, fakeRegistration)
+        assertTrue(repo.hasActiveListenerForTesting())
+
+        val decision = PaymentVerificationRepository.classifyVerificationRejection("PAYMENT_NOT_RECEIVED_YET")
+        repo.applyRejectionDecision(utr, decision)
+
+        assertEquals("Active pending_verifications listener must NOT be cancelled", 0, removeCount)
+        assertTrue("Listener must remain active for auto-approval", repo.hasActiveListenerForTesting())
+        val state = repo.verificationState.value
+        assertTrue("State must remain Pending, got $state", state is PaymentVerificationState.Pending)
+        val pending = state as PaymentVerificationState.Pending
+        assertEquals(utr, pending.utr)
+        assertEquals(expectedMsg, pending.message)
+
+        // Clean up
+        repo.cancelPendingListener()
+        assertEquals(1, removeCount)
+    }
+
+    @Test
+    fun testUtrAlreadyUsedAndAmountMismatchAreTerminalAndDetachListener() {
+        val utr = "426719823452"
+
+        // 1. UTR_ALREADY_USED
+        val formattedUsed = LicenseManager.formatActionQueueErrorMessage(
+            actionType = "ACTIVATE_PASS_PAYMENT",
+            rawError = "UTR_ALREADY_USED"
+        )
+        assertEquals("UTR already claimed by another user.", formattedUsed)
+
+        val usedDecision = PaymentVerificationRepository.classifyVerificationRejection("UTR_ALREADY_USED")
+        assertTrue("UTR_ALREADY_USED must be terminal", usedDecision.isTerminal)
+        assertFalse("UTR_ALREADY_USED must not allow retry", usedDecision.canRetry)
+        assertTrue("UTR_ALREADY_USED must set isAlreadyClaimed = true", usedDecision.isAlreadyClaimed)
+        assertFalse("UTR_ALREADY_USED must not be isStillPending", usedDecision.isStillPending)
+        assertEquals("UTR already claimed by another user.", usedDecision.message)
+
+        val repo = PaymentVerificationRepository()
+        var usedRemoved = 0
+        repo.attachListenerForTesting(utr, ListenerRegistration { usedRemoved++ })
+        repo.applyRejectionDecision(utr, usedDecision)
+        assertEquals("Listener must detach immediately on UTR_ALREADY_USED", 1, usedRemoved)
+        assertFalse(repo.hasActiveListenerForTesting())
+        val usedState = repo.verificationState.value
+        assertTrue("State must be Error on UTR_ALREADY_USED", usedState is PaymentVerificationState.Error)
+        assertFalse((usedState as PaymentVerificationState.Error).canRetry)
+        assertEquals("UTR already claimed by another user.", usedState.message)
+
+        // 2. AMOUNT_MISMATCH (both bare code and Admin detailed format)
+        val expectedMismatchMsg =
+            "Payment amount does not match the selected Pass plan. Please select the exact plan you paid for and try again."
+        assertEquals(
+            expectedMismatchMsg,
+            LicenseManager.formatActionQueueErrorMessage(
+                actionType = "ACTIVATE_PASS_PAYMENT",
+                rawError = "AMOUNT_MISMATCH: expected 49, got 9"
+            )
+        )
+
+        listOf(
+            PaymentVerificationRepository.classifyVerificationRejection("AMOUNT_MISMATCH: expected 49, got 9"),
+            PaymentVerificationRepository.classifyVerificationRejection("AMOUNT_MISMATCH"),
+            PaymentVerificationRepository.classifyVerificationRejection(expectedMismatchMsg)
+        ).forEach { mismatchDecision ->
+            assertTrue("AMOUNT_MISMATCH must be terminal", mismatchDecision.isTerminal)
+            assertTrue("AMOUNT_MISMATCH must allow retry with correct plan", mismatchDecision.canRetry)
+            assertFalse("AMOUNT_MISMATCH must not be isStillPending", mismatchDecision.isStillPending)
+            assertFalse("AMOUNT_MISMATCH must not set isAlreadyClaimed", mismatchDecision.isAlreadyClaimed)
+            assertEquals(expectedMismatchMsg, mismatchDecision.message)
+        }
+
+        var mismatchRemoved = 0
+        repo.attachListenerForTesting(utr, ListenerRegistration { mismatchRemoved++ })
+        val mismatchDecision = PaymentVerificationRepository.classifyVerificationRejection(
+            "AMOUNT_MISMATCH: expected 49, got 9"
+        )
+        repo.applyRejectionDecision(utr, mismatchDecision)
+        assertEquals("Listener must detach immediately on AMOUNT_MISMATCH", 1, mismatchRemoved)
+        assertFalse(repo.hasActiveListenerForTesting())
+        val mismatchState = repo.verificationState.value
+        assertTrue("State must be Error on AMOUNT_MISMATCH", mismatchState is PaymentVerificationState.Error)
+        assertTrue((mismatchState as PaymentVerificationState.Error).canRetry)
+        assertEquals(expectedMismatchMsg, mismatchState.message)
+    }
+
+    @Test
+    fun testAllClientFirestorePayloadBuildersEmitZeroLegacyAliasKeys() {
+        val forbiddenLegacyKeys = setOf(
+            "email",
+            "hardwareId",
+            "deviceId",
+            "blockedLocations",
+            "points",
+            "userId",
+            "payload",
+            "data"
+        )
+
+        val uid = "uid_step8b_hygiene"
+        val userEmail = "captain.hygiene@example.com"
+        val hwId = "HW-HYGIENE-8B"
+        val sig = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+
+        fun assertNoLegacyKeys(label: String, map: Map<String, Any>) {
+            val found = map.keys.intersect(forbiddenLegacyKeys)
+            assertTrue("$label emitted forbidden legacy keys: $found", found.isEmpty())
+        }
+
+        // 1. Profile payload builders
+        assertNoLegacyKeys(
+            "buildInitProfilePayload",
+            LicenseManager.buildInitProfilePayload(uid, userEmail, hwId, legacyCustomId = "OM_OLD")
+        )
+        assertNoLegacyKeys(
+            "computeNeededProfileUpdates",
+            LicenseManager.computeNeededProfileUpdates(
+                snapshotFirebaseUid = null,
+                snapshotHardwareId = "OLD_HW",
+                snapshotEmail = "old@example.com",
+                expectedFirebaseUid = uid,
+                currentHardwareId = hwId,
+                authEmail = userEmail
+            )
+        )
+
+        // 2. Pass & feature payload builders
+        PassTier.entries.forEach { tier ->
+            assertNoLegacyKeys("buildPurchasePassPayload($tier)", LicenseManager.buildPurchasePassPayload(tier))
+            assertNoLegacyKeys(
+                "buildActivatePassPaymentPayload($tier)",
+                LicenseManager.buildActivatePassPaymentPayload(tier, "426719823451")
+            )
+            assertNoLegacyKeys(
+                "buildPendingVerificationPayload($tier)",
+                PaymentVerificationRepository.buildPendingVerificationPayload(
+                    utr = "426719823451",
+                    firebaseUid = uid,
+                    tier = tier,
+                    deviceHardwareId = hwId
+                )
+            )
+        }
+        assertNoLegacyKeys(
+            "buildUnlockFeaturePayload",
+            LicenseManager.buildUnlockFeaturePayload(FeatureIds.MIN_FARE, 2)
+        )
+        assertNoLegacyKeys(
+            "buildUnlockMultipleFeaturesPayload",
+            LicenseManager.buildUnlockMultipleFeaturesPayload(listOf(FeatureIds.MIN_FARE, FeatureIds.MAX_FARE), 1)
+        )
+
+        // 3. Action queue envelope builder (including hostile legacy key injection defense)
+        val hostileLegacyPayload = mapOf<String, Any>(
+            "email" to "legacy@example.com",
+            "hardwareId" to "LEGACY_HW",
+            "deviceId" to "LEGACY_DEV",
+            "blockedLocations" to listOf("Airport"),
+            "points" to 9999,
+            "userId" to "legacy_uid",
+            "payload" to mapOf("nested" to true),
+            "data" to mapOf("nested" to true),
+            "passTier" to "weekly",
+            "utr" to "426719823451"
+        )
+        LicenseManager.PENDING_ACTION_ALLOWED_TYPES.forEach { actionType ->
+            val built = LicenseManager.buildActionQueuePayload(
+                firebaseUid = uid,
+                userEmail = userEmail,
+                hardwareId = hwId,
+                deviceIntegrityOk = true,
+                appSignatureSha256 = sig,
+                actionType = actionType,
+                payload = hostileLegacyPayload
+            )
+            assertNoLegacyKeys("buildActionQueuePayload($actionType)", built)
+            assertEquals(uid, built["uid"])
+            assertEquals(uid, built["firebaseUid"])
+            assertEquals(userEmail, built["userEmail"])
+            assertEquals(hwId, built["linkedHardwareId"])
+        }
+    }
 }
+
+

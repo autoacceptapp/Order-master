@@ -2,9 +2,13 @@ package com.example
 
 import android.content.Context
 import android.media.MediaDrm
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
@@ -99,15 +103,10 @@ object DeviceUtils {
     }
 
     /**
-     * Returns an immutable, hardware-locked Device Hardware Fingerprint.
-     * Always recomputes and verifies against cached value in device_security_prefs so SharedPreferences tampering cannot spoof HW ID.
-     * Example format: "HW-A1B2C3D4E5F6"
+     * Computes, verifies, and persists the single deterministic hardware fingerprint in device_security_prefs.
      */
     @Synchronized
-    fun getDeviceHardwareId(context: Context): String {
-        cachedHardwareId?.let { return it }
-
-        // Always recompute deterministic hardware fingerprint from physical device attributes
+    internal fun getOrVerifyHardwareFingerprint(context: Context): HardwareFingerprint {
         val fingerprint = buildUnifiedHardwareFingerprint(context)
         val formattedId = "HW-" + fingerprint.sha256Hex.take(16).uppercase(Locale.US)
 
@@ -122,6 +121,20 @@ object DeviceUtils {
             .putBoolean(KEY_CACHED_HAS_DRM, fingerprint.hasWidevineDrm)
             .apply()
         cachedHardwareId = formattedId
+        return fingerprint
+    }
+
+    /**
+     * Returns an immutable, hardware-locked Device Hardware Fingerprint.
+     * Always recomputes and verifies against cached value in device_security_prefs so SharedPreferences tampering cannot spoof HW ID.
+     * Example format: "HW-A1B2C3D4E5F6"
+     */
+    @Synchronized
+    fun getDeviceHardwareId(context: Context): String {
+        cachedHardwareId?.let { return it }
+
+        val fingerprint = getOrVerifyHardwareFingerprint(context)
+        val formattedId = "HW-" + fingerprint.sha256Hex.take(16).uppercase(Locale.US)
         Log.i(TAG, "Computed Verified Device Hardware ID: $formattedId")
         return formattedId
     }
@@ -321,33 +334,59 @@ object DeviceUtils {
         return isHookingFrameworkDetected() || isDebuggerOrDebuggableTamper(context)
     }
 
+    private val SHA256_HEX_REGEX = Regex("^[0-9A-F]{64}$")
+    internal const val ROBOLECTRIC_TEST_SHA256 =
+        "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+
     /**
-     * Computes uppercase SHA-256 fingerprint of the APK's active signing certificate(s).
-     * Used by backend/Admin attestation to detect repacked/cloned APKs.
+     * Normalizes a SHA-256 certificate digest to exact 64-character uppercase hex (`^[0-9A-F]{64}$`).
+     * Strips colons and whitespace; returns `""` when blank or malformed.
+     * Matches Admin App's `ZeroTrustRules.normalizeSha256()` byte-for-byte.
+     */
+    fun normalizeSha256(raw: String?): String {
+        if (raw.isNullOrBlank()) return ""
+        val cleaned = raw
+            .replace(":", "")
+            .replace(Regex("\\s+"), "")
+            .trim()
+            .uppercase(Locale.ROOT)
+        return if (SHA256_HEX_REGEX.matches(cleaned)) cleaned else ""
+    }
+
+    /**
+     * Computes normalized 64-character uppercase hex SHA-256 fingerprint of the APK's active signing certificate.
+     * Returns `""` if the signing certificate cannot be read or fails normalization.
+     * Used by Admin App fail-closed attestation to detect repacked/cloned APKs.
      */
     @Suppress("DEPRECATION")
     fun getApkSignatureSha256(context: Context): String {
-        if (isUnitTestEnvironment()) return "ROBOLECTRIC_TEST_SIG"
+        if (isUnitTestEnvironment()) return ROBOLECTRIC_TEST_SHA256
         return try {
             val pm = context.packageManager
-            val signatures = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val firstCert = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 val pkgInfo = pm.getPackageInfo(
                     context.packageName,
                     android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES
                 )
                 val signingInfo = pkgInfo.signingInfo
-                if (signingInfo == null) emptyArray()
-                else if (signingInfo.hasMultipleSigners()) signingInfo.apkContentsSigners
-                else signingInfo.signingCertificateHistory
+                when {
+                    signingInfo == null -> null
+                    signingInfo.hasMultipleSigners() ->
+                        signingInfo.apkContentsSigners?.firstOrNull()
+                            ?: signingInfo.signingCertificateHistory?.firstOrNull()
+                    else ->
+                        signingInfo.signingCertificateHistory?.firstOrNull()
+                            ?: signingInfo.apkContentsSigners?.firstOrNull()
+                }
             } else {
                 pm.getPackageInfo(
                     context.packageName,
                     android.content.pm.PackageManager.GET_SIGNATURES
-                ).signatures ?: emptyArray()
-            }
-            val firstCert = signatures.firstOrNull() ?: return ""
+                ).signatures?.firstOrNull()
+            } ?: return ""
             val digest = MessageDigest.getInstance("SHA-256").digest(firstCert.toByteArray())
-            digest.joinToString("") { "%02X".format(it) }
+            val hex = digest.joinToString("") { "%02X".format(Locale.US, it) }
+            normalizeSha256(hex)
         } catch (e: Throwable) {
             Log.w(TAG, "Unable to read APK signing certificate: ${e.message}")
             ""
@@ -425,11 +464,55 @@ object DeviceUtils {
         return true
     }
 
-    private fun isUnitTestEnvironment(): Boolean {
+    fun isUnitTestEnvironment(): Boolean {
         return BuildConfig.DEBUG && (
-            Build.FINGERPRINT.contains("robolectric", ignoreCase = true) ||
+            Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
                 runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
         )
+    }
+
+    /**
+     * Shared network connectivity check used across repositories and managers.
+     */
+    fun isNetworkAvailable(context: Context): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return false
+            val activeNetwork = cm.activeNetwork ?: return false
+            val capabilities = cm.getNetworkCapabilities(activeNetwork) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Shared Firebase initialization helper with BuildConfig fallback support.
+     */
+    fun ensureFirebaseInitialized(context: Context): Boolean {
+        return try {
+            if (FirebaseApp.getApps(context).isEmpty()) {
+                try {
+                    FirebaseApp.initializeApp(context)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Standard Firebase initialization notice: ${e.message}")
+                    val fallbackApiKey = BuildConfig.FIREBASE_FALLBACK_API_KEY
+                    if (fallbackApiKey.isNotBlank()) {
+                        val options = FirebaseOptions.Builder()
+                            .setApplicationId("1:14592259076:android:9d13a5884a47fa5f337151")
+                            .setProjectId("order-master-1561f")
+                            .setStorageBucket("order-master-1561f.firebasestorage.app")
+                            .setApiKey(fallbackApiKey)
+                            .build()
+                        FirebaseApp.initializeApp(context, options)
+                        Log.i(TAG, "Initialized Firebase with fallback options from BuildConfig.")
+                    }
+                }
+            }
+            FirebaseApp.getApps(context).isNotEmpty()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to initialize FirebaseApp: ${e.message}")
+            false
+        }
     }
 
     /**
@@ -488,19 +571,5 @@ object DeviceUtils {
             // Fallback hash
             input.hashCode().toString(16)
         }
-    }
-
-    /**
-     * Retrieves readable device hardware details for diagnostics and store display.
-     */
-    fun getHardwareSpecs(): Map<String, String> {
-        return mapOf(
-            "Model" to "${Build.MANUFACTURER} ${Build.MODEL}",
-            "Board" to Build.BOARD,
-            "Hardware" to Build.HARDWARE,
-            "Android Version" to "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
-            "Fingerprint" to Build.FINGERPRINT,
-            "IsEmulator" to isEmulator().toString()
-        )
     }
 }

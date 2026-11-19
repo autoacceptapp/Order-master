@@ -227,12 +227,7 @@ object RewardedAdManager {
         }
     }
 
-    private fun isUnitTestEnvironment(): Boolean {
-        return BuildConfig.DEBUG && (
-            Build.FINGERPRINT?.contains("robolectric", ignoreCase = true) == true ||
-                runCatching { Class.forName("org.robolectric.Robolectric") }.isSuccess
-        )
-    }
+    private fun isUnitTestEnvironment(): Boolean = DeviceUtils.isUnitTestEnvironment()
 
     internal fun simulateLoadFailureForTesting(errorCode: Int, isDebugBuild: Boolean = false) {
         rewardedAd = null

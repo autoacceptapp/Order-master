@@ -112,19 +112,6 @@ data class RideEvaluation(
 }
 
 /**
- * Backward-compatible analysis result class for general text analysis.
- */
-data class AnalysisResult(
-    val rawText: String,
-    val totalCurrency: Double?,
-    val currencyBreakdown: List<Double>,
-    val distanceKm: Double?,
-    val hasAcceptButton: Boolean,
-    val conditionsPassed: Boolean,
-    val reason: String
-)
-
-/**
  * Dedicated parsing, UI tree grouping, and business logic engine for analyzing ride requests
  * (e.g. Rapido Captain, Uber Driver, Ola Captain overlay cards) and evaluating user decision criteria.
  *
@@ -211,98 +198,6 @@ object TextAnalysisEngine {
     // =========================================================================================
 
     /**
-     * Recursively traverses the AccessibilityNodeInfo tree to discover and isolate
-     * distinct order cards (e.g. CardView, ViewGroup, bounded subtrees).
-     *
-     * Groups child text nodes by their parent card container ID and spatial boundaries,
-     * isolating each offer and preventing cross-card text contamination when multiple
-     * offers are displayed simultaneously.
-     */
-    fun extractOrderCards(root: AccessibilityNodeInfo?): List<RawOrderCard> {
-        if (root == null) return emptyList()
-
-        val cards = mutableListOf<RawOrderCard>()
-        val startTime = System.currentTimeMillis()
-        val timeoutMs = 180L
-
-        // Pass 1: Collect all candidate accept nodes and their screen bounds
-        val acceptNodes = mutableListOf<AccessibilityNodeInfo>()
-        findAcceptNodesDfs(root, acceptNodes, startTime, timeoutMs)
-
-        if (acceptNodes.size > 1) {
-            // MULTIPLE ORDERS ON SCREEN:
-            // For each accept button, find its highest enclosing container node
-            // that does NOT contain any other accept button.
-            val processedBounds = mutableListOf<Rect>()
-
-            for (acceptNode in acceptNodes) {
-                val container = findIsolatedCardContainer(acceptNode, acceptNodes) ?: acceptNode
-                val bounds = Rect()
-                container.getBoundsInScreen(bounds)
-
-                // Validate container dimensions
-                if (!bounds.isEmpty && bounds.width() > 40 && bounds.height() > 40) {
-                    val isDuplicate = processedBounds.any { existing ->
-                        (Math.abs(existing.top - bounds.top) < 25 && Math.abs(existing.bottom - bounds.bottom) < 25)
-                    }
-
-                    if (!isDuplicate) {
-                        processedBounds.add(bounds)
-                        val nodeTexts = extractTextNodesFromSubtree(container, startTime, timeoutMs)
-                        val cardId = container.viewIdResourceName
-                            ?: "card_${bounds.left}_${bounds.top}_${bounds.right}_${bounds.bottom}"
-
-                        cards.add(
-                            RawOrderCard(
-                                id = cardId,
-                                nodeTexts = nodeTexts,
-                                bounds = bounds,
-                                hasAcceptButton = true,
-                                acceptNode = acceptNode
-                            )
-                        )
-                    }
-                }
-            }
-
-            if (cards.isNotEmpty()) {
-                return cards
-            }
-        }
-
-        // Pass 2: Fallback container search: Look for child containers with currency and distance
-        val containerCards = findContainerCardsDfs(root, startTime, timeoutMs)
-        if (containerCards.size > 1) {
-            return containerCards
-        }
-
-        // Pass 3: Single card or standard screen fallback:
-        // Whole window / root is treated as a single RawOrderCard
-        val bounds = Rect()
-        root.getBoundsInScreen(bounds)
-        val allTexts = extractTextNodesFromSubtree(root, startTime, timeoutMs)
-        val hasAccept = acceptNodes.isNotEmpty() || hasAcceptAction(allTexts.joinToString(" "))
-        val primaryAccept = acceptNodes.firstOrNull()
-        val cardId = root.viewIdResourceName ?: "card_${bounds.left}_${bounds.top}"
-
-        // STRICT: Only treat as an order card if an accept button is present or it is an explicit ride request popup.
-        // Floating widget bubbles, driver earnings histories, or background views without an Accept button are ignored.
-        if (!hasAccept && !isExplicitRideRequest(cardId)) {
-            return emptyList()
-        }
-
-        return listOf(
-            RawOrderCard(
-                id = cardId,
-                nodeTexts = allTexts,
-                bounds = bounds,
-                hasAcceptButton = hasAccept,
-                acceptNode = primaryAccept
-            )
-        )
-    }
-
-    /**
      * Checks if a view ID or resource name denotes an explicit incoming ride request popup/card.
      */
     fun isExplicitRideRequest(identifier: String?): Boolean {
@@ -320,129 +215,6 @@ object TextAnalysisEngine {
                 lower.contains("rapido_order") ||
                 lower.contains("order_details") ||
                 lower.contains("request_card")
-    }
-
-    /**
-     * Walks up the parent chain of an accept button to find the highest container node
-     * that encapsulates this offer's details without enclosing other accept buttons.
-     */
-    private fun findIsolatedCardContainer(
-        acceptNode: AccessibilityNodeInfo,
-        allAcceptNodes: List<AccessibilityNodeInfo>
-    ): AccessibilityNodeInfo? {
-        val otherNodes = allAcceptNodes.filter { it !== acceptNode }
-        var current: AccessibilityNodeInfo? = acceptNode.parent
-        var bestContainer: AccessibilityNodeInfo? = acceptNode
-        var depth = 0
-
-        while (current != null && depth < 8) {
-            // Check if current parent encloses any other accept button
-            val enclosesOther = otherNodes.any { other ->
-                isDescendantOf(other, current)
-            }
-
-            if (enclosesOther) {
-                // Stop! The previous container was the highest isolated node for this card
-                break
-            }
-
-            val bounds = Rect()
-            current.getBoundsInScreen(bounds)
-            if (!bounds.isEmpty && bounds.height() > 50) {
-                bestContainer = current
-            }
-
-            val parent = current.parent
-            current = parent
-            depth++
-        }
-
-        return bestContainer
-    }
-
-    /**
-     * Checks whether a target node is a descendant of the candidate parent.
-     */
-    private fun isDescendantOf(target: AccessibilityNodeInfo, parent: AccessibilityNodeInfo?): Boolean {
-        if (parent == null) return false
-        var cur: AccessibilityNodeInfo? = target.parent
-        var depth = 0
-        while (cur != null && depth < 10) {
-            if (cur == parent) return true
-            cur = cur.parent
-            depth++
-        }
-        return false
-    }
-
-    /**
-     * DFS search collecting all accept action nodes in the hierarchy.
-     */
-    private fun findAcceptNodesDfs(
-        node: AccessibilityNodeInfo?,
-        outList: MutableList<AccessibilityNodeInfo>,
-        startTime: Long,
-        timeoutMs: Long
-    ) {
-        if (node == null) return
-        if (System.currentTimeMillis() - startTime > timeoutMs) return
-
-        val text = node.text?.toString() ?: ""
-        val desc = node.contentDescription?.toString() ?: ""
-        val viewId = node.viewIdResourceName ?: ""
-
-        if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
-            outList.add(node)
-        }
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            findAcceptNodesDfs(child, outList, startTime, timeoutMs)
-        }
-    }
-
-    /**
-     * Traverses subtrees to detect multi-card structures (e.g. RecyclerView items, CardViews).
-     */
-    private fun findContainerCardsDfs(
-        node: AccessibilityNodeInfo?,
-        startTime: Long,
-        timeoutMs: Long
-    ): List<RawOrderCard> {
-        if (node == null) return emptyList()
-        val results = mutableListOf<RawOrderCard>()
-
-        val childCount = node.childCount
-        if (childCount >= 2) {
-            for (i in 0 until childCount) {
-                val child = node.getChild(i) ?: continue
-                val childTexts = extractTextNodesFromSubtree(child, startTime, timeoutMs)
-                val fullChildText = childTexts.joinToString(" ")
-                val (fare, _) = extractCurrencies(fullChildText)
-                val (pickup, drop) = extractRideDistances(fullChildText)
-
-                if (fare != null && (pickup != null || drop != null)) {
-                    val bounds = Rect()
-                    child.getBoundsInScreen(bounds)
-                    val hasAccept = hasAcceptAction(fullChildText)
-                    results.add(
-                        RawOrderCard(
-                            id = child.viewIdResourceName ?: "container_card_${bounds.left}_${bounds.top}",
-                            nodeTexts = childTexts,
-                            bounds = bounds,
-                            hasAcceptButton = hasAccept,
-                            acceptNode = if (hasAccept) child else null
-                        )
-                    )
-                }
-            }
-        }
-
-        if (results.size >= 2) {
-            return results
-        }
-
-        return emptyList()
     }
 
     /**
@@ -944,14 +716,6 @@ object TextAnalysisEngine {
     }
 
     /**
-     * Convenience method returning the primary distance found in text (in kilometers).
-     */
-    fun extractDistance(text: String): Double? {
-        val (pickup, drop) = extractRideDistances(text)
-        return pickup ?: drop
-    }
-
-    /**
      * Detects if the screen hierarchy includes an interactive "Accept" / "Go" action.
      */
     fun hasAcceptAction(text: String): Boolean {
@@ -970,12 +734,7 @@ object TextAnalysisEngine {
     private fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
-        return MyAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)
-    }
-
-    private fun isRapidoAcceptId(viewId: String): Boolean {
-        if (viewId.isEmpty()) return false
-        return MyAccessibilityService.RAPIDO_ACCEPT_ID_REGEX.containsMatchIn(viewId)
+        return RapidoAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)
     }
 
     /**
@@ -1195,55 +954,6 @@ object TextAnalysisEngine {
             isMinPerKmRateEnabled = settings.isMinPerKmRateEnabled,
             blockedLocations = settings.blockedLocations,
             isDestinationBlacklistEnabled = settings.isDestinationBlacklistEnabled
-        )
-    }
-
-    /**
-     * Backward-compatible analyze method returning AnalysisResult.
-     */
-    fun analyze(text: String): AnalysisResult {
-        val offer = parseRideOffer(text)
-        val minThreshold = AppSettings.minCurrencyThreshold
-
-        val conditionMet = offer.totalFare != null && offer.totalFare >= minThreshold
-        val reason = if (conditionMet) "Condition Met" else "Threshold Not Met"
-
-        return AnalysisResult(
-            rawText = text,
-            totalCurrency = offer.totalFare,
-            currencyBreakdown = offer.fareBreakdown,
-            distanceKm = offer.pickupDistanceKm ?: offer.dropDistanceKm,
-            hasAcceptButton = offer.hasAcceptButton,
-            conditionsPassed = conditionMet,
-            reason = reason
-        )
-    }
-
-    /**
-     * Backward-compatible evaluate method.
-     */
-    fun evaluate(
-        text: String,
-        hasAcceptButton: Boolean,
-        minFilter: Float,
-        maxFilter: Float
-    ): AnalysisResult {
-        val offer = parseRideOffer(text).copy(hasAcceptButton = hasAcceptButton)
-        val evaluation = evaluateRideOffer(
-            offer = offer,
-            minFare = minFilter,
-            maxPickupDistance = maxFilter,
-            isAutoAcceptEnabled = true
-        )
-
-        return AnalysisResult(
-            rawText = text,
-            totalCurrency = offer.totalFare,
-            currencyBreakdown = offer.fareBreakdown,
-            distanceKm = offer.pickupDistanceKm ?: offer.dropDistanceKm,
-            hasAcceptButton = hasAcceptButton,
-            conditionsPassed = evaluation.isAccepted,
-            reason = evaluation.decisionReason
         )
     }
 }

@@ -8,9 +8,17 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'APK Build Type to assemble and publish'
+        required: false
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
 
-# CRITICAL FIX 1: Explicit workflow-level permissions
-# GitHub Actions requires 'contents: write' to create releases, push git tags, and upload APK assets.
+# Explicit workflow-level permissions for creating releases, tags, and uploading APK assets
 permissions:
   contents: write
   actions: read
@@ -18,23 +26,20 @@ permissions:
 
 jobs:
   build-and-release:
-    name: Build & Release APK
+    name: Build & Release APK (${{ inputs.build_type || 'release' }})
     runs-on: ubuntu-latest
 
-    # Job-level permissions redundancy to ensure token has write access
     permissions:
       contents: write
 
     steps:
       # Step 1: Checkout repository
-      # Uses actions/checkout@v4 (latest, fully compatible with modern GitHub runners)
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       # Step 2: Set up Java 17 Development Kit
-      # Uses actions/setup-java@v5 with Temurin distribution for stable Android Gradle Plugin 8.x / 9.x builds
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
@@ -42,8 +47,7 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      # Step 3: Setup Gradle
-      # Uses gradle/actions/setup-gradle@v4 (upgraded to eliminate deprecation warnings)
+      # Step 3: Set up Gradle
       - name: Set up Gradle Build Tool
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -58,7 +62,7 @@ jobs:
           GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
           echo "=== Setting up Keystore & Google Services Secrets ==="
-          
+
           # 1: Firebase Google Services JSON
           if [ -n "${GOOGLE_SERVICES_JSON}" ]; then
             echo "Writing GOOGLE_SERVICES_JSON directly into app/google-services.json..."
@@ -66,10 +70,6 @@ jobs:
             echo "✅ app/google-services.json written from secret ($(stat -c%s app/google-services.json) bytes)."
           elif [ -f "app/google-services.json" ]; then
             echo "✅ Using existing app/google-services.json from repository ($(stat -c%s app/google-services.json) bytes)."
-          elif [ -f "public/assets/aistudio/google-services__1__037de27d.json" ]; then
-            echo "Restoring app/google-services.json from public assets..."
-            cp public/assets/aistudio/google-services__1__037de27d.json app/google-services.json
-            echo "✅ app/google-services.json restored from assets."
           else
             echo "⚠️ Warning: app/google-services.json not found; build will proceed with fallback."
           fi
@@ -131,7 +131,14 @@ jobs:
       # Step 6: Calculate Version Info
       - name: Prepare Dynamic Version Metadata
         id: version_meta
+        env:
+          BUILD_TYPE_INPUT: ${{ inputs.build_type }}
         run: |
+          BUILD_TYPE="${BUILD_TYPE_INPUT:-release}"
+          if [ "${BUILD_TYPE}" != "debug" ]; then
+            BUILD_TYPE="release"
+          fi
+
           # 1. Monotonic Version Code: Must strictly increase on every build (>= 102 to avoid downgrade)
           RUN_NUM="${{ github.run_number }}"
           VERSION_CODE="${RUN_NUM}"
@@ -145,21 +152,36 @@ jobs:
             BASE_VERSION_NAME="1.0.2"
           fi
 
-          # If triggered by a Git Tag (e.g., v1.0.3 or v1.1.0), extract version from tag
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            RELEASE_TAG="${GITHUB_REF#refs/tags/}"
-            VERSION_NAME="${RELEASE_TAG#v}"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            RELEASE_TAG="${GITHUB_REF#refs/tags/}"
-            VERSION_NAME="${RELEASE_TAG}"
+          if [ "${BUILD_TYPE}" = "debug" ]; then
+            VERSION_NAME="${BASE_VERSION_NAME}-debug"
+            RELEASE_TAG="v${BASE_VERSION_NAME}-debug-build-${VERSION_CODE}"
+            IS_PRERELEASE="true"
+            MAKE_LATEST="false"
+            APK_FILENAME="app-debug.apk"
           else
-            VERSION_NAME="${BASE_VERSION_NAME}"
-            RELEASE_TAG="v${VERSION_NAME}-build-${VERSION_CODE}"
+            if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+              RELEASE_TAG="${GITHUB_REF#refs/tags/}"
+              VERSION_NAME="${RELEASE_TAG#v}"
+            elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+              RELEASE_TAG="${GITHUB_REF#refs/tags/}"
+              VERSION_NAME="${RELEASE_TAG}"
+            else
+              VERSION_NAME="${BASE_VERSION_NAME}"
+              RELEASE_TAG="v${VERSION_NAME}-build-${VERSION_CODE}"
+            fi
+            IS_PRERELEASE="false"
+            MAKE_LATEST="true"
+            APK_FILENAME="app-release.apk"
           fi
 
+          echo "build_type=${BUILD_TYPE}" >> "$GITHUB_OUTPUT"
           echo "release_tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
           echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
           echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=${IS_PRERELEASE}" >> "$GITHUB_OUTPUT"
+          echo "make_latest=${MAKE_LATEST}" >> "$GITHUB_OUTPUT"
+          echo "apk_filename=${APK_FILENAME}" >> "$GITHUB_OUTPUT"
+          echo "Computed Build Type: ${BUILD_TYPE}"
           echo "Computed Release Tag: ${RELEASE_TAG}"
           echo "Computed Version Name: ${VERSION_NAME}"
           echo "Computed Version Code: ${VERSION_CODE}"
@@ -168,9 +190,10 @@ jobs:
       - name: Grant Execute Permission to Gradle Wrapper
         run: chmod +x ./gradlew
 
-      # Step 8: Compile and Assemble Release APK
-      - name: Build Release APK with Gradle
+      # Step 8: Compile and Assemble APK
+      - name: Build APK with Gradle
         env:
+          BUILD_TYPE: ${{ steps.version_meta.outputs.build_type }}
           VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
           VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -179,7 +202,7 @@ jobs:
           FIREBASE_FALLBACK_API_KEY: ${{ secrets.FIREBASE_FALLBACK_API_KEY }}
           CUSTOM_KEYSTORE: ${{ steps.decode_secrets.outputs.custom_keystore }}
         run: |
-          echo "=== Building Release APK ==="
+          echo "=== Building ${BUILD_TYPE} APK ==="
 
           # Strip accidental \r/\n from mobile copy-pasted secrets
           KEYSTORE_PASSWORD="$(printf '%s' "${KEYSTORE_PASSWORD:-}" | tr -d '\r\n')"
@@ -203,7 +226,6 @@ jobs:
           cp ./debug.keystore app/debug.keystore 2>/dev/null || true
 
           if [ -f "app/release.jks" ]; then
-            # Verify if TARGET_PASS works. If not, test if default 'android' works
             if ! keytool -list -keystore app/release.jks -storepass "${TARGET_PASS}" >/dev/null 2>&1; then
               if keytool -list -keystore app/release.jks -storepass android >/dev/null 2>&1; then
                 echo "Notice: Configured keystore password failed, but 'android' unlocked app/release.jks. Falling back to 'android'."
@@ -220,7 +242,6 @@ jobs:
             fi
 
             if [ -f "app/release.jks" ]; then
-              # Check if TARGET_ALIAS exists in keystore. If not, detect the actual alias from keystore
               if [ -z "${TARGET_ALIAS}" ] || ! keytool -list -keystore app/release.jks -storepass "${TARGET_PASS}" -alias "${TARGET_ALIAS}" >/dev/null 2>&1; then
                 DETECTED_ALIAS=$(keytool -list -v -keystore app/release.jks -storepass "${TARGET_PASS}" 2>/dev/null | grep -i "Alias name:" | head -n 1 | sed 's/.*Alias name: *//I')
                 if [ -n "${DETECTED_ALIAS}" ]; then
@@ -235,7 +256,6 @@ jobs:
                 TARGET_KEYPASS="${TARGET_PASS}"
               fi
 
-              # Verify key password
               if ! keytool -importkeystore -srckeystore app/release.jks -srcstorepass "${TARGET_PASS}" -srcalias "${TARGET_ALIAS}" -srckeypass "${TARGET_KEYPASS}" -destkeystore /tmp/keycheck.p12 -deststoretype PKCS12 -deststorepass "check123" -noprompt >/dev/null 2>&1; then
                 rm -f /tmp/keycheck.p12
                 if [ "${TARGET_KEYPASS}" != "android" ] && keytool -importkeystore -srckeystore app/release.jks -srcstorepass "${TARGET_PASS}" -srcalias "${TARGET_ALIAS}" -srckeypass "android" -destkeystore /tmp/keycheck.p12 -deststoretype PKCS12 -deststorepass "check123" -noprompt >/dev/null 2>&1; then
@@ -251,54 +271,63 @@ jobs:
               fi
               rm -f /tmp/keycheck.p12
             fi
-            if [ -f "app/release.jks" ]; then
-              echo "Release keystore and alias '${TARGET_ALIAS}' successfully validated."
-            fi
           fi
 
-          # Export the exact verified credentials for Gradle's System.getenv() calls
           export KEYSTORE_PASSWORD="${TARGET_PASS}"
           export STORE_PASSWORD="${TARGET_PASS}"
           export KEY_ALIAS="${TARGET_ALIAS}"
           export KEY_PASSWORD="${TARGET_KEYPASS}"
 
+          if [ "${BUILD_TYPE}" = "debug" ]; then
+            GRADLE_TASK="assembleDebug"
+          else
+            GRADLE_TASK="assembleRelease"
+          fi
+
           if command -v gradle >/dev/null 2>&1; then
             echo "Using pre-installed Gradle CLI ($(gradle --version | head -n 3 | tr '\n' ' '))"
-            gradle assembleRelease --stacktrace
+            gradle "${GRADLE_TASK}" --stacktrace
           else
             echo "Falling back to Gradle Wrapper..."
-            ./gradlew assembleRelease --stacktrace
+            ./gradlew "${GRADLE_TASK}" --stacktrace
           fi
 
       # Step 9: Verify and Locate Generated APKs
       - name: Verify Generated APK Outputs
         id: verify_apk
+        env:
+          BUILD_TYPE: ${{ steps.version_meta.outputs.build_type }}
+          RELEASE_TAG: ${{ steps.version_meta.outputs.release_tag }}
         run: |
-          echo "=== Locating Built APKs ==="
+          echo "=== Locating Built APKs (${BUILD_TYPE}) ==="
           mkdir -p release_assets
 
-          # Locate Release APK
-          RELEASE_APK=$(find app/build/outputs/apk/release -type f -name "*.apk" 2>/dev/null | head -n 1)
-          if [ -n "${RELEASE_APK}" ] && [ -f "${RELEASE_APK}" ]; then
-            echo "Found Release APK: ${RELEASE_APK} ($(stat -c%s "${RELEASE_APK}") bytes)"
-            cp "${RELEASE_APK}" release_assets/OrderMaster-${{ steps.version_meta.outputs.release_tag }}-release.apk
-            cp "${RELEASE_APK}" release_assets/app-release.apk
-            echo "has_release_apk=true" >> "$GITHUB_OUTPUT"
+          if [ "${BUILD_TYPE}" = "debug" ]; then
+            BUILT_APK=$(find app/build/outputs/apk/debug -type f -name "*.apk" 2>/dev/null | head -n 1)
+            if [ -n "${BUILT_APK}" ] && [ -f "${BUILT_APK}" ]; then
+              echo "Found Debug APK: ${BUILT_APK} ($(stat -c%s "${BUILT_APK}") bytes)"
+              cp "${BUILT_APK}" "release_assets/OrderMaster-${RELEASE_TAG}-debug.apk"
+              cp "${BUILT_APK}" "release_assets/app-debug.apk"
+            fi
           else
-            echo "has_release_apk=false" >> "$GITHUB_OUTPUT"
+            BUILT_APK=$(find app/build/outputs/apk/release -type f -name "*.apk" 2>/dev/null | head -n 1)
+            if [ -n "${BUILT_APK}" ] && [ -f "${BUILT_APK}" ]; then
+              echo "Found Release APK: ${BUILT_APK} ($(stat -c%s "${BUILT_APK}") bytes)"
+              cp "${BUILT_APK}" "release_assets/OrderMaster-${RELEASE_TAG}-release.apk"
+              cp "${BUILT_APK}" "release_assets/app-release.apk"
+            fi
           fi
 
           TOTAL_APKS=$(find release_assets/ -type f -name "*.apk" | wc -l)
           if [ "${TOTAL_APKS}" -eq 0 ]; then
-            echo "ERROR: No APK files found in app/build/outputs/apk!" >&2
+            echo "ERROR: No APK files found in app/build/outputs/apk/${BUILD_TYPE}!" >&2
             exit 1
           fi
 
           echo "Successfully verified ${TOTAL_APKS} APK file(s) ready for release."
           ls -lh release_assets/
 
-      # Step 9: Upload Artifact to GitHub Actions Run
-      # Uses actions/upload-artifact@v4 (latest version, resolves Node.js deprecations)
+      # Step 10: Upload Artifact to GitHub Actions Run
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -307,8 +336,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # Step 10: Publish APK to GitHub Releases
-      # Uses softprops/action-gh-release@v2 (upgraded to v2; runs natively on Node.js 20+)
+      # Step 11: Publish APK to GitHub Releases
       - name: Publish APK to GitHub Releases
         uses: softprops/action-gh-release@v2
         if: success()
@@ -318,30 +346,31 @@ jobs:
           name: "Order Master ${{ steps.version_meta.outputs.release_tag }} (Build #${{ steps.version_meta.outputs.version_code }})"
           target_commitish: ${{ github.sha }}
           draft: false
-          prerelease: false
-          make_latest: "true"
+          prerelease: ${{ steps.version_meta.outputs.is_prerelease == 'true' }}
+          make_latest: ${{ steps.version_meta.outputs.make_latest }}
           generate_release_notes: false
           body: |
             ### 🚀 Order Master ${{ steps.version_meta.outputs.release_tag }}
 
+            - **Build Type**: `${{ steps.version_meta.outputs.build_type }}`
             - **Version Name**: `${{ steps.version_meta.outputs.version_name }}`
             - **Version Code**: `${{ steps.version_meta.outputs.version_code }}`
             - **Commit**: `${{ github.sha }}`
             - **Build Run**: #${{ github.run_number }}
 
             #### 📦 Download Assets
-            - Release APK: [`app-release.apk`](https://github.com/${{ github.repository }}/releases/download/${{ steps.version_meta.outputs.release_tag }}/app-release.apk)
+            - APK: [`${{ steps.version_meta.outputs.apk_filename }}`](https://github.com/${{ github.repository }}/releases/download/${{ steps.version_meta.outputs.release_tag }}/${{ steps.version_meta.outputs.apk_filename }})
           files: |
             release_assets/*.apk
           fail_on_unmatched_files: true
 
-      # Step 11: Summary Reporting
+      # Step 12: Summary Reporting
       - name: Generate Workflow Step Summary
         if: always()
         run: |
           echo "## 📱 Order Master Build & Release Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Type**: \`${{ steps.version_meta.outputs.build_type }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Status**: Completed" >> $GITHUB_STEP_SUMMARY
           echo "- **Tag**: \`${{ steps.version_meta.outputs.release_tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- **Version Code**: \`${{ steps.version_meta.outputs.version_code }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **Release APK**: [Download app-release.apk](https://github.com/${{ github.repository }}/releases/latest/download/app-release.apk)" >> $GITHUB_STEP_SUMMARY
-
+          echo "- **APK Download**: [Download ${{ steps.version_meta.outputs.apk_filename }}](https://github.com/${{ github.repository }}/releases/download/${{ steps.version_meta.outputs.release_tag }}/${{ steps.version_meta.outputs.apk_filename }})" >> $GITHUB_STEP_SUMMARY

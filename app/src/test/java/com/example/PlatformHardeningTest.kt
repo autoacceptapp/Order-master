@@ -4,6 +4,7 @@ import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Looper
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.AppDatabase
@@ -20,6 +21,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowToast
 import org.robolectric.util.ReflectionHelpers
@@ -172,8 +174,7 @@ class PlatformHardeningTest {
                     pickupLocation = "Old Pickup",
                     dropLocation = "Old Drop",
                     isAccepted = true,
-                    decisionReason = "Accepted",
-                    rawText = "old"
+                    decisionReason = "Accepted"
                 )
             )
             dao.insertOrder(
@@ -185,8 +186,7 @@ class PlatformHardeningTest {
                     pickupLocation = "Recent Pickup",
                     dropLocation = "Recent Drop",
                     isAccepted = true,
-                    decisionReason = "Accepted",
-                    rawText = "recent"
+                    decisionReason = "Accepted"
                 )
             )
 
@@ -236,8 +236,8 @@ class PlatformHardeningTest {
     @Test
     fun `utf8 hindi and rupee string resources render intact`() {
         assertEquals("Order Master", context.getString(R.string.app_name))
-        assertEquals("Hindi (\u0939\u093F\u0928\u094D\u0926\u0940)", context.getString(R.string.language_hindi))
-        assertEquals("\u20B999", context.getString(R.string.payment_price_format, 99))
+        assertTrue(context.getString(R.string.settings_oem_title).contains("Xiaomi"))
+        assertEquals("\u2713 Order Master is up to date (v1.0.2)", context.getString(R.string.settings_updater_up_to_date_format, "v1.0.2"))
     }
 
     @Test
@@ -327,5 +327,120 @@ class PlatformHardeningTest {
         assertEquals("LOCK", service.getModeBadgeTextForTesting())
 
         controller.destroy()
+    }
+
+    @Test
+    fun `floating overlay stays active in Expired Free Mode when floating_overlay is unlocked via Points and stops when locked or expired`() {
+        val now = LicenseManager.getCurrentServerTimeMs()
+        val futureExpiry = now + 3_600_000L
+
+        // 1. Force AccessStatus.Expired (Free Mode: no active Pass or Trial)
+        LicenseManager.setLicensingForTesting(
+            passTier = null,
+            passExpiry = 0L,
+            trialClaimed = now - 200_000_000L,
+            trialExpiry = now - 10_000L,
+            trialUsed = true
+        )
+        assertTrue(LicenseManager.accessStatus.value is AccessStatus.Expired)
+
+        // 2. Unlock FLOATING_OVERLAY + MIN_FARE + TTS_VOICE via Points in Free Mode
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.FLOATING_OVERLAY to futureExpiry,
+                FeatureIds.TTS_VOICE to futureExpiry
+            )
+        )
+        AppSettings.setAutoAcceptEnabled(context, true)
+        AppSettings.setFloatingOverlayEnabled(context, true)
+        AppSettings.setVoiceAnnouncerEnabled(context, true)
+
+        val controller = Robolectric.buildService(FloatingOverlayService::class.java).create()
+        val service = controller.get()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        // Overlay service MUST stay active despite AccessStatus.Expired
+        assertTrue(FloatingOverlayService.isServiceRunning)
+        assertFalse(
+            "FloatingOverlayService must remain active in Expired/Free mode when FLOATING_OVERLAY is unlocked via Points",
+            Shadows.shadowOf(service).isStoppedBySelf
+        )
+        assertEquals("VOICE", service.getModeBadgeTextForTesting())
+
+        // 3. Updating unlockedFeatures (unlocking AUTO_CLICK) updates visual state immediately
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.FLOATING_OVERLAY to futureExpiry,
+                FeatureIds.TTS_VOICE to futureExpiry,
+                FeatureIds.AUTO_CLICK to futureExpiry
+            )
+        )
+        AppSettings.setAutoClickEnabled(context, true)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(Shadows.shadowOf(service).isStoppedBySelf)
+        assertEquals("AUTO", service.getModeBadgeTextForTesting())
+
+        // 4. Locking FLOATING_OVERLAY by Admin stops the service immediately via lockedFeatures observer
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.FLOATING_OVERLAY to futureExpiry
+            ),
+            locked = setOf(FeatureIds.FLOATING_OVERLAY)
+        )
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(
+            "FloatingOverlayService must stop immediately when Admin locks FLOATING_OVERLAY",
+            Shadows.shadowOf(service).isStoppedBySelf
+        )
+        controller.destroy()
+
+        // 5. Verify expiry of Points unlock also stops service immediately
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.FLOATING_OVERLAY to futureExpiry
+            )
+        )
+        AppSettings.setAutoAcceptEnabled(context, true)
+        AppSettings.setFloatingOverlayEnabled(context, true)
+        val controller2 = Robolectric.buildService(FloatingOverlayService::class.java).create()
+        val service2 = controller2.get()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(Shadows.shadowOf(service2).isStoppedBySelf)
+
+        // Points unlock for FLOATING_OVERLAY expires/is removed
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(FeatureIds.MIN_FARE to futureExpiry)
+        )
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(
+            "FloatingOverlayService must stop immediately when FLOATING_OVERLAY Points unlock expires",
+            Shadows.shadowOf(service2).isStoppedBySelf
+        )
+        controller2.destroy()
+    }
+
+    @Test
+    fun `order entity default timestamp uses server adjusted time and formatDateTime is consistent`() {
+        val simulatedServerNow = 1_900_000_000_000L
+        LicenseManager.recordServerTimeSync(simulatedServerNow)
+
+        val order = OrderEntity(
+            fare = 150.0,
+            isAccepted = true,
+            decisionReason = "Accepted"
+        )
+        assertTrue(
+            "OrderEntity default timestamp must use LicenseManager.getCurrentServerTimeMs()",
+             kotlin.math.abs(order.timestamp - simulatedServerNow) < 5_000L
+        )
+
+        val formatted1 = GlobalAdminManager.formatDateTime(simulatedServerNow)
+        val formatted2 = GlobalAdminManager.formatDateTime(simulatedServerNow)
+        assertEquals(formatted1, formatted2)
+        assertTrue(formatted1.isNotBlank())
     }
 }

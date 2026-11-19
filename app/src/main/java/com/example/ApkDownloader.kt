@@ -53,7 +53,6 @@ object ApkDownloader {
 
     private const val TAG = "ApkDownloader"
     internal const val PREFS_NAME = GitHubUpdateManager.PREFS_NAME
-    private const val LEGACY_PREFS_NAME = "apk_downloader_prefs"
     internal const val KEY_ACTIVE_DOWNLOAD_ID = "active_download_id"
 
     private val _downloadState = MutableStateFlow<DownloadState>(DownloadState.Idle)
@@ -533,7 +532,6 @@ object ApkDownloader {
     }
 
     private fun saveActiveDownload(context: Context, downloadId: Long, fileName: String) {
-        cleanupLegacyDownloadPrefs(context)
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putLong(KEY_ACTIVE_DOWNLOAD_ID, downloadId)
@@ -553,19 +551,10 @@ object ApkDownloader {
     }
 
     private fun clearSavedDownload(context: Context) {
-        cleanupLegacyDownloadPrefs(context)
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .remove(KEY_ACTIVE_DOWNLOAD_ID)
             .apply()
-    }
-
-    private fun cleanupLegacyDownloadPrefs(context: Context) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                context.applicationContext.deleteSharedPreferences(LEGACY_PREFS_NAME)
-            }
-        } catch (_: Throwable) {}
     }
 
     private fun mapDownloadErrorReason(reason: Int): String {

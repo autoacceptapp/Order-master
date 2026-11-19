@@ -23,11 +23,11 @@ class ExampleRobolectricTest {
         val appName = context.getString(R.string.app_name)
         assertEquals("Order Master", appName)
 
-        val filterTitle = context.getString(R.string.filter_title)
-        assertEquals("Minimum Value Filter (₹ / $)", filterTitle)
+        val serviceName = context.getString(R.string.accessibility_service_name)
+        assertEquals("Order Master Ride Evaluation Service", serviceName)
 
-        val filterDesc = context.getString(R.string.filter_desc)
-        assertTrue(filterDesc.contains("₹"))
+        val serviceDesc = context.getString(R.string.accessibility_service_description)
+        assertTrue(serviceDesc.contains("Rapido Captain"))
     }
 
     @Test
@@ -59,7 +59,7 @@ class ExampleRobolectricTest {
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf(
-                "autoAcceptEnabled" to true,
+                "isAutoAcceptEnabled" to true,
                 "minFare" to 75.0,
                 "maxFare" to 800.0,
                 "maxPickupDistance" to 2.5
@@ -67,9 +67,7 @@ class ExampleRobolectricTest {
         )
         assertTrue(AppSettings.isAutoAcceptEnabled(context))
         assertEquals(75.0f, AppSettings.getMinFare(context), 0.01f)
-        assertEquals(75.0f, AppSettings.getMinPrice(context), 0.01f)
         assertEquals(800.0f, AppSettings.getMaxFare(context), 0.01f)
-        assertEquals(800.0f, AppSettings.getMaxPrice(context), 0.01f)
         assertEquals(2.5f, AppSettings.getMaxPickupDistance(context), 0.01f)
 
         // Now that filters are unlocked, user CAN manually adjust thresholds & auto-accept toggle
@@ -239,18 +237,19 @@ class ExampleRobolectricTest {
 
     @Test
     fun `test backward compatible methods`() {
-        val result = TextAnalysisEngine.analyze("Offer: ₹150 + ₹50")
-        assertEquals(200.0, result.totalCurrency ?: 0.0, 0.001)
-        assertTrue(result.conditionsPassed)
+        val offer = TextAnalysisEngine.parseRideOffer("Offer: ₹150 + ₹50")
+        assertEquals(200.0, offer.totalFare ?: 0.0, 0.001)
+        assertTrue((offer.totalFare ?: 0.0) >= AppSettings.minCurrencyThreshold)
 
         val passText = "Order ₹120 + ₹80 • Distance 2.2 km"
-        val evalResult = TextAnalysisEngine.evaluate(
-            text = passText,
-            hasAcceptButton = true,
-            minFilter = 150.0f,
-            maxFilter = 3.0f
+        val parsedOffer = TextAnalysisEngine.parseRideOffer(passText).copy(hasAcceptButton = true)
+        val evalResult = TextAnalysisEngine.evaluateRideOffer(
+            offer = parsedOffer,
+            minFare = 150.0f,
+            maxPickupDistance = 3.0f,
+            isAutoAcceptEnabled = true
         )
-        assertTrue(evalResult.conditionsPassed)
+        assertTrue(evalResult.isAccepted)
         assertEquals(200.0, evalResult.totalCurrency ?: 0.0, 0.001)
         assertEquals(2.2, evalResult.distanceKm ?: 0.0, 0.001)
     }
@@ -286,7 +285,7 @@ class ExampleRobolectricTest {
 
     @Test
     fun `test accessibility service target package constant`() {
-        assertEquals("com.rapido.rider", MyAccessibilityService.TARGET_PACKAGE)
+        assertEquals("com.rapido.rider", RapidoAccessibilityService.TARGET_PACKAGE)
     }
 
     @Test
@@ -327,7 +326,7 @@ class ExampleRobolectricTest {
 
     @Test
     fun `test strict accept action detection in accessibility service`() {
-        val service = MyAccessibilityService()
+        val service = RapidoAccessibilityService()
 
         // Valid actionable strings
         assertTrue(service.isAcceptAction("Accept"))
@@ -378,7 +377,7 @@ class ExampleRobolectricTest {
 
     @Test
     fun `test extractAllText and findAndClickAcceptButton null safety`() = runTest {
-        val service = MyAccessibilityService()
+        val service = RapidoAccessibilityService()
 
         // Null node returns empty string safely
         val text = service.extractAllText(null)
@@ -395,14 +394,14 @@ class ExampleRobolectricTest {
     @Test
     fun `test accessibility service traversal limits strictly under 50ms and bounded depth`() {
         // Acceptance criteria: Max traversal time in AccessibilityService strictly under 50ms
-        assertTrue(MyAccessibilityService.MAX_TRAVERSAL_TIMEOUT_MS < 50L)
-        assertEquals(45L, MyAccessibilityService.MAX_TRAVERSAL_TIMEOUT_MS)
-        assertTrue(MyAccessibilityService.MAX_TRAVERSAL_DEPTH <= 15)
-        assertEquals(12, MyAccessibilityService.MAX_TRAVERSAL_DEPTH)
-        assertEquals(400L, MyAccessibilityService.REJECT_DEBOUNCE_MS)
-        assertEquals(2000L, MyAccessibilityService.COOLDOWN_MS)
+        assertTrue(RapidoAccessibilityService.MAX_TRAVERSAL_TIMEOUT_MS < 50L)
+        assertEquals(45L, RapidoAccessibilityService.MAX_TRAVERSAL_TIMEOUT_MS)
+        assertTrue(RapidoAccessibilityService.MAX_TRAVERSAL_DEPTH <= 15)
+        assertEquals(12, RapidoAccessibilityService.MAX_TRAVERSAL_DEPTH)
+        assertEquals(400L, RapidoAccessibilityService.REJECT_DEBOUNCE_MS)
+        assertEquals(2000L, RapidoAccessibilityService.COOLDOWN_MS)
 
-        val service = MyAccessibilityService()
+        val service = RapidoAccessibilityService()
         val node = android.view.accessibility.AccessibilityNodeInfo.obtain()
         val bounds = android.graphics.Rect(0, 0, 1080, 500)
 
@@ -451,7 +450,7 @@ class ExampleRobolectricTest {
 
     @Test
     fun `test reject action detection in accessibility service`() {
-        val service = MyAccessibilityService()
+        val service = RapidoAccessibilityService()
 
         assertTrue(service.isRejectAction("Reject"))
         assertTrue(service.isRejectAction("Decline"))
@@ -721,7 +720,7 @@ class ExampleRobolectricTest {
             dropLocation = "Race Course"
         )
 
-        val service = MyAccessibilityService()
+        val service = RapidoAccessibilityService()
         val speech = service.formatCleanVoiceAnnouncement(target)
         assertEquals(
             "Kiraya 95 rupaye. Pickup 2.8 kilometer Lalpari River. Drop 6.2 kilometer Race Course.",
@@ -913,12 +912,7 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val prefs = context.getSharedPreferences(AppSettings.PREFS_NAME, Context.MODE_PRIVATE)
 
-        // Seed legacy business keys and confirm init() purges them from SharedPreferences
-        prefs.edit()
-            .putBoolean("key_auto_accept_enabled", true)
-            .putFloat("key_min_fare", 99.0f)
-            .putBoolean("key_floating_overlay_enabled", true)
-            .apply()
+        prefs.edit().clear().commit()
         AppSettings.init(context)
 
         // Ensure RAM updates NEVER write business keys to SharedPreferences
@@ -1058,10 +1052,10 @@ class ExampleRobolectricTest {
     @Test
     fun `test wait-for-success state machine regexes and states`() {
         // AcceptanceState enum presence
-        assertEquals(3, MyAccessibilityService.AcceptanceState.values().size)
-        assertNotNull(MyAccessibilityService.AcceptanceState.valueOf("CONFIRMED_ACCEPTED"))
-        assertNotNull(MyAccessibilityService.AcceptanceState.valueOf("REJECTED_OR_TAKEN"))
-        assertNotNull(MyAccessibilityService.AcceptanceState.valueOf("STALLED_OR_TIMED_OUT"))
+        assertEquals(3, RapidoAccessibilityService.AcceptanceState.values().size)
+        assertNotNull(RapidoAccessibilityService.AcceptanceState.valueOf("CONFIRMED_ACCEPTED"))
+        assertNotNull(RapidoAccessibilityService.AcceptanceState.valueOf("REJECTED_OR_TAKEN"))
+        assertNotNull(RapidoAccessibilityService.AcceptanceState.valueOf("STALLED_OR_TIMED_OUT"))
 
         // Rejection indicators regex
         val rejectionPhrases = listOf(
@@ -1073,7 +1067,7 @@ class ExampleRobolectricTest {
             "Booking failed, please try again"
         )
         for (phrase in rejectionPhrases) {
-            assertTrue("Expected rejection match for: $phrase", MyAccessibilityService.REJECTION_INDICATORS_REGEX.containsMatchIn(phrase))
+            assertTrue("Expected rejection match for: $phrase", RapidoAccessibilityService.REJECTION_INDICATORS_REGEX.containsMatchIn(phrase))
         }
 
         // Active trip transition regex
@@ -1087,13 +1081,13 @@ class ExampleRobolectricTest {
             "Call customer directly"
         )
         for (phrase in activeTripPhrases) {
-            assertTrue("Expected active trip match for: $phrase", MyAccessibilityService.ACTIVE_TRIP_INDICATORS_REGEX.containsMatchIn(phrase))
+            assertTrue("Expected active trip match for: $phrase", RapidoAccessibilityService.ACTIVE_TRIP_INDICATORS_REGEX.containsMatchIn(phrase))
         }
 
         // Negative check: standard offer text should NOT match rejection or active trip indicators
         val standardOffer = "₹45 0.6 km City Centre Premji Park 2.4 km Rajkot railway station Accept"
-        assertFalse(MyAccessibilityService.REJECTION_INDICATORS_REGEX.containsMatchIn(standardOffer))
-        assertFalse(MyAccessibilityService.ACTIVE_TRIP_INDICATORS_REGEX.containsMatchIn(standardOffer))
+        assertFalse(RapidoAccessibilityService.REJECTION_INDICATORS_REGEX.containsMatchIn(standardOffer))
+        assertFalse(RapidoAccessibilityService.ACTIVE_TRIP_INDICATORS_REGEX.containsMatchIn(standardOffer))
     }
 
     @Test
@@ -1125,7 +1119,7 @@ class ExampleRobolectricTest {
             )
         )
         val snapshotData = mapOf<String, Any?>(
-            "autoAcceptEnabled" to true,
+            "isAutoAcceptEnabled" to true,
             "minFare" to 85.0,
             "maxPickupDistance" to 2.0,
             "isFloatingOverlayEnabled" to true,

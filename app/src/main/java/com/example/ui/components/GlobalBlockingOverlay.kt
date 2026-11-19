@@ -56,11 +56,9 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import com.example.GlobalAdminManager
 import com.example.LicenseManager
 import com.google.firebase.auth.FirebaseAuth
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * Full-screen, non-dismissible blocking UI displayed on top of the app when:
@@ -220,9 +218,9 @@ private fun UserBannedContent(
 ) {
     val context = LocalContext.current
     val customUserId = com.example.LicenseManager.resolveUserKey(context)
-    val formattedDate = banUntilTimestamp?.let {
-        SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(it))
-    } ?: "Further notice"
+    val formattedDate = remember(banUntilTimestamp) {
+        banUntilTimestamp?.let { GlobalAdminManager.formatDateTime(it) } ?: "Further notice"
+    }
 
     ElevatedCard(
         modifier = Modifier
