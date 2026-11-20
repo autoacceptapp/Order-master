@@ -249,7 +249,8 @@ class AuditRegressionTest {
 
         val paymentPayload = LicenseManager.buildActivatePassPaymentPayload(PassTier.MONTHLY, "123456789012")
         assertEquals(setOf("passTier", "utr"), paymentPayload.keys)
-        assertEquals(PassTier.MONTHLY.id, paymentPayload["passTier"])
+        assertEquals(PassTier.MONTHLY.canonicalId, paymentPayload["passTier"])
+        assertEquals("monthly", paymentPayload["passTier"])
         assertEquals("123456789012", paymentPayload["utr"])
         assertFalse(paymentPayload.containsKey("amount"))
         assertFalse(paymentPayload.containsKey("durationDays"))

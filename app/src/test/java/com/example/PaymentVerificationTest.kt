@@ -620,7 +620,8 @@ class PaymentVerificationTest {
         assertTrue(payload["amount"] is Int)
         assertEquals("hw_test_1234", payload["deviceHardwareId"])
         assertEquals(PassTier.MONTHLY.title, payload["passName"])
-        assertEquals(PassTier.MONTHLY.id, payload["passTier"])
+        assertEquals(PassTier.MONTHLY.canonicalId, payload["passTier"])
+        assertEquals("monthly", payload["passTier"])
         assertEquals(com.google.firebase.firestore.FieldValue.serverTimestamp(), payload["createdAt"])
         assertTrue(
             "Unexpected keys outside unified firestore.rules allowlist: ${payload.keys - unifiedAllowedKeys}",
@@ -690,6 +691,7 @@ class PaymentVerificationTest {
 
         assertEquals("uid_canonical_99", payload["uid"])
         assertEquals("uid_canonical_99", payload["firebaseUid"])
+        assertEquals(PassTier.REMOVE_ADS.canonicalId, payload["passTier"])
         assertFalse("Action queue payload must not include duplicate userId", payload.containsKey("userId"))
         assertTrue(payload.keys.containsAll(setOf("uid", "firebaseUid", "actionType", "status", "createdAt")))
         assertEquals(com.google.firebase.firestore.FieldValue.serverTimestamp(), payload["createdAt"])
@@ -982,7 +984,9 @@ class PaymentVerificationTest {
             "points",
             "userId",
             "payload",
-            "data"
+            "data",
+            "isAutoAcceptEnabled",
+            "autoAcceptEnabled"
         )
 
         val uid = "uid_step8b_hygiene"
@@ -1048,7 +1052,9 @@ class PaymentVerificationTest {
             "userId" to "legacy_uid",
             "payload" to mapOf("nested" to true),
             "data" to mapOf("nested" to true),
-            "passTier" to "weekly",
+            "isAutoAcceptEnabled" to true,
+            "autoAcceptEnabled" to true,
+            "passTier" to "weekly_pass",
             "utr" to "426719823451"
         )
         LicenseManager.PENDING_ACTION_ALLOWED_TYPES.forEach { actionType ->
@@ -1125,6 +1131,55 @@ class PaymentVerificationTest {
         assertEquals(PassTier.WEEKLY, normalApproval!!.passTier)
         assertNull(normalApproval.autoAdjustedFromRequestedTier)
         assertFalse(normalApproval.message.contains("Auto-matched"))
+    }
+
+    @Test
+    fun testAllPaymentFlowsEmitCanonicalPassTierIds() {
+        val expectedWireIds = mapOf(
+            PassTier.DAILY to "daily",
+            PassTier.WEEKLY to "weekly",
+            PassTier.MONTHLY to "monthly",
+            PassTier.REMOVE_ADS to "remove_ads"
+        )
+        val utr = "426719823459"
+        val uid = "uid_step10b_tier_parity"
+        val hwId = "HW-STEP10B-001"
+        val sig = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+
+        expectedWireIds.forEach { (tier, expectedCanonicalId) ->
+            // 1. PURCHASE_PASS
+            val purchasePayload = LicenseManager.buildPurchasePassPayload(tier)
+            assertEquals("PURCHASE_PASS must emit canonicalId for $tier", expectedCanonicalId, purchasePayload["passTier"])
+
+            // 2. ACTIVATE_PASS_PAYMENT
+            val activatePayload = LicenseManager.buildActivatePassPaymentPayload(tier, utr)
+            assertEquals("ACTIVATE_PASS_PAYMENT must emit canonicalId for $tier", expectedCanonicalId, activatePayload["passTier"])
+            assertEquals(utr, activatePayload["utr"])
+
+            // 3. pending_verifications/{utr} (retains passName display label)
+            val verificationPayload = PaymentVerificationRepository.buildPendingVerificationPayload(
+                utr = utr,
+                firebaseUid = uid,
+                tier = tier,
+                deviceHardwareId = hwId
+            )
+            assertEquals("pending_verifications must emit canonicalId for $tier", expectedCanonicalId, verificationPayload["passTier"])
+            assertEquals("pending_verifications must retain passName display label", tier.title, verificationPayload["passName"])
+
+            // 4. Envelope builder defense-in-depth normalizes legacy passTier IDs on both payment actions
+            listOf("PURCHASE_PASS", "ACTIVATE_PASS_PAYMENT").forEach { actionType ->
+                val envelope = LicenseManager.buildActionQueuePayload(
+                    firebaseUid = uid,
+                    userEmail = "captain@example.com",
+                    hardwareId = hwId,
+                    deviceIntegrityOk = true,
+                    appSignatureSha256 = sig,
+                    actionType = actionType,
+                    payload = mapOf("passTier" to tier.id, "utr" to utr)
+                )
+                assertEquals("$actionType envelope must normalize legacy ${tier.id} to $expectedCanonicalId", expectedCanonicalId, envelope["passTier"])
+            }
+        }
     }
 }
 

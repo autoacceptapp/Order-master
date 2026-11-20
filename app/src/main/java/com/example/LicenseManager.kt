@@ -782,7 +782,9 @@ object LicenseManager {
         snapshotEmail: String?,
         expectedFirebaseUid: String,
         currentHardwareId: String,
-        authEmail: String
+        authEmail: String,
+        snapshotAutoClickEnabled: Boolean? = null,
+        desiredAutoClickEnabled: Boolean? = null
     ): Map<String, Any> {
         val updatesNeeded = mutableMapOf<String, Any>()
         if (expectedFirebaseUid.isNotBlank() && snapshotFirebaseUid.orEmpty() != expectedFirebaseUid) {
@@ -793,6 +795,9 @@ object LicenseManager {
         }
         if (authEmail.isNotBlank() && snapshotEmail.orEmpty() != authEmail) {
             updatesNeeded["userEmail"] = authEmail
+        }
+        if (desiredAutoClickEnabled != null && snapshotAutoClickEnabled != desiredAutoClickEnabled) {
+            updatesNeeded["isAutoClickEnabled"] = desiredAutoClickEnabled
         }
         if (updatesNeeded.isNotEmpty() && expectedFirebaseUid.isNotBlank()) {
             updatesNeeded["firebaseUid"] = expectedFirebaseUid
@@ -1838,7 +1843,9 @@ object LicenseManager {
         "points",
         "userId",
         "payload",
-        "data"
+        "data",
+        "isAutoAcceptEnabled",
+        "autoAcceptEnabled"
     )
 
     @VisibleForTesting
@@ -1853,10 +1860,23 @@ object LicenseManager {
         createdAtValue: Any = FieldValue.serverTimestamp()
     ): Map<String, Any> {
         val actionData = hashMapOf<String, Any>()
+        val isPassTierAction = actionType.equals("PURCHASE_PASS", ignoreCase = true) ||
+            actionType.equals("ACTIVATE_PASS_PAYMENT", ignoreCase = true)
+        val hasExplicitAutoClick = payload.containsKey("isAutoClickEnabled")
         for ((k, v) in payload) {
+            if (k == "isAutoAcceptEnabled" || k == "autoAcceptEnabled") {
+                if (actionType.equals("UPDATE_PROFILE", ignoreCase = true) && !hasExplicitAutoClick && v is Boolean) {
+                    actionData["isAutoClickEnabled"] = v
+                }
+                continue
+            }
             if (k in FORBIDDEN_LEGACY_PAYLOAD_KEYS) continue
             if (k !in PENDING_ACTION_ALLOWED_KEYS) continue
             if (actionType == "REWARD_AD_WATCHED" && k == "amount") continue
+            if (isPassTierAction && k == "passTier" && v is String) {
+                actionData[k] = PassTier.fromId(v)?.canonicalId ?: v
+                continue
+            }
             actionData[k] = v
         }
         actionData["uid"] = firebaseUid
@@ -2014,7 +2034,9 @@ object LicenseManager {
             return@withContext Result.failure(IllegalArgumentException("Unsupported actionType: $actionType"))
         }
 
-        val effectivePayload = if (actionType.equals("PURCHASE_PASS", ignoreCase = true)) {
+        val effectivePayload = if (actionType.equals("PURCHASE_PASS", ignoreCase = true) ||
+            actionType.equals("ACTIVATE_PASS_PAYMENT", ignoreCase = true)
+        ) {
             val rawTier = payload["passTier"] as? String
             val resolvedTier = PassTier.fromId(rawTier)
                 ?: return@withContext Result.failure(
@@ -2291,8 +2313,12 @@ object LicenseManager {
 
     @VisibleForTesting
     internal fun buildActivatePassPaymentPayload(passTier: PassTier, cleanUtr: String): Map<String, Any> {
+        val canonical = passTier.canonicalId.trim().lowercase(Locale.ROOT)
+        require(canonical in PassTier.VALID_CANONICAL_PASS_TIERS && canonical != "none") {
+            "Invalid canonical passTier '$canonical' for ACTIVATE_PASS_PAYMENT"
+        }
         return mapOf(
-            "passTier" to passTier.id,
+            "passTier" to canonical,
             "utr" to cleanUtr
         )
     }
@@ -2554,6 +2580,12 @@ object LicenseManager {
                 val existingLinkedHw = snapshot.getString("linkedHardwareId")
                 val existingEmail = snapshot.getString("userEmail")
                 val existingFirebaseUid = snapshot.getString("firebaseUid")
+                val existingAutoClick = snapshot.getBoolean("isAutoClickEnabled")
+                val legacyAutoAcceptToMigrate = if (existingAutoClick == null) {
+                    snapshot.getBoolean("isAutoAcceptEnabled")
+                } else {
+                    null
+                }
                 val authEmail = try {
                     FirebaseAuth.getInstance().currentUser?.email.orEmpty()
                 } catch (_: Exception) {
@@ -2566,7 +2598,9 @@ object LicenseManager {
                     snapshotEmail = existingEmail,
                     expectedFirebaseUid = customUserId,
                     currentHardwareId = currentHwId,
-                    authEmail = authEmail
+                    authEmail = authEmail,
+                    snapshotAutoClickEnabled = existingAutoClick,
+                    desiredAutoClickEnabled = legacyAutoAcceptToMigrate
                 )
                 _referralCode.value = code?.takeIf { it.isNotBlank() }
 
@@ -3179,6 +3213,15 @@ object LicenseManager {
         )
         _trialInfo.value = trialInfoObj
 
+        // Prune expired point-unlocked entries (e.g. expired remove_ads_pass or hourly unlocks)
+        // even while Pro Pass / Trial is active so UI flows stay live and accurate.
+        val livePrunedUnlocked = _unlockedFeatures.value.filterValues { exp ->
+            exp == -1L || exp == Long.MAX_VALUE || exp > now
+        }
+        if (_unlockedFeatures.value != livePrunedUnlocked) {
+            _unlockedFeatures.value = livePrunedUnlocked
+        }
+
         // 1. Check Paid Pro Pass First (Daily/Weekly/Monthly ONLY)
         if (tier != null && passExpiry > now) {
             val timeLeft = passExpiry - now
@@ -3451,15 +3494,13 @@ object LicenseManager {
     }
 
     /**
-     * Returns true when automation clicking can run for the user:
-     * - Service active, unbanned, clean clock/hooks, and AUTO_CLICK not locked by Admin
-     * - Either active Pro Pass/Trial OR AUTO_CLICK unlocked OR at least one filter unlocked in Free Mode
+     * Returns true when at least one evaluation filter is unlocked (either via active Pro Pass/Trial
+     * or via an active Points/Admin unlock in Free Mode).
      */
-    fun hasAnyAutoAcceptCapability(): Boolean {
+    fun hasAnyUnlockedFilter(): Boolean {
         if (!isServiceActive() || isCurrentlyBanned() || isClockTamperingDetected()) return false
         val ctx = appContext
         if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return false
-        if (isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) return false
         if (isAccessGranted()) return true
 
         return listOf(
@@ -3472,6 +3513,23 @@ object LicenseManager {
             FeatureIds.FARE_FILTERS,
             FeatureIds.DISTANCE_FILTERS
         ).any { isFeatureUnlocked(it) }
+    }
+
+    /**
+     * Returns true when automation clicking can run for the user:
+     * - Service active, unbanned, clean clock/hooks, licensing loaded (not Loading),
+     *   and AUTO_CLICK not explicitly locked by Admin.
+     * - Allowed in BOTH Pro Mode (300–700ms boosted speed + all filters unlocked)
+     *   AND Free Mode (1–2s fast auto-accept, bypassing locked filters and enforcing only
+     *   actively Point-unlocked filters).
+     */
+    fun hasAnyAutoAcceptCapability(): Boolean {
+        if (!isServiceActive() || isCurrentlyBanned() || isClockTamperingDetected()) return false
+        val ctx = appContext
+        if (ctx != null && DeviceUtils.isRuntimeHookOrDebuggerDetected(ctx)) return false
+        if (isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) return false
+        if (_accessStatus.value is AccessStatus.Loading && !hasAnyUnlockedFilter()) return false
+        return true
     }
 
     /**
@@ -3508,12 +3566,17 @@ object LicenseManager {
     fun isAdsRemoved(): Boolean = isRemoveAdsActive()
 
     /**
-     * Controls whether Banner Ads should be shown.
-     * Returns false if user is in Pro Mode (active Pro Pass or active Free Trial)
-     * OR if user has an active Remove Ads Pass.
-     * In Free Mode, returns true even if 1 or more filter features are unlocked with Points.
+     * Controls whether Ads (banners / interstitials / ad placements) should be shown.
+     * Ads remain enabled in BOTH Free Mode AND Pro Mode (Free Trial, Daily/Weekly/Monthly Pass),
+     * and are hidden STRICTLY when the user holds an active `remove_ads` pass (`isRemoveAdsActive() == true`).
      */
-    fun shouldShowBannerAds(): Boolean = !isProMode() && !isRemoveAdsActive()
+    fun shouldShowAds(): Boolean = !isRemoveAdsActive()
+
+    /**
+     * Controls whether Banner Ads should be shown.
+     * Strictly requires an active Remove Ads Pass to hide banners; Pro Passes and Free Trial do NOT hide ads.
+     */
+    fun shouldShowBannerAds(): Boolean = shouldShowAds()
 
     /**
      * Returns remaining active time in milliseconds for a specific feature.
@@ -3655,35 +3718,26 @@ object LicenseManager {
 
         result.fold(
             onSuccess = { snap ->
-                (snap.getLong("newPointsBalance"))?.let { newBal ->
-                    _pointsBalance.value = newBal.toInt()
+                val actionData = snap.data ?: buildMap {
+                    snap.get("newPointsBalance")?.let { put("newPointsBalance", it) }
+                    snap.get("pointsBalance")?.let { put("pointsBalance", it) }
+                    snap.get("points")?.let { put("points", it) }
+                    snap.get("unlockedFeatures")?.let { put("unlockedFeatures", it) }
+                    snap.get("unlockedExpiries")?.let { put("unlockedExpiries", it) }
                 }
-                val rawExpiries = snap.get("unlockedExpiries") as? Map<*, *>
-                val allPresentOnActionDoc = rawExpiries != null &&
-                    pricings.all { (rawExpiries[it.id] as? Number)?.toLong() != null }
-                if (!allPresentOnActionDoc) {
-                    appContext?.let { refreshUserPassStatusFromServer(it) }
-                }
-
-                val unlockedResults = mutableMapOf<String, Long>()
-                val updatedMap = _unlockedFeatures.value.toMutableMap()
-                for (pricing in pricings) {
-                    val serverExp = (rawExpiries?.get(pricing.id) as? Number)?.toLong()
-                        ?: findFeatureUnlockExpiry(pricing.id)
-                    if (serverExp != null) {
-                        updatedMap[pricing.id] = serverExp
-                        unlockedResults[pricing.id] = serverExp
+                applyCompletedMultiFeatureUnlockSnapshot(
+                    actionData = actionData,
+                    requestedFeatureIds = pricings.map { it.id },
+                    onMissingFeaturesRefresh = {
+                        appContext?.let { refreshUserPassStatusFromServer(it) }
                     }
-                }
-                _unlockedFeatures.value = filterAuthoritativeUnlockedFeatures(updatedMap)
-                onEntitlementsChanged?.invoke()
-                if (unlockedResults.isEmpty()) {
-                    Result.failure(
-                        IllegalStateException("Feature unlock completed on server, awaiting profile sync.")
-                    )
-                } else {
-                    Log.i(TAG, "UNLOCK_MULTIPLE_FEATURES completed atomically for ${unlockedResults.size} feature(s).")
-                    Result.success(unlockedResults)
+                ).also { applied ->
+                    if (applied.isSuccess) {
+                        Log.i(
+                            TAG,
+                            "UNLOCK_MULTIPLE_FEATURES completed atomically for ${applied.getOrNull()?.size ?: 0} feature(s)."
+                        )
+                    }
                 }
             },
             onFailure = { err ->
@@ -3691,6 +3745,70 @@ object LicenseManager {
                 Result.failure(err)
             }
         )
+    }
+
+    /**
+     * Reads canonical `unlockedFeatures` from a completed `UNLOCK_MULTIPLE_FEATURES` action
+     * snapshot first, falling back to legacy `unlockedExpiries` when `unlockedFeatures` is absent.
+     */
+    @VisibleForTesting
+    internal fun extractUnlockedFeaturesFromActionData(
+        actionData: Map<String, Any?>?
+    ): Map<String, Long> {
+        if (actionData == null) return emptyMap()
+        fun parseExpiryMap(raw: Any?): Map<String, Long> {
+            val map = raw as? Map<*, *> ?: return emptyMap()
+            return map.mapNotNull { (k, v) ->
+                val key = (k as? String)?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }
+                    ?: return@mapNotNull null
+                val exp = extractServerTimestampMs(v) ?: return@mapNotNull null
+                key to exp
+            }.toMap()
+        }
+        val canonical = parseExpiryMap(actionData["unlockedFeatures"])
+        if (canonical.isNotEmpty()) return canonical
+        return parseExpiryMap(actionData["unlockedExpiries"])
+    }
+
+    @VisibleForTesting
+    internal suspend fun applyCompletedMultiFeatureUnlockSnapshot(
+        actionData: Map<String, Any?>?,
+        requestedFeatureIds: List<String>,
+        onMissingFeaturesRefresh: suspend () -> Unit = {}
+    ): Result<Map<String, Long>> {
+        val newBalance = (actionData?.get("newPointsBalance") as? Number)?.toInt()
+            ?: (actionData?.get("pointsBalance") as? Number)?.toInt()
+            ?: (actionData?.get("points") as? Number)?.toInt()
+        if (newBalance != null) {
+            _pointsBalance.value = newBalance
+        }
+
+        val parsedExpiries = extractUnlockedFeaturesFromActionData(actionData)
+        val allPresentOnActionDoc = requestedFeatureIds.isNotEmpty() &&
+            requestedFeatureIds.all { parsedExpiries[it] != null }
+        if (!allPresentOnActionDoc) {
+            onMissingFeaturesRefresh()
+        }
+
+        val unlockedResults = mutableMapOf<String, Long>()
+        val updatedMap = _unlockedFeatures.value.toMutableMap()
+        for (featureId in requestedFeatureIds) {
+            val serverExp = parsedExpiries[featureId]
+                ?: findFeatureUnlockExpiry(featureId)
+            if (serverExp != null) {
+                updatedMap[featureId] = serverExp
+                unlockedResults[featureId] = serverExp
+            }
+        }
+        _unlockedFeatures.value = filterAuthoritativeUnlockedFeatures(updatedMap)
+        onEntitlementsChanged?.invoke()
+        return if (unlockedResults.isEmpty()) {
+            Result.failure(
+                IllegalStateException("Feature unlock completed on server, awaiting profile sync.")
+            )
+        } else {
+            Result.success(unlockedResults)
+        }
     }
 
     @VisibleForTesting

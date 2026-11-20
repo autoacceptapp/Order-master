@@ -80,6 +80,88 @@ open class RapidoAccessibilityService : AccessibilityService() {
             lastSnapshotCapturedAtMs = 0L
         }
 
+        const val FREE_MODE_MIN_ACCEPT_DELAY_MS = 1000L
+        const val FREE_MODE_DEFAULT_ACCEPT_DELAY_MS = 1200L
+        const val FREE_MODE_MAX_ACCEPT_DELAY_MS = 2000L
+        const val PRO_MODE_MIN_ACCEPT_DELAY_MS = 300L
+        const val PRO_MODE_MAX_ACCEPT_DELAY_MS = 5000L
+
+        /**
+         * Computes the effective auto-accept click delay:
+         * - Pro Mode (Active Trial / Daily / Weekly / Monthly Pass) or Point-unlocked AUTO_CLICK Boost:
+         *   honors configured speed clamped to [300ms, 5000ms].
+         * - Free Mode (no active Pro Pass/Trial and no AUTO_CLICK boost):
+         *   strictly enforces a fast 1–2s human-safe delay in [1000ms, 2000ms].
+         */
+        @androidx.annotation.VisibleForTesting
+        fun computeEffectiveAcceptDelayMs(
+            configuredDelayMs: Long,
+            isProMode: Boolean,
+            isAutoClickSpeedUnlocked: Boolean
+        ): Long {
+            return if (isProMode || isAutoClickSpeedUnlocked) {
+                configuredDelayMs.coerceIn(PRO_MODE_MIN_ACCEPT_DELAY_MS, PRO_MODE_MAX_ACCEPT_DELAY_MS)
+            } else {
+                when {
+                    configuredDelayMs in FREE_MODE_MIN_ACCEPT_DELAY_MS..FREE_MODE_MAX_ACCEPT_DELAY_MS -> configuredDelayMs
+                    configuredDelayMs < FREE_MODE_MIN_ACCEPT_DELAY_MS -> FREE_MODE_DEFAULT_ACCEPT_DELAY_MS
+                    else -> FREE_MODE_MAX_ACCEPT_DELAY_MS
+                }
+            }
+        }
+
+        /**
+         * Evaluates an incoming ride offer using live server-authoritative entitlements:
+         * - Free Mode (0 unlocked filters): bypasses ALL filter checks (including stale Pro/Trial thresholds)
+         *   so incoming offers pass cleanly for fast 1–2s auto-accept.
+         * - Free Mode (Point-unlocked filters): enforces ONLY actively unlocked & enabled filters
+         *   (`expiry > now`), ignoring locked/expired filters.
+         * - Pro Mode (Active Trial or Daily/Weekly/Monthly Pass): enforces ALL enabled filters.
+         */
+        @androidx.annotation.VisibleForTesting
+        fun evaluateOfferWithEffectiveLicensing(
+            context: Context,
+            offer: ParsedRideOffer
+        ): RideEvaluation {
+            val isAutoAccept = AppSettings.isAutoAcceptEnabled(context)
+
+            val isMinFareUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)
+            val isMaxFareUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)
+            val isMinPerKmRateUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)
+            val isPickupDistUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)
+            val isDropDistUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)
+            val isBlacklistUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
+
+            val isMinFareEnabled = isMinFareUnlocked && AppSettings.isMinFareEnabled(context)
+            val isMaxFareEnabled = isMaxFareUnlocked && AppSettings.isMaxFareEnabled(context)
+            val isMinPerKmRateEnabled = isMinPerKmRateUnlocked && AppSettings.isMinPerKmRateEnabled(context)
+            val isMaxPickupDistEnabled = isPickupDistUnlocked && AppSettings.isMaxPickupDistanceEnabled(context)
+            val isMaxDropDistEnabled = isDropDistUnlocked && AppSettings.isMaxDropDistanceEnabled(context)
+            val isDestinationBlacklistEnabled = isBlacklistUnlocked && AppSettings.isDestinationBlacklistEnabled(context)
+            val effectiveBlockedLocations = if (isBlacklistUnlocked && isDestinationBlacklistEnabled) {
+                AppSettings.getBlockedLocations(context)
+            } else {
+                emptyList()
+            }
+
+            return TextAnalysisEngine.evaluateRideOffer(
+                offer = offer,
+                minFare = AppSettings.getMinFare(context),
+                maxFare = AppSettings.getMaxFare(context),
+                maxPickupDistance = AppSettings.getMaxPickupDistance(context),
+                isAutoAcceptEnabled = isAutoAccept,
+                isMinFareEnabled = isMinFareEnabled,
+                isMaxFareEnabled = isMaxFareEnabled,
+                isMaxPickupDistanceEnabled = isMaxPickupDistEnabled,
+                isMaxDropDistanceEnabled = isMaxDropDistEnabled,
+                maxDropDistance = AppSettings.getMaxDropDistance(context),
+                minPerKmRate = AppSettings.getMinPerKmRate(context),
+                isMinPerKmRateEnabled = isMinPerKmRateEnabled,
+                blockedLocations = effectiveBlockedLocations,
+                isDestinationBlacklistEnabled = isDestinationBlacklistEnabled
+            )
+        }
+
         private val DIAGNOSTIC_LOCATION_VIEW_ID_REGEX = Regex(
             """(?i)(?:address|location|pickup_loc|drop_loc|dest|source|street|landmark|locality|route|place|waypoint)"""
         )
@@ -955,37 +1037,14 @@ open class RapidoAccessibilityService : AccessibilityService() {
         )
         broadcastLog("Detected ${unprocessedOffers.size} distinct order card${if (unprocessedOffers.size > 1) "s" else ""} [${if (isProMode) "Pro" else "Free"}]")
 
-        // Granular Pay-Per-Use & Admin Lock/Unlock Feature Checks:
-        val isMinFareUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)
-        val isMaxFareUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)
-        val isMinPerKmRateUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)
-        val isPickupDistUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)
-        val isDropDistUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)
-        val isBlacklistUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)
         val isAutoClickSpeedUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK)
         val isTtsVoiceUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE)
-
-        val minFare = AppSettings.getMinFare(this)
-        val maxFare = AppSettings.getMaxFare(this)
-        val maxPickupDist = AppSettings.getMaxPickupDistance(this)
-        val maxDropDist = AppSettings.getMaxDropDistance(this)
-        val minPerKmRate = AppSettings.getMinPerKmRate(this)
-        val blockedLocations = AppSettings.getBlockedLocations(this)
-
-        // Enforce both user's toggle AND server-authoritative feature unlock status
-        val isMinFareEnabled = isMinFareUnlocked && AppSettings.isMinFareEnabled(this)
-        val isMaxFareEnabled = isMaxFareUnlocked && AppSettings.isMaxFareEnabled(this)
-        val isMinPerKmRateEnabled = isMinPerKmRateUnlocked && AppSettings.isMinPerKmRateEnabled(this)
-        val isMaxPickupDistEnabled = isPickupDistUnlocked && AppSettings.isMaxPickupDistanceEnabled(this)
-        val isMaxDropDistEnabled = isDropDistUnlocked && AppSettings.isMaxDropDistanceEnabled(this)
-        val isDestinationBlacklistEnabled = isBlacklistUnlocked && AppSettings.isDestinationBlacklistEnabled(this)
-        val effectiveBlockedLocations = if (isBlacklistUnlocked) blockedLocations else emptyList()
-        val hasAnyActiveFilterEnabled = isMinFareEnabled || isMaxFareEnabled || isMaxPickupDistEnabled ||
-            isMaxDropDistEnabled || isMinPerKmRateEnabled || isDestinationBlacklistEnabled
+        val hasAnyActiveFilterEnabled = AppSettings.hasActiveEvaluationFilter(this)
 
         val evaluatedOffers = mutableListOf<Pair<ParsedRideOffer, RideEvaluation>>()
 
-        // Sequential Queue Evaluation: Always evaluate offers via TextAnalysisEngine with effective filter settings
+        // Sequential Queue Evaluation: Always evaluate offers via live entitlement-gated evaluator
+        // (Free Mode with 0 active filters bypasses all locked/stale filters; Point-unlocked filters enforce only active unlocks; Pro Mode enforces all enabled filters)
         unprocessedOffers.forEachIndexed { index, offer ->
             // Record in deduplication set
             synchronized(processedOfferIds) {
@@ -996,22 +1055,7 @@ open class RapidoAccessibilityService : AccessibilityService() {
                 processedOfferIds.add(offer.id)
             }
 
-            val evaluation = TextAnalysisEngine.evaluateRideOffer(
-                offer = offer,
-                minFare = minFare,
-                maxFare = maxFare,
-                maxPickupDistance = maxPickupDist,
-                isAutoAcceptEnabled = isAutoAccept,
-                isMinFareEnabled = isMinFareEnabled,
-                isMaxFareEnabled = isMaxFareEnabled,
-                isMaxPickupDistanceEnabled = isMaxPickupDistEnabled,
-                isMaxDropDistanceEnabled = isMaxDropDistEnabled,
-                maxDropDistance = maxDropDist,
-                minPerKmRate = minPerKmRate,
-                isMinPerKmRateEnabled = isMinPerKmRateEnabled,
-                blockedLocations = effectiveBlockedLocations,
-                isDestinationBlacklistEnabled = isDestinationBlacklistEnabled
-            )
+            val evaluation = evaluateOfferWithEffectiveLicensing(this, offer)
 
             evaluatedOffers.add(offer to evaluation)
             AppSettings.recordEvaluation(this, evaluation)
@@ -1055,23 +1099,12 @@ open class RapidoAccessibilityService : AccessibilityService() {
             if (!hasActiveAccess) {
                 val topOffer = matchingOffers.first().first
                 AppSettings.addLog(
-                    title = "Unlock Required",
-                    message = "Matching ride detected (₹${topOffer.totalFare?.toInt() ?: 0}), but an active Pass/Trial or at least 1 unlocked filter/Auto-Click feature is required.",
+                    title = "Auto-Accept Restricted",
+                    message = "Matching ride detected (₹${topOffer.totalFare?.toInt() ?: 0}), but automation is currently restricted or locked by Admin.",
                     severity = LogSeverity.WARNING,
                     evaluation = matchingOffers.first().second
                 )
-                broadcastLog("Auto-Accept paused: Unlock a filter with Points or activate a Pass.")
-                return
-            }
-            if (!isProMode && !hasAnyActiveFilterEnabled) {
-                val topOffer = matchingOffers.first().first
-                AppSettings.addLog(
-                    title = "Filter Rule Required",
-                    message = "Ride detected (₹${topOffer.totalFare?.toInt() ?: 0}), but no unlocked filter toggle is active in Free Mode. Enable at least 1 filter before auto-accepting.",
-                    severity = LogSeverity.WARNING,
-                    evaluation = matchingOffers.first().second
-                )
-                broadcastLog("Auto-Accept paused: Enable at least 1 unlocked filter rule.")
+                broadcastLog("Auto-Accept paused: Service offline or restricted by Admin.")
                 return
             }
 
@@ -1094,15 +1127,21 @@ open class RapidoAccessibilityService : AccessibilityService() {
             val bestEvaluation = bestCandidate.second
 
             isPendingExecution = true
-            // Acceptance Speed: Honor user-configured delay, clamped cleanly (min 300ms with Boost, min 1000ms standard)
+            // Acceptance Speed:
+            // - Pro Mode or Point-unlocked AUTO_CLICK boost: 300–5000ms (user-configured)
+            // - Free Mode (default / unfiltered or standard point-filter mode): strictly 1–2s (1000–2000ms)
             val configuredDelayMs = AppSettings.getClickDelayMs(this)
-            val acceptDelayMs = if (isAutoClickSpeedUnlocked) {
-                configuredDelayMs.coerceIn(300L, 5000L)
-            } else {
-                configuredDelayMs.coerceIn(1000L, 5000L)
-            }
+            val acceptDelayMs = computeEffectiveAcceptDelayMs(
+                configuredDelayMs = configuredDelayMs,
+                isProMode = isProMode,
+                isAutoClickSpeedUnlocked = isAutoClickSpeedUnlocked
+            )
 
-            val speedLabel = if (isAutoClickSpeedUnlocked) "Boost (${acceptDelayMs}ms)" else "Standard (${acceptDelayMs}ms)"
+            val speedLabel = if (isProMode || isAutoClickSpeedUnlocked) {
+                "Boost (${acceptDelayMs}ms)"
+            } else {
+                "Free Mode 1-2s (${acceptDelayMs}ms)"
+            }
             AppSettings.addLog(
                 title = "Auto-Accept Scheduled",
                 message = "Selected best offer: ₹${bestOffer.totalFare?.toInt() ?: 0}, ${bestOffer.pickupDistanceKm ?: 0.0}km. Auto-clicking Accept in ${acceptDelayMs}ms ($speedLabel)...",
@@ -1157,11 +1196,11 @@ open class RapidoAccessibilityService : AccessibilityService() {
 
                     if (invalidOffers.isNotEmpty()) {
                         val configuredDelayMs = AppSettings.getClickDelayMs(this)
-                        val delayMs = if (isAutoClickSpeedUnlocked) {
-                            configuredDelayMs.coerceIn(300L, 5000L)
-                        } else {
-                            configuredDelayMs.coerceIn(1000L, 5000L)
-                        }
+                        val delayMs = computeEffectiveAcceptDelayMs(
+                            configuredDelayMs = configuredDelayMs,
+                            isProMode = isProMode,
+                            isAutoClickSpeedUnlocked = isAutoClickSpeedUnlocked
+                        )
                         pendingRejectRunnable?.let { mainHandler.removeCallbacks(it) }
                         isPendingExecution = true
                         val rejectRunnable = Runnable {

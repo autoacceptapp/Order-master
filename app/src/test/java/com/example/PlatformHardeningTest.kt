@@ -360,15 +360,20 @@ class PlatformHardeningTest {
         val service = controller.get()
         Shadows.shadowOf(Looper.getMainLooper()).idle()
 
-        // Overlay service MUST stay active despite AccessStatus.Expired
+        // Overlay service MUST stay active despite AccessStatus.Expired, showing Free Mode AUTO
         assertTrue(FloatingOverlayService.isServiceRunning)
         assertFalse(
             "FloatingOverlayService must remain active in Expired/Free mode when FLOATING_OVERLAY is unlocked via Points",
             Shadows.shadowOf(service).isStoppedBySelf
         )
+        assertEquals("AUTO", service.getModeBadgeTextForTesting())
+
+        // 3. Toggling Auto-Click OFF enters Voice-Only ("VOICE"), and toggling back ON restores "AUTO"
+        AppSettings.setAutoClickEnabled(context, false)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(Shadows.shadowOf(service).isStoppedBySelf)
         assertEquals("VOICE", service.getModeBadgeTextForTesting())
 
-        // 3. Updating unlockedFeatures (unlocking AUTO_CLICK) updates visual state immediately
         LicenseManager.setFeatureLocksForTesting(
             unlocked = mapOf(
                 FeatureIds.MIN_FARE to futureExpiry,

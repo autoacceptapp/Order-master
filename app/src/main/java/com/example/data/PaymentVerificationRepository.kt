@@ -384,10 +384,14 @@ class PaymentVerificationRepository(
             deviceHardwareId: String,
             createdAtValue: Any = FieldValue.serverTimestamp()
         ): Map<String, Any> {
+            val canonicalTier = tier.canonicalId.trim().lowercase(java.util.Locale.ROOT)
+            require(canonicalTier in PassTier.VALID_CANONICAL_PASS_TIERS && canonicalTier != "none") {
+                "Invalid canonical passTier '$canonicalTier' for pending_verifications"
+            }
             return mapOf(
                 "status" to "PENDING",
                 "passName" to tier.title,
-                "passTier" to tier.id,
+                "passTier" to canonicalTier,
                 "amount" to tier.effectivePriceInInr(),
                 "isUsed" to false,
                 "utr" to utr,

@@ -442,8 +442,8 @@ fun FilterSettingsScreen(
                             Text(
                                 text = when {
                                     isProMode -> "All unlocked filter rules active. Ultra-fast auto-acceptance (300-700ms) with smart auto-reject."
-                                    unlockedFreeCount > 0 -> "Free Mode: $unlockedFreeCount feature(s) unlocked via Points. Buy more filters with Points or activate a Pro Pass."
-                                    else -> "All filters are locked in Free Mode. Buy any 1 or multiple filters with Points, or activate a Daily / Weekly / Monthly Pass."
+                                    unlockedFreeCount > 0 -> "Free Mode: $unlockedFreeCount feature(s) unlocked via Points. Locked filters are bypassed; active unlocks are enforced."
+                                    else -> "All filters are locked in Free Mode (Fast 1-2s Auto-Accept active). Unlock specific filters with Points or activate a Daily / Weekly / Monthly Pass."
                                 },
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1210,9 +1210,9 @@ fun FilterSettingsScreen(
                                 Text(
                                     text = when {
                                         isAutoClickAdminLocked -> "🔒 Auto-Click locked by Admin"
-                                        !hasAnyAutoCapability -> "🔒 Unlock at least 1 filter rule first to enable Auto-Click"
+                                        !hasAnyAutoCapability -> "🔒 Auto-Click unavailable (Service offline or verifying)"
                                         settingsState.isAutoClickEnabled && isAutoClickUnlocked -> "🟢 Green HUD: Full Auto Click (300-700ms Pro Speed)"
-                                        settingsState.isAutoClickEnabled -> "🟢 Green HUD: Full Auto Click (Standard Speed)"
+                                        settingsState.isAutoClickEnabled -> "🟢 Green HUD: Full Auto Click (1-2s Free Mode Speed)"
                                         else -> "🔴 Red HUD: Voice Alert Only"
                                     },
                                     style = MaterialTheme.typography.bodySmall.copy(

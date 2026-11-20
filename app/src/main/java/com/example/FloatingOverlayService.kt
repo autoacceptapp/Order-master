@@ -604,8 +604,7 @@ class FloatingOverlayService : Service() {
         val isLicensed = LicenseManager.hasAnyAutoAcceptCapability()
         val effectiveAutoClick = isLicensed &&
             isAutoClickEnabled &&
-            !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) &&
-            LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK)
+            !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)
         val isVoiceUnlocked = LicenseManager.isFeatureUnlocked(FeatureIds.TTS_VOICE) &&
             !LicenseManager.isFeatureLockedByAdmin(FeatureIds.TTS_VOICE)
         val isVoiceActive = isVoiceUnlocked && AppSettings.isVoiceAnnouncerEnabled(this)

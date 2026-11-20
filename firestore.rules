@@ -230,7 +230,7 @@ service cloud.firestore {
                               data.uid is string &&
                               data.uid == request.auth.uid &&
                               (!('firebaseUid' in data) || (data.firebaseUid is string && data.firebaseUid == request.auth.uid)) &&
-                              (!('userId' in data) || data.userId is string && data.userId == request.auth.uid);
+                              (!('userId' in data) || (data.userId is string && data.userId == request.auth.uid));
       let hasPendingStatus = ('status' in data) && data.status == 'PENDING';
       let hasAllowedType = ('actionType' in data) &&
                            data.actionType is string &&

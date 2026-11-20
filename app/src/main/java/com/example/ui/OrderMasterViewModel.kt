@@ -94,8 +94,8 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
         val actualState = AppSettings.isAutoAcceptEnabled(app)
         if (nextState && !actualState) {
             AppSettings.addLog(
-                title = "Automation Locked",
-                message = "Unlock at least 1 filter with Points or activate a Pro Pass to enable Master Automation.",
+                title = "Automation Restricted",
+                message = "Unable to enable Master Automation: Service is offline, verifying status, or locked by Admin.",
                 severity = LogSeverity.WARNING
             )
             return
@@ -269,32 +269,10 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
             )
         )
 
-        val rawEvaluation = TextAnalysisEngine.evaluateRideOffer(
-            offer = parsedOffer,
-            minFare = state.minFare,
-            maxFare = state.maxFare,
-            maxPickupDistance = state.maxPickupDistance,
-            isAutoAcceptEnabled = AppSettings.isAutoAcceptEnabled(app),
-            isMinFareEnabled = AppSettings.isMinFareEnabled(app),
-            isMaxFareEnabled = AppSettings.isMaxFareEnabled(app),
-            isMaxPickupDistanceEnabled = AppSettings.isMaxPickupDistanceEnabled(app),
-            isMaxDropDistanceEnabled = AppSettings.isMaxDropDistanceEnabled(app),
-            maxDropDistance = state.maxDropDistance,
-            minPerKmRate = state.minPerKmRate,
-            isMinPerKmRateEnabled = AppSettings.isMinPerKmRateEnabled(app),
-            blockedLocations = state.blockedLocations,
-            isDestinationBlacklistEnabled = AppSettings.isDestinationBlacklistEnabled(app)
+        val evaluation = com.example.RapidoAccessibilityService.evaluateOfferWithEffectiveLicensing(
+            context = app,
+            offer = parsedOffer
         )
-        val hasProOrTrial = LicenseManager.isAccessGranted()
-        val hasActiveEvalFilter = AppSettings.hasActiveEvaluationFilter(app)
-        val evaluation = if (!hasProOrTrial && !hasActiveEvalFilter) {
-            rawEvaluation.copy(
-                isAccepted = false,
-                decisionReason = "Free Mode: Unlock and enable at least 1 filter (or activate a Pro Pass) to evaluate rides."
-            )
-        } else {
-            rawEvaluation
-        }
 
         val logSeverity = if (evaluation.isAccepted) LogSeverity.MATCH_ACCEPTED else LogSeverity.REJECTED
         AppSettings.addLog(

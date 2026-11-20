@@ -394,9 +394,12 @@ class SecurityHardeningTest {
             )
         )
 
-        // Free Mode with 0 purchased features: ALL filters & automation MUST stay locked
+        // Free Mode with 0 purchased features: ALL filters, voice & overlay MUST stay locked,
+        // while standard Free Mode auto-accept (1-2s speed) remains available (300ms boost locked).
         assertFalse(LicenseManager.isAccessGranted())
-        assertFalse(LicenseManager.hasAnyAutoAcceptCapability())
+        assertFalse(LicenseManager.hasAnyUnlockedFilter())
+        assertTrue(LicenseManager.hasAnyAutoAcceptCapability())
+        assertFalse(LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK))
         assertFalse(AppSettings.isMinFareEnabled(context))
         assertFalse(AppSettings.isMaxFareEnabled(context))
         assertFalse(AppSettings.isMaxPickupDistanceEnabled(context))
@@ -405,7 +408,7 @@ class SecurityHardeningTest {
         assertFalse(AppSettings.isDestinationBlacklistEnabled(context))
         assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
         assertFalse(AppSettings.isFloatingOverlayEnabled(context))
-        assertFalse(AppSettings.isAutoClickEnabled(context))
+        assertTrue("Standard Free Mode auto-click remains available when enabled", AppSettings.isAutoClickEnabled(context))
 
         // Attempting to toggle locked filters ON in Free Mode must also remain blocked
         AppSettings.setMinFareEnabled(context, true)
@@ -427,17 +430,19 @@ class SecurityHardeningTest {
         assertFalse(AppSettings.isDestinationBlacklistEnabled(context))
         assertFalse(AppSettings.isVoiceAnnouncerEnabled(context))
         assertFalse(AppSettings.isFloatingOverlayEnabled(context))
+        assertTrue(LicenseManager.hasAnyUnlockedFilter())
         assertTrue(LicenseManager.hasAnyAutoAcceptCapability())
-        // Strict AUTO_CLICK check: unlocking a rate filter does NOT grant auto-click
-        assertFalse(AppSettings.isAutoClickEnabled(context))
+        // 300ms Pro Boost feature remains locked until explicitly unlocked
+        assertFalse(LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK))
 
-        // Unlocking AUTO_CLICK allows enabling auto-click
+        // Unlocking AUTO_CLICK grants the 300ms speed boost
         LicenseManager.setFeatureLocksForTesting(
             unlocked = mapOf(
                 FeatureIds.MIN_PER_KM_RATE to futureExpiry,
                 FeatureIds.AUTO_CLICK to futureExpiry
             )
         )
+        assertTrue(LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK))
         AppSettings.setAutoClickEnabled(context, true)
         assertTrue(AppSettings.isAutoClickEnabled(context))
 
@@ -553,12 +558,10 @@ class SecurityHardeningTest {
         assertFalse("Unknown pass type must NOT activate isPassActiveFlow", AppSettings.isPassActiveFlow.value)
         assertFalse("Unknown pass type must NOT activate AppSettings.isPassActive", AppSettings.isPassActive(context))
         assertEquals("Unknown pass type must yield 0L pass expiry", 0L, AppSettings.getPassExpiryTimestamp(context))
-        assertFalse(
-            "Auto-accept must stay disabled without any Pro pass or unlocked filter capability",
-            AppSettings.isAutoAcceptEnabled(context)
-        )
+        assertFalse("Unknown pass type must NOT unlock Pro filters", LicenseManager.hasAnyUnlockedFilter())
+        assertFalse("Unknown pass type must NOT unlock MIN_FARE filter", LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE))
 
-        // Even with Remove Ads pass only, Auto-Accept capability remains false
+        // Even with Remove Ads pass only, Pro pass state and all filters remain locked
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf(
@@ -568,7 +571,8 @@ class SecurityHardeningTest {
             )
         )
         assertFalse("Remove Ads pass must NOT unlock Pro pass state", AppSettings.isPassActive(context))
-        assertFalse("Remove Ads pass must NOT grant auto-accept capability", AppSettings.isAutoAcceptEnabled(context))
+        assertFalse("Remove Ads pass must NOT unlock any filter", LicenseManager.hasAnyUnlockedFilter())
+        assertFalse("Remove Ads pass must NOT unlock MIN_FARE filter", LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE))
 
         AppSettings.resetBusinessStateForTest(context)
     }
@@ -746,7 +750,7 @@ class SecurityHardeningTest {
     }
 
     @Test
-    fun autoClickAloneWithoutEvaluationFilterCannotEnableAutoAccept() {
+    fun autoClickBoostAloneDoesNotUnlockFiltersAndAdminLockBlocksAutoAccept() {
         AppSettings.init(context)
         LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
@@ -757,15 +761,27 @@ class SecurityHardeningTest {
             unlocked = mapOf(FeatureIds.AUTO_CLICK to futureExpiry)
         )
 
+        // AUTO_CLICK boost does NOT unlock any filter rule
         assertFalse(
-            "AUTO_CLICK without any evaluation filter unlocked must NOT grant auto-accept capability",
-            LicenseManager.hasAnyAutoAcceptCapability()
+            "AUTO_CLICK boost alone must NOT unlock evaluation filters",
+            LicenseManager.hasAnyUnlockedFilter()
         )
+        assertFalse(LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE))
+
+        // Standard Free Mode auto-accept works when enabled
         AppSettings.setAutoAcceptEnabled(context, true)
-        assertFalse(
-            "Master auto-accept must stay OFF until at least 1 evaluation filter or Pro Pass is active",
-            AppSettings.isAutoAcceptEnabled(context)
+        assertTrue(AppSettings.isAutoAcceptEnabled(context))
+        assertTrue(AppSettings.isAutoClickEnabled(context))
+
+        // Explicit Admin lock on AUTO_CLICK immediately blocks both Auto-Accept and Auto-Click
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(FeatureIds.AUTO_CLICK to futureExpiry),
+            locked = setOf(FeatureIds.AUTO_CLICK)
         )
+        AppSettings.publishEffectiveSettings(context)
+        assertFalse(LicenseManager.hasAnyAutoAcceptCapability())
+        assertFalse(AppSettings.isAutoAcceptEnabled(context))
+        assertFalse(AppSettings.isAutoClickEnabled(context))
         assertFalse(AppSettings.settingsState.value.isAutoClickEnabled)
     }
 
@@ -1000,16 +1016,21 @@ class SecurityHardeningTest {
         LicenseManager.resetStateForTesting(context)
         val now = LicenseManager.getCurrentServerTimeMs()
 
-        // 1. Pro Pass Active (Daily Pass) hides banner ads
-        LicenseManager.setLicensingForTesting(
-            passTier = PassTier.DAILY,
-            passExpiry = now + 86_400_000L
-        )
-        assertTrue(LicenseManager.isPassActive)
-        assertTrue(LicenseManager.isProMode())
-        assertFalse("Pro Mode must hide banner ads", LicenseManager.shouldShowBannerAds())
+        // 1. Pro Pass Active (Daily / Weekly / Monthly Pass) MUST STILL SHOW banner ads (Pro != Remove Ads)
+        for (tier in listOf(PassTier.DAILY, PassTier.WEEKLY, PassTier.MONTHLY)) {
+            LicenseManager.resetStateForTesting(context)
+            LicenseManager.setLicensingForTesting(
+                passTier = tier,
+                passExpiry = now + 86_400_000L
+            )
+            assertTrue(LicenseManager.isPassActive)
+            assertTrue(LicenseManager.isProMode())
+            assertFalse("${tier.title} must NOT mark ads removed", LicenseManager.isRemoveAdsActive())
+            assertTrue("${tier.title} must STILL show banner ads without remove_ads pass", LicenseManager.shouldShowBannerAds())
+            assertTrue("${tier.title} must STILL show ads without remove_ads pass", LicenseManager.shouldShowAds())
+        }
 
-        // 2. Active Free Trial hides banner ads
+        // 2. Active Free Trial MUST STILL SHOW banner ads
         LicenseManager.resetStateForTesting(context)
         LicenseManager.setLicensingForTesting(
             trialClaimed = now - 10_000L,
@@ -1018,9 +1039,10 @@ class SecurityHardeningTest {
         )
         assertTrue(LicenseManager.isTrialActive)
         assertTrue(LicenseManager.isProMode())
-        assertFalse("Active Free Trial must hide banner ads", LicenseManager.shouldShowBannerAds())
+        assertFalse("Active Free Trial must NOT mark ads removed", LicenseManager.isRemoveAdsActive())
+        assertTrue("Active Free Trial must STILL show banner ads", LicenseManager.shouldShowBannerAds())
 
-        // 3. Remove Ads Pass hides banner ads in Free Mode
+        // 3. Remove Ads Pass hides banner ads in Free Mode (and alongside Pro Pass)
         LicenseManager.resetStateForTesting(context)
         LicenseManager.setLicensingForTesting(
             removeAdsExpiry = now + 86_400_000L
@@ -1028,6 +1050,7 @@ class SecurityHardeningTest {
         assertFalse(LicenseManager.isProMode())
         assertTrue(LicenseManager.isRemoveAdsActive())
         assertFalse("Active Remove Ads pass must hide banner ads", LicenseManager.shouldShowBannerAds())
+        assertFalse("Active Remove Ads pass must hide ads", LicenseManager.shouldShowAds())
     }
 
     @Test
@@ -1042,17 +1065,23 @@ class SecurityHardeningTest {
             .putBoolean("user_auto_click_enabled", true)
             .commit()
 
-        // But user is in Free Mode with 0 unlocked features
+        // User is in Free Mode with 0 unlocked features
         LicenseManager.setLicensingForTesting()
         LicenseManager.setFeatureLocksForTesting(emptyMap())
 
         AppSettings.init(context)
         AppSettings.publishEffectiveSettings(context)
 
+        // Locked filter toggles MUST be reset cleanly to false in both RAM and XML
         assertFalse(AppSettings.isMinFareEnabled(context))
+        assertFalse("Persisted XML filter pref must be reset to false", prefs.getBoolean("user_min_fare_enabled", true))
+
+        // Standard Free Mode auto-click stays intact unless Admin locks AUTO_CLICK
+        assertTrue(AppSettings.isAutoClickEnabled(context))
+        LicenseManager.setFeatureLocksForTesting(unlocked = emptyMap(), locked = setOf(FeatureIds.AUTO_CLICK))
+        AppSettings.publishEffectiveSettings(context)
         assertFalse(AppSettings.isAutoClickEnabled(context))
-        assertFalse("Persisted XML pref must be reset to false", prefs.getBoolean("user_min_fare_enabled", true))
-        assertFalse("Persisted XML pref must be reset to false", prefs.getBoolean("user_auto_click_enabled", true))
+        assertFalse("Admin-locked auto_click pref must be reset to false", prefs.getBoolean("user_auto_click_enabled", true))
     }
 
     @Test
@@ -1219,16 +1248,17 @@ class SecurityHardeningTest {
         assertTrue(AppSettings.settingsState.value.isAutoClickEnabled)
         assertEquals(140f, AppSettings.getMinFare(context), 0.01f)
 
-        // 4. Transition PassActive -> verified Expired: unentitled toggles are reset cleanly
+        // 4. Transition PassActive -> verified Expired: unentitled filter toggles are reset cleanly,
+        // while Free Mode standard 1-2s auto-click remains intact (300ms Pro Boost locked).
         LicenseManager.setLicensingForTesting(
             passTier = PassTier.MONTHLY,
             passExpiry = System.currentTimeMillis() - 60_000L
         )
         assertTrue(LicenseManager.accessStatus.value is AccessStatus.Expired)
         assertFalse(AppSettings.isMinFareEnabled(context))
-        assertFalse(AppSettings.isAutoClickEnabled(context))
         assertFalse(fPrefs.getBoolean("user_min_fare_enabled", true))
-        assertFalse(fPrefs.getBoolean("user_auto_click_enabled", true))
+        assertFalse("300ms Pro Boost must lock on pass expiry", LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK))
+        assertTrue("Free Mode standard 1-2s auto-click stays active on pass expiry", AppSettings.isAutoClickEnabled(context))
     }
 
     @Test
@@ -1682,6 +1712,197 @@ class SecurityHardeningTest {
         listOf(null, "", "  ", "none", "NONE", "null", "free", "invalid_tier").forEach { invalid ->
             assertNull("Expected null for '$invalid'", PassTier.fromId(invalid))
         }
+    }
+
+    @Test
+    fun unlockMultipleFeaturesParsesCanonicalUnlockedFeaturesAndFallsBackToLegacyUnlockedExpiries() = kotlinx.coroutines.runBlocking {
+        LicenseManager.resetStateForTesting(context)
+        val now = LicenseManager.getCurrentServerTimeMs()
+        val canonicalMinFareExp = now + 3_600_000L
+        val canonicalAutoClickExp = now + 7_200_000L
+        val legacyDifferentExp = now + 1_800_000L
+
+        // Case 1: Canonical unlockedFeatures is present (alongside legacy unlockedExpiries) -> canonical wins with 0 refreshes
+        var refreshCalls = 0
+        val canonicalResult = LicenseManager.applyCompletedMultiFeatureUnlockSnapshot(
+            actionData = mapOf(
+                "newPointsBalance" to 250L,
+                "unlockedFeatures" to mapOf(
+                    FeatureIds.MIN_FARE to canonicalMinFareExp,
+                    FeatureIds.AUTO_CLICK to canonicalAutoClickExp
+                ),
+                "unlockedExpiries" to mapOf(
+                    FeatureIds.MIN_FARE to legacyDifferentExp,
+                    FeatureIds.AUTO_CLICK to legacyDifferentExp
+                )
+            ),
+            requestedFeatureIds = listOf(FeatureIds.MIN_FARE, FeatureIds.AUTO_CLICK),
+            onMissingFeaturesRefresh = { refreshCalls++ }
+        )
+
+        assertTrue("Canonical unlockedFeatures must succeed immediately", canonicalResult.isSuccess)
+        assertEquals("Zero extra server refreshes needed when canonical unlockedFeatures covers all features", 0, refreshCalls)
+        assertEquals(250, LicenseManager.pointsBalance.value)
+        assertEquals(
+            mapOf(
+                FeatureIds.MIN_FARE to canonicalMinFareExp,
+                FeatureIds.AUTO_CLICK to canonicalAutoClickExp
+            ),
+            canonicalResult.getOrNull()
+        )
+        assertEquals(canonicalMinFareExp, LicenseManager.unlockedFeatures.value[FeatureIds.MIN_FARE])
+        assertEquals(canonicalAutoClickExp, LicenseManager.unlockedFeatures.value[FeatureIds.AUTO_CLICK])
+
+        // Case 2: Canonical unlockedFeatures absent -> gracefully falls back to legacy unlockedExpiries with 0 refreshes
+        LicenseManager.resetStateForTesting(context)
+        val legacyMaxFareExp = now + 5_400_000L
+        val legacyTtsExp = now + 5_400_000L
+        var legacyRefreshCalls = 0
+        val legacyResult = LicenseManager.applyCompletedMultiFeatureUnlockSnapshot(
+            actionData = mapOf(
+                "newPointsBalance" to 190L,
+                "unlockedExpiries" to mapOf(
+                    FeatureIds.MAX_FARE to legacyMaxFareExp,
+                    FeatureIds.TTS_VOICE to legacyTtsExp
+                )
+            ),
+            requestedFeatureIds = listOf(FeatureIds.MAX_FARE, FeatureIds.TTS_VOICE),
+            onMissingFeaturesRefresh = { legacyRefreshCalls++ }
+        )
+
+        assertTrue("Legacy unlockedExpiries fallback must succeed immediately", legacyResult.isSuccess)
+        assertEquals(0, legacyRefreshCalls)
+        assertEquals(190, LicenseManager.pointsBalance.value)
+        assertEquals(legacyMaxFareExp, LicenseManager.unlockedFeatures.value[FeatureIds.MAX_FARE])
+        assertEquals(legacyTtsExp, LicenseManager.unlockedFeatures.value[FeatureIds.TTS_VOICE])
+
+        // Case 3: Missing feature in action doc triggers fallback profile refresh callback
+        LicenseManager.resetStateForTesting(context)
+        var missingRefreshCalls = 0
+        val partialResult = LicenseManager.applyCompletedMultiFeatureUnlockSnapshot(
+            actionData = mapOf(
+                "unlockedFeatures" to mapOf(FeatureIds.MIN_FARE to canonicalMinFareExp)
+            ),
+            requestedFeatureIds = listOf(FeatureIds.MIN_FARE, FeatureIds.MAX_DROP_DISTANCE),
+            onMissingFeaturesRefresh = { missingRefreshCalls++ }
+        )
+        assertEquals(1, missingRefreshCalls)
+        assertTrue(partialResult.isSuccess)
+        assertEquals(canonicalMinFareExp, partialResult.getOrNull()?.get(FeatureIds.MIN_FARE))
+    }
+
+    @Test
+    fun appSettingsSyncsCanonicalIsAutoClickEnabledFirstAndUpdateProfileEmitsCanonicalKey() {
+        LicenseManager.resetStateForTesting(context)
+        AppSettings.resetBusinessStateForTest(context)
+        val futureExpiry = System.currentTimeMillis() + 86_400_000L
+        LicenseManager.setLicensingForTesting(
+            passTier = PassTier.MONTHLY,
+            passExpiry = futureExpiry
+        )
+
+        // 1. Canonical isAutoClickEnabled present without legacy isAutoAcceptEnabled -> syncs true
+        assertEquals(true, AppSettings.resolveCanonicalAutoClickFromMap(mapOf("isAutoClickEnabled" to true)))
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf("isAutoClickEnabled" to true)
+        )
+        assertTrue(AppSettings.isAutoClickEnabled(context))
+        assertTrue(AppSettings.isAutoAcceptEnabled(context))
+
+        // 2. Both isAutoClickEnabled (false) and legacy isAutoAcceptEnabled (true) present -> canonical wins (false)
+        assertEquals(
+            false,
+            AppSettings.resolveCanonicalAutoClickFromMap(
+                mapOf(
+                    "isAutoClickEnabled" to false,
+                    "isAutoAcceptEnabled" to true
+                )
+            )
+        )
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf(
+                "isAutoClickEnabled" to false,
+                "isAutoAcceptEnabled" to true
+            )
+        )
+        assertFalse("Canonical isAutoClickEnabled=false must override legacy isAutoAcceptEnabled=true", AppSettings.isAutoClickEnabled(context))
+        assertFalse("Canonical isAutoClickEnabled=false must override legacy isAutoAcceptEnabled=true for auto-accept", AppSettings.isAutoAcceptEnabled(context))
+
+        // 3. Canonical isAutoClickEnabled absent -> falls back to legacy isAutoAcceptEnabled=true
+        assertEquals(true, AppSettings.resolveCanonicalAutoClickFromMap(mapOf("isAutoAcceptEnabled" to true)))
+        AppSettings.applyFirestoreSnapshotForTest(
+            context,
+            mapOf("isAutoAcceptEnabled" to true)
+        )
+        assertTrue("Fallback to legacy isAutoAcceptEnabled=true when canonical key is absent", AppSettings.isAutoClickEnabled(context))
+        assertTrue("Fallback to legacy isAutoAcceptEnabled=true for auto-accept when canonical key is absent", AppSettings.isAutoAcceptEnabled(context))
+
+        // 4. UPDATE_PROFILE payloads emit canonical isAutoClickEnabled and NEVER obsolete isAutoAcceptEnabled
+        val uid = "uid_step10b_autoclick"
+        val hwId = "HW-STEP10B-AC"
+        val email = "captain@example.com"
+        val sig = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99"
+
+        val migrationUpdates = LicenseManager.computeNeededProfileUpdates(
+            snapshotFirebaseUid = uid,
+            snapshotHardwareId = hwId,
+            snapshotEmail = email,
+            expectedFirebaseUid = uid,
+            currentHardwareId = hwId,
+            authEmail = email,
+            snapshotAutoClickEnabled = null,
+            desiredAutoClickEnabled = true
+        )
+        assertEquals(true, migrationUpdates["isAutoClickEnabled"])
+        assertFalse("UPDATE_PROFILE must never emit obsolete isAutoAcceptEnabled", migrationUpdates.containsKey("isAutoAcceptEnabled"))
+
+        // Already-canonical doc produces zero UPDATE_PROFILE writes (no write loop)
+        val noUpdates = LicenseManager.computeNeededProfileUpdates(
+            snapshotFirebaseUid = uid,
+            snapshotHardwareId = hwId,
+            snapshotEmail = email,
+            expectedFirebaseUid = uid,
+            currentHardwareId = hwId,
+            authEmail = email,
+            snapshotAutoClickEnabled = true,
+            desiredAutoClickEnabled = null
+        )
+        assertTrue("Canonical user doc must not trigger unnecessary UPDATE_PROFILE writes", noUpdates.isEmpty())
+
+        // Even if legacy isAutoAcceptEnabled is passed into buildActionQueuePayload for UPDATE_PROFILE,
+        // it is translated to canonical isAutoClickEnabled and obsolete keys are stripped
+        val translatedEnvelope = LicenseManager.buildActionQueuePayload(
+            firebaseUid = uid,
+            userEmail = email,
+            hardwareId = hwId,
+            deviceIntegrityOk = true,
+            appSignatureSha256 = sig,
+            actionType = "UPDATE_PROFILE",
+            payload = mapOf("isAutoAcceptEnabled" to true)
+        )
+        assertEquals(true, translatedEnvelope["isAutoClickEnabled"])
+        assertFalse(translatedEnvelope.containsKey("isAutoAcceptEnabled"))
+        assertFalse(translatedEnvelope.containsKey("autoAcceptEnabled"))
+
+        // When both are passed on UPDATE_PROFILE, explicit canonical isAutoClickEnabled wins
+        val explicitCanonicalEnvelope = LicenseManager.buildActionQueuePayload(
+            firebaseUid = uid,
+            userEmail = email,
+            hardwareId = hwId,
+            deviceIntegrityOk = true,
+            appSignatureSha256 = sig,
+            actionType = "UPDATE_PROFILE",
+            payload = mapOf(
+                "isAutoClickEnabled" to false,
+                "isAutoAcceptEnabled" to true
+            )
+        )
+        assertEquals(false, explicitCanonicalEnvelope["isAutoClickEnabled"])
+        assertFalse(explicitCanonicalEnvelope.containsKey("isAutoAcceptEnabled"))
+
+        AppSettings.resetBusinessStateForTest(context)
     }
 }
 

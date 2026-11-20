@@ -444,7 +444,7 @@ fun AppSettingsScreen(
 
             // Freemium Operating Mode & Pro Pass Status Card
             item {
-                val hasCustomFilters = !isProMode && LicenseManager.hasAnyAutoAcceptCapability()
+                val hasCustomFilters = !isProMode && LicenseManager.hasAnyUnlockedFilter()
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -547,7 +547,7 @@ fun AppSettingsScreen(
                                         else if (hasCustomFilters)
                                             "Custom filters unlocked with Points are active. Automation is evaluating rides matching your unlocked rules."
                                         else
-                                            "All filters are locked in Free Mode. Buy filters with Points in Filter Rules or activate a Daily / Weekly / Monthly Pass.",
+                                            "All filters are locked in Free Mode (Fast 1-2s Auto-Accept active). Unlock filters with Points in Filter Rules or activate a Daily / Weekly / Monthly Pass.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

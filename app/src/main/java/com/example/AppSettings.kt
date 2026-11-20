@@ -457,8 +457,9 @@ object AppSettings {
             val effOverlay = rawOverlayEnabled &&
                 LicenseManager.isFeatureUnlocked(FeatureIds.FLOATING_OVERLAY) &&
                 !LicenseManager.isFeatureLockedByAdmin(FeatureIds.FLOATING_OVERLAY)
-            val effAutoClick = rawAutoClickEnabled &&
-                LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK) &&
+            val effAutoClick = serviceOnline &&
+                hasCapability &&
+                rawAutoClickEnabled &&
                 !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)
 
             _isMinFareEnabledFlow.value = effMinFare
@@ -561,7 +562,8 @@ object AppSettings {
                     changed = true
                 }
             }
-            if (!LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK)) {
+            // Preserve standard Free Mode Auto-Click (1–2s delay) unless Admin explicitly locked AUTO_CLICK.
+            if (LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) {
                 if (rawAutoClickEnabled || prefs.getBoolean(FKEY_AUTO_CLICK_ENABLED, false)) {
                     rawAutoClickEnabled = false
                     editor.putBoolean(FKEY_AUTO_CLICK_ENABLED, false)
@@ -976,6 +978,21 @@ object AppSettings {
         else -> null
     }
 
+    /**
+     * Resolves canonical `isAutoClickEnabled` from a Firestore `users/{uid}` snapshot map first,
+     * falling back to obsolete legacy `isAutoAcceptEnabled` ONLY when `isAutoClickEnabled` is absent.
+     */
+    @VisibleForTesting
+    internal fun resolveCanonicalAutoClickFromMap(data: Map<String, Any?>): Boolean? {
+        if (data.containsKey("isAutoClickEnabled")) {
+            (data["isAutoClickEnabled"] as? Boolean)?.let { return it }
+        }
+        if (data.containsKey("isAutoAcceptEnabled")) {
+            (data["isAutoAcceptEnabled"] as? Boolean)?.let { return it }
+        }
+        return null
+    }
+
     private fun applyRawMapToRam(context: Context?, data: Map<String, Any?>?, docExists: Boolean) {
         if (!docExists || data == null) {
             _isFirestoreSyncedFlow.value = false
@@ -1024,9 +1041,8 @@ object AppSettings {
             val current = _settingsState.value
             val fPrefs = (context ?: appContextRef)?.let { getUserFilterPrefs(it) }
 
-            val serverAutoAccept = if (data.containsKey("isAutoAcceptEnabled")) {
-                (data["isAutoAcceptEnabled"] as? Boolean) ?: autoAcceptEnabled
-            } else autoAcceptEnabled
+            val serverAutoClick = resolveCanonicalAutoClickFromMap(data)
+            val serverAutoAccept = serverAutoClick ?: autoAcceptEnabled
             val finalAutoAccept = if (hasLocalUserFilterPref(context, FKEY_AUTO_ACCEPT)) {
                 fPrefs?.takeIf { it.contains(FKEY_AUTO_ACCEPT) }?.getBoolean(FKEY_AUTO_ACCEPT, autoAcceptEnabled) ?: autoAcceptEnabled
             } else serverAutoAccept
@@ -1153,10 +1169,10 @@ object AppSettings {
                     ?: rawVoiceEnabled
             }
 
-            val finalAutoClickEnabled = if (data.containsKey("isAutoClickEnabled") &&
+            val finalAutoClickEnabled = if (serverAutoClick != null &&
                 !hasLocalUserFilterPref(context, FKEY_AUTO_CLICK_ENABLED)
             ) {
-                (data["isAutoClickEnabled"] as? Boolean) ?: rawAutoClickEnabled
+                serverAutoClick
             } else {
                 fPrefs?.takeIf { it.contains(FKEY_AUTO_CLICK_ENABLED) }?.getBoolean(FKEY_AUTO_CLICK_ENABLED, rawAutoClickEnabled)
                     ?: rawAutoClickEnabled
@@ -1511,15 +1527,34 @@ object AppSettings {
                 return
             }
             if (!LicenseManager.hasAnyAutoAcceptCapability()) {
-                showToast(context, "Unlock at least 1 filter with Points or activate a Pro Pass")
+                val msg = if (LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) {
+                    "Auto-Accept is locked by Admin"
+                } else {
+                    "Verifying account status, please wait..."
+                }
+                showToast(context, msg)
                 return
             }
         }
+        var alsoPersistedAutoClick = false
         synchronized(settingsLock) {
             autoAcceptEnabled = enabled
+            // When enabling Master Auto-Accept while not in Voice-Only mode, activate standard Auto-Click
+            // so Free Mode (1–2s) and Pro Mode (300–700ms) work immediately from the Master Switch.
+            if (enabled &&
+                !rawAutoClickEnabled &&
+                !isVoiceAnnouncerEnabled(context) &&
+                !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)
+            ) {
+                rawAutoClickEnabled = true
+                alsoPersistedAutoClick = true
+            }
             publishEffectiveSettings(context)
         }
         persistUserFilterPref(context, FKEY_AUTO_ACCEPT) { putBoolean(FKEY_AUTO_ACCEPT, enabled) }
+        if (alsoPersistedAutoClick) {
+            persistUserFilterPref(context, FKEY_AUTO_CLICK_ENABLED) { putBoolean(FKEY_AUTO_CLICK_ENABLED, true) }
+        }
         syncOverlayService(context)
     }
 
@@ -1678,18 +1713,26 @@ object AppSettings {
     }
 
     fun isAutoClickEnabled(context: Context): Boolean =
-        rawAutoClickEnabled &&
-            LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK) &&
-            !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)
+        LicenseManager.isServiceActive(context) &&
+            !LicenseManager.isCurrentlyBanned() &&
+            !LicenseManager.isClockTamperingDetected(context) &&
+            !DeviceUtils.isRuntimeHookOrDebuggerDetected(context) &&
+            LicenseManager.hasAnyAutoAcceptCapability() &&
+            !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) &&
+            rawAutoClickEnabled
 
     fun setAutoClickEnabled(context: Context, enabled: Boolean) {
         if (enabled) {
+            if (DeviceUtils.isRuntimeHookOrDebuggerDetected(context) || LicenseManager.isClockTamperingDetected(context)) {
+                showToast(context, "Security check failed")
+                return
+            }
             if (LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK)) {
                 showToast(context, "Auto-Click is locked by Admin")
                 return
             }
-            if (!LicenseManager.isFeatureUnlocked(FeatureIds.AUTO_CLICK)) {
-                showToast(context, "Unlock Auto-Click with Points or Pro Pass")
+            if (!LicenseManager.hasAnyAutoAcceptCapability()) {
+                showToast(context, "Service offline or account restricted by Admin")
                 return
             }
         }
