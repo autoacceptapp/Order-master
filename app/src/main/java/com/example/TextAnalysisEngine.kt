@@ -817,25 +817,36 @@ object TextAnalysisEngine {
      * (including any remote `rapidoAcceptButtonKeywords`).
      */
     fun hasAcceptAction(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return false
+        // If this is a standalone reject button label, never classify it as an accept action
+        val looksStandaloneReject = trimmed.length <= 40 &&
+            RideOfferParser.isRejectAction(trimmed) &&
+            !RapidoAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)
+        if (looksStandaloneReject) return false
+
         val remoteMatch = AppConfigRepository.effectiveRapidoAcceptKeywords().any { kw ->
-            kw.length >= 2 && text.contains(kw, ignoreCase = true)
+            kw.length >= 2 &&
+                !RideOfferParser.isRejectAction(kw) &&
+                trimmed.contains(kw, ignoreCase = true)
         }
         return remoteMatch ||
-                text.contains("Accept", ignoreCase = true) ||
-                text.contains("Accept Order", ignoreCase = true) ||
-                text.contains("Accept Ride", ignoreCase = true) ||
-                text.contains("Swipe to Accept", ignoreCase = true) ||
-                Regex("""\bGo\b""").containsMatchIn(text) ||
-                text.contains("Take Ride", ignoreCase = true) ||
-                text.contains("Confirm Order", ignoreCase = true) ||
-                text.contains("Confirm Ride", ignoreCase = true) ||
-                text.contains("स्वीकार", ignoreCase = true) ||
-                text.contains("sweekar", ignoreCase = true)
+                trimmed.contains("Accept", ignoreCase = true) ||
+                trimmed.contains("Accept Order", ignoreCase = true) ||
+                trimmed.contains("Accept Ride", ignoreCase = true) ||
+                trimmed.contains("Swipe to Accept", ignoreCase = true) ||
+                Regex("""\bGo\b""").containsMatchIn(trimmed) ||
+                trimmed.contains("Take Ride", ignoreCase = true) ||
+                trimmed.contains("Confirm Order", ignoreCase = true) ||
+                trimmed.contains("Confirm Ride", ignoreCase = true) ||
+                trimmed.contains("स्वीकार", ignoreCase = true) ||
+                trimmed.contains("sweekar", ignoreCase = true)
     }
 
     private fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
+        if (RideOfferParser.isRejectAction(trimmed)) return false
         if (RapidoAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)) return true
         return AppConfigRepository.effectiveRapidoAcceptKeywords().any { kw ->
             trimmed.equals(kw, ignoreCase = true)

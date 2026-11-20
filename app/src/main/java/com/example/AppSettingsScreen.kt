@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Download
@@ -64,6 +65,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -149,6 +152,10 @@ fun AppSettingsScreen(
     var awaitingAccessibilityReturn by remember { mutableStateOf(false) }
 
     var showRestrictedSettingsDialog by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    var lastSnapshotTimestampMs by remember {
+        mutableStateOf(RapidoAccessibilityService.getLastSnapshotCapturedAtMs())
+    }
 
     // Refresh permission statuses
     val refreshPermissions = {
@@ -157,6 +164,7 @@ fun AppSettingsScreen(
         isAccessibilityEnabled = PermissionUtils.isAccessibilityServiceEnabled(context)
         isOverlayEnabled = PermissionUtils.canDrawOverlays(context)
         isBatteryUnrestricted = PermissionUtils.isIgnoringBatteryOptimizations(context)
+        lastSnapshotTimestampMs = RapidoAccessibilityService.getLastSnapshotCapturedAtMs()
     }
 
     val launchAccessibilityWithRestrictedFallback: () -> Unit = {
@@ -194,6 +202,7 @@ fun AppSettingsScreen(
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         topBar = {
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -668,6 +677,41 @@ fun AppSettingsScreen(
 
             item {
                 InAppUpdaterSettingsCard()
+            }
+
+            // 5. Section Header: Troubleshooting & UI Diagnostics
+            item {
+                Text(
+                    text = "TROUBLESHOOTING & UI DIAGNOSTICS",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 4.dp, top = 8.dp)
+                )
+            }
+
+            item {
+                ReportUiIssueDiagnosticsCard(
+                    hasCapturedSnapshot = lastSnapshotTimestampMs > 0L,
+                    onCopyDiagnostic = {
+                        val (payload, hasLiveSnapshot) = RapidoAccessibilityService.buildDiagnosticClipboardPayload(context)
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = ClipData.newPlainText("OrderMaster UI Diagnostic", payload)
+                        clipboard.setPrimaryClip(clip)
+                        lastSnapshotTimestampMs = RapidoAccessibilityService.getLastSnapshotCapturedAtMs()
+                        val feedback = if (hasLiveSnapshot) {
+                            "Sanitized Rapido UI snapshot copied to clipboard."
+                        } else {
+                            "Diagnostic summary copied (no Rapido screen captured yet)."
+                        }
+                        Toast.makeText(context, feedback, Toast.LENGTH_SHORT).show()
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar(feedback)
+                        }
+                    }
+                )
             }
         }
     }
@@ -1841,4 +1885,144 @@ fun MultiFilterUnlockDialog(
         }
     )
 }
+
+/**
+ * Privacy-safe "Report UI Issue" diagnostic card allowing drivers to copy a sanitized
+ * Rapido UI structure snapshot (View IDs, bounds, clickability, and button labels only;
+ * all passenger addresses, names, and phone numbers are redacted) to the clipboard.
+ */
+@Composable
+private fun ReportUiIssueDiagnosticsCard(
+    hasCapturedSnapshot: Boolean,
+    onCopyDiagnostic: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("settings_report_ui_issue_card"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = CardDefaults.outlinedCardBorder()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.secondaryContainer),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.BugReport,
+                            contentDescription = "Report UI Issue",
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = "Rapido UI Compatibility Helper",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Text(
+                            text = "Rapido updated its screen? Copy a privacy-safe layout snapshot for support.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = if (hasCapturedSnapshot) {
+                            "Latest Rapido layout snapshot ready (PII redacted)"
+                        } else {
+                            "No Rapido screen captured yet — copies device & config summary"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (hasCapturedSnapshot) {
+                            PrimaryEmerald.copy(alpha = 0.16f)
+                        } else {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        }
+                    ) {
+                        Text(
+                            text = if (hasCapturedSnapshot) "READY" else "FALLBACK",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 10.sp
+                            ),
+                            color = if (hasCapturedSnapshot) {
+                                PrimaryEmeraldDark
+                            } else {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            },
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
+
+            Text(
+                text = "Privacy guarantee: Copies only View IDs, bounds, and button labels. Passenger names, street addresses, and phone numbers are never included.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            FilledTonalButton(
+                onClick = onCopyDiagnostic,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .testTag("report_ui_issue_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ContentCopy,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Report UI Issue",
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                )
+            }
+        }
+    }
+}
+
 

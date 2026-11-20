@@ -20,7 +20,8 @@ class RideOfferParserTest {
 
     @After
     fun tearDown() {
-        AppConfigRepository.applyAppConfigFromMap(null)
+        AppConfigRepository.applyAppConfigFromMap(null, persistToCache = false)
+        RapidoAccessibilityService.clearSanitizedUiSnapshotForTesting()
     }
 
     @Test
@@ -754,7 +755,229 @@ class RideOfferParserTest {
         val fallbackDist = RideOfferParser.extractDistanceValue("2.5 km")
         assertEquals(2.5, fallbackDist ?: 0.0, 0.01)
     }
+
+    @Test
+    fun `test viewIdResourceName-first matching accepts regional Gujarati Hindi Tamil buttons and excludes reject buttons`() {
+        AppConfigRepository.applyAppConfigFromMap(
+            mapOf(
+                "rapidoAcceptViewIds" to "btn_accept,btn_accept_order,accept_button",
+                "rapidoRejectKeywords" to "Reject,Decline,Skip,Pass,Dismiss"
+            ),
+            persistToCache = false
+        )
+
+        // Reject keywords must NEVER be misidentified as Accept actions
+        listOf("Reject", "Decline", "Skip", "Pass", "Dismiss", "Skip Ride").forEach { rejectLabel ->
+            assertTrue("Expected isRejectAction=true for '$rejectLabel'", RideOfferParser.isRejectAction(rejectLabel))
+            assertFalse("Expected isAcceptAction=false for '$rejectLabel'", RideOfferParser.isAcceptAction(rejectLabel))
+            assertFalse("Expected TextAnalysisEngine.hasAcceptAction=false for '$rejectLabel'", TextAnalysisEngine.hasAcceptAction(rejectLabel))
+        }
+
+        // Regional labels (Gujarati, Hindi, Tamil) backed by com.rapido.rider:id/btn_accept_order
+        // must match strictly by viewIdResourceName while skipping Reject/Dismiss buttons placed before them.
+        listOf("સ્વીકારો", "स्वीकार करें", "ஏற்றுக்கொள்").forEach { localizedAcceptLabel ->
+            @Suppress("DEPRECATION")
+            val card = AccessibilityNodeInfo.obtain()
+            card.className = "androidx.cardview.widget.CardView"
+            card.viewIdResourceName = "com.rapido.rider:id/order_card"
+            card.setBoundsInScreen(Rect(240, 120, 1040, 620))
+
+            @Suppress("DEPRECATION")
+            val fare = AccessibilityNodeInfo.obtain()
+            fare.text = "₹78"
+            fare.setBoundsInScreen(Rect(260, 140, 500, 200))
+
+            @Suppress("DEPRECATION")
+            val pickup = AccessibilityNodeInfo.obtain()
+            pickup.text = "Pickup 1.1 km"
+            pickup.setBoundsInScreen(Rect(260, 210, 560, 260))
+
+            // Reject button placed FIRST in tree with custom remote reject keyword "Dismiss"
+            @Suppress("DEPRECATION")
+            val rejectBtn = AccessibilityNodeInfo.obtain()
+            rejectBtn.text = "Dismiss"
+            rejectBtn.viewIdResourceName = "com.rapido.rider:id/btn_reject_order"
+            rejectBtn.isClickable = true
+            rejectBtn.isEnabled = true
+            rejectBtn.setBoundsInScreen(Rect(260, 500, 520, 590))
+
+            // Localized Accept button backed by authoritative viewIdResourceName
+            @Suppress("DEPRECATION")
+            val acceptBtn = AccessibilityNodeInfo.obtain()
+            acceptBtn.text = localizedAcceptLabel
+            acceptBtn.viewIdResourceName = "com.rapido.rider:id/btn_accept_order"
+            acceptBtn.isClickable = true
+            acceptBtn.isEnabled = true
+            acceptBtn.setBoundsInScreen(Rect(550, 500, 1010, 590))
+
+            org.robolectric.Shadows.shadowOf(card).addChild(fare)
+            org.robolectric.Shadows.shadowOf(card).addChild(pickup)
+            org.robolectric.Shadows.shadowOf(card).addChild(rejectBtn)
+            org.robolectric.Shadows.shadowOf(card).addChild(acceptBtn)
+
+            val parsed = RideOfferParser.parseCardContainer(card, screenWidthPx = 1080)
+            assertNotNull("Card with localized '$localizedAcceptLabel' should parse", parsed)
+            assertTrue("hasAcceptButton must be true for '$localizedAcceptLabel'", parsed?.hasAcceptButton == true)
+            assertEquals(
+                "Matched Accept button must be btn_accept_order (NOT btn_reject_order)",
+                "com.rapido.rider:id/btn_accept_order",
+                parsed?.acceptButton?.viewIdResourceName
+            )
+            assertEquals(localizedAcceptLabel, parsed?.acceptButton?.text?.toString())
+        }
+    }
+
+    @Test
+    fun `test dynamic rapidoLeftSidebarWidthRatio and rapidoSeeMoreOrdersKeywords`() {
+        // With wider sidebar ratio (0.35 on 1080px -> cutoff 378px), a strip at x=0..340 is excluded
+        AppConfigRepository.applyAppConfigFromMap(
+            mapOf(
+                "rapidoLeftSidebarWidthRatio" to 0.35,
+                "rapidoSeeMoreOrdersKeywords" to "और ऑर्डर,extra rides"
+            ),
+            persistToCache = false
+        )
+        assertTrue(RideOfferParser.isLeftSidebarNode(Rect(0, 150, 340, 800), screenWidthPx = 1080))
+        assertFalse(RideOfferParser.isLeftSidebarNode(Rect(400, 150, 1040, 800), screenWidthPx = 1080))
+        assertTrue(RideOfferParser.isSeeMoreOrdersText("2 और ऑर्डर देखें"))
+        assertTrue(RideOfferParser.isSeeMoreOrdersText("Tap for extra rides"))
+
+        // Lowering sidebar ratio to 0.15 (cutoff 162px) includes x=180..340 as normal card area
+        AppConfigRepository.applyAppConfigFromMap(
+            mapOf("rapidoLeftSidebarWidthRatio" to 0.15),
+            persistToCache = false
+        )
+        assertFalse(RideOfferParser.isLeftSidebarNode(Rect(180, 150, 340, 800), screenWidthPx = 1080))
+        assertTrue(RideOfferParser.isLeftSidebarNode(Rect(0, 150, 150, 800), screenWidthPx = 1080))
+    }
+
+    @Test
+    fun `test Report UI Issue sanitizer preserves View IDs bounds and button labels while redacting PII and addresses`() {
+        @Suppress("DEPRECATION")
+        val root = AccessibilityNodeInfo.obtain()
+        root.className = "android.widget.FrameLayout"
+        root.viewIdResourceName = "com.rapido.rider:id/order_card"
+        root.setBoundsInScreen(Rect(240, 120, 1040, 620))
+
+        @Suppress("DEPRECATION")
+        val fareNode = AccessibilityNodeInfo.obtain()
+        fareNode.className = "android.widget.TextView"
+        fareNode.viewIdResourceName = "com.rapido.rider:id/tv_fare"
+        fareNode.text = "₹55 + ₹10"
+        fareNode.setBoundsInScreen(Rect(260, 140, 560, 200))
+
+        @Suppress("DEPRECATION")
+        val tipBadgeNode = AccessibilityNodeInfo.obtain()
+        tipBadgeNode.className = "android.widget.TextView"
+        tipBadgeNode.text = "Customer added ₹10.0 extra"
+        tipBadgeNode.setBoundsInScreen(Rect(260, 205, 760, 245))
+
+        @Suppress("DEPRECATION")
+        val pickupAddrNode = AccessibilityNodeInfo.obtain()
+        pickupAddrNode.className = "android.widget.TextView"
+        pickupAddrNode.viewIdResourceName = "com.rapido.rider:id/pickup_location"
+        pickupAddrNode.text = "Flat 4B, 22-24-2 Shree Ram Society, MG Road, Bengaluru 560001"
+        pickupAddrNode.setBoundsInScreen(Rect(260, 260, 980, 320))
+
+        @Suppress("DEPRECATION")
+        val dropAddrNode = AccessibilityNodeInfo.obtain()
+        dropAddrNode.className = "android.widget.TextView"
+        dropAddrNode.viewIdResourceName = "com.rapido.rider:id/drop_location"
+        dropAddrNode.text = "Koramangala 4th Block, Near Sony Signal"
+        dropAddrNode.setBoundsInScreen(Rect(260, 330, 980, 390))
+
+        @Suppress("DEPRECATION")
+        val passengerNode = AccessibilityNodeInfo.obtain()
+        passengerNode.className = "android.widget.TextView"
+        passengerNode.viewIdResourceName = "com.rapido.rider:id/customer_name"
+        passengerNode.text = "Rahul Sharma +91 9876543210"
+        passengerNode.setBoundsInScreen(Rect(260, 400, 820, 445))
+
+        @Suppress("DEPRECATION")
+        val freeTextAddressNode = AccessibilityNodeInfo.obtain()
+        freeTextAddressNode.className = "android.widget.TextView"
+        freeTextAddressNode.text = "14, Indiranagar 100 Feet Road, 560038"
+        freeTextAddressNode.isClickable = true
+        freeTextAddressNode.setBoundsInScreen(Rect(260, 450, 960, 490))
+
+        @Suppress("DEPRECATION")
+        val rejectBtn = AccessibilityNodeInfo.obtain()
+        rejectBtn.className = "android.widget.Button"
+        rejectBtn.viewIdResourceName = "com.rapido.rider:id/btn_reject_order"
+        rejectBtn.text = "Skip"
+        rejectBtn.isClickable = true
+        rejectBtn.isEnabled = true
+        rejectBtn.setBoundsInScreen(Rect(260, 510, 520, 600))
+
+        @Suppress("DEPRECATION")
+        val acceptBtn = AccessibilityNodeInfo.obtain()
+        acceptBtn.className = "android.widget.Button"
+        acceptBtn.viewIdResourceName = "com.rapido.rider:id/btn_accept_order"
+        acceptBtn.text = "સ્વીકારો"
+        acceptBtn.isClickable = true
+        acceptBtn.isEnabled = true
+        acceptBtn.setBoundsInScreen(Rect(550, 510, 1010, 600))
+
+        org.robolectric.Shadows.shadowOf(root).addChild(fareNode)
+        org.robolectric.Shadows.shadowOf(root).addChild(tipBadgeNode)
+        org.robolectric.Shadows.shadowOf(root).addChild(pickupAddrNode)
+        org.robolectric.Shadows.shadowOf(root).addChild(dropAddrNode)
+        org.robolectric.Shadows.shadowOf(root).addChild(passengerNode)
+        org.robolectric.Shadows.shadowOf(root).addChild(freeTextAddressNode)
+        org.robolectric.Shadows.shadowOf(root).addChild(rejectBtn)
+        org.robolectric.Shadows.shadowOf(root).addChild(acceptBtn)
+
+        val snapshotJson = RapidoAccessibilityService.captureSanitizedUiSnapshot(
+            rootWindows = listOf(root),
+            packageName = "com.rapido.rider",
+            screenWidthPx = 1080,
+            screenHeightPx = 2400
+        )
+
+        // Structural metadata, View IDs, bounds, and action button labels MUST be preserved
+        assertTrue(snapshotJson.contains("com.rapido.rider:id/order_card"))
+        assertTrue(snapshotJson.contains("com.rapido.rider:id/btn_accept_order"))
+        assertTrue(snapshotJson.contains("com.rapido.rider:id/btn_reject_order"))
+        assertTrue(snapshotJson.contains("240,120,1040,620"))
+        assertTrue(snapshotJson.contains("550,510,1010,600"))
+        assertTrue(snapshotJson.contains("સ્વીકારો"))
+        assertTrue(snapshotJson.contains("Skip"))
+        assertTrue(snapshotJson.contains("[FARE_WITH_TIP]"))
+        assertTrue(snapshotJson.contains("[TIP_BADGE]"))
+        assertTrue(snapshotJson.contains("[REDACTED_LOCATION]"))
+        assertTrue(snapshotJson.contains("[REDACTED_CONTACT]"))
+
+        // All passenger addresses, street names, landmarks, customer names, phone numbers, and pincodes MUST be redacted
+        listOf(
+            "Shree Ram",
+            "MG Road",
+            "560001",
+            "Koramangala",
+            "Sony Signal",
+            "Rahul",
+            "Sharma",
+            "9876543210",
+            "Indiranagar",
+            "560038",
+            "₹55",
+            "₹10"
+        ).forEach { sensitive ->
+            assertFalse("Sanitized snapshot leaked sensitive token '$sensitive'", snapshotJson.contains(sensitive))
+        }
+
+        // Clipboard helper returns live snapshot when present, and safe fallback when cleared
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val (livePayload, hasLive) = RapidoAccessibilityService.buildDiagnosticClipboardPayload(context)
+        assertTrue(hasLive)
+        assertEquals(snapshotJson, livePayload)
+
+        RapidoAccessibilityService.clearSanitizedUiSnapshotForTesting()
+        val (fallbackPayload, hasLiveAfterClear) = RapidoAccessibilityService.buildDiagnosticClipboardPayload(context)
+        assertFalse(hasLiveAfterClear)
+        assertTrue(fallbackPayload.contains("NO_RAPIDO_SCREEN_CAPTURED_YET"))
+    }
 }
+
 
 
 

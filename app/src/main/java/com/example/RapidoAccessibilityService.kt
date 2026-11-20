@@ -29,6 +29,8 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Locale
 
 /**
@@ -52,6 +54,8 @@ open class RapidoAccessibilityService : AccessibilityService() {
         const val MAX_TRAVERSAL_DEPTH = 12       // Strictly limit recursion depth to prevent ANRs on nested layouts
         const val MIN_COORDINATE_TAP_INTERVAL_MS = 2000L // Strict rate-limiter: min 2000ms delay between coordinate taps
         const val MORE_ORDERS_EXPAND_COOLDOWN_MS = 1500L // Prevent rapid re-tapping of "See N more orders"
+        const val UI_SNAPSHOT_CAPTURE_INTERVAL_MS = 2000L
+        const val MAX_DIAGNOSTIC_NODES = 120
 
         @Volatile
         var isServiceRunning: Boolean = false
@@ -60,6 +64,290 @@ open class RapidoAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: RapidoAccessibilityService? = null
             protected set
+
+        @Volatile
+        private var lastSanitizedUiSnapshotJson: String? = null
+
+        @Volatile
+        private var lastSnapshotCapturedAtMs: Long = 0L
+
+        fun getLastSanitizedUiSnapshotJson(): String? = lastSanitizedUiSnapshotJson
+
+        fun getLastSnapshotCapturedAtMs(): Long = lastSnapshotCapturedAtMs
+
+        fun clearSanitizedUiSnapshotForTesting() {
+            lastSanitizedUiSnapshotJson = null
+            lastSnapshotCapturedAtMs = 0L
+        }
+
+        private val DIAGNOSTIC_LOCATION_VIEW_ID_REGEX = Regex(
+            """(?i)(?:address|location|pickup_loc|drop_loc|dest|source|street|landmark|locality|route|place|waypoint)"""
+        )
+
+        private val DIAGNOSTIC_CONTACT_VIEW_ID_REGEX = Regex(
+            """(?i)(?:customer|passenger|rider_name|user_name|phone|mobile|contact|email|otp|pin|chat|message|note)"""
+        )
+
+        private val DIAGNOSTIC_PHONE_OR_PIN_REGEX = Regex(
+            """(?:\+?\d[\d\s\-]{8,}\d|\b\d{6}\b)"""
+        )
+
+        private val DIAGNOSTIC_EMAIL_REGEX = Regex(
+            """[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"""
+        )
+
+        private val DIAGNOSTIC_ADDRESS_HINT_REGEX = Regex(
+            """(?i)\b(?:road|rd|street|st|nagar|layout|sector|block|colony|society|lane|cross|main|phase|floor|flat|near|opp|opposite|gate|chowk|circle|hospital|station|airport|mall|market|park|apartment|apartments|residency|enclave|vihar|puram|marg|bazaar|bazar|complex|tower|plaza|heights|avenue|extn|extension|stage|ward|taluka|district)\b"""
+        )
+
+        private val DIAGNOSTIC_SAFE_CHROME_REGEX = Regex(
+            """(?i)^(?:auto|bike|cab|parcel|boost|boosted|cash|online|offline|upi|wallet|cod|pickup|drop|\d+\s*orders?|new\s*order|incoming\s*order|order\s*details)$"""
+        )
+
+        private val DIAGNOSTIC_BUTTON_VIEW_ID_REGEX = Regex(
+            """(?i)(?:btn|button|accept|reject|decline|skip|pass|cancel|close|more|expand|tab|action|confirm)"""
+        )
+
+        /**
+         * Privacy-safe sanitizer for "Report UI Issue" diagnostic snapshots.
+         * Preserves action button labels and structural tokens while strictly redacting all
+         * passenger addresses, street names, landmarks, customer names, phone numbers, and free text.
+         */
+        fun sanitizeNodeTextForDiagnostic(
+            text: String,
+            desc: String,
+            viewId: String,
+            className: String,
+            isClickable: Boolean
+        ): String {
+            val raw = text.trim().ifEmpty { desc.trim() }
+            if (raw.isEmpty()) return ""
+
+            // 1. Always redact nodes whose View ID indicates contact/PII or location/address data
+            if (DIAGNOSTIC_CONTACT_VIEW_ID_REGEX.containsMatchIn(viewId)) {
+                return "[REDACTED_CONTACT]"
+            }
+            if (DIAGNOSTIC_LOCATION_VIEW_ID_REGEX.containsMatchIn(viewId)) {
+                return "[REDACTED_LOCATION]"
+            }
+
+            // 2. Always redact emails, phone numbers, and 6-digit postal pincodes
+            if (DIAGNOSTIC_EMAIL_REGEX.containsMatchIn(raw) || DIAGNOSTIC_PHONE_OR_PIN_REGEX.containsMatchIn(raw)) {
+                return "[REDACTED_CONTACT]"
+            }
+
+            // 3. Mask tip badges, fares, and distances into privacy-safe structural tokens
+            if (TextAnalysisEngine.isTipBadgeNoise(raw)) {
+                return "[TIP_BADGE]"
+            }
+            if (RideOfferParser.isFareNode(raw, viewId)) {
+                return if (raw.contains("+")) "[FARE_WITH_TIP]" else "[FARE]"
+            }
+            if (RideOfferParser.extractDistanceValue(raw) != null) {
+                return when {
+                    RideOfferParser.isPickupNode(raw, viewId) -> "[PICKUP_DISTANCE]"
+                    RideOfferParser.isDropNode(raw, viewId) -> "[DROP_DISTANCE]"
+                    else -> "[DISTANCE]"
+                }
+            }
+
+            // 4. Reject anything containing street/address cues or multi-part address commas
+            val hasAddressCue = raw.contains(',') || DIAGNOSTIC_ADDRESS_HINT_REGEX.containsMatchIn(raw)
+            if (hasAddressCue) {
+                return "[REDACTED_LOCATION]"
+            }
+
+            // 5. Preserve known action button labels (Accept / Reject / See More Orders) verbatim
+            val isActionLabel = RideOfferParser.isRapidoAcceptId(viewId) ||
+                RideOfferParser.isRapidoRejectId(viewId) ||
+                RideOfferParser.isAcceptAction(raw) ||
+                RideOfferParser.isRejectAction(raw) ||
+                RideOfferParser.isSeeMoreOrdersText(raw)
+            if (isActionLabel && raw.length <= 40) {
+                return raw
+            }
+
+            // 6. Preserve generic UI chrome labels (AUTO / BIKE / 3 Orders / Online)
+            if (DIAGNOSTIC_SAFE_CHROME_REGEX.matches(raw)) {
+                return raw
+            }
+
+            // 7. Preserve short clickable button labels explicitly backed by a Button class or button viewId
+            val isButtonWidget = className.contains("Button", ignoreCase = true) ||
+                DIAGNOSTIC_BUTTON_VIEW_ID_REGEX.containsMatchIn(viewId)
+            val wordCount = raw.split(Regex("""\s+""")).count { it.isNotEmpty() }
+            if (isClickable && isButtonWidget && raw.length <= 24 && wordCount <= 3 && !raw.any { it.isDigit() }) {
+                return raw
+            }
+
+            // 8. Default fail-closed redaction for all remaining free-text, names, and locations
+            return "[REDACTED_TEXT]"
+        }
+
+        /**
+         * Captures a bounded, strictly privacy-sanitized JSON snapshot of the Rapido UI hierarchy
+         * in memory for 1-tap troubleshooting via "Report UI Issue".
+         */
+        fun captureSanitizedUiSnapshot(
+            rootWindows: List<AccessibilityNodeInfo>,
+            packageName: String,
+            screenWidthPx: Int,
+            screenHeightPx: Int,
+            capturedAtMs: Long = System.currentTimeMillis()
+        ): String {
+            val nodesJson = JSONArray()
+            val startTime = SystemClock.elapsedRealtime()
+            var capturedCount = 0
+
+            for ((windowIndex, root) in rootWindows.withIndex()) {
+                if (capturedCount >= MAX_DIAGNOSTIC_NODES) break
+                val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>()
+                queue.add(root to 0)
+
+                try {
+                    while (queue.isNotEmpty() && capturedCount < MAX_DIAGNOSTIC_NODES) {
+                        if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
+                            break
+                        }
+                        val (node, depth) = queue.removeFirst()
+                        try {
+                            val bounds = Rect()
+                            node.getBoundsInScreen(bounds)
+                            val viewId = node.viewIdResourceName ?: ""
+                            val className = node.className?.toString() ?: ""
+                            val text = node.text?.toString() ?: ""
+                            val desc = node.contentDescription?.toString() ?: ""
+                            val sanitizedLabel = sanitizeNodeTextForDiagnostic(
+                                text = text,
+                                desc = desc,
+                                viewId = viewId,
+                                className = className,
+                                isClickable = node.isClickable
+                            )
+
+                            val hasUsefulStructure = viewId.isNotEmpty() ||
+                                sanitizedLabel.isNotEmpty() ||
+                                node.isClickable ||
+                                depth <= 1
+                            if (hasUsefulStructure) {
+                                val entry = JSONObject().apply {
+                                    put("w", windowIndex)
+                                    put("d", depth)
+                                    put("bounds", "${bounds.left},${bounds.top},${bounds.right},${bounds.bottom}")
+                                    if (viewId.isNotEmpty()) put("viewId", viewId)
+                                    if (className.isNotEmpty()) {
+                                        put("class", className.substringAfterLast('.'))
+                                    }
+                                    put("clickable", node.isClickable)
+                                    put("enabled", node.isEnabled)
+                                    if (sanitizedLabel.isNotEmpty()) put("label", sanitizedLabel)
+                                }
+                                nodesJson.put(entry)
+                                capturedCount++
+                            }
+
+                            if (depth < MAX_TRAVERSAL_DEPTH && capturedCount < MAX_DIAGNOSTIC_NODES) {
+                                val childCount = node.childCount
+                                for (i in 0 until childCount) {
+                                    val child = node.getChild(i)
+                                    if (child != null) {
+                                        queue.add(child to (depth + 1))
+                                    }
+                                }
+                            }
+                        } finally {
+                            if (depth > 0) {
+                                try {
+                                    @Suppress("DEPRECATION")
+                                    node.recycle()
+                                } catch (_: Exception) {
+                                }
+                            }
+                        }
+                    }
+                } finally {
+                    while (queue.isNotEmpty()) {
+                        val (queuedNode, queuedDepth) = queue.removeFirst()
+                        if (queuedDepth > 0) {
+                            try {
+                                @Suppress("DEPRECATION")
+                                queuedNode.recycle()
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+                }
+            }
+
+            val activeConfig = AppConfigRepository.currentAppConfig.value
+            val rootJson = JSONObject().apply {
+                put("schema", "rapido_ui_diagnostic_v1")
+                put("capturedAtMs", capturedAtMs)
+                put("appVersionCode", BuildConfig.APP_VERSION_CODE)
+                put("androidSdk", Build.VERSION.SDK_INT)
+                put("packageName", packageName)
+                put("screenWidthPx", screenWidthPx)
+                put("screenHeightPx", screenHeightPx)
+                put("windowCount", rootWindows.size)
+                put(
+                    "activeConfig",
+                    JSONObject().apply {
+                        put("targetPackage", AppConfigRepository.effectiveRapidoTargetPackage())
+                        put("leftSidebarWidthRatio", AppConfigRepository.effectiveRapidoLeftSidebarWidthRatio().toDouble())
+                        put("acceptViewIds", JSONArray(AppConfigRepository.effectiveRapidoAcceptViewIds()))
+                        put("acceptKeywordsCount", AppConfigRepository.effectiveRapidoAcceptKeywords().size)
+                        put("rejectKeywordsCount", AppConfigRepository.effectiveRapidoRejectKeywords().size)
+                        put("seeMoreKeywords", JSONArray(AppConfigRepository.effectiveRapidoSeeMoreOrdersKeywords()))
+                        put("autoExpandMoreOrders", activeConfig.rapidoAutoExpandMoreOrders)
+                    }
+                )
+                put("nodeCount", nodesJson.length())
+                put("nodes", nodesJson)
+            }
+
+            val formatted = rootJson.toString(2).replace("\\/", "/")
+            lastSanitizedUiSnapshotJson = formatted
+            lastSnapshotCapturedAtMs = capturedAtMs
+            return formatted
+        }
+
+        /**
+         * Returns the latest sanitized Rapido UI diagnostic snapshot if available, or a privacy-safe
+         * fallback summary with device/permission/parser config state when no Rapido screen was captured yet.
+         */
+        fun buildDiagnosticClipboardPayload(context: Context): Pair<String, Boolean> {
+            val existing = lastSanitizedUiSnapshotJson
+            if (!existing.isNullOrBlank()) {
+                return existing to true
+            }
+            val activeConfig = AppConfigRepository.currentAppConfig.value
+            val fallback = JSONObject().apply {
+                put("schema", "rapido_ui_diagnostic_v1")
+                put("status", "NO_RAPIDO_SCREEN_CAPTURED_YET")
+                put("generatedAtMs", System.currentTimeMillis())
+                put("appVersionCode", BuildConfig.APP_VERSION_CODE)
+                put("androidSdk", Build.VERSION.SDK_INT)
+                put("deviceManufacturer", Build.MANUFACTURER ?: "unknown")
+                put("deviceModel", Build.MODEL ?: "unknown")
+                put("accessibilityServiceRunning", isServiceRunning)
+                put("accessibilityEnabledInSettings", PermissionUtils.isAccessibilityServiceEnabled(context))
+                put("overlayPermissionGranted", PermissionUtils.canDrawOverlays(context))
+                put("batteryOptimizationIgnored", PermissionUtils.isIgnoringBatteryOptimizations(context))
+                put(
+                    "activeConfig",
+                    JSONObject().apply {
+                        put("targetPackage", AppConfigRepository.effectiveRapidoTargetPackage())
+                        put("leftSidebarWidthRatio", AppConfigRepository.effectiveRapidoLeftSidebarWidthRatio().toDouble())
+                        put("acceptViewIds", JSONArray(AppConfigRepository.effectiveRapidoAcceptViewIds()))
+                        put("acceptKeywordsCount", AppConfigRepository.effectiveRapidoAcceptKeywords().size)
+                        put("rejectKeywordsCount", AppConfigRepository.effectiveRapidoRejectKeywords().size)
+                        put("seeMoreKeywords", JSONArray(AppConfigRepository.effectiveRapidoSeeMoreOrdersKeywords()))
+                        put("autoExpandMoreOrders", activeConfig.rapidoAutoExpandMoreOrders)
+                    }
+                )
+            }.toString(2).replace("\\/", "/")
+            return fallback to false
+        }
 
         /**
          * Invokes the system accessibility configuration to activate the Rapido Accessibility Service.
@@ -139,6 +427,9 @@ open class RapidoAccessibilityService : AccessibilityService() {
 
     @Volatile
     private var lastMoreOrdersExpandTime: Long = 0L
+
+    @Volatile
+    private var lastUiSnapshotCaptureElapsedMs: Long = 0L
 
     @Volatile
     private var lastAppliedTargetPackage: String = TARGET_PACKAGE
@@ -383,6 +674,23 @@ open class RapidoAccessibilityService : AccessibilityService() {
                 return
             }
 
+            val (screenWFloat, screenHFloat) = getScreenDimensionsPx()
+            val screenWidthPx = screenWFloat.toInt()
+            val screenHeightPx = screenHFloat.toInt()
+
+            // Throttled privacy-safe UI structure capture for "Report UI Issue" diagnostics
+            if (currentTime - lastUiSnapshotCaptureElapsedMs >= UI_SNAPSHOT_CAPTURE_INTERVAL_MS) {
+                lastUiSnapshotCaptureElapsedMs = currentTime
+                runCatching {
+                    captureSanitizedUiSnapshot(
+                        rootWindows = candidateWindows,
+                        packageName = targetPkg,
+                        screenWidthPx = screenWidthPx,
+                        screenHeightPx = screenHeightPx
+                    )
+                }
+            }
+
             // STRICT REQUIREMENT: If no valid "Accept", "Reject", or "Order Offer" view ID/text node is found on screen,
             // trigger a lightweight retry loop in case the offer card layout is still rendering asynchronously.
             if (!hasActiveRideOfferOnScreen(candidateWindows)) {
@@ -393,11 +701,20 @@ open class RapidoAccessibilityService : AccessibilityService() {
             // 1. Card-Level Layout Isolation: Extract distinct order card containers across candidate windows
             // and parse each container independently into a strictly isolated ParsedRideOffer
             // (excluding Rapido's left-side mini-tab strip on multi-order screens).
-            val screenWidthPx = getScreenDimensionsPx().first.toInt()
             val offers = RideOfferParser.parseCards(candidateWindows, screenWidthPx)
             parsedOffers = offers
 
             if (offers.isEmpty()) {
+                // Capture latest sanitized tree whenever an active offer screen fails to parse cards
+                lastUiSnapshotCaptureElapsedMs = currentTime
+                runCatching {
+                    captureSanitizedUiSnapshot(
+                        rootWindows = candidateWindows,
+                        packageName = targetPkg,
+                        screenWidthPx = screenWidthPx,
+                        screenHeightPx = screenHeightPx
+                    )
+                }
                 scheduleNodeRenderRetry()
                 return
             }
@@ -1935,6 +2252,7 @@ open class RapidoAccessibilityService : AccessibilityService() {
         queue.add(Pair(AccessibilityNodeInfo.obtain(root), 0))
 
         val startTime = SystemClock.elapsedRealtime()
+        var textFallbackNode: AccessibilityNodeInfo? = null
         try {
             while (queue.isNotEmpty()) {
                 if (SystemClock.elapsedRealtime() - startTime > MAX_TRAVERSAL_TIMEOUT_MS) {
@@ -1948,10 +2266,22 @@ open class RapidoAccessibilityService : AccessibilityService() {
                     val desc = node.contentDescription?.toString() ?: ""
                     val viewId = node.viewIdResourceName ?: ""
 
-                    if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
-                        if (isActionableNodeOrChild(node)) {
+                    val isRejectNode = isRapidoRejectId(viewId) || isRejectAction(text) || isRejectAction(desc)
+                    if (!isRejectNode) {
+                        // Priority 1: Authoritative viewIdResourceName match (language-independent)
+                        if (isRapidoAcceptId(viewId) && isActionableNodeOrChild(node)) {
+                            textFallbackNode?.let { recycleNode(it) }
+                            textFallbackNode = null
                             keepNode = true
                             return node
+                        }
+                        // Priority 2: Localized/English text keyword match fallback
+                        if (textFallbackNode == null &&
+                            (isAcceptAction(text) || isAcceptAction(desc)) &&
+                            isActionableNodeOrChild(node)
+                        ) {
+                            @Suppress("DEPRECATION")
+                            textFallbackNode = AccessibilityNodeInfo.obtain(node)
                         }
                     }
 
@@ -1978,12 +2308,13 @@ open class RapidoAccessibilityService : AccessibilityService() {
                 recycleNode(queue.removeFirst().first)
             }
         }
-        return null
+        return textFallbackNode
     }
 
     fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty() || trimmed.length > 50) return false
+        if (isRejectAction(trimmed)) return false
         if (CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(trimmed)) return false
         if (ACCEPT_REGEX.containsMatchIn(trimmed)) return true
         return AppConfigRepository.effectiveRapidoAcceptKeywords().any { kw ->
@@ -1992,19 +2323,15 @@ open class RapidoAccessibilityService : AccessibilityService() {
     }
 
     fun isRapidoAcceptId(viewId: String): Boolean {
-        if (viewId.isEmpty()) return false
-        return RAPIDO_ACCEPT_ID_REGEX.containsMatchIn(viewId)
+        return RideOfferParser.isRapidoAcceptId(viewId)
     }
 
     fun isRejectAction(content: String): Boolean {
-        val trimmed = content.trim()
-        if (trimmed.isEmpty()) return false
-        return REJECT_REGEX.containsMatchIn(trimmed)
+        return RideOfferParser.isRejectAction(content)
     }
 
     fun isRapidoRejectId(viewId: String): Boolean {
-        if (viewId.isEmpty()) return false
-        return RAPIDO_REJECT_ID_REGEX.containsMatchIn(viewId)
+        return RideOfferParser.isRapidoRejectId(viewId)
     }
 
     fun findRejectNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {

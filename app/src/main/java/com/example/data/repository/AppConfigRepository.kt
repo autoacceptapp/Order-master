@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import org.json.JSONArray
 
 /**
  * App Configuration model synced with Firestore collection `admin_settings`, document `app_config`.
@@ -27,6 +28,10 @@ import kotlinx.coroutines.flow.callbackFlow
  * @param paidPassOfflineGraceHours Remote offline grace hours for active paid pass drivers (clamped 2..72, default 24).
  * @param rapidoTargetPackage Target Rapido Captain package name (default `com.rapido.rider`).
  * @param rapidoAcceptButtonKeywords Remote keywords used to recognize Rapido Accept buttons.
+ * @param rapidoAcceptViewIds Remote resource IDs (exact or `:id/` suffix) prioritized before text keywords.
+ * @param rapidoRejectKeywords Remote keywords excluded from ever matching as Accept buttons.
+ * @param rapidoSeeMoreOrdersKeywords Remote keywords used to detect "See N more orders >" expansion chips.
+ * @param rapidoLeftSidebarWidthRatio Clamped width ratio (`0.05f..0.45f`, default `0.22f`) for excluding left mini-tabs.
  * @param rapidoFareRegex Optional remote regex override for extracting fare values (falls back safely if blank/invalid).
  * @param rapidoDistanceRegex Optional remote regex override for extracting distance values (falls back safely if blank/invalid).
  * @param rapidoAutoExpandMoreOrders When true, auto-taps "See N more orders" when top floating popup fails filters.
@@ -38,6 +43,10 @@ data class AppConfig(
     val paidPassOfflineGraceHours: Int = AppConfigRepository.DEFAULT_PAID_PASS_OFFLINE_GRACE_HOURS,
     val rapidoTargetPackage: String = AppConfigRepository.DEFAULT_RAPIDO_TARGET_PACKAGE,
     val rapidoAcceptButtonKeywords: List<String> = AppConfigRepository.DEFAULT_RAPIDO_ACCEPT_KEYWORDS,
+    val rapidoAcceptViewIds: List<String> = AppConfigRepository.DEFAULT_RAPIDO_ACCEPT_VIEW_IDS,
+    val rapidoRejectKeywords: List<String> = AppConfigRepository.DEFAULT_RAPIDO_REJECT_KEYWORDS,
+    val rapidoSeeMoreOrdersKeywords: List<String> = AppConfigRepository.DEFAULT_RAPIDO_SEE_MORE_ORDERS_KEYWORDS,
+    val rapidoLeftSidebarWidthRatio: Float = AppConfigRepository.DEFAULT_LEFT_SIDEBAR_WIDTH_RATIO,
     val rapidoFareRegex: String = "",
     val rapidoDistanceRegex: String = "",
     val rapidoAutoExpandMoreOrders: Boolean = false
@@ -81,10 +90,30 @@ object AppConfigRepository {
     const val DOC_SECURITY_CONFIG = "security_config"
     const val DOC_SERVER_CLOCK = "server_clock"
 
+    const val PREFS_APP_CONFIG_CACHE = "app_config_cache"
+    private const val KEY_CACHE_PRESENT = "has_cached_snapshot"
+    private const val KEY_MIN_SUPPORTED_VERSION = "minSupportedVersionCode"
+    private const val KEY_LATEST_VERSION = "latestVersionCode"
+    private const val KEY_DYNAMIC_DOWNLOAD_URL = "dynamicAppDownloadUrl"
+    private const val KEY_PAID_OFFLINE_GRACE_HOURS = "paidPassOfflineGraceHours"
+    private const val KEY_RAPIDO_TARGET_PACKAGE = "rapidoTargetPackage"
+    private const val KEY_RAPIDO_ACCEPT_KEYWORDS = "rapidoAcceptButtonKeywords"
+    private const val KEY_RAPIDO_ACCEPT_VIEW_IDS = "rapidoAcceptViewIds"
+    private const val KEY_RAPIDO_REJECT_KEYWORDS = "rapidoRejectKeywords"
+    private const val KEY_RAPIDO_SEE_MORE_KEYWORDS = "rapidoSeeMoreOrdersKeywords"
+    private const val KEY_RAPIDO_LEFT_SIDEBAR_RATIO = "rapidoLeftSidebarWidthRatio"
+    private const val KEY_RAPIDO_FARE_REGEX = "rapidoFareRegex"
+    private const val KEY_RAPIDO_DISTANCE_REGEX = "rapidoDistanceRegex"
+    private const val KEY_RAPIDO_AUTO_EXPAND_MORE = "rapidoAutoExpandMoreOrders"
+
     const val DEFAULT_PAID_PASS_OFFLINE_GRACE_HOURS = 24
     const val MIN_PAID_PASS_OFFLINE_GRACE_HOURS = 2
     const val MAX_PAID_PASS_OFFLINE_GRACE_HOURS = 72
     const val DEFAULT_RAPIDO_TARGET_PACKAGE = "com.rapido.rider"
+
+    const val DEFAULT_LEFT_SIDEBAR_WIDTH_RATIO = 0.22f
+    const val MIN_LEFT_SIDEBAR_WIDTH_RATIO = 0.05f
+    const val MAX_LEFT_SIDEBAR_WIDTH_RATIO = 0.45f
 
     val DEFAULT_RAPIDO_ACCEPT_KEYWORDS: List<String> = listOf(
         "Accept",
@@ -94,6 +123,24 @@ object AppConfigRepository {
         "Confirm",
         "Take Ride",
         "स्वीकार"
+    )
+
+    val DEFAULT_RAPIDO_ACCEPT_VIEW_IDS: List<String> = listOf(
+        "btn_accept",
+        "btn_accept_order",
+        "accept_button"
+    )
+
+    val DEFAULT_RAPIDO_REJECT_KEYWORDS: List<String> = listOf(
+        "Reject",
+        "Decline",
+        "Skip",
+        "Pass"
+    )
+
+    val DEFAULT_RAPIDO_SEE_MORE_ORDERS_KEYWORDS: List<String> = listOf(
+        "See",
+        "more orders"
     )
 
     /**
@@ -128,10 +175,14 @@ object AppConfigRepository {
     private var cachedDistanceRegex: Regex? = null
 
     /**
-     * Initializes the repository with the application context.
+     * Initializes the repository with the application context and immediately hydrates
+     * `currentAppConfig` from persistent `SharedPreferences` (`app_config_cache`) so
+     * offline/cold-boot sessions use the latest remote rules without network dependency.
      */
     fun init(context: Context) {
-        appContext = context.applicationContext
+        val appCtx = context.applicationContext
+        appContext = appCtx
+        hydrateFromCache(appCtx)
     }
 
     fun effectivePaidPassOfflineGraceHours(): Int {
@@ -149,6 +200,36 @@ object AppConfigRepository {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
         return if (configured.isNotEmpty()) configured else DEFAULT_RAPIDO_ACCEPT_KEYWORDS
+    }
+
+    fun effectiveRapidoAcceptViewIds(): List<String> {
+        val configured = _currentAppConfig.value.rapidoAcceptViewIds
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        return if (configured.isNotEmpty()) configured else DEFAULT_RAPIDO_ACCEPT_VIEW_IDS
+    }
+
+    fun effectiveRapidoRejectKeywords(): List<String> {
+        val configured = _currentAppConfig.value.rapidoRejectKeywords
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        return if (configured.isNotEmpty()) configured else DEFAULT_RAPIDO_REJECT_KEYWORDS
+    }
+
+    fun effectiveRapidoSeeMoreOrdersKeywords(): List<String> {
+        val configured = _currentAppConfig.value.rapidoSeeMoreOrdersKeywords
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        return if (configured.isNotEmpty()) configured else DEFAULT_RAPIDO_SEE_MORE_ORDERS_KEYWORDS
+    }
+
+    fun effectiveRapidoLeftSidebarWidthRatio(): Float {
+        val ratio = _currentAppConfig.value.rapidoLeftSidebarWidthRatio
+        return if (ratio.isFinite()) {
+            ratio.coerceIn(MIN_LEFT_SIDEBAR_WIDTH_RATIO, MAX_LEFT_SIDEBAR_WIDTH_RATIO)
+        } else {
+            DEFAULT_LEFT_SIDEBAR_WIDTH_RATIO
+        }
     }
 
     fun effectiveRapidoFareRegex(): Regex? {
@@ -387,18 +468,40 @@ object AppConfigRepository {
         else -> null
     }
 
-    private fun parseAcceptKeywords(raw: Any?): List<String> {
+    private fun parseFloatOrNull(value: Any?): Float? = runCatching {
+        when (value) {
+            is Number -> value.toFloat().takeIf { it.isFinite() }
+            is String -> value.trim().toFloatOrNull()?.takeIf { it.isFinite() }
+            else -> null
+        }
+    }.getOrNull()
+
+    private fun parseKeywordList(raw: Any?, defaults: List<String>): List<String> = runCatching {
         val items = when (raw) {
             is Iterable<*> -> raw.mapNotNull { it?.toString()?.trim()?.takeIf { s -> s.isNotEmpty() } }
-            is String -> raw.split(',', '\n', '|').map { it.trim() }.filter { it.isNotEmpty() }
+            is String -> {
+                val trimmed = raw.trim()
+                if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                    val arr = JSONArray(trimmed)
+                    buildList {
+                        for (i in 0 until arr.length()) {
+                            val token = arr.optString(i, "").trim()
+                            if (token.isNotEmpty()) add(token)
+                        }
+                    }
+                } else {
+                    trimmed.split(',', '\n', '|').map { it.trim() }.filter { it.isNotEmpty() }
+                }
+            }
             else -> emptyList()
         }.distinct()
-        return if (items.isNotEmpty()) items else DEFAULT_RAPIDO_ACCEPT_KEYWORDS
-    }
+        if (items.isNotEmpty()) items else defaults
+    }.getOrDefault(defaults)
 
     /**
      * Parses raw `admin_settings/app_config` document fields with safe defaults, clamping,
      * and validation for remote Rapido parser settings and paid pass offline grace hours.
+     * Wrapped in `runCatching` so malformed remote payloads never crash the app.
      */
     @VisibleForTesting
     internal fun parseAppConfigMap(data: Map<String, Any?>?): AppConfig {
@@ -406,70 +509,190 @@ object AppConfigRepository {
             return AppConfig()
         }
 
-        val minCode = parsePositiveInt(data["minSupportedVersionCode"]) ?: 1
-        val latestCode = parsePositiveInt(data["latestVersionCode"]) ?: 1
-        val downloadUrl = (data["dynamicAppDownloadUrl"] as? String)?.trim().orEmpty()
+        return runCatching {
+            val minCode = parsePositiveInt(data[KEY_MIN_SUPPORTED_VERSION]) ?: 1
+            val latestCode = parsePositiveInt(data[KEY_LATEST_VERSION]) ?: 1
+            val downloadUrl = (data[KEY_DYNAMIC_DOWNLOAD_URL] as? String)?.trim().orEmpty()
 
-        val rawGraceHours = parseIntOrNull(data["paidPassOfflineGraceHours"])
-            ?: DEFAULT_PAID_PASS_OFFLINE_GRACE_HOURS
-        val clampedGraceHours = rawGraceHours.coerceIn(
-            MIN_PAID_PASS_OFFLINE_GRACE_HOURS,
-            MAX_PAID_PASS_OFFLINE_GRACE_HOURS
-        )
+            val rawGraceHours = parseIntOrNull(data[KEY_PAID_OFFLINE_GRACE_HOURS])
+                ?: DEFAULT_PAID_PASS_OFFLINE_GRACE_HOURS
+            val clampedGraceHours = rawGraceHours.coerceIn(
+                MIN_PAID_PASS_OFFLINE_GRACE_HOURS,
+                MAX_PAID_PASS_OFFLINE_GRACE_HOURS
+            )
 
-        val rawTargetPkg = (data["rapidoTargetPackage"] as? String)?.trim().orEmpty()
-        val targetPackage = if (rawTargetPkg.isNotEmpty() && rawTargetPkg.contains('.')) {
-            rawTargetPkg
-        } else {
-            DEFAULT_RAPIDO_TARGET_PACKAGE
-        }
+            val rawTargetPkg = (data[KEY_RAPIDO_TARGET_PACKAGE] as? String)?.trim().orEmpty()
+            val targetPackage = if (rawTargetPkg.isNotEmpty() && rawTargetPkg.contains('.')) {
+                rawTargetPkg
+            } else {
+                DEFAULT_RAPIDO_TARGET_PACKAGE
+            }
 
-        val acceptKeywords = parseAcceptKeywords(data["rapidoAcceptButtonKeywords"])
-        val fareRegex = (data["rapidoFareRegex"] as? String)?.trim().orEmpty()
-        val distanceRegex = (data["rapidoDistanceRegex"] as? String)?.trim().orEmpty()
-        val autoExpandMoreOrders = parseBooleanOrNull(data["rapidoAutoExpandMoreOrders"]) ?: false
+            val acceptKeywords = parseKeywordList(data[KEY_RAPIDO_ACCEPT_KEYWORDS], DEFAULT_RAPIDO_ACCEPT_KEYWORDS)
+            val acceptViewIds = parseKeywordList(data[KEY_RAPIDO_ACCEPT_VIEW_IDS], DEFAULT_RAPIDO_ACCEPT_VIEW_IDS)
+            val rejectKeywords = parseKeywordList(data[KEY_RAPIDO_REJECT_KEYWORDS], DEFAULT_RAPIDO_REJECT_KEYWORDS)
+            val seeMoreKeywords = parseKeywordList(
+                data[KEY_RAPIDO_SEE_MORE_KEYWORDS],
+                DEFAULT_RAPIDO_SEE_MORE_ORDERS_KEYWORDS
+            )
+            val rawSidebarRatio = parseFloatOrNull(data[KEY_RAPIDO_LEFT_SIDEBAR_RATIO])
+                ?: DEFAULT_LEFT_SIDEBAR_WIDTH_RATIO
+            val clampedSidebarRatio = rawSidebarRatio.coerceIn(
+                MIN_LEFT_SIDEBAR_WIDTH_RATIO,
+                MAX_LEFT_SIDEBAR_WIDTH_RATIO
+            )
 
-        return AppConfig(
-            minSupportedVersionCode = minCode,
-            latestVersionCode = latestCode,
-            dynamicAppDownloadUrl = downloadUrl,
-            paidPassOfflineGraceHours = clampedGraceHours,
-            rapidoTargetPackage = targetPackage,
-            rapidoAcceptButtonKeywords = acceptKeywords,
-            rapidoFareRegex = fareRegex,
-            rapidoDistanceRegex = distanceRegex,
-            rapidoAutoExpandMoreOrders = autoExpandMoreOrders
-        )
+            val fareRegex = (data[KEY_RAPIDO_FARE_REGEX] as? String)?.trim().orEmpty()
+            val distanceRegex = (data[KEY_RAPIDO_DISTANCE_REGEX] as? String)?.trim().orEmpty()
+            val autoExpandMoreOrders = parseBooleanOrNull(data[KEY_RAPIDO_AUTO_EXPAND_MORE]) ?: false
+
+            AppConfig(
+                minSupportedVersionCode = minCode,
+                latestVersionCode = latestCode,
+                dynamicAppDownloadUrl = downloadUrl,
+                paidPassOfflineGraceHours = clampedGraceHours,
+                rapidoTargetPackage = targetPackage,
+                rapidoAcceptButtonKeywords = acceptKeywords,
+                rapidoAcceptViewIds = acceptViewIds,
+                rapidoRejectKeywords = rejectKeywords,
+                rapidoSeeMoreOrdersKeywords = seeMoreKeywords,
+                rapidoLeftSidebarWidthRatio = clampedSidebarRatio,
+                rapidoFareRegex = fareRegex,
+                rapidoDistanceRegex = distanceRegex,
+                rapidoAutoExpandMoreOrders = autoExpandMoreOrders
+            )
+        }.onFailure { err ->
+            Log.w(TAG, "Malformed app_config payload ignored; falling back to defaults: ${err.message}")
+        }.getOrDefault(AppConfig())
+    }
+
+    private fun encodeStringList(values: List<String>): String {
+        val arr = JSONArray()
+        values.forEach { arr.put(it) }
+        return arr.toString()
     }
 
     /**
-     * Parses and applies a raw `admin_settings/app_config` map to `currentAppConfig`,
-     * refreshing compiled remote regex caches safely.
+     * Persists a validated remote [AppConfig] snapshot to local `SharedPreferences` (`app_config_cache`)
+     * so offline/cold-boot sessions immediately inherit the latest remote rules.
      */
     @VisibleForTesting
-    internal fun applyAppConfigFromMap(data: Map<String, Any?>?): AppConfig {
-        val config = parseAppConfigMap(data)
+    internal fun persistAppConfigToCache(context: Context, config: AppConfig) {
+        runCatching {
+            val prefs = context.getSharedPreferences(PREFS_APP_CONFIG_CACHE, Context.MODE_PRIVATE)
+            prefs.edit()
+                .putBoolean(KEY_CACHE_PRESENT, true)
+                .putInt(KEY_MIN_SUPPORTED_VERSION, config.minSupportedVersionCode)
+                .putInt(KEY_LATEST_VERSION, config.latestVersionCode)
+                .putString(KEY_DYNAMIC_DOWNLOAD_URL, config.dynamicAppDownloadUrl)
+                .putInt(KEY_PAID_OFFLINE_GRACE_HOURS, config.paidPassOfflineGraceHours)
+                .putString(KEY_RAPIDO_TARGET_PACKAGE, config.rapidoTargetPackage)
+                .putString(KEY_RAPIDO_ACCEPT_KEYWORDS, encodeStringList(config.rapidoAcceptButtonKeywords))
+                .putString(KEY_RAPIDO_ACCEPT_VIEW_IDS, encodeStringList(config.rapidoAcceptViewIds))
+                .putString(KEY_RAPIDO_REJECT_KEYWORDS, encodeStringList(config.rapidoRejectKeywords))
+                .putString(KEY_RAPIDO_SEE_MORE_KEYWORDS, encodeStringList(config.rapidoSeeMoreOrdersKeywords))
+                .putFloat(KEY_RAPIDO_LEFT_SIDEBAR_RATIO, config.rapidoLeftSidebarWidthRatio)
+                .putString(KEY_RAPIDO_FARE_REGEX, config.rapidoFareRegex)
+                .putString(KEY_RAPIDO_DISTANCE_REGEX, config.rapidoDistanceRegex)
+                .putBoolean(KEY_RAPIDO_AUTO_EXPAND_MORE, config.rapidoAutoExpandMoreOrders)
+                .apply()
+        }.onFailure { err ->
+            Log.w(TAG, "Failed persisting app_config_cache: ${err.message}")
+        }
+    }
+
+    /**
+     * Reads and validates any previously cached [AppConfig] snapshot from `SharedPreferences` (`app_config_cache`).
+     */
+    @VisibleForTesting
+    internal fun loadCachedAppConfig(context: Context): AppConfig? {
+        return runCatching {
+            val prefs = context.getSharedPreferences(PREFS_APP_CONFIG_CACHE, Context.MODE_PRIVATE)
+            if (!prefs.getBoolean(KEY_CACHE_PRESENT, false)) {
+                return null
+            }
+            val rawMap = mapOf<String, Any?>(
+                KEY_MIN_SUPPORTED_VERSION to prefs.getInt(KEY_MIN_SUPPORTED_VERSION, 1),
+                KEY_LATEST_VERSION to prefs.getInt(KEY_LATEST_VERSION, 1),
+                KEY_DYNAMIC_DOWNLOAD_URL to prefs.getString(KEY_DYNAMIC_DOWNLOAD_URL, ""),
+                KEY_PAID_OFFLINE_GRACE_HOURS to prefs.getInt(KEY_PAID_OFFLINE_GRACE_HOURS, DEFAULT_PAID_PASS_OFFLINE_GRACE_HOURS),
+                KEY_RAPIDO_TARGET_PACKAGE to prefs.getString(KEY_RAPIDO_TARGET_PACKAGE, DEFAULT_RAPIDO_TARGET_PACKAGE),
+                KEY_RAPIDO_ACCEPT_KEYWORDS to prefs.getString(KEY_RAPIDO_ACCEPT_KEYWORDS, null),
+                KEY_RAPIDO_ACCEPT_VIEW_IDS to prefs.getString(KEY_RAPIDO_ACCEPT_VIEW_IDS, null),
+                KEY_RAPIDO_REJECT_KEYWORDS to prefs.getString(KEY_RAPIDO_REJECT_KEYWORDS, null),
+                KEY_RAPIDO_SEE_MORE_KEYWORDS to prefs.getString(KEY_RAPIDO_SEE_MORE_KEYWORDS, null),
+                KEY_RAPIDO_LEFT_SIDEBAR_RATIO to prefs.getFloat(KEY_RAPIDO_LEFT_SIDEBAR_RATIO, DEFAULT_LEFT_SIDEBAR_WIDTH_RATIO),
+                KEY_RAPIDO_FARE_REGEX to prefs.getString(KEY_RAPIDO_FARE_REGEX, ""),
+                KEY_RAPIDO_DISTANCE_REGEX to prefs.getString(KEY_RAPIDO_DISTANCE_REGEX, ""),
+                KEY_RAPIDO_AUTO_EXPAND_MORE to prefs.getBoolean(KEY_RAPIDO_AUTO_EXPAND_MORE, false)
+            )
+            parseAppConfigMap(rawMap)
+        }.onFailure { err ->
+            Log.w(TAG, "Failed loading app_config_cache; using defaults: ${err.message}")
+        }.getOrNull()
+    }
+
+    /**
+     * Hydrates `currentAppConfig` from `SharedPreferences` (`app_config_cache`) at startup
+     * or cold boot before Firestore connects.
+     */
+    fun hydrateFromCache(context: Context): AppConfig {
+        val cached = loadCachedAppConfig(context)
+        val effective = cached ?: AppConfig()
+        applyParsedAppConfigLocked(effective)
+        return effective
+    }
+
+    @VisibleForTesting
+    internal fun clearCachedAppConfig(context: Context) {
+        runCatching {
+            context.getSharedPreferences(PREFS_APP_CONFIG_CACHE, Context.MODE_PRIVATE)
+                .edit()
+                .clear()
+                .commit()
+        }
+    }
+
+    private fun applyParsedAppConfigLocked(config: AppConfig) {
         cachedFareRegexSource = ""
         cachedFareRegex = null
         cachedDistanceRegexSource = ""
         cachedDistanceRegex = null
         _currentAppConfig.value = config
-        // Eagerly validate remote regex patterns so malformed rules log once on update
+        // Eagerly validate remote regex patterns so malformed rules log once and fall back cleanly
         if (config.rapidoFareRegex.isNotEmpty()) {
             effectiveRapidoFareRegex()
         }
         if (config.rapidoDistanceRegex.isNotEmpty()) {
             effectiveRapidoDistanceRegex()
         }
+    }
+
+    /**
+     * Parses and applies a raw `admin_settings/app_config` map to `currentAppConfig`,
+     * refreshing compiled remote regex caches safely and persisting valid non-empty remote
+     * snapshots to `SharedPreferences` (`app_config_cache`) when `appContext` is initialized.
+     */
+    @VisibleForTesting
+    internal fun applyAppConfigFromMap(
+        data: Map<String, Any?>?,
+        persistToCache: Boolean = true
+    ): AppConfig {
+        val config = parseAppConfigMap(data)
+        applyParsedAppConfigLocked(config)
+        if (persistToCache && !data.isNullOrEmpty()) {
+            appContext?.let { ctx -> persistAppConfigToCache(ctx, config) }
+        }
         return config
     }
 
     /**
-     * Applies remote `admin_settings/app_config` snapshot safely, falling back to defaults if absent.
+     * Applies remote `admin_settings/app_config` snapshot safely, persisting valid snapshots
+     * to local `SharedPreferences` cache and falling back to defaults if absent.
      */
     fun applyAppConfigFromSnapshot(snapshot: DocumentSnapshot?): AppConfig {
         val data = if (snapshot != null && snapshot.exists()) snapshot.data else null
-        return applyAppConfigFromMap(data)
+        return applyAppConfigFromMap(data, persistToCache = true)
     }
 
     /**

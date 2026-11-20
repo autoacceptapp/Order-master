@@ -1,5 +1,7 @@
 package com.example
 
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import com.example.data.repository.AppConfig
 import com.example.data.repository.AppConfigRepository
 import kotlinx.coroutines.flow.first
@@ -17,9 +19,11 @@ class AppConfigTest {
 
     @After
     fun tearDown() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
         AppConfigRepository.paymentConfigTestListenerFactory = null
         AppConfigRepository.applyPaymentConfigFromMap(null)
-        AppConfigRepository.applyAppConfigFromMap(null)
+        AppConfigRepository.applyAppConfigFromMap(null, persistToCache = false)
+        AppConfigRepository.clearCachedAppConfig(ctx)
     }
 
     @Test
@@ -480,7 +484,70 @@ class AppConfigTest {
         assertNull("Malformed remote fare regex must fall back to null", AppConfigRepository.effectiveRapidoFareRegex())
         assertNull("Malformed remote distance regex must fall back to null", AppConfigRepository.effectiveRapidoDistanceRegex())
     }
+
+    @Test
+    fun testAppConfigPersistsStep9BFieldsToSharedPreferencesAndHydratesOfflineOnColdStart() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        AppConfigRepository.clearCachedAppConfig(context)
+        AppConfigRepository.init(context)
+
+        // Verify Step 9B defaults on fresh install with no cache
+        assertEquals(listOf("btn_accept", "btn_accept_order", "accept_button"), AppConfigRepository.effectiveRapidoAcceptViewIds())
+        assertEquals(listOf("Reject", "Decline", "Skip", "Pass"), AppConfigRepository.effectiveRapidoRejectKeywords())
+        assertEquals(listOf("See", "more orders"), AppConfigRepository.effectiveRapidoSeeMoreOrdersKeywords())
+        assertEquals(0.22f, AppConfigRepository.effectiveRapidoLeftSidebarWidthRatio(), 0.001f)
+
+        // Apply remote Step 9B config (including a malformed regex to ensure safe fallback)
+        AppConfigRepository.applyAppConfigFromMap(
+            mapOf(
+                "paidPassOfflineGraceHours" to 36L,
+                "rapidoTargetPackage" to "com.rapido.rider.partner",
+                "rapidoAcceptViewIds" to "btn_accept_custom,com.rapido.rider:id/accept_cta",
+                "rapidoRejectKeywords" to "Reject,Dismiss,Skip Ride",
+                "rapidoSeeMoreOrdersKeywords" to "View,extra orders",
+                "rapidoLeftSidebarWidthRatio" to 0.31,
+                "rapidoFareRegex" to "[malformed_unclosed(",
+                "rapidoDistanceRegex" to """(\d+(?:\.\d+)?)\s*(km|m)""",
+                "rapidoAutoExpandMoreOrders" to true
+            )
+        )
+
+        assertEquals(listOf("btn_accept_custom", "com.rapido.rider:id/accept_cta"), AppConfigRepository.effectiveRapidoAcceptViewIds())
+        assertEquals(listOf("Reject", "Dismiss", "Skip Ride"), AppConfigRepository.effectiveRapidoRejectKeywords())
+        assertEquals(listOf("View", "extra orders"), AppConfigRepository.effectiveRapidoSeeMoreOrdersKeywords())
+        assertEquals(0.31f, AppConfigRepository.effectiveRapidoLeftSidebarWidthRatio(), 0.001f)
+        assertNull("Malformed fare regex must fall back safely", AppConfigRepository.effectiveRapidoFareRegex())
+        assertTrue("Valid distance regex must compile", AppConfigRepository.effectiveRapidoDistanceRegex() != null)
+
+        // Simulate app process death / cold start by wiping in-memory state WITHOUT clearing SharedPreferences
+        AppConfigRepository.applyAppConfigFromMap(null, persistToCache = false)
+        assertEquals(0.22f, AppConfigRepository.effectiveRapidoLeftSidebarWidthRatio(), 0.001f)
+        assertEquals(listOf("btn_accept", "btn_accept_order", "accept_button"), AppConfigRepository.effectiveRapidoAcceptViewIds())
+
+        // Cold-boot init() hydrates directly from SharedPreferences ("app_config_cache") with zero network
+        AppConfigRepository.init(context)
+        assertEquals(36, AppConfigRepository.effectivePaidPassOfflineGraceHours())
+        assertEquals("com.rapido.rider.partner", AppConfigRepository.effectiveRapidoTargetPackage())
+        assertEquals(listOf("btn_accept_custom", "com.rapido.rider:id/accept_cta"), AppConfigRepository.effectiveRapidoAcceptViewIds())
+        assertEquals(listOf("Reject", "Dismiss", "Skip Ride"), AppConfigRepository.effectiveRapidoRejectKeywords())
+        assertEquals(listOf("View", "extra orders"), AppConfigRepository.effectiveRapidoSeeMoreOrdersKeywords())
+        assertEquals(0.31f, AppConfigRepository.effectiveRapidoLeftSidebarWidthRatio(), 0.001f)
+        assertTrue(AppConfigRepository.isRapidoAutoExpandMoreOrdersEnabled())
+        assertNull("Malformed cached fare regex must still fall back safely after hydration", AppConfigRepository.effectiveRapidoFareRegex())
+        assertTrue(AppConfigRepository.effectiveRapidoDistanceRegex() != null)
+
+        // Verify clamping bounds (0.05..0.45) and NaN/garbage fallback
+        AppConfigRepository.applyAppConfigFromMap(mapOf("rapidoLeftSidebarWidthRatio" to 0.01))
+        assertEquals(0.05f, AppConfigRepository.effectiveRapidoLeftSidebarWidthRatio(), 0.001f)
+
+        AppConfigRepository.applyAppConfigFromMap(mapOf("rapidoLeftSidebarWidthRatio" to 0.90))
+        assertEquals(0.45f, AppConfigRepository.effectiveRapidoLeftSidebarWidthRatio(), 0.001f)
+
+        AppConfigRepository.applyAppConfigFromMap(mapOf("rapidoLeftSidebarWidthRatio" to "not_a_float"))
+        assertEquals(0.22f, AppConfigRepository.effectiveRapidoLeftSidebarWidthRatio(), 0.001f)
+    }
 }
+
 
 
 

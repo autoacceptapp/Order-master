@@ -75,22 +75,36 @@ object RideOfferParser {
     }
 
     /**
-     * Returns true when [bounds] sits inside the narrow left-side mini-tab strip (`x < 22%` of
-     * screen width) on Rapido's multi-order list screen so mini-tabs are never parsed as cards
+     * Returns true when [bounds] sits inside the narrow left-side mini-tab strip
+     * (`x < rapidoLeftSidebarWidthRatio`, default 22%, clamped 5%..45% of screen width)
+     * on Rapido's multi-order list screen so mini-tabs are never parsed as cards
      * or merged into active order cards.
      */
     fun isLeftSidebarNode(bounds: Rect, screenWidthPx: Int): Boolean {
         if (bounds.isEmpty || screenWidthPx <= 0) return false
-        val cutoffX = (screenWidthPx * LEFT_SIDEBAR_WIDTH_RATIO).toInt()
+        val ratio = AppConfigRepository.effectiveRapidoLeftSidebarWidthRatio()
+        val cutoffX = (screenWidthPx * ratio).toInt()
         if (cutoffX <= 0) return false
+        val maxSidebarWidth = (screenWidthPx * (ratio + 0.08f).coerceAtMost(0.55f)).toInt()
         return bounds.right <= cutoffX ||
-            (bounds.centerX() < cutoffX && bounds.width() < (screenWidthPx * 0.30f).toInt())
+            (bounds.centerX() < cutoffX && bounds.width() < maxSidebarWidth)
     }
 
     fun isSeeMoreOrdersText(text: String): Boolean {
         val trimmed = text.trim()
-        if (trimmed.isEmpty()) return false
-        return SEE_MORE_ORDERS_REGEX.containsMatchIn(trimmed)
+        if (trimmed.isEmpty() || trimmed.length > 80) return false
+        if (isRejectAction(trimmed) || RapidoAccessibilityService.CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(trimmed)) {
+            return false
+        }
+        if (SEE_MORE_ORDERS_REGEX.containsMatchIn(trimmed)) return true
+        val configuredKeywords = AppConfigRepository.effectiveRapidoSeeMoreOrdersKeywords()
+        if (configuredKeywords.isEmpty()) return false
+        if (configuredKeywords.all { kw -> trimmed.contains(kw, ignoreCase = true) }) {
+            return true
+        }
+        return configuredKeywords.any { kw ->
+            (kw.length >= 6 || kw.contains(' ')) && trimmed.contains(kw, ignoreCase = true)
+        }
     }
 
     /**
@@ -307,7 +321,8 @@ object RideOfferParser {
                     val desc = node.contentDescription?.toString() ?: ""
                     val viewId = node.viewIdResourceName ?: ""
 
-                    if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
+                    val isRejectNode = isRapidoRejectId(viewId) || isRejectAction(text) || isRejectAction(desc)
+                    if (!isRejectNode && (isRapidoAcceptId(viewId) || isAcceptAction(text) || isAcceptAction(desc))) {
                         count++
                         if (count >= maxCount) {
                             return count
@@ -458,7 +473,8 @@ object RideOfferParser {
         var dropText = ""
         var pickupLocationText = ""
         var dropLocationText = ""
-        var acceptButtonNode: AccessibilityNodeInfo? = null
+        var acceptButtonByViewId: AccessibilityNodeInfo? = null
+        var acceptButtonByText: AccessibilityNodeInfo? = null
 
         // Collect all distinct text nodes strictly inside this card container
         val queue = ArrayDeque<AccessibilityNodeInfo>()
@@ -511,36 +527,26 @@ object RideOfferParser {
                         allNodeTexts.add(effectiveText)
                     }
 
-                    // 1. Locate Accept Button strictly inside this card's bounds
-                    if (acceptButtonNode == null && !isTipNoise) {
-                        if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
-                            val candidateAccept = if (node.isClickable && node.isEnabled) {
-                                @Suppress("DEPRECATION")
-                                AccessibilityNodeInfo.obtain(node)
+                    // 1. Locate Accept Button strictly inside this card's bounds:
+                    //    Priority 1: viewIdResourceName match against rapidoAcceptViewIds (works for all regional languages)
+                    //    Priority 2: Localized/English text match against rapidoAcceptButtonKeywords
+                    //    Always exclude any node matching rapidoRejectKeywords or reject view IDs.
+                    val isRejectNode = isRapidoRejectId(viewId) || isRejectAction(text) || isRejectAction(desc)
+                    if (!isTipNoise && !isRejectNode) {
+                        val matchedByViewId = isRapidoAcceptId(viewId)
+                        val matchedByText = !matchedByViewId && (isAcceptAction(text) || isAcceptAction(desc))
+                        if ((matchedByViewId && acceptButtonByViewId == null) ||
+                            (matchedByText && acceptButtonByViewId == null && acceptButtonByText == null)
+                        ) {
+                            val candidateAccept = resolveClickableAcceptWithinCard(node, cardBounds)
+                            if (matchedByViewId) {
+                                acceptButtonByViewId = candidateAccept
+                                // Release any lower-priority text candidate now that an authoritative viewId matched
+                                acceptButtonByText?.let { recycleNode(it) }
+                                acceptButtonByText = null
                             } else {
-                                val clickableParent = findClickableParent(node)
-                                if (clickableParent != null) {
-                                    // Ensure clickableParent stays within cardBounds (don't escape card container)
-                                    val parentBounds = Rect()
-                                    clickableParent.getBoundsInScreen(parentBounds)
-                                    val parentFitsCard = cardBounds.isEmpty || parentBounds.isEmpty ||
-                                        (parentBounds.top >= cardBounds.top - 12 &&
-                                            parentBounds.bottom <= cardBounds.bottom + 12 &&
-                                            parentBounds.left >= cardBounds.left - 12 &&
-                                            parentBounds.right <= cardBounds.right + 12)
-                                    if (parentFitsCard) {
-                                        clickableParent
-                                    } else {
-                                        recycleNode(clickableParent)
-                                        @Suppress("DEPRECATION")
-                                        AccessibilityNodeInfo.obtain(node)
-                                    }
-                                } else {
-                                    @Suppress("DEPRECATION")
-                                    AccessibilityNodeInfo.obtain(node)
-                                }
+                                acceptButtonByText = candidateAccept
                             }
-                            acceptButtonNode = candidateAccept
                         }
                     }
 
@@ -613,6 +619,11 @@ object RideOfferParser {
             while (queue.isNotEmpty()) {
                 recycleNode(queue.removeFirst())
             }
+        }
+
+        val acceptButtonNode = acceptButtonByViewId ?: acceptButtonByText
+        if (acceptButtonByViewId != null && acceptButtonByText != null) {
+            recycleNode(acceptButtonByText)
         }
 
         // Positional fallback for distance if not explicitly labeled with "Pickup" or "Drop"
@@ -812,9 +823,63 @@ object RideOfferParser {
         return TextAnalysisEngine.locationCleaner(text)
     }
 
+    private fun resolveClickableAcceptWithinCard(
+        node: AccessibilityNodeInfo,
+        cardBounds: Rect
+    ): AccessibilityNodeInfo {
+        if (node.isClickable && node.isEnabled) {
+            @Suppress("DEPRECATION")
+            return AccessibilityNodeInfo.obtain(node)
+        }
+        val clickableParent = findClickableParent(node)
+        if (clickableParent != null) {
+            val parentBounds = Rect()
+            clickableParent.getBoundsInScreen(parentBounds)
+            val parentFitsCard = cardBounds.isEmpty || parentBounds.isEmpty ||
+                (parentBounds.top >= cardBounds.top - 12 &&
+                    parentBounds.bottom <= cardBounds.bottom + 12 &&
+                    parentBounds.left >= cardBounds.left - 12 &&
+                    parentBounds.right <= cardBounds.right + 12)
+            if (parentFitsCard) {
+                return clickableParent
+            }
+            recycleNode(clickableParent)
+        }
+        @Suppress("DEPRECATION")
+        return AccessibilityNodeInfo.obtain(node)
+    }
+
+    private fun matchesWordOrPhrase(text: String, keyword: String): Boolean {
+        val kw = keyword.trim()
+        if (kw.isEmpty()) return false
+        if (text.equals(kw, ignoreCase = true)) return true
+        val escaped = Regex.escape(kw)
+        val pattern = if (kw.all { it.isLetterOrDigit() || it == '_' || it == '-' || it == ' ' }) {
+            Regex("""(?i)(?:^|[\s/|,•\-])$escaped(?:$|[\s/|,•\-!])""")
+        } else {
+            Regex("""(?i)$escaped""")
+        }
+        return pattern.containsMatchIn(text)
+    }
+
+    fun isRejectAction(content: String): Boolean {
+        val trimmed = content.trim()
+        if (trimmed.isEmpty()) return false
+        if (RapidoAccessibilityService.REJECT_REGEX.containsMatchIn(trimmed)) return true
+        return AppConfigRepository.effectiveRapidoRejectKeywords().any { kw ->
+            matchesWordOrPhrase(trimmed, kw)
+        }
+    }
+
+    fun isRapidoRejectId(viewId: String): Boolean {
+        if (viewId.isBlank()) return false
+        return RapidoAccessibilityService.RAPIDO_REJECT_ID_REGEX.containsMatchIn(viewId)
+    }
+
     fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
+        if (isRejectAction(trimmed)) return false
         if (RapidoAccessibilityService.CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(trimmed)) return false
         if (RapidoAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)) return true
         return AppConfigRepository.effectiveRapidoAcceptKeywords().any { kw ->
@@ -822,9 +887,27 @@ object RideOfferParser {
         }
     }
 
-    private fun isRapidoAcceptId(viewId: String): Boolean {
-        if (viewId.isEmpty()) return false
-        return RapidoAccessibilityService.RAPIDO_ACCEPT_ID_REGEX.containsMatchIn(viewId)
+    /**
+     * Checks if [viewId] matches any remote `rapidoAcceptViewIds` entry (exact full ID or `:id/` suffix)
+     * or built-in accept ID pattern, while strictly excluding reject IDs.
+     */
+    fun isRapidoAcceptId(viewId: String): Boolean {
+        val trimmed = viewId.trim()
+        if (trimmed.isEmpty()) return false
+        if (isRapidoRejectId(trimmed)) return false
+        val fullLower = trimmed.lowercase(Locale.ROOT)
+        val suffixLower = fullLower.substringAfter(":id/", fullLower)
+        val matchesConfigured = AppConfigRepository.effectiveRapidoAcceptViewIds().any { configured ->
+            val cfgLower = configured.trim().lowercase(Locale.ROOT)
+            val cfgSuffix = cfgLower.substringAfter(":id/", cfgLower)
+            cfgLower.isNotEmpty() && (
+                fullLower == cfgLower ||
+                    suffixLower == cfgLower ||
+                    suffixLower == cfgSuffix
+                )
+        }
+        if (matchesConfigured) return true
+        return RapidoAccessibilityService.RAPIDO_ACCEPT_ID_REGEX.containsMatchIn(trimmed)
     }
 
     private fun findAcceptNodeInSubtree(
@@ -837,44 +920,56 @@ object RideOfferParser {
 
         val startTime = System.currentTimeMillis()
         val timeoutMs = 80L
+        var textFallbackCandidate: AccessibilityNodeInfo? = null
 
-        while (queue.isNotEmpty()) {
-            if (System.currentTimeMillis() - startTime > timeoutMs) {
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
+        try {
+            while (queue.isNotEmpty()) {
+                if (System.currentTimeMillis() - startTime > timeoutMs) {
+                    break
                 }
-                break
-            }
-            val node = queue.removeFirst()
-            if (screenWidthPx > 0) {
-                val b = Rect()
-                node.getBoundsInScreen(b)
-                if (isLeftSidebarNode(b, screenWidthPx)) {
-                    recycleNode(node)
-                    continue
+                val node = queue.removeFirst()
+                if (screenWidthPx > 0) {
+                    val b = Rect()
+                    node.getBoundsInScreen(b)
+                    if (isLeftSidebarNode(b, screenWidthPx)) {
+                        recycleNode(node)
+                        continue
+                    }
                 }
-            }
-            val text = node.text?.toString() ?: ""
-            val desc = node.contentDescription?.toString() ?: ""
-            val viewId = node.viewIdResourceName ?: ""
+                val text = node.text?.toString() ?: ""
+                val desc = node.contentDescription?.toString() ?: ""
+                val viewId = node.viewIdResourceName ?: ""
 
-            if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
-                while (queue.isNotEmpty()) {
-                    recycleNode(queue.removeFirst())
+                val isRejectNode = isRapidoRejectId(viewId) || isRejectAction(text) || isRejectAction(desc)
+                if (!isRejectNode) {
+                    // Priority 1: Authoritative viewIdResourceName match returns immediately
+                    if (isRapidoAcceptId(viewId)) {
+                        textFallbackCandidate?.let { recycleNode(it) }
+                        textFallbackCandidate = null
+                        return node
+                    }
+                    // Priority 2: Retain first text/desc match in case no viewId match exists in subtree
+                    if (textFallbackCandidate == null && (isAcceptAction(text) || isAcceptAction(desc))) {
+                        @Suppress("DEPRECATION")
+                        textFallbackCandidate = AccessibilityNodeInfo.obtain(node)
+                    }
                 }
-                return node
-            }
 
-            val childCount = node.childCount
-            for (i in 0 until childCount) {
-                val child = node.getChild(i)
-                if (child != null) {
-                    queue.add(child)
+                val childCount = node.childCount
+                for (i in 0 until childCount) {
+                    val child = node.getChild(i)
+                    if (child != null) {
+                        queue.add(child)
+                    }
                 }
+                recycleNode(node)
             }
-            recycleNode(node)
+        } finally {
+            while (queue.isNotEmpty()) {
+                recycleNode(queue.removeFirst())
+            }
         }
-        return null
+        return textFallbackCandidate
     }
 
     private fun containsFareInSubtree(
