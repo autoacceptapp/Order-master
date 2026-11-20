@@ -1,8 +1,10 @@
 package com.example
 
+import android.content.res.Resources
 import android.graphics.Rect
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.data.repository.AppConfigRepository
 import java.util.ArrayDeque
 import java.util.Locale
 import java.util.regex.Pattern
@@ -47,19 +49,131 @@ object RideOfferParser {
         Pattern.CASE_INSENSITIVE
     )
 
+    // Left-side mini-tab strip cutoff on Rapido's multi-order ("3 Orders") screen
+    const val LEFT_SIDEBAR_WIDTH_RATIO = 0.22f
+
+    // Pattern matching Rapido floating popup expansion chip ("See 1 more orders >", "View 3 more orders")
+    val SEE_MORE_ORDERS_REGEX = Regex(
+        """(?i)\b(?:see|view)\s+\d+\s+more\s+orders?\b""",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * Resolves effective screen width for sidebar exclusion using explicit screen width,
+     * root window width, or system display metrics fallback.
+     */
+    fun resolveScreenWidthPx(root: AccessibilityNodeInfo?, explicitWidthPx: Int = 0): Int {
+        if (explicitWidthPx > 0) return explicitWidthPx
+        if (root != null) {
+            val rootBounds = Rect()
+            root.getBoundsInScreen(rootBounds)
+            if (rootBounds.width() > 0) return rootBounds.width()
+        }
+        return runCatching { Resources.getSystem().displayMetrics.widthPixels }
+            .getOrDefault(1080)
+            .takeIf { it > 0 } ?: 1080
+    }
+
+    /**
+     * Returns true when [bounds] sits inside the narrow left-side mini-tab strip (`x < 22%` of
+     * screen width) on Rapido's multi-order list screen so mini-tabs are never parsed as cards
+     * or merged into active order cards.
+     */
+    fun isLeftSidebarNode(bounds: Rect, screenWidthPx: Int): Boolean {
+        if (bounds.isEmpty || screenWidthPx <= 0) return false
+        val cutoffX = (screenWidthPx * LEFT_SIDEBAR_WIDTH_RATIO).toInt()
+        if (cutoffX <= 0) return false
+        return bounds.right <= cutoffX ||
+            (bounds.centerX() < cutoffX && bounds.width() < (screenWidthPx * 0.30f).toInt())
+    }
+
+    fun isSeeMoreOrdersText(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return false
+        return SEE_MORE_ORDERS_REGEX.containsMatchIn(trimmed)
+    }
+
+    /**
+     * Searches a window root for Rapido's "See N more orders >" expansion chip so the service
+     * can optionally open the full order list when the top floating popup fails filters.
+     */
+    fun findSeeMoreOrdersNode(
+        root: AccessibilityNodeInfo,
+        screenWidthPx: Int = 0
+    ): AccessibilityNodeInfo? {
+        val effectiveWidth = resolveScreenWidthPx(root, screenWidthPx)
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        @Suppress("DEPRECATION")
+        queue.add(AccessibilityNodeInfo.obtain(root))
+
+        val startTime = System.currentTimeMillis()
+        val timeoutMs = 100L
+
+        try {
+            while (queue.isNotEmpty()) {
+                if (System.currentTimeMillis() - startTime > timeoutMs) break
+                val node = queue.removeFirst()
+                val bounds = Rect()
+                node.getBoundsInScreen(bounds)
+                if (isLeftSidebarNode(bounds, effectiveWidth)) {
+                    recycleNode(node)
+                    continue
+                }
+
+                val text = (node.text?.toString() ?: "").trim()
+                val desc = (node.contentDescription?.toString() ?: "").trim()
+                if (isSeeMoreOrdersText(text) || isSeeMoreOrdersText(desc)) {
+                    val target = if (node.isClickable && node.isEnabled) {
+                        node
+                    } else {
+                        val clickableParent = findClickableParent(node)
+                        if (clickableParent != null) {
+                            recycleNode(node)
+                            clickableParent
+                        } else {
+                            node
+                        }
+                    }
+                    while (queue.isNotEmpty()) {
+                        recycleNode(queue.removeFirst())
+                    }
+                    return target
+                }
+
+                val childCount = node.childCount
+                for (i in 0 until childCount) {
+                    val child = node.getChild(i)
+                    if (child != null) {
+                        queue.add(child)
+                    }
+                }
+                recycleNode(node)
+            }
+        } finally {
+            while (queue.isNotEmpty()) {
+                recycleNode(queue.removeFirst())
+            }
+        }
+        return null
+    }
+
     /**
      * Parses all distinct order cards across the given candidate window roots.
-     * Ensures strict card isolation so nodes from one card never contaminate another.
+     * Ensures strict card isolation and excludes the left-side mini-tab strip (`x < 22%` width).
      */
-    fun parseCards(rootWindows: List<AccessibilityNodeInfo>): List<ParsedRideOffer> {
+    fun parseCards(
+        rootWindows: List<AccessibilityNodeInfo>,
+        screenWidthPx: Int = 0
+    ): List<ParsedRideOffer> {
         val parsedOffers = mutableListOf<ParsedRideOffer>()
         val seenCardKeys = mutableSetOf<String>()
 
         for (root in rootWindows) {
-            val cardContainers = findCardContainers(root)
+            val effectiveWidth = resolveScreenWidthPx(root, screenWidthPx)
+            val cardContainers = findCardContainers(root, effectiveWidth)
             for (container in cardContainers) {
                 try {
-                    val offer = parseCardContainer(container)
+                    val offer = parseCardContainer(container, effectiveWidth)
                     if (offer != null) {
                         val pickupKey = String.format(Locale.US, "%.1f", offer.pickupDistanceKm ?: 0.0)
                         val dropKey = String.format(Locale.US, "%.1f", offer.dropDistanceKm ?: 0.0)
@@ -80,9 +194,14 @@ object RideOfferParser {
 
     /**
      * Identifies individual order card container nodes on the screen.
-     * Searches for ViewGroup/CardView containers that enclose individual ride offers.
+     * Searches for ViewGroup/CardView containers that enclose individual ride offers
+     * while ignoring Rapido's left-side mini-tab sidebar (`x < 22%` screen width).
      */
-    fun findCardContainers(root: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
+    fun findCardContainers(
+        root: AccessibilityNodeInfo,
+        screenWidthPx: Int = 0
+    ): List<AccessibilityNodeInfo> {
+        val effectiveWidth = resolveScreenWidthPx(root, screenWidthPx)
         val containers = mutableListOf<AccessibilityNodeInfo>()
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         @Suppress("DEPRECATION")
@@ -99,8 +218,16 @@ object RideOfferParser {
 
                 val current = queue.removeFirst()
 
+                // Exclude narrow left-side mini-tab strip on multi-order ("3 Orders") screens
+                val currentBounds = Rect()
+                current.getBoundsInScreen(currentBounds)
+                if (isLeftSidebarNode(currentBounds, effectiveWidth)) {
+                    recycleNode(current)
+                    continue
+                }
+
                 // Check if current node is an isolated order card container
-                if (isOrderCardContainer(current)) {
+                if (isOrderCardContainer(current, effectiveWidth)) {
                     containers.add(current)
                     // CRITICAL LAYOUT ISOLATION: Do not descend into children of this container
                     // to prevent sub-layouts from being falsely treated as separate cards.
@@ -125,10 +252,10 @@ object RideOfferParser {
 
         // Fallback: If no explicit card container tags were found, verify root only has exactly one accept action
         if (containers.isEmpty()) {
-            val acceptCount = countAcceptNodesInSubtree(root, maxCount = 2)
+            val acceptCount = countAcceptNodesInSubtree(root, maxCount = 2, screenWidthPx = effectiveWidth)
             if (acceptCount == 1) {
-                val acceptNode = findAcceptNodeInSubtree(root)
-                val hasFare = containsFareInSubtree(root)
+                val acceptNode = findAcceptNodeInSubtree(root, effectiveWidth)
+                val hasFare = containsFareInSubtree(root, effectiveWidth)
                 try {
                     if (acceptNode != null && hasFare) {
                         @Suppress("DEPRECATION")
@@ -146,9 +273,13 @@ object RideOfferParser {
     }
 
     /**
-     * Counts the number of accept buttons in a subtree up to maxCount.
+     * Counts the number of accept buttons in a subtree up to maxCount (excluding left sidebar).
      */
-    fun countAcceptNodesInSubtree(root: AccessibilityNodeInfo, maxCount: Int = 2): Int {
+    fun countAcceptNodesInSubtree(
+        root: AccessibilityNodeInfo,
+        maxCount: Int = 2,
+        screenWidthPx: Int = 0
+    ): Int {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         @Suppress("DEPRECATION")
         queue.add(AccessibilityNodeInfo.obtain(root))
@@ -164,6 +295,14 @@ object RideOfferParser {
                 }
                 val node = queue.removeFirst()
                 try {
+                    if (screenWidthPx > 0) {
+                        val b = Rect()
+                        node.getBoundsInScreen(b)
+                        if (isLeftSidebarNode(b, screenWidthPx)) {
+                            continue
+                        }
+                    }
+
                     val text = node.text?.toString() ?: ""
                     val desc = node.contentDescription?.toString() ?: ""
                     val viewId = node.viewIdResourceName ?: ""
@@ -216,11 +355,23 @@ object RideOfferParser {
 
     /**
      * Checks if a node qualifies as an individual order card container.
-     * Enforces strict layout boundary isolation so containers of multiple cards are never merged.
+     * Enforces strict layout boundary isolation so containers of multiple cards are never merged
+     * and left-side mini-tab strips (`x < 22%` width) are excluded.
      */
-    fun isOrderCardContainer(node: AccessibilityNodeInfo): Boolean {
+    fun isOrderCardContainer(
+        node: AccessibilityNodeInfo,
+        screenWidthPx: Int = 0
+    ): Boolean {
         val viewId = (node.viewIdResourceName ?: "").lowercase(Locale.ROOT)
         val className = (node.className?.toString() ?: "").lowercase(Locale.ROOT)
+
+        if (screenWidthPx > 0) {
+            val bounds = Rect()
+            node.getBoundsInScreen(bounds)
+            if (isLeftSidebarNode(bounds, screenWidthPx)) {
+                return false
+            }
+        }
 
         // Exclude aggregate collection / scroll containers
         if (className.contains("recyclerview") ||
@@ -233,7 +384,7 @@ object RideOfferParser {
         }
 
         // An aggregate layout holding multiple Accept buttons must NEVER be treated as a single card container
-        val acceptCount = countAcceptNodesInSubtree(node, maxCount = 2)
+        val acceptCount = countAcceptNodesInSubtree(node, maxCount = 2, screenWidthPx = screenWidthPx)
         if (acceptCount > 1) {
             return false
         }
@@ -267,7 +418,7 @@ object RideOfferParser {
 
         // 2. ClassName is a CardView or MaterialCardView with children
         if ((className.contains("cardview") || className.contains("materialcardview")) && node.childCount > 0) {
-            val hasAccept = findAcceptNodeInSubtree(node)
+            val hasAccept = findAcceptNodeInSubtree(node, screenWidthPx)
             if (hasAccept != null) {
                 recycleNode(hasAccept)
                 return true
@@ -279,7 +430,7 @@ object RideOfferParser {
             val bounds = Rect()
             node.getBoundsInScreen(bounds)
             if (bounds.width() > 250 && bounds.height() in 100..1800) {
-                if (containsFareInSubtree(node)) {
+                if (containsFareInSubtree(node, screenWidthPx)) {
                     return true
                 }
             }
@@ -290,11 +441,17 @@ object RideOfferParser {
 
     /**
      * Extracts structural fields strictly from within the boundaries of a single card container.
-     * Texts from other cards are NEVER visited.
+     * Texts from other cards and left-sidebar mini-tabs are NEVER visited.
      */
-    fun parseCardContainer(container: AccessibilityNodeInfo): ParsedRideOffer? {
+    fun parseCardContainer(
+        container: AccessibilityNodeInfo,
+        screenWidthPx: Int = 0
+    ): ParsedRideOffer? {
         val cardBounds = Rect()
         container.getBoundsInScreen(cardBounds)
+        if (screenWidthPx > 0 && isLeftSidebarNode(cardBounds, screenWidthPx)) {
+            return null
+        }
 
         var fareText = ""
         var pickupText = ""
@@ -328,8 +485,18 @@ object RideOfferParser {
 
                 try {
                     // Strict layout boundary isolation: Never traverse into another distinct child card container
-                    if (!currentIsRoot && isOrderCardContainer(node)) {
-                        continue
+                    // or into the left-side mini-tab strip (`x < 22%` width).
+                    if (!currentIsRoot) {
+                        if (screenWidthPx > 0) {
+                            val nodeBounds = Rect()
+                            node.getBoundsInScreen(nodeBounds)
+                            if (isLeftSidebarNode(nodeBounds, screenWidthPx)) {
+                                continue
+                            }
+                        }
+                        if (isOrderCardContainer(node, screenWidthPx)) {
+                            continue
+                        }
                     }
 
                     val text = (node.text?.toString() ?: "").trim()
@@ -337,30 +504,48 @@ object RideOfferParser {
                     val viewId = (node.viewIdResourceName ?: "").lowercase(Locale.ROOT)
                     val effectiveText = if (text.isNotEmpty()) text else desc
 
-                    if (effectiveText.isNotEmpty()) {
+                    // Skip informational tip-badge phrases (e.g., "Customer added ₹10.0 extra")
+                    // so tips already included on the main fare line are never double-counted or treated as locations.
+                    val isTipNoise = TextAnalysisEngine.isTipBadgeNoise(effectiveText)
+                    if (effectiveText.isNotEmpty() && !isTipNoise) {
                         allNodeTexts.add(effectiveText)
                     }
 
-                    // 1. Locate Accept Button inside this card
-                    if (acceptButtonNode == null) {
+                    // 1. Locate Accept Button strictly inside this card's bounds
+                    if (acceptButtonNode == null && !isTipNoise) {
                         if (isAcceptAction(text) || isAcceptAction(desc) || isRapidoAcceptId(viewId)) {
-                            if (node.isClickable && node.isEnabled) {
+                            val candidateAccept = if (node.isClickable && node.isEnabled) {
                                 @Suppress("DEPRECATION")
-                                acceptButtonNode = AccessibilityNodeInfo.obtain(node)
+                                AccessibilityNodeInfo.obtain(node)
                             } else {
                                 val clickableParent = findClickableParent(node)
                                 if (clickableParent != null) {
-                                    acceptButtonNode = clickableParent
+                                    // Ensure clickableParent stays within cardBounds (don't escape card container)
+                                    val parentBounds = Rect()
+                                    clickableParent.getBoundsInScreen(parentBounds)
+                                    val parentFitsCard = cardBounds.isEmpty || parentBounds.isEmpty ||
+                                        (parentBounds.top >= cardBounds.top - 12 &&
+                                            parentBounds.bottom <= cardBounds.bottom + 12 &&
+                                            parentBounds.left >= cardBounds.left - 12 &&
+                                            parentBounds.right <= cardBounds.right + 12)
+                                    if (parentFitsCard) {
+                                        clickableParent
+                                    } else {
+                                        recycleNode(clickableParent)
+                                        @Suppress("DEPRECATION")
+                                        AccessibilityNodeInfo.obtain(node)
+                                    }
                                 } else {
                                     @Suppress("DEPRECATION")
-                                    acceptButtonNode = AccessibilityNodeInfo.obtain(node)
+                                    AccessibilityNodeInfo.obtain(node)
                                 }
                             }
+                            acceptButtonNode = candidateAccept
                         }
                     }
 
-                    // 2. Extract Fare Node (Currency symbol or fare pattern)
-                    if (isFareNode(effectiveText, viewId)) {
+                    // 2. Extract Fare Node (Currency symbol or fare pattern; ignores tip badge noise)
+                    if (!isTipNoise && isFareNode(effectiveText, viewId)) {
                         val isLikelyOldOrStrike = viewId.contains("strike") ||
                             viewId.contains("old") ||
                             viewId.contains("original")
@@ -373,15 +558,15 @@ object RideOfferParser {
                             effectiveText.contains("CAB", ignoreCase = true) ||
                             effectiveText.contains("PARCEL", ignoreCase = true)
 
-                        if (fareText.isEmpty() || !CURRENCY_SYMBOL_PATTERN.matcher(fareText).find()) {
+                        if (fareText.isEmpty() || !matchesFareIndicator(fareText)) {
                             fareText = effectiveText
                             fareFromStrikethroughView = isLikelyOldOrStrike
-                        } else if (effectiveText.startsWith("+") && !fareText.contains(effectiveText)) {
-                            // Complementary bonus/tip within the same card boundary (e.g., "₹56 + ₹13")
+                        } else if (effectiveText.startsWith("+") && !fareText.contains(effectiveText) && !fareText.contains("+")) {
+                            // Complementary bonus/tip within the same card boundary (e.g., "₹55" + "+ ₹10")
                             fareText = "$fareText $effectiveText"
                         } else if (!fareText.startsWith("+") && !isLikelyOldOrStrike &&
                             (fareFromStrikethroughView || isExplicitPrimaryFare) &&
-                            CURRENCY_SYMBOL_PATTERN.matcher(effectiveText).find()
+                            matchesFareIndicator(effectiveText)
                         ) {
                             fareText = effectiveText
                             fareFromStrikethroughView = false
@@ -389,27 +574,27 @@ object RideOfferParser {
                     }
 
                     // 3. Extract Pickup Node
-                    if (pickupText.isEmpty() && isPickupNode(effectiveText, viewId)) {
+                    if (!isTipNoise && pickupText.isEmpty() && isPickupNode(effectiveText, viewId)) {
                         pickupText = effectiveText
                     }
 
                     // 4. Extract Drop Node
-                    if (dropText.isEmpty() && isDropNode(effectiveText, viewId)) {
+                    if (!isTipNoise && dropText.isEmpty() && isDropNode(effectiveText, viewId)) {
                         dropText = effectiveText
                     }
 
                     // 5. Track standalone distance strings for positional assignment
-                    if (DISTANCE_PATTERN.matcher(effectiveText).find() && !isFareNode(effectiveText, viewId)) {
+                    if (!isTipNoise && matchesDistancePattern(effectiveText) && !isFareNode(effectiveText, viewId)) {
                         if (!candidateDistanceTexts.contains(effectiveText)) {
                             candidateDistanceTexts.add(effectiveText)
                         }
                     }
 
                     // 6. Extract Location Labels
-                    if (isPickupLocationNode(effectiveText, viewId) && pickupLocationText.isEmpty()) {
+                    if (!isTipNoise && isPickupLocationNode(effectiveText, viewId) && pickupLocationText.isEmpty()) {
                         pickupLocationText = cleanLocation(effectiveText)
                     }
-                    if (isDropLocationNode(effectiveText, viewId) && dropLocationText.isEmpty()) {
+                    if (!isTipNoise && isDropLocationNode(effectiveText, viewId) && dropLocationText.isEmpty()) {
                         dropLocationText = cleanLocation(effectiveText)
                     }
 
@@ -515,12 +700,27 @@ object RideOfferParser {
     // FIELD IDENTIFICATION HELPERS
     // =========================================================================================
 
+    private fun matchesFareIndicator(text: String): Boolean {
+        if (text.isEmpty() || TextAnalysisEngine.isTipBadgeNoise(text)) return false
+        if (CURRENCY_SYMBOL_PATTERN.matcher(text).find()) return true
+        val remoteFareRegex = AppConfigRepository.effectiveRapidoFareRegex()
+        return remoteFareRegex != null && remoteFareRegex.containsMatchIn(text)
+    }
+
+    private fun matchesDistancePattern(text: String): Boolean {
+        if (text.isEmpty()) return false
+        if (DISTANCE_PATTERN.matcher(text).find()) return true
+        val remoteDistRegex = AppConfigRepository.effectiveRapidoDistanceRegex()
+        return remoteDistRegex != null && remoteDistRegex.containsMatchIn(text)
+    }
+
     fun isFareNode(text: String, viewId: String): Boolean {
         if (text.isEmpty()) return false
+        if (TextAnalysisEngine.isTipBadgeNoise(text)) return false
         if (viewId.contains("fare") || viewId.contains("price") || viewId.contains("amount")) {
             return true
         }
-        return CURRENCY_SYMBOL_PATTERN.matcher(text).find()
+        return matchesFareIndicator(text)
     }
 
     fun isPickupNode(text: String, viewId: String): Boolean {
@@ -529,7 +729,7 @@ object RideOfferParser {
         if (lower.contains("drop") || lower.contains("destination")) return false
         if (viewId.contains("pickup_dist") || viewId.contains("pickup_distance")) return true
         return (lower.contains("pickup") || lower.contains("pick up") || lower.contains("pick-up") || lower.contains("away")) &&
-                DISTANCE_PATTERN.matcher(text).find()
+                matchesDistancePattern(text)
     }
 
     fun isDropNode(text: String, viewId: String): Boolean {
@@ -537,32 +737,61 @@ object RideOfferParser {
         val lower = text.lowercase(Locale.ROOT)
         if (viewId.contains("drop_dist") || viewId.contains("drop_distance")) return true
         return (lower.contains("drop") || lower.contains("drop off") || lower.contains("drop-off") || lower.contains("destination")) &&
-                DISTANCE_PATTERN.matcher(text).find()
+                matchesDistancePattern(text)
     }
 
     fun isPickupLocationNode(text: String, viewId: String): Boolean {
-        if (text.isEmpty()) return false
+        if (text.isEmpty() || TextAnalysisEngine.isTipBadgeNoise(text)) return false
         val lower = text.lowercase(Locale.ROOT)
-        if (lower.contains("drop") || DISTANCE_PATTERN.matcher(text).find() || CURRENCY_SYMBOL_PATTERN.matcher(text).find()) return false
+        if (lower.contains("drop") || matchesDistancePattern(text) || matchesFareIndicator(text)) return false
         if (viewId.contains("pickup_loc") || viewId.contains("source_address") || viewId.contains("pickup_address")) return true
         return false
     }
 
     fun isDropLocationNode(text: String, viewId: String): Boolean {
-        if (text.isEmpty()) return false
+        if (text.isEmpty() || TextAnalysisEngine.isTipBadgeNoise(text)) return false
         val lower = text.lowercase(Locale.ROOT)
-        if (lower.contains("pickup") || DISTANCE_PATTERN.matcher(text).find() || CURRENCY_SYMBOL_PATTERN.matcher(text).find()) return false
+        if (lower.contains("pickup") || matchesDistancePattern(text) || matchesFareIndicator(text)) return false
         if (viewId.contains("drop_loc") || viewId.contains("dest_address") || viewId.contains("drop_address")) return true
         return false
     }
 
     fun extractFareValue(fareText: String): Pair<Double?, List<Double>> {
-        if (fareText.isEmpty()) return null to emptyList()
+        if (fareText.isEmpty() || TextAnalysisEngine.isTipBadgeNoise(fareText)) return null to emptyList()
         return TextAnalysisEngine.extractCurrencies(fareText)
     }
 
     fun extractDistanceValue(distanceText: String): Double? {
         if (distanceText.isEmpty()) return null
+        val remoteDistRegex = AppConfigRepository.effectiveRapidoDistanceRegex()
+        if (remoteDistRegex != null) {
+            val remoteMatch = remoteDistRegex.find(distanceText)
+            if (remoteMatch != null) {
+                var numericVal: Double? = null
+                for (i in 1 until remoteMatch.groups.size) {
+                    val v = remoteMatch.groups[i]?.value?.replace(",", ".")?.toDoubleOrNull()
+                    if (v != null) {
+                        numericVal = v
+                        break
+                    }
+                }
+                if (numericVal == null) {
+                    numericVal = Regex("""\d+(?:[.,]\d+)?""").find(remoteMatch.value)
+                        ?.value?.replace(",", ".")?.toDoubleOrNull()
+                }
+                if (numericVal != null) {
+                    val raw = remoteMatch.value.lowercase(Locale.ROOT)
+                    return if (raw.contains("km")) {
+                        numericVal
+                    } else if (raw.contains("m")) {
+                        numericVal / 1000.0
+                    } else {
+                        numericVal
+                    }
+                }
+            }
+        }
+
         val matcher = DISTANCE_PATTERN.matcher(distanceText)
         if (matcher.find()) {
             val numStr = matcher.group(1)?.replace(",", ".") ?: return null
@@ -583,10 +812,14 @@ object RideOfferParser {
         return TextAnalysisEngine.locationCleaner(text)
     }
 
-    private fun isAcceptAction(content: String): Boolean {
+    fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
-        return RapidoAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)
+        if (RapidoAccessibilityService.CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(trimmed)) return false
+        if (RapidoAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)) return true
+        return AppConfigRepository.effectiveRapidoAcceptKeywords().any { kw ->
+            trimmed.equals(kw, ignoreCase = true)
+        }
     }
 
     private fun isRapidoAcceptId(viewId: String): Boolean {
@@ -594,7 +827,10 @@ object RideOfferParser {
         return RapidoAccessibilityService.RAPIDO_ACCEPT_ID_REGEX.containsMatchIn(viewId)
     }
 
-    private fun findAcceptNodeInSubtree(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    private fun findAcceptNodeInSubtree(
+        root: AccessibilityNodeInfo,
+        screenWidthPx: Int = 0
+    ): AccessibilityNodeInfo? {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         @Suppress("DEPRECATION")
         queue.add(AccessibilityNodeInfo.obtain(root))
@@ -610,6 +846,14 @@ object RideOfferParser {
                 break
             }
             val node = queue.removeFirst()
+            if (screenWidthPx > 0) {
+                val b = Rect()
+                node.getBoundsInScreen(b)
+                if (isLeftSidebarNode(b, screenWidthPx)) {
+                    recycleNode(node)
+                    continue
+                }
+            }
             val text = node.text?.toString() ?: ""
             val desc = node.contentDescription?.toString() ?: ""
             val viewId = node.viewIdResourceName ?: ""
@@ -633,7 +877,10 @@ object RideOfferParser {
         return null
     }
 
-    private fun containsFareInSubtree(root: AccessibilityNodeInfo): Boolean {
+    private fun containsFareInSubtree(
+        root: AccessibilityNodeInfo,
+        screenWidthPx: Int = 0
+    ): Boolean {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         @Suppress("DEPRECATION")
         queue.add(AccessibilityNodeInfo.obtain(root))
@@ -649,6 +896,14 @@ object RideOfferParser {
                 break
             }
             val node = queue.removeFirst()
+            if (screenWidthPx > 0) {
+                val b = Rect()
+                node.getBoundsInScreen(b)
+                if (isLeftSidebarNode(b, screenWidthPx)) {
+                    recycleNode(node)
+                    continue
+                }
+            }
             val text = node.text?.toString() ?: ""
             val desc = node.contentDescription?.toString() ?: ""
             val viewId = (node.viewIdResourceName ?: "").lowercase(Locale.ROOT)
@@ -701,7 +956,7 @@ object RideOfferParser {
         val distIndices = mutableListOf<Int>()
         for (i in nodeTexts.indices) {
             val text = nodeTexts[i].trim()
-            if (DISTANCE_PATTERN.matcher(text).find() && !isFareNode(text, "")) {
+            if (matchesDistancePattern(text) && !isFareNode(text, "")) {
                 distIndices.add(i)
             }
         }
@@ -728,7 +983,7 @@ object RideOfferParser {
             var i = dropDistIdx + 1
             while (i < nodeTexts.size) {
                 val t = nodeTexts[i].trim()
-                if (isAcceptAction(t) || isFareNode(t, "") || DISTANCE_PATTERN.matcher(t).find()) {
+                if (isAcceptAction(t) || isFareNode(t, "") || matchesDistancePattern(t)) {
                     break
                 }
                 if (isValidLocationText(t)) {
@@ -747,9 +1002,11 @@ object RideOfferParser {
     private fun isValidLocationText(text: String): Boolean {
         val trimmed = text.trim()
         if (trimmed.length < 2) return false
+        if (TextAnalysisEngine.isTipBadgeNoise(trimmed)) return false
+        if (isSeeMoreOrdersText(trimmed)) return false
         if (isAcceptAction(trimmed)) return false
-        if (CURRENCY_SYMBOL_PATTERN.matcher(trimmed).find()) return false
-        if (DISTANCE_PATTERN.matcher(trimmed).find()) return false
+        if (matchesFareIndicator(trimmed)) return false
+        if (matchesDistancePattern(trimmed)) return false
         val lower = trimmed.lowercase(Locale.ROOT)
         val noiseWords = setOf("accept", "decline", "reject", "order", "1 order", "go to", "auto boost", "auto", "bike", "orders")
         if (lower in noiseWords) return false

@@ -57,6 +57,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -64,6 +65,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import android.widget.Toast
 import kotlinx.coroutines.launch
 import com.example.PassManager
@@ -83,6 +87,7 @@ import com.example.ActivityLogEntry
 import com.example.AppSettings
 import com.example.LicenseManager
 import com.example.LogSeverity
+import com.example.PermissionOemHealthChecklistCard
 import com.example.PermissionUtils
 import com.example.R
 import com.example.auth.GoogleAuthManager
@@ -130,7 +135,42 @@ fun HomeScreen(
     val isAdsRemoved = remember(accessStatus, unlockedFeatures, removeAdsExpiryMs) { LicenseManager.isAdsRemoved() }
     val pointsBalance by LicenseManager.pointsBalance.collectAsState()
 
-    val isServiceRunningInSystem = AppSettings.isAccessibilityServiceEnabled(context)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var isServiceRunningInSystem by remember {
+        mutableStateOf(AppSettings.isAccessibilityServiceEnabled(context))
+    }
+    var isOverlayEnabled by remember {
+        mutableStateOf(PermissionUtils.canDrawOverlays(context))
+    }
+    var isBatteryUnrestricted by remember {
+        mutableStateOf(PermissionUtils.isIgnoringBatteryOptimizations(context))
+    }
+    var awaitingAccessibilityReturn by remember { mutableStateOf(false) }
+
+    // Live-refresh permission health on ON_RESUME and auto-surface Restricted Settings Guide
+    // if Accessibility remains OFF after returning from system settings on Android 13/14+.
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val accessibilityNow = AppSettings.isAccessibilityServiceEnabled(context)
+                isServiceRunningInSystem = accessibilityNow
+                isOverlayEnabled = PermissionUtils.canDrawOverlays(context)
+                isBatteryUnrestricted = PermissionUtils.isIgnoringBatteryOptimizations(context)
+
+                if (awaitingAccessibilityReturn) {
+                    awaitingAccessibilityReturn = false
+                    if (!accessibilityNow && PermissionUtils.isAndroid13OrHigher()) {
+                        onOpenRestrictedSettingsGuide()
+                    }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
     val isAutomationActive = settingsState.isAutoAcceptEnabled && isServiceRunningInSystem
 
     // 3. Server-Side / Expiry Date Check on opening HomeScreen
@@ -140,13 +180,14 @@ fun HomeScreen(
         }
     }
 
+    val launchAccessibilitySettingsWithGuideFallback: () -> Unit = {
+        awaitingAccessibilityReturn = true
+        PermissionUtils.openAccessibilitySettings(context)
+    }
+
     val handleOpenAccessibilityService: () -> Unit = {
         if (!isServiceRunningInSystem) {
-            if (PermissionUtils.isAndroid13OrHigher()) {
-                onOpenRestrictedSettingsGuide()
-            } else {
-                PermissionUtils.invokeRapidoAccessibilityService(context)
-            }
+            launchAccessibilitySettingsWithGuideFallback()
         } else {
             viewModel.toggleMasterAutomation()
         }
@@ -180,13 +221,21 @@ fun HomeScreen(
             isAutoAcceptEnabled = settingsState.isAutoAcceptEnabled,
             pulseScale = pulseScale,
             onToggle = handleOpenAccessibilityService,
-            onFixService = {
-                if (PermissionUtils.isAndroid13OrHigher()) {
-                    onOpenRestrictedSettingsGuide()
-                } else {
-                    PermissionUtils.invokeRapidoAccessibilityService(context)
-                }
-            }
+            onFixService = launchAccessibilitySettingsWithGuideFallback
+        )
+
+        // =========================================================================================
+        // COMPONENT 1.1: 1-TAP PERMISSION & OEM HEALTH CHECKLIST
+        // =========================================================================================
+        PermissionOemHealthChecklistCard(
+            isAccessibilityEnabled = isServiceRunningInSystem,
+            isOverlayEnabled = isOverlayEnabled,
+            isBatteryUnrestricted = isBatteryUnrestricted,
+            onClickAccessibility = launchAccessibilitySettingsWithGuideFallback,
+            onClickOverlay = { PermissionUtils.openOverlaySettings(context) },
+            onClickBattery = { PermissionUtils.openBatteryOptimizationSettings(context) },
+            onClickOemAutoStart = { PermissionUtils.openOemAutoStartSettings(context) },
+            onOpenRestrictedGuide = onOpenRestrictedSettingsGuide
         )
 
         // =========================================================================================

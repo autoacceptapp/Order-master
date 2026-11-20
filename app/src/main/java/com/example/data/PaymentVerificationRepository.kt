@@ -55,8 +55,13 @@ sealed class PaymentVerificationState {
         val passTier: PassTier,
         val expiryTimestamp: Long,
         val isImmediate: Boolean,
-        val message: String
-    ) : PaymentVerificationState()
+        val message: String,
+        val resolvedPassTier: PassTier = passTier,
+        val autoAdjustedFromRequestedTier: PassTier? = null
+    ) : PaymentVerificationState() {
+        val wasAutoAdjusted: Boolean
+            get() = autoAdjustedFromRequestedTier != null && autoAdjustedFromRequestedTier != resolvedPassTier
+    }
 
     data class Error(
         val message: String,
@@ -109,6 +114,62 @@ class PaymentVerificationRepository(
          */
         fun mapAmountToPassTier(amount: Long): PassTier? {
             return PassPricingConfig.mapAmountToPassTier(amount)
+        }
+
+        @VisibleForTesting
+        internal data class ApprovedSnapshotResolution(
+            val passTier: PassTier,
+            val autoAdjustedFromRequestedTier: PassTier?,
+            val message: String
+        )
+
+        /**
+         * Resolves the activated PassTier and optional auto-adjusted feedback from an approved
+         * `pending_verifications/{utr}` snapshot, honoring Admin App's `resolvedPassTier` and
+         * `autoAdjustedFromRequestedTier` fields when Admin auto-matched the actual paid INR amount.
+         */
+        @VisibleForTesting
+        internal fun resolveApprovedSnapshot(
+            amount: Long,
+            resolvedPassTierId: String?,
+            docPassTierId: String?,
+            autoAdjustedFromRaw: Any?,
+            requestedTier: PassTier?,
+            serverTier: PassTier?
+        ): ApprovedSnapshotResolution? {
+            val explicitResolved = PassTier.fromId(resolvedPassTierId)
+            val docTier = PassTier.fromId(docPassTierId)
+
+            val finalTier: PassTier = when {
+                explicitResolved != null -> explicitResolved
+                docTier != null && !docTier.isProPass -> docTier
+                requestedTier != null && !requestedTier.isProPass -> requestedTier
+                serverTier != null -> serverTier
+                docTier != null -> docTier
+                else -> mapAmountToPassTier(amount) ?: requestedTier ?: return null
+            }
+
+            val parsedFromTier: PassTier? = when (autoAdjustedFromRaw) {
+                is String -> PassTier.fromId(autoAdjustedFromRaw)
+                is Boolean -> if (autoAdjustedFromRaw) (docTier ?: requestedTier) else null
+                else -> if (explicitResolved != null && requestedTier != null && explicitResolved != requestedTier) {
+                    requestedTier
+                } else {
+                    null
+                }
+            }?.takeIf { it != finalTier }
+
+            val message = if (parsedFromTier != null) {
+                "Payment of ₹$amount verified! Auto-matched from ${parsedFromTier.title} to ${finalTier.title} based on paid amount — ${finalTier.title} is now active."
+            } else {
+                "Payment of ₹$amount verified successfully! ${finalTier.title} is now active."
+            }
+
+            return ApprovedSnapshotResolution(
+                passTier = finalTier,
+                autoAdjustedFromRequestedTier = parsedFromTier,
+                message = message
+            )
         }
 
         @VisibleForTesting
@@ -545,15 +606,24 @@ class PaymentVerificationRepository(
                 suspend fun handleApprovedAlreadyApplied(
                     utrStr: String,
                     amountVal: Long,
+                    resolvedTierId: String?,
                     docTierId: String?,
+                    autoAdjustedFromRaw: Any?,
                     isImmediate: Boolean
                 ) {
                     val (serverTier, serverExpiry) = LicenseManager.refreshUserPassStatusFromServer(context)
-                    val resolvedTier: PassTier = if (!requiredTier.isProPass) {
-                        PassTier.fromId(docTierId) ?: requiredTier
-                    } else {
-                        serverTier ?: PassTier.fromId(docTierId) ?: requiredTier
-                    }
+                    val resolution = resolveApprovedSnapshot(
+                        amount = amountVal,
+                        resolvedPassTierId = resolvedTierId,
+                        docPassTierId = docTierId,
+                        autoAdjustedFromRaw = autoAdjustedFromRaw,
+                        requestedTier = requiredTier,
+                        serverTier = serverTier
+                    )
+                    val resolvedTier = resolution?.passTier ?: requiredTier
+                    val autoAdjustedFrom = resolution?.autoAdjustedFromRequestedTier
+                    val successMessage = resolution?.message
+                        ?: "Payment of ₹$amountVal verified successfully! ${resolvedTier.title} is now active."
                     val now = LicenseManager.getCurrentServerTimeMs()
                     val resolvedExpiry = resolveActivatedExpiryTimestamp(
                         tier = resolvedTier,
@@ -564,9 +634,10 @@ class PaymentVerificationRepository(
                         now = now
                     )
                     withContext(NonCancellable + Dispatchers.Main) {
+                        val adjustmentNote = autoAdjustedFrom?.let { " (auto-matched from ${it.title})" }.orEmpty()
                         AppSettings.addLog(
                             title = "Payment Approved & Synced",
-                            message = "UTR: $utrStr (₹$amountVal). ${resolvedTier.title} confirmed active.",
+                            message = "UTR: $utrStr (₹$amountVal). ${resolvedTier.title} confirmed active$adjustmentNote.",
                             severity = LogSeverity.INFO
                         )
                     }
@@ -577,7 +648,9 @@ class PaymentVerificationRepository(
                         passTier = resolvedTier,
                         expiryTimestamp = resolvedExpiry,
                         isImmediate = isImmediate,
-                        message = "Payment of ₹$amountVal verified successfully! ${resolvedTier.title} is now active."
+                        message = successMessage,
+                        resolvedPassTier = resolvedTier,
+                        autoAdjustedFromRequestedTier = autoAdjustedFrom
                     )
                 }
 
@@ -592,6 +665,8 @@ class PaymentVerificationRepository(
                         ?: existingSnap.getString("firebaseUid")
                         ?: existingSnap.getString("userId")
                     val docTierId = existingSnap.getString("passTier")
+                    val resolvedTierId = existingSnap.getString("resolvedPassTier")
+                    val autoAdjustedFromRaw = existingSnap.get("autoAdjustedFromRequestedTier")
 
                     when (evaluateUtrSnapshot(status, isUsed, claimedBy, docOwnerId, userId, currentUid)) {
                         UtrSnapshotDecision.ALREADY_CLAIMED_BY_OTHER -> {
@@ -618,7 +693,9 @@ class PaymentVerificationRepository(
                             handleApprovedAlreadyApplied(
                                 utrStr = utr,
                                 amountVal = amount,
+                                resolvedTierId = resolvedTierId,
                                 docTierId = docTierId,
+                                autoAdjustedFromRaw = autoAdjustedFromRaw,
                                 isImmediate = true
                             )
                             return@launch
@@ -685,7 +762,12 @@ class PaymentVerificationRepository(
 
     private sealed interface RealtimeWaitOutcome {
         data object VerifiedReadyToClaim : RealtimeWaitOutcome
-        data class ApprovedAlreadyApplied(val amount: Long, val passTierId: String?) : RealtimeWaitOutcome
+        data class ApprovedAlreadyApplied(
+            val amount: Long,
+            val resolvedPassTierId: String?,
+            val passTierId: String?,
+            val autoAdjustedFromRaw: Any?
+        ) : RealtimeWaitOutcome
         data class EarlyResult(val result: PassManager.VerificationResult) : RealtimeWaitOutcome
     }
 
@@ -746,13 +828,22 @@ class PaymentVerificationRepository(
 
             val existingSnap = pendingSnapshot?.takeIf { it.exists() }
 
-            suspend fun completeApprovedPassResult(docTierId: String?): PassManager.VerificationResult {
+            suspend fun completeApprovedPassResult(
+                amountVal: Long,
+                resolvedTierId: String?,
+                docTierId: String?,
+                autoAdjustedFromRaw: Any?
+            ): PassManager.VerificationResult {
                 val (serverTier, serverExpiry) = LicenseManager.refreshUserPassStatusFromServer(context)
-                val resolvedTier = if (!tier.isProPass) {
-                    PassTier.fromId(docTierId) ?: tier
-                } else {
-                    serverTier ?: PassTier.fromId(docTierId) ?: tier
-                }
+                val resolution = resolveApprovedSnapshot(
+                    amount = amountVal,
+                    resolvedPassTierId = resolvedTierId,
+                    docPassTierId = docTierId,
+                    autoAdjustedFromRaw = autoAdjustedFromRaw,
+                    requestedTier = tier,
+                    serverTier = serverTier
+                )
+                val resolvedTier = resolution?.passTier ?: tier
                 val now = LicenseManager.getCurrentServerTimeMs()
                 val resolvedExpiry = resolveActivatedExpiryTimestamp(
                     tier = resolvedTier,
@@ -763,9 +854,12 @@ class PaymentVerificationRepository(
                     now = now
                 )
                 withContext(NonCancellable + Dispatchers.Main) {
+                    val adjustmentNote = resolution?.autoAdjustedFromRequestedTier?.let {
+                        " (auto-matched from ${it.title})"
+                    }.orEmpty()
                     AppSettings.addLog(
                         title = "Pass Approved & Synced",
-                        message = "${resolvedTier.title} verified via UTR $cleanUtr.",
+                        message = "${resolvedTier.title} verified via UTR $cleanUtr$adjustmentNote.",
                         severity = LogSeverity.MATCH_ACCEPTED
                     )
                 }
@@ -795,8 +889,12 @@ class PaymentVerificationRepository(
                         )
                     }
                     UtrSnapshotDecision.APPROVED_ALREADY_APPLIED -> {
+                        val amt = existingSnap.getLong("amount") ?: tier.effectivePriceInInr().toLong()
                         return@withContext completeApprovedPassResult(
-                            existingSnap.getString("passTier")
+                            amountVal = amt,
+                            resolvedTierId = existingSnap.getString("resolvedPassTier"),
+                            docTierId = existingSnap.getString("passTier"),
+                            autoAdjustedFromRaw = existingSnap.get("autoAdjustedFromRequestedTier")
                         )
                     }
                     UtrSnapshotDecision.REJECTED -> {
@@ -895,8 +993,17 @@ class PaymentVerificationRepository(
                                     if (isResumed.compareAndSet(false, true)) {
                                         removeListeners()
                                         val amt = docSnap.getLong("amount") ?: tier.effectivePriceInInr().toLong()
+                                        val resolvedId = docSnap.getString("resolvedPassTier")
                                         val tierId = docSnap.getString("passTier")
-                                        continuation.resume(RealtimeWaitOutcome.ApprovedAlreadyApplied(amt, tierId))
+                                        val autoAdjustedRaw = docSnap.get("autoAdjustedFromRequestedTier")
+                                        continuation.resume(
+                                            RealtimeWaitOutcome.ApprovedAlreadyApplied(
+                                                amount = amt,
+                                                resolvedPassTierId = resolvedId,
+                                                passTierId = tierId,
+                                                autoAdjustedFromRaw = autoAdjustedRaw
+                                            )
+                                        )
                                     }
                                 }
                                 UtrSnapshotDecision.PENDING -> Unit
@@ -927,7 +1034,12 @@ class PaymentVerificationRepository(
                     )
                 }
                 is RealtimeWaitOutcome.ApprovedAlreadyApplied -> {
-                    completeApprovedPassResult(waitOutcome.passTierId)
+                    completeApprovedPassResult(
+                        amountVal = waitOutcome.amount,
+                        resolvedTierId = waitOutcome.resolvedPassTierId,
+                        docTierId = waitOutcome.passTierId,
+                        autoAdjustedFromRaw = waitOutcome.autoAdjustedFromRaw
+                    )
                 }
                 is RealtimeWaitOutcome.EarlyResult -> {
                     waitOutcome.result
@@ -1037,8 +1149,10 @@ class PaymentVerificationRepository(
                     ?: snapshot.getString("firebaseUid")
                     ?: snapshot.getString("userId")
                 val docTierId = snapshot.getString("passTier")
+                val resolvedTierId = snapshot.getString("resolvedPassTier")
+                val autoAdjustedFromRaw = snapshot.get("autoAdjustedFromRequestedTier")
 
-                Log.i(TAG, "Realtime update received for UTR $utr: status=$status, isUsed=$isUsed, amount=$amount")
+                Log.i(TAG, "Realtime update received for UTR $utr: status=$status, isUsed=$isUsed, amount=$amount, resolvedPassTier=$resolvedTierId")
 
                 when (evaluateUtrSnapshot(status, isUsed, claimedBy, docOwnerId, userId, firebaseUid)) {
                     UtrSnapshotDecision.VERIFIED_READY_TO_CLAIM -> {
@@ -1057,13 +1171,15 @@ class PaymentVerificationRepository(
                         cancelPendingListener()
                         repoScope.launch {
                             val (serverTier, serverExpiry) = LicenseManager.refreshUserPassStatusFromServer(context)
-                            val docOrPrefTier = PassTier.fromId(docTierId) ?: preferredTier
-                            val resolvedTier = if (docOrPrefTier != null && !docOrPrefTier.isProPass) {
-                                docOrPrefTier
-                            } else {
-                                serverTier ?: docOrPrefTier ?: mapAmountToPassTier(amount)
-                            }
-                            if (resolvedTier == null) {
+                            val resolution = resolveApprovedSnapshot(
+                                amount = amount,
+                                resolvedPassTierId = resolvedTierId,
+                                docPassTierId = docTierId,
+                                autoAdjustedFromRaw = autoAdjustedFromRaw,
+                                requestedTier = preferredTier,
+                                serverTier = serverTier
+                            )
+                            if (resolution == null) {
                                 _verificationState.value = PaymentVerificationState.Error(
                                     message = "Could not determine Pass plan for ₹$amount. Please select your Pass plan and retry.",
                                     canRetry = true,
@@ -1071,6 +1187,8 @@ class PaymentVerificationRepository(
                                 )
                                 return@launch
                             }
+                            val resolvedTier = resolution.passTier
+                            val autoAdjustedFrom = resolution.autoAdjustedFromRequestedTier
                             val now = LicenseManager.getCurrentServerTimeMs()
                             val resolvedExpiry = resolveActivatedExpiryTimestamp(
                                 tier = resolvedTier,
@@ -1081,9 +1199,10 @@ class PaymentVerificationRepository(
                                 now = now
                             )
                             withContext(NonCancellable + Dispatchers.Main) {
+                                val adjustmentNote = autoAdjustedFrom?.let { " (auto-matched from ${it.title})" }.orEmpty()
                                 AppSettings.addLog(
                                     title = "Payment Approved & Synced",
-                                    message = "UTR: $utr (₹$amount). ${resolvedTier.title} confirmed active.",
+                                    message = "UTR: $utr (₹$amount). ${resolvedTier.title} confirmed active$adjustmentNote.",
                                     severity = LogSeverity.INFO
                                 )
                             }
@@ -1093,7 +1212,9 @@ class PaymentVerificationRepository(
                                 passTier = resolvedTier,
                                 expiryTimestamp = resolvedExpiry,
                                 isImmediate = false,
-                                message = "Payment of ₹$amount verified successfully! ${resolvedTier.title} is now active."
+                                message = resolution.message,
+                                resolvedPassTier = resolvedTier,
+                                autoAdjustedFromRequestedTier = autoAdjustedFrom
                             )
                         }
                     }

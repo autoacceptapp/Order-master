@@ -137,6 +137,16 @@ fun AppSettingsScreen(
     var isReady by remember {
         mutableStateOf(PermissionUtils.isReadyForAutoAcceptance(context))
     }
+    var isAccessibilityEnabled by remember {
+        mutableStateOf(PermissionUtils.isAccessibilityServiceEnabled(context))
+    }
+    var isOverlayEnabled by remember {
+        mutableStateOf(PermissionUtils.canDrawOverlays(context))
+    }
+    var isBatteryUnrestricted by remember {
+        mutableStateOf(PermissionUtils.isIgnoringBatteryOptimizations(context))
+    }
+    var awaitingAccessibilityReturn by remember { mutableStateOf(false) }
 
     var showRestrictedSettingsDialog by remember { mutableStateOf(false) }
 
@@ -144,13 +154,30 @@ fun AppSettingsScreen(
     val refreshPermissions = {
         permissionList = PermissionUtils.getPermissionStatusList(context)
         isReady = PermissionUtils.isReadyForAutoAcceptance(context)
+        isAccessibilityEnabled = PermissionUtils.isAccessibilityServiceEnabled(context)
+        isOverlayEnabled = PermissionUtils.canDrawOverlays(context)
+        isBatteryUnrestricted = PermissionUtils.isIgnoringBatteryOptimizations(context)
     }
 
-    // Auto-refresh when captain returns to this screen from system settings
+    val launchAccessibilityWithRestrictedFallback: () -> Unit = {
+        awaitingAccessibilityReturn = true
+        PermissionUtils.openAccessibilitySettings(context)
+    }
+
+    // Auto-refresh when captain returns to this screen from system settings;
+    // auto-surface Android 13/14+ Restricted Settings Guide if Accessibility is still OFF.
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 refreshPermissions()
+                if (awaitingAccessibilityReturn) {
+                    awaitingAccessibilityReturn = false
+                    if (!PermissionUtils.isAccessibilityServiceEnabled(context) &&
+                        PermissionUtils.isAndroid13OrHigher()
+                    ) {
+                        showRestrictedSettingsDialog = true
+                    }
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -224,15 +251,11 @@ fun AppSettingsScreen(
                 ReadinessSummaryBanner(
                     isReady = isReady,
                     onOpenPrimaryAction = {
-                        if (!PermissionUtils.isAccessibilityServiceEnabled(context)) {
-                            if (PermissionUtils.isAndroid13OrHigher()) {
-                                showRestrictedSettingsDialog = true
-                            } else {
-                                PermissionUtils.openAccessibilitySettings(context)
-                            }
-                        } else if (!PermissionUtils.canDrawOverlays(context)) {
+                        if (!isAccessibilityEnabled) {
+                            launchAccessibilityWithRestrictedFallback()
+                        } else if (!isOverlayEnabled) {
                             PermissionUtils.openOverlaySettings(context)
-                        } else if (!PermissionUtils.isIgnoringBatteryOptimizations(context)) {
+                        } else if (!isBatteryUnrestricted) {
                             PermissionUtils.openBatteryOptimizationSettings(context)
                         } else {
                             PermissionUtils.openOemAutoStartSettings(context)
@@ -241,8 +264,22 @@ fun AppSettingsScreen(
                 )
             }
 
+            // 1.5 1-Tap Permission & OEM Health Checklist (Accessibility, Overlay, Battery, OEM Auto-Start)
+            item {
+                PermissionOemHealthChecklistCard(
+                    isAccessibilityEnabled = isAccessibilityEnabled,
+                    isOverlayEnabled = isOverlayEnabled,
+                    isBatteryUnrestricted = isBatteryUnrestricted,
+                    onClickAccessibility = launchAccessibilityWithRestrictedFallback,
+                    onClickOverlay = { PermissionUtils.openOverlaySettings(context) },
+                    onClickBattery = { PermissionUtils.openBatteryOptimizationSettings(context) },
+                    onClickOemAutoStart = { PermissionUtils.openOemAutoStartSettings(context) },
+                    onOpenRestrictedGuide = { showRestrictedSettingsDialog = true }
+                )
+            }
+
             // Android 13/14+ Restricted Settings Help Notice
-            if (!PermissionUtils.isAccessibilityServiceEnabled(context) && PermissionUtils.isAndroid13OrHigher()) {
+            if (!isAccessibilityEnabled && PermissionUtils.isAndroid13OrHigher()) {
                 item {
                     RestrictedSettingsNoticeBanner(
                         onClick = { showRestrictedSettingsDialog = true }
@@ -581,8 +618,8 @@ fun AppSettingsScreen(
                 PermissionItemCard(
                     item = item,
                     onActionClick = {
-                        if (item.id == "accessibility" && PermissionUtils.isAndroid13OrHigher()) {
-                            showRestrictedSettingsDialog = true
+                        if (item.id == "accessibility") {
+                            launchAccessibilityWithRestrictedFallback()
                         } else {
                             handlePermissionAction(context, item.id, coroutineScope, onNavigateToPaymentVerification)
                         }

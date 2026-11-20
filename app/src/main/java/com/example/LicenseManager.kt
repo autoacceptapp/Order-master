@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import com.example.auth.GoogleAuthManager
+import com.example.data.repository.AppConfigRepository
 import com.google.firebase.FirebaseApp
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
@@ -951,6 +952,8 @@ object LicenseManager {
             return ClockTamperStatus.HARD_TAMPER
         }
 
+        val effectiveGraceMs = getEffectiveOfflineGracePeriodMs(ctx, syncWall, currentWall)
+
         // 2. Device reboot detection: elapsedRealtime resets near 0 after a device reboot.
         val hasRebooted = deltaElapsed < -5_000L
         if (hasRebooted) {
@@ -962,8 +965,8 @@ object LicenseManager {
                 Log.w(TAG, "Clock tampering detected after reboot: wall=$currentWall < lastServerTs=$lastServerTs")
                 return ClockTamperStatus.HARD_TAMPER
             }
-            if (deltaWall > OFFLINE_GRACE_PERIOD_MS) {
-                Log.w(TAG, "Post-reboot offline wall delta exceeds grace period: ${deltaWall}ms")
+            if (deltaWall > effectiveGraceMs) {
+                Log.w(TAG, "Post-reboot offline wall delta exceeds grace period: ${deltaWall}ms > ${effectiveGraceMs}ms")
                 return ClockTamperStatus.HARD_TAMPER
             }
             // Wall clock stayed consistent and within offline grace across reboot; skip elapsed delta drift check
@@ -971,7 +974,7 @@ object LicenseManager {
         }
 
         // 3. Cross-check against persisted authoritative UTC server timestamp across restarts
-        if (lastServerTs > 0L && deltaElapsed >= 0L && deltaElapsed < OFFLINE_GRACE_PERIOD_MS) {
+        if (lastServerTs > 0L && deltaElapsed >= 0L && deltaElapsed < effectiveGraceMs) {
             val expectedWallFromServer = lastServerTs + deltaElapsed
             if (currentWall < expectedWallFromServer - MAX_ALLOWED_CLOCK_DRIFT_MS) {
                 Log.w(TAG, "Clock rollback vs server UTC detected: wall=$currentWall < expected=$expectedWallFromServer")
@@ -1060,7 +1063,103 @@ object LicenseManager {
     }
 
     /**
-     * Checks if the maximum allowed offline grace period (2 hours) has expired or if clock tampering was detected.
+     * Returns remote-configured paid pass offline grace hours clamped to `[2, 72]` (default 24h).
+     */
+    fun getEffectivePaidPassOfflineGraceHours(): Int {
+        return AppConfigRepository.effectivePaidPassOfflineGraceHours()
+    }
+
+    /**
+     * Resolves an active paid Pro Pass expiry timestamp (in ms) from authoritative memory or
+     * HMAC-verified local cache. Returns `0L` for free/trial/remove-ads/expired states so only
+     * active paid pass drivers receive the extended offline grace window.
+     */
+    @VisibleForTesting
+    internal fun resolveActivePaidPassExpiryMs(
+        context: Context? = null,
+        nowMs: Long = System.currentTimeMillis()
+    ): Long {
+        if (serverPassTier?.isProPass == true && serverPassExpiry > nowMs) {
+            return serverPassExpiry
+        }
+        val ctx = context ?: appContext ?: return 0L
+        val cached = getCachedLicensingData(ctx)
+        if (cached.passTier?.isProPass == true && cached.passExpiry > nowMs) {
+            return cached.passExpiry
+        }
+        return 0L
+    }
+
+    /**
+     * Pure deterministic offline grace deadline calculation:
+     * - Active paid pass (`activePaidPassExpiryMs > nowMs` and `> lastCloudSyncAtMs`):
+     *   `min(activePaidPassExpiryMs, lastCloudSyncAtMs + clampedHours * 3_600_000L)`
+     * - Free / Trial / Unpaid / Expired states:
+     *   `lastCloudSyncAtMs + OFFLINE_GRACE_PERIOD_MS` (strict 2 hours).
+     */
+    @VisibleForTesting
+    internal fun computeOfflineGraceDeadlineMs(
+        lastCloudSyncAtMs: Long,
+        activePaidPassExpiryMs: Long,
+        nowMs: Long = System.currentTimeMillis(),
+        paidPassOfflineGraceHours: Int = getEffectivePaidPassOfflineGraceHours()
+    ): Long {
+        if (lastCloudSyncAtMs <= 0L) return 0L
+        if (activePaidPassExpiryMs > nowMs && activePaidPassExpiryMs > lastCloudSyncAtMs) {
+            val clampedHours = paidPassOfflineGraceHours.coerceIn(
+                AppConfigRepository.MIN_PAID_PASS_OFFLINE_GRACE_HOURS,
+                AppConfigRepository.MAX_PAID_PASS_OFFLINE_GRACE_HOURS
+            )
+            return minOf(activePaidPassExpiryMs, lastCloudSyncAtMs + clampedHours * 3_600_000L)
+        }
+        return lastCloudSyncAtMs + OFFLINE_GRACE_PERIOD_MS
+    }
+
+    /**
+     * Computes the effective offline grace duration in milliseconds from [lastSyncWallMs].
+     */
+    @VisibleForTesting
+    internal fun getEffectiveOfflineGracePeriodMs(
+        context: Context? = null,
+        lastSyncWallMs: Long = 0L,
+        nowWallMs: Long = System.currentTimeMillis()
+    ): Long {
+        val activePaidExpiry = resolveActivePaidPassExpiryMs(context, nowWallMs)
+        if (activePaidExpiry <= nowWallMs) {
+            return OFFLINE_GRACE_PERIOD_MS
+        }
+        val clampedHours = getEffectivePaidPassOfflineGraceHours()
+        val maxPaidGraceMs = clampedHours * 3_600_000L
+        if (lastSyncWallMs > 0L) {
+            val deadline = computeOfflineGraceDeadlineMs(
+                lastCloudSyncAtMs = lastSyncWallMs,
+                activePaidPassExpiryMs = activePaidExpiry,
+                nowMs = nowWallMs,
+                paidPassOfflineGraceHours = clampedHours
+            )
+            return (deadline - lastSyncWallMs).coerceAtLeast(0L)
+        }
+        return minOf(maxPaidGraceMs, (activePaidExpiry - nowWallMs).coerceAtLeast(0L))
+    }
+
+    /**
+     * Returns the human-readable offline grace limit in hours currently applicable for this user
+     * (`paidPassOfflineGraceHours` for active paid pass drivers, `2` for free/trial/unpaid users).
+     */
+    fun getEffectiveOfflineGraceHours(context: Context? = null): Int {
+        val nowWall = System.currentTimeMillis()
+        val activePaidExpiry = resolveActivePaidPassExpiryMs(context, nowWall)
+        return if (activePaidExpiry > nowWall) {
+            getEffectivePaidPassOfflineGraceHours()
+        } else {
+            (OFFLINE_GRACE_PERIOD_MS / 3_600_000L).toInt()
+        }
+    }
+
+    /**
+     * Checks if the effective offline grace period has expired or if clock tampering was detected.
+     * - Active paid pass drivers: `min(passExpiryTimestamp, lastCloudSyncAt + paidPassOfflineGraceHours * 3_600_000L)`.
+     * - Free / Trial / Unpaid users: strict 2-hour `OFFLINE_GRACE_PERIOD_MS`.
      */
     fun isOfflineGracePeriodExpired(context: Context? = null): Boolean {
         val ctx = context ?: appContext
@@ -1071,23 +1170,36 @@ object LicenseManager {
             return true
         }
 
-        val lastSync = lastSuccessfulServerSyncElapsedMs
-        if (lastSync > 0L) {
-            val offlineDuration = SystemClock.elapsedRealtime() - lastSync
-            if (offlineDuration > OFFLINE_GRACE_PERIOD_MS) return true
-        }
+        val nowWall = System.currentTimeMillis()
+        var lastServerSyncTime = 0L
         if (ctx != null) {
             try {
                 val prefs = ctx.getSharedPreferences(LICENSE_CACHE_PREFS, Context.MODE_PRIVATE)
-                val lastServerSyncTime = prefs.getLong(KEY_LAST_SERVER_SYNC_TIME, 0L)
-                if (lastServerSyncTime > 0L) {
-                    val offlineWallDuration = System.currentTimeMillis() - lastServerSyncTime
-                    if (offlineWallDuration < -60_000L || offlineWallDuration > OFFLINE_GRACE_PERIOD_MS) {
-                        Log.w(TAG, "Offline grace period expired or clock tampering detected: duration=$offlineWallDuration")
-                        return true
-                    }
-                }
+                lastServerSyncTime = prefs.getLong(KEY_LAST_SERVER_SYNC_TIME, 0L)
             } catch (_: Exception) {}
+        }
+
+        val effectiveGraceMs = getEffectiveOfflineGracePeriodMs(ctx, lastServerSyncTime, nowWall)
+
+        val lastSync = lastSuccessfulServerSyncElapsedMs
+        if (lastSync > 0L) {
+            val offlineDuration = SystemClock.elapsedRealtime() - lastSync
+            if (offlineDuration > effectiveGraceMs) return true
+        }
+        if (lastServerSyncTime > 0L) {
+            val offlineWallDuration = nowWall - lastServerSyncTime
+            val deadlineMs = computeOfflineGraceDeadlineMs(
+                lastCloudSyncAtMs = lastServerSyncTime,
+                activePaidPassExpiryMs = resolveActivePaidPassExpiryMs(ctx, nowWall),
+                nowMs = nowWall
+            )
+            if (offlineWallDuration < -60_000L || nowWall > deadlineMs) {
+                Log.w(
+                    TAG,
+                    "Offline grace period expired or clock tampering detected: duration=${offlineWallDuration}ms, limit=${effectiveGraceMs}ms"
+                )
+                return true
+            }
         }
         return false
     }
@@ -1136,12 +1248,13 @@ object LicenseManager {
             ClockTamperStatus.NONE -> Unit
         }
 
-        // 2. Check offline grace period expiration (> 2 hours without server sync):
+        // 2. Check offline grace period expiration (24h default for active paid pass, 2h for free/trial):
         if (isOfflineGracePeriodExpired(context)) {
-            Log.w(TAG, "Periodic cross-check: Offline grace period (2 hours) expired.")
+            val graceHours = getEffectiveOfflineGraceHours(context)
+            Log.w(TAG, "Periodic cross-check: Offline grace period ($graceHours hours) expired.")
             invalidateAndForceCloudResync(
                 context,
-                "Offline grace period (2 hours) expired without server confirmation"
+                "Offline grace period ($graceHours hours) expired without server confirmation"
             )
             return
         }
@@ -1181,10 +1294,11 @@ object LicenseManager {
         }
 
         if (isOfflineGracePeriodExpired(context)) {
-            Log.w(TAG, "Periodic cross-check: Offline grace period (2 hours) expired.")
+            val graceHours = getEffectiveOfflineGraceHours(context)
+            Log.w(TAG, "Periodic cross-check: Offline grace period ($graceHours hours) expired.")
             invalidateAndForceCloudResync(
                 context,
-                "Offline grace period (2 hours) expired without server confirmation"
+                "Offline grace period ($graceHours hours) expired without server confirmation"
             )
             return
         }
@@ -2960,13 +3074,14 @@ object LicenseManager {
             return
         }
 
-        // Strict 2-hour offline grace check:
+        // Effective offline grace check (24h default for active paid pass, strict 2h for free/trial):
         if (isOfflineGracePeriodExpired(ctx)) {
-            Log.w(TAG, "Offline grace period expired (limit: 2 hours). Enforcing zero-trust lock.")
+            val graceHours = getEffectiveOfflineGraceHours(ctx)
+            Log.w(TAG, "Offline grace period expired (limit: $graceHours hours). Enforcing zero-trust lock.")
             _accessStatus.value = AccessStatus.Expired(
                 isTrialUsed = serverTrialUsed || serverTrialClaimed > 0L,
                 hasHadPreviousPass = serverPassTier != null || serverPassExpiry > 0L,
-                message = "Maximum 2-hour offline limit reached. Please connect to internet to verify pass."
+                message = "Maximum ${graceHours}-hour offline limit reached. Please connect to internet to verify pass."
             )
             return
         }

@@ -691,7 +691,8 @@ class ExampleRobolectricTest {
 
         val target = TextAnalysisEngine.parseTargetOfferFromNodes(nodeTexts)
         assertNotNull(target)
-        assertEquals(95.0, target!!.fare, 0.001)
+        // Base ₹95 + Tip "+ ₹23" = ₹118.0 total payout
+        assertEquals(118.0, target!!.fare, 0.001)
         assertEquals(2.8, target.pickupDistance, 0.001)
         assertEquals("Lalpari River", target.pickupLocation)
         assertEquals(6.2, target.dropDistance, 0.001)

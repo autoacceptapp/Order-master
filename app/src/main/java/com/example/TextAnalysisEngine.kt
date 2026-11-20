@@ -4,6 +4,7 @@ import android.graphics.Rect
 import android.os.Build
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.data.repository.AppConfigRepository
 import java.util.Locale
 
 /**
@@ -155,11 +156,39 @@ object TextAnalysisEngine {
         RegexOption.IGNORE_CASE
     )
 
-    // Regex for plus component numbers (e.g. "+ ₹15" or "+ 20" following a fare)
+    // Regex for plus component numbers (e.g. "+ ₹15", "+ ₹10", "+ 20" following a fare)
     private val plusBonusRegex = Regex(
         """\+\s*(?:(?:[₹\u20B9\u20A8\$€£]|Rs\.?|INR)?\s*(\d{1,3}(?:\.\d{1,2})?)|(\d{1,3}(?:\.\d{1,2})?)\s*(?:[₹\u20B9\u20A8\$€£]|Rs\.?|INR)?)(?!\d)""",
         RegexOption.IGNORE_CASE
     )
+
+    // Informational tip-badge / note text on Rapido cards (e.g. "Customer added ₹10.0 extra")
+    // that duplicates the "+ ₹10" tip already shown on the main fare line.
+    private val tipBadgeNoiseRegex = Regex(
+        """(?i)(?:customer|rider|user)\s+added\s+[^,\r\n]{0,24}?(?:extra|tip)|(?:extra|tip)\s*(?:of\s*)?[₹\u20B9\u20A8]?\s*\d+(?:\.\d+)?\s*(?:added|included)|added\s+[₹\u20B9\u20A8]?\s*\d+(?:\.\d+)?\s*(?:extra|tip)""",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * Returns true when a node's text is purely an informational customer-added-tip badge
+     * (e.g., "Customer added ₹10.0 extra") so it is excluded from fare & location parsing
+     * and tips are never double-counted.
+     */
+    fun isTipBadgeNoise(text: String): Boolean {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return false
+        return tipBadgeNoiseRegex.containsMatchIn(trimmed) &&
+            !trimmed.contains("+")
+    }
+
+    /**
+     * Strips informational tip-badge phrases (e.g., "Customer added ₹10.0 extra") from combined
+     * text before running currency extraction so tips are never double-counted.
+     */
+    fun stripTipBadgeNoise(text: String): String {
+        if (text.isEmpty()) return text
+        return text.replace(tipBadgeNoiseRegex, " ")
+    }
 
     // General distance regex with boundary protection (prevents matching "10 am" or "15 min")
     private val generalDistanceRegex = Regex(
@@ -396,13 +425,22 @@ object TextAnalysisEngine {
         // while "+ ₹13" nodes add bonus amounts to the detected fare.
         var baseFare = 0.0
         var hasPrimaryFareTag = false
+        var standaloneTipBonus = 0.0
         for (node in nodes) {
             // Ignore timestamps (e.g. 12:30, 09:45 PM)
             if (node.contains(":") && Regex("""\b\d{1,2}:\d{2}\b""").containsMatchIn(node)) {
                 continue
             }
             val trimmedNode = node.trim()
+            if (isTipBadgeNoise(trimmedNode)) {
+                continue
+            }
             if (trimmedNode.startsWith("+")) {
+                val bonusMatch = plusBonusRegex.find(trimmedNode)
+                val bonusVal = (bonusMatch?.groups?.get(1)?.value ?: bonusMatch?.groups?.get(2)?.value)?.toDoubleOrNull()
+                if (bonusVal != null && bonusVal in 1.0..500.0 && standaloneTipBonus == 0.0) {
+                    standaloneTipBonus = bonusVal
+                }
                 continue
             }
 
@@ -414,8 +452,12 @@ object TextAnalysisEngine {
                 trimmedNode.contains("FINAL", ignoreCase = true) ||
                 trimmedNode.contains("TOTAL", ignoreCase = true)
 
-            val (extractedNodeFare, _) = extractCurrencies(trimmedNode)
+            val (extractedNodeFare, extractedBreakdown) = extractCurrencies(trimmedNode)
             val candidateFare = if (extractedNodeFare != null && isValidRapidoFare(extractedNodeFare)) {
+                if (extractedBreakdown.size > 1) {
+                    // Main node already included "+ ₹tip", avoid adding sibling bonus twice
+                    standaloneTipBonus = 0.0
+                }
                 extractedNodeFare
             } else {
                 val matches = fareRegex.findAll(trimmedNode)
@@ -433,12 +475,30 @@ object TextAnalysisEngine {
                 }
             }
         }
+        if (baseFare > 0.0 && standaloneTipBonus > 0.0 && isValidRapidoFare(baseFare + standaloneTipBonus)) {
+            baseFare += standaloneTipBonus
+        }
 
         // 2. Distances: First match = Pickup distance, Second match = Drop distance
         val allDistanceValues = mutableListOf<Double>()
+        val remoteDistRegex = AppConfigRepository.effectiveRapidoDistanceRegex()
         for (node in nodes) {
-            distanceRegex.findAll(node).forEach { match ->
-                match.groups[1]?.value?.toDoubleOrNull()?.let { allDistanceValues.add(it) }
+            var matchedRemote = false
+            if (remoteDistRegex != null) {
+                remoteDistRegex.findAll(node).forEach { match ->
+                    val numVal = extractFirstNumericGroup(match)
+                    if (numVal != null) {
+                        val unit = match.value.lowercase(Locale.ROOT)
+                        val km = if (unit.contains("km")) numVal else if (unit.contains("m")) numVal / 1000.0 else numVal
+                        allDistanceValues.add(km)
+                        matchedRemote = true
+                    }
+                }
+            }
+            if (!matchedRemote) {
+                distanceRegex.findAll(node).forEach { match ->
+                    match.groups[1]?.value?.toDoubleOrNull()?.let { allDistanceValues.add(it) }
+                }
             }
         }
 
@@ -469,6 +529,7 @@ object TextAnalysisEngine {
         for (node in nodes) {
             val trimmed = node.trim()
             if (trimmed.isEmpty()) continue
+            if (isTipBadgeNoise(trimmed)) continue
 
             // Ignore pure currency or pure distance nodes
             if (fareRegex.containsMatchIn(trimmed) && !trimmed.contains("-") && !trimmed.contains("\n")) {
@@ -565,13 +626,24 @@ object TextAnalysisEngine {
     // 3. CURRENCY & DISTANCE EXTRACTION LOGIC
     // =========================================================================================
 
+    private fun extractFirstNumericGroup(match: MatchResult): Double? {
+        for (i in 1 until match.groups.size) {
+            val value = match.groups[i]?.value?.replace(",", ".")?.toDoubleOrNull()
+            if (value != null) return value
+        }
+        return Regex("""\d+(?:[.,]\d+)?""").find(match.value)?.value?.replace(",", ".")?.toDoubleOrNull()
+    }
+
     /**
      * Extracts all currency amounts, correctly handling base fare + bonus tips/incentives
-     * (e.g., "₹55", "₹56 + ₹13", "₹95 + ₹23", "Rs. 70 + Rs. 15").
+     * (e.g., "₹55", "₹55 + ₹10", "₹56 + ₹13", "₹95 + ₹23", "Rs. 70 + Rs. 15") while
+     * stripping informational tip-badge phrases like "Customer added ₹10.0 extra" so tips
+     * are never double-counted.
      */
     fun extractCurrencies(text: String): Pair<Double?, List<Double>> {
-        // Strip timestamps (e.g., 12:30, 09:45 PM) to prevent false-positive currency matches
-        val cleanText = text.replace(Regex("""\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?\b""", RegexOption.IGNORE_CASE), " ")
+        // Strip tip-badge noise (e.g., "Customer added ₹10.0 extra") and timestamps (e.g., 12:30 PM)
+        val withoutTipNoise = stripTipBadgeNoise(text)
+        val cleanText = withoutTipNoise.replace(Regex("""\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?\b""", RegexOption.IGNORE_CASE), " ")
         val breakdown = mutableListOf<Double>()
         val matchedCurrencyRanges = mutableListOf<IntRange>()
 
@@ -584,13 +656,23 @@ object TextAnalysisEngine {
             RegexOption.IGNORE_CASE
         )
 
-        // 1. Direct currency matches (enforce ₹20 to ₹2000 range)
-        val directMatches = currencyRegex.findAll(cleanText).toList()
+        // 1. Direct currency matches (honor optional remote rapidoFareRegex first, fallback to built-in)
+        val remoteFareRegex = AppConfigRepository.effectiveRapidoFareRegex()
+        val remoteMatches = if (remoteFareRegex != null) {
+            remoteFareRegex.findAll(cleanText).toList()
+        } else {
+            emptyList()
+        }
+        val directMatches = if (remoteMatches.isNotEmpty()) {
+            remoteMatches
+        } else {
+            currencyRegex.findAll(cleanText).toList()
+        }
         var lastValidMatch: MatchResult? = null
         var hasPrimaryFareTag = false
 
         for (match in directMatches) {
-            val amount = (match.groups[1]?.value ?: match.groups[2]?.value)?.toDoubleOrNull()
+            val amount = extractFirstNumericGroup(match)
             if (amount != null && isValidRapidoFare(amount)) {
                 val trailingContext = cleanText.substring(
                     match.range.last + 1,
@@ -633,7 +715,7 @@ object TextAnalysisEngine {
             }
         }
 
-        // 2. Plus component bonuses (e.g. "+ ₹15", "+ 20" - valid bonus range is ₹5 to ₹500)
+        // 2. Plus component bonuses/tips (e.g. "+ ₹10", "+ ₹13", "+ 20" - valid tip/bonus range ₹1 to ₹500)
         if (breakdown.isNotEmpty()) {
             val plusMatches = plusBonusRegex.findAll(cleanText).toList()
             for (pm in plusMatches) {
@@ -643,7 +725,7 @@ object TextAnalysisEngine {
                 if (overlapsCurrency) continue
 
                 val bonusVal = (pm.groups[1]?.value ?: pm.groups[2]?.value)?.toDoubleOrNull()
-                if (bonusVal != null && bonusVal in 5.0..500.0) {
+                if (bonusVal != null && bonusVal in 1.0..500.0) {
                     val potentialTotal = breakdown.sum() + bonusVal
                     if (isValidRapidoFare(potentialTotal)) {
                         breakdown.add(bonusVal)
@@ -694,15 +776,30 @@ object TextAnalysisEngine {
             }
         }
 
-        // 3. Fallback: Parse sequential distances if labels were not explicitly matched
+        // 3. Fallback: Parse sequential distances (optional remote rapidoDistanceRegex first, else built-in)
         if (pickup == null || drop == null) {
-            val allDistances = generalDistanceRegex.findAll(text).mapNotNull { match ->
-                val num = match.groups[1]?.value?.toDoubleOrNull()
-                val unit = match.groups[2]?.value?.lowercase(Locale.ROOT) ?: "km"
-                if (num != null) {
-                    if (unit.startsWith("m")) num / 1000.0 else num
-                } else null
-            }.toList()
+            val remoteDistRegex = AppConfigRepository.effectiveRapidoDistanceRegex()
+            val remoteDistances = if (remoteDistRegex != null) {
+                remoteDistRegex.findAll(text).mapNotNull { match ->
+                    val num = extractFirstNumericGroup(match) ?: return@mapNotNull null
+                    val raw = match.value.lowercase(Locale.ROOT)
+                    if (raw.contains("km")) num else if (raw.contains("m")) num / 1000.0 else num
+                }.toList()
+            } else {
+                emptyList()
+            }
+
+            val allDistances = if (remoteDistances.isNotEmpty()) {
+                remoteDistances
+            } else {
+                generalDistanceRegex.findAll(text).mapNotNull { match ->
+                    val num = match.groups[1]?.value?.toDoubleOrNull()
+                    val unit = match.groups[2]?.value?.lowercase(Locale.ROOT) ?: "km"
+                    if (num != null) {
+                        if (unit.startsWith("m")) num / 1000.0 else num
+                    } else null
+                }.toList()
+            }
 
             if (allDistances.isNotEmpty()) {
                 if (pickup == null) pickup = allDistances.first()
@@ -716,10 +813,15 @@ object TextAnalysisEngine {
     }
 
     /**
-     * Detects if the screen hierarchy includes an interactive "Accept" / "Go" action.
+     * Detects if the screen hierarchy includes an interactive "Accept" / "Go" action
+     * (including any remote `rapidoAcceptButtonKeywords`).
      */
     fun hasAcceptAction(text: String): Boolean {
-        return text.contains("Accept", ignoreCase = true) ||
+        val remoteMatch = AppConfigRepository.effectiveRapidoAcceptKeywords().any { kw ->
+            kw.length >= 2 && text.contains(kw, ignoreCase = true)
+        }
+        return remoteMatch ||
+                text.contains("Accept", ignoreCase = true) ||
                 text.contains("Accept Order", ignoreCase = true) ||
                 text.contains("Accept Ride", ignoreCase = true) ||
                 text.contains("Swipe to Accept", ignoreCase = true) ||
@@ -734,7 +836,10 @@ object TextAnalysisEngine {
     private fun isAcceptAction(content: String): Boolean {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return false
-        return RapidoAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)
+        if (RapidoAccessibilityService.ACCEPT_REGEX.containsMatchIn(trimmed)) return true
+        return AppConfigRepository.effectiveRapidoAcceptKeywords().any { kw ->
+            trimmed.equals(kw, ignoreCase = true)
+        }
     }
 
     /**

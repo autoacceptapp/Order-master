@@ -4,7 +4,9 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.PaymentVerificationRepository
 import com.example.data.PaymentVerificationState
+import com.example.data.repository.AppConfigRepository
 import com.google.firebase.firestore.ListenerRegistration
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -20,6 +22,13 @@ import kotlinx.coroutines.test.runTest
  */
 @RunWith(RobolectricTestRunner::class)
 class PaymentVerificationTest {
+
+    @After
+    fun tearDown() {
+        AppConfigRepository.applyAppConfigFromMap(null)
+        PassPricingConfig.resetDefaultsForTesting()
+        FeatureIds.resetRatesForTesting()
+    }
 
     @Test
     fun testStrict12DigitUtrValidation() {
@@ -327,40 +336,129 @@ class PaymentVerificationTest {
     }
 
     @Test
-    fun testLicenseManagerEnforcesOfflineGracePeriodLockRegardlessOfCache() {
+    fun testLicenseManagerEnforcesStrictTwoHourOfflineGraceForUnpaidAndTrialUsers() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         try {
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofHours(48))
             LicenseManager.resetStateForTesting(context)
 
             val now = System.currentTimeMillis()
-            val futureExpiry = now + 86400000L // Active for next 24 hours
+            val futureTrialExpiry = now + 12L * 3600L * 1000L // Active trial for next 12 hours
 
-            // Valid pass in cache
+            // Active trial (no paid Pro Pass) in cache
             LicenseManager.saveAuthoritativeLicensingCache(
                 context = context,
-                passTier = PassTier.MONTHLY,
-                passExpiry = futureExpiry,
-                trialClaimed = 0L,
-                trialExpiry = 0L,
-                trialUsed = false
+                passTier = null,
+                passExpiry = 0L,
+                trialClaimed = now - 10_000L,
+                trialExpiry = futureTrialExpiry,
+                trialUsed = true
             )
 
-            // Simulate offline for 3 hours (> 2 hours limit)
+            assertEquals(2, LicenseManager.getEffectiveOfflineGraceHours(context))
+            assertEquals(2, AppSettings.getEffectiveOfflineGraceHours(context))
+
+            // Simulate offline for 3 hours (> strict 2-hour unpaid/trial limit)
             val threeHoursAgo = now - (3L * 3600L * 1000L)
             LicenseManager.setLastServerSyncForTesting(
                 elapsedMs = android.os.SystemClock.elapsedRealtime() - (3L * 3600L * 1000L),
                 wallClockMs = threeHoursAgo
             )
 
-            assertTrue("Offline grace period must be expired", LicenseManager.isOfflineGracePeriodExpired())
+            assertTrue("Unpaid/trial offline grace period must expire after 2 hours", LicenseManager.isOfflineGracePeriodExpired(context))
 
             // Refresh access status
-            LicenseManager.refreshAccessStatus()
+            LicenseManager.refreshAccessStatus(context)
 
-            // Zero-Trust Security: Must be Expired despite valid cached pass expiry
+            // Zero-Trust Security: Free/trial user MUST be Expired after 2 hours offline
             val status = LicenseManager.accessStatus.value
             assertTrue("Status must be Expired due to 2-hour offline limit", status is AccessStatus.Expired)
             assertTrue((status as AccessStatus.Expired).message.contains("2-hour offline limit"))
+        } finally {
+            LicenseManager.resetStateForTesting(context)
+        }
+    }
+
+    @Test
+    fun testPaidPassOfflineGraceExtendsTo24HoursAndCapsAtPassExpiry() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        try {
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofHours(48))
+            LicenseManager.resetStateForTesting(context)
+            AppConfigRepository.applyAppConfigFromMap(null) // default 24h paid pass grace
+
+            val now = System.currentTimeMillis()
+            val tenDaysExpiry = now + (10L * 24L * 3600L * 1000L)
+
+            LicenseManager.saveAuthoritativeLicensingCache(
+                context = context,
+                passTier = PassTier.MONTHLY,
+                passExpiry = tenDaysExpiry,
+                trialClaimed = 0L,
+                trialExpiry = 0L,
+                trialUsed = false
+            )
+
+            assertEquals(24, LicenseManager.getEffectiveOfflineGraceHours(context))
+            assertEquals(24, AppSettings.getEffectiveOfflineGraceHours(context))
+
+            // 3 hours offline: MUST remain active for paid pass driver
+            LicenseManager.setLastServerSyncForTesting(
+                elapsedMs = android.os.SystemClock.elapsedRealtime() - (3L * 3600L * 1000L),
+                wallClockMs = now - (3L * 3600L * 1000L)
+            )
+            assertFalse("Paid pass driver offline 3h must NOT expire under 24h grace", LicenseManager.isOfflineGracePeriodExpired(context))
+            LicenseManager.refreshAccessStatus(context)
+            assertTrue("Paid pass driver offline 3h must remain PassActive", LicenseManager.accessStatus.value is AccessStatus.PassActive)
+
+            // 20 hours offline: MUST still remain active under 24h grace
+            LicenseManager.setLastServerSyncForTesting(
+                elapsedMs = android.os.SystemClock.elapsedRealtime() - (20L * 3600L * 1000L),
+                wallClockMs = now - (20L * 3600L * 1000L)
+            )
+            assertFalse("Paid pass driver offline 20h must NOT expire under 24h grace", LicenseManager.isOfflineGracePeriodExpired(context))
+
+            // 25 hours offline: MUST expire (> 24h grace)
+            LicenseManager.setLastServerSyncForTesting(
+                elapsedMs = android.os.SystemClock.elapsedRealtime() - (25L * 3600L * 1000L),
+                wallClockMs = now - (25L * 3600L * 1000L)
+            )
+            assertTrue("Paid pass driver offline 25h must expire after 24h grace", LicenseManager.isOfflineGracePeriodExpired(context))
+            LicenseManager.refreshAccessStatus(context)
+            val expiredStatus = LicenseManager.accessStatus.value
+            assertTrue("Expected Expired status after 25h offline", expiredStatus is AccessStatus.Expired)
+            assertTrue((expiredStatus as AccessStatus.Expired).message.contains("24-hour offline limit"))
+
+            // Pure formula check: min(passExpiryTimestamp, lastCloudSyncAt + paidPassOfflineGraceHours * 3_600_000L)
+            val syncAt = 1_700_000_000_000L
+            val sixHourExpiry = syncAt + (6L * 3_600_000L)
+            val deadlineCappedByExpiry = LicenseManager.computeOfflineGraceDeadlineMs(
+                lastCloudSyncAtMs = syncAt,
+                activePaidPassExpiryMs = sixHourExpiry,
+                nowMs = syncAt + (2L * 3_600_000L),
+                paidPassOfflineGraceHours = 24
+            )
+            assertEquals("Offline grace must never exceed passExpiryTimestamp", sixHourExpiry, deadlineCappedByExpiry)
+
+            // Remote paidPassOfflineGraceHours override & clamping (2..72)
+            AppConfigRepository.applyAppConfigFromMap(mapOf("paidPassOfflineGraceHours" to 12L))
+            assertEquals(12, LicenseManager.getEffectiveOfflineGraceHours(context))
+            val deadline12h = LicenseManager.computeOfflineGraceDeadlineMs(
+                lastCloudSyncAtMs = syncAt,
+                activePaidPassExpiryMs = syncAt + (100L * 3_600_000L),
+                nowMs = syncAt + (1L * 3_600_000L)
+            )
+            assertEquals(syncAt + (12L * 3_600_000L), deadline12h)
+
+            // Clamped ceiling (200 -> 72h)
+            AppConfigRepository.applyAppConfigFromMap(mapOf("paidPassOfflineGraceHours" to 200L))
+            assertEquals(72, LicenseManager.getEffectiveOfflineGraceHours(context))
+            val deadline72h = LicenseManager.computeOfflineGraceDeadlineMs(
+                lastCloudSyncAtMs = syncAt,
+                activePaidPassExpiryMs = syncAt + (200L * 3_600_000L),
+                nowMs = syncAt + (1L * 3_600_000L)
+            )
+            assertEquals(syncAt + (72L * 3_600_000L), deadline72h)
         } finally {
             LicenseManager.resetStateForTesting(context)
         }
@@ -970,6 +1068,65 @@ class PaymentVerificationTest {
             assertEquals(hwId, built["linkedHardwareId"])
         }
     }
+
+    @Test
+    fun testApprovedSnapshotResolutionHandlesAutoAdjustedTierAndNormalApproval() {
+        // Case 1: Admin auto-matched paid ₹49 from requested Daily Pass to Weekly Pass (String field)
+        val autoAdjusted = PaymentVerificationRepository.resolveApprovedSnapshot(
+            amount = 49L,
+            resolvedPassTierId = "weekly_pass",
+            docPassTierId = "daily_pass",
+            autoAdjustedFromRaw = "daily_pass",
+            requestedTier = PassTier.DAILY,
+            serverTier = PassTier.WEEKLY
+        )
+        assertNotNull(autoAdjusted)
+        assertEquals(PassTier.WEEKLY, autoAdjusted!!.passTier)
+        assertEquals(PassTier.DAILY, autoAdjusted.autoAdjustedFromRequestedTier)
+        assertTrue(autoAdjusted.message.contains("Auto-matched from Daily Pass to Weekly Pass"))
+
+        val successState = PaymentVerificationState.Success(
+            utr = "426719823451",
+            amount = 49L,
+            passTier = autoAdjusted.passTier,
+            expiryTimestamp = System.currentTimeMillis() + 86_400_000L,
+            isImmediate = true,
+            message = autoAdjusted.message,
+            resolvedPassTier = autoAdjusted.passTier,
+            autoAdjustedFromRequestedTier = autoAdjusted.autoAdjustedFromRequestedTier
+        )
+        assertTrue(successState.wasAutoAdjusted)
+        assertEquals(PassTier.WEEKLY, successState.resolvedPassTier)
+        assertEquals(PassTier.DAILY, successState.autoAdjustedFromRequestedTier)
+
+        // Case 2: Admin sends boolean autoAdjustedFromRequestedTier = true
+        val autoAdjustedBool = PaymentVerificationRepository.resolveApprovedSnapshot(
+            amount = 179L,
+            resolvedPassTierId = "monthly",
+            docPassTierId = "weekly",
+            autoAdjustedFromRaw = true,
+            requestedTier = PassTier.WEEKLY,
+            serverTier = PassTier.MONTHLY
+        )
+        assertNotNull(autoAdjustedBool)
+        assertEquals(PassTier.MONTHLY, autoAdjustedBool!!.passTier)
+        assertEquals(PassTier.WEEKLY, autoAdjustedBool.autoAdjustedFromRequestedTier)
+
+        // Case 3: Normal exact match approval (no auto-adjustment)
+        val normalApproval = PaymentVerificationRepository.resolveApprovedSnapshot(
+            amount = 49L,
+            resolvedPassTierId = "weekly_pass",
+            docPassTierId = "weekly_pass",
+            autoAdjustedFromRaw = null,
+            requestedTier = PassTier.WEEKLY,
+            serverTier = PassTier.WEEKLY
+        )
+        assertNotNull(normalApproval)
+        assertEquals(PassTier.WEEKLY, normalApproval!!.passTier)
+        assertNull(normalApproval.autoAdjustedFromRequestedTier)
+        assertFalse(normalApproval.message.contains("Auto-matched"))
+    }
 }
+
 
 

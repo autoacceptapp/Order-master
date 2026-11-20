@@ -45,6 +45,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
@@ -56,7 +57,6 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Shield
@@ -69,6 +69,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -347,16 +348,21 @@ fun PaymentVerificationScreen(
                     }
                 }
 
-                // 5. Merchant QR Code & UPI Card
+                // 5. QR-First Merchant Payment & 1-Tap Copy Card
                 item {
+                    val effectiveAmount = remember(paymentConfig, selectedTier) { selectedTier.effectivePriceInInr() }
                     MerchantPaymentQrCard(
                         selectedTier = selectedTier,
-                        effectiveAmountInr = remember(paymentConfig, selectedTier) { selectedTier.effectivePriceInInr() },
+                        effectiveAmountInr = effectiveAmount,
                         merchantVpa = merchantVpa,
                         merchantName = merchantName,
                         onCopyVpa = {
                             clipboardManager.setText(AnnotatedString(merchantVpa))
                             Toast.makeText(context, "UPI ID copied: $merchantVpa", Toast.LENGTH_SHORT).show()
+                        },
+                        onCopyAmount = {
+                            clipboardManager.setText(AnnotatedString(effectiveAmount.toString()))
+                            Toast.makeText(context, "Exact amount copied: ₹$effectiveAmount", Toast.LENGTH_SHORT).show()
                         },
                         onOpenUpi = {
                             val act = context as? Activity
@@ -496,6 +502,7 @@ private fun MerchantPaymentQrCard(
     merchantVpa: String,
     merchantName: String,
     onCopyVpa: () -> Unit,
+    onCopyAmount: () -> Unit,
     onOpenUpi: () -> Unit
 ) {
     ElevatedCard(
@@ -515,19 +522,46 @@ private fun MerchantPaymentQrCard(
             verticalArrangement = Arrangement.spacedBy(14.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Recommended QR-First Pill
+            Surface(
+                shape = RoundedCornerShape(999.dp),
+                color = PrimaryEmerald.copy(alpha = 0.14f)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.QrCode,
+                        contentDescription = null,
+                        tint = PrimaryEmerald,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = "RECOMMENDED • SCAN QR OR COPY UPI ID",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp
+                        ),
+                        color = PrimaryEmerald
+                    )
+                }
+            }
+
             // Header: Amount & Pass Name
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "Pay for ${selectedTier.title}",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                     Text(
-                        text = "Validity: ${selectedTier.durationDays} Day${if (selectedTier.durationDays > 1) "s" else ""}",
+                        text = "Validity: ${selectedTier.durationDays} Day${if (selectedTier.durationDays > 1) "s" else ""} • Exact amount required",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -561,12 +595,12 @@ private fun MerchantPaymentQrCard(
                 }
             }
 
-            // QR Code Container with subtle background
+            // Primary QR Code Container
             Surface(
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
-                modifier = Modifier.padding(vertical = 4.dp)
+                border = BorderStroke(1.5.dp, PrimaryEmerald.copy(alpha = 0.45f)),
+                modifier = Modifier.padding(vertical = 2.dp)
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -574,13 +608,13 @@ private fun MerchantPaymentQrCard(
                 ) {
                     ScannableUpiQrCode(
                         upiUri = upiUri,
-                        modifier = Modifier.size(190.dp),
+                        modifier = Modifier.size(200.dp),
                         contentDescription = "Scan to pay ₹$effectiveAmountInr to $merchantVpa"
                     )
 
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "Scan with any UPI App (GPay / PhonePe / Paytm / BHIM)",
+                        text = "Scan from another phone or screenshot & scan inside GPay / PhonePe / Paytm",
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -588,78 +622,116 @@ private fun MerchantPaymentQrCard(
                 }
             }
 
-            // Merchant VPA & Copy Button
+            // Merchant VPA Display
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Column {
-                        Text(
-                            text = "MERCHANT UPI ID",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.6.sp
-                            ),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Text(
+                        text = "UPI ID (PAY EXACTLY ₹$effectiveAmountInr)",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.6.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = merchantVpa.ifBlank { "Fetching Merchant UPI ID..." },
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
                         )
-                        Text(
-                            text = merchantVpa.ifBlank { "Fetching Merchant UPI ID..." },
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        )
-                    }
-
-                    OutlinedButton(
-                        onClick = onCopyVpa,
-                        enabled = merchantVpa.isNotBlank(),
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ContentCopy,
-                            contentDescription = "Copy",
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Copy", style = MaterialTheme.typography.labelSmall)
-                    }
+                    )
                 }
             }
 
-            // Direct Open UPI App Button
-            Button(
+            // Primary 1-Tap Actions: Copy UPI ID + Copy Exact Amount
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = onCopyVpa,
+                    enabled = merchantVpa.isNotBlank(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryEmerald),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    modifier = Modifier
+                        .weight(1.25f)
+                        .height(48.dp)
+                        .testTag("copy_upi_id_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Copy UPI ID",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+
+                FilledTonalButton(
+                    onClick = onCopyAmount,
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp)
+                        .testTag("copy_exact_amount_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Copy ₹$effectiveAmountInr",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
+
+            // Secondary Action: Direct Open UPI App (OutlinedButton to avoid NPCI personal-VPA intent failure confusion)
+            OutlinedButton(
                 onClick = onOpenUpi,
                 enabled = merchantVpa.isNotBlank(),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = PrimaryEmerald),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(46.dp)
+                    .height(48.dp)
                     .testTag("open_upi_app_button")
             ) {
                 Icon(
-                    imageVector = Icons.Default.OpenInNew,
+                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                     contentDescription = null,
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Pay ₹$effectiveAmountInr Directly in UPI App",
-                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                    text = "Open UPI App (Optional)",
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
                 )
             }
+
+            Text(
+                text = "Some UPI apps block direct links for personal UPI IDs. Scanning the QR or pasting the copied UPI ID works 100% of the time.",
+                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
         }
     }
 }
@@ -1001,6 +1073,47 @@ private fun VerificationSuccessCard(
                 textAlign = TextAlign.Center
             )
 
+            if (successState.message.isNotBlank()) {
+                Text(
+                    text = successState.message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
+                )
+            }
+
+            if (successState.wasAutoAdjusted) {
+                val fromTier = successState.autoAdjustedFromRequestedTier
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = AmberAccent.copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, AmberAccent.copy(alpha = 0.55f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("auto_adjusted_tier_badge")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Sync,
+                            contentDescription = "Auto-matched pass tier",
+                            tint = AmberAccent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Plan auto-matched: ${fromTier?.title ?: "Selected plan"} \u2192 ${successState.resolvedPassTier.title} based on ₹${successState.amount} paid.",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = MaterialTheme.colorScheme.surface,
@@ -1015,7 +1128,11 @@ private fun VerificationSuccessCard(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text("Active Pass Plan:", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(successState.passTier.title, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = successState.resolvedPassTier.title,
+                            fontWeight = FontWeight.Bold,
+                            color = PrimaryEmerald
+                        )
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth(),

@@ -1449,6 +1449,14 @@ object AppSettings {
                 _passExpiryTimestampFlow.value > LicenseManager.getCurrentServerTimeMs())
     }
 
+    /**
+     * Returns the active offline grace window in hours (`paidPassOfflineGraceHours` for active
+     * paid pass drivers, or `2` hours for free/trial/unpaid states).
+     */
+    fun getEffectiveOfflineGraceHours(context: Context? = null): Int {
+        return LicenseManager.getEffectiveOfflineGraceHours(context)
+    }
+
     private fun showToast(context: Context?, msg: String) {
         val ctx = context ?: return
         if (Looper.myLooper() == Looper.getMainLooper()) {

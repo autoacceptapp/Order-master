@@ -18,6 +18,7 @@ import android.util.Log
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.data.repository.AppConfigRepository
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +51,7 @@ open class RapidoAccessibilityService : AccessibilityService() {
         const val MAX_TRAVERSAL_TIMEOUT_MS = 45L // Strictly under 50ms traversal timeout to eliminate ANRs
         const val MAX_TRAVERSAL_DEPTH = 12       // Strictly limit recursion depth to prevent ANRs on nested layouts
         const val MIN_COORDINATE_TAP_INTERVAL_MS = 2000L // Strict rate-limiter: min 2000ms delay between coordinate taps
+        const val MORE_ORDERS_EXPAND_COOLDOWN_MS = 1500L // Prevent rapid re-tapping of "See N more orders"
 
         @Volatile
         var isServiceRunning: Boolean = false
@@ -136,11 +138,37 @@ open class RapidoAccessibilityService : AccessibilityService() {
     private var lastCoordinateTapTime: Long = 0L
 
     @Volatile
+    private var lastMoreOrdersExpandTime: Long = 0L
+
+    @Volatile
+    private var lastAppliedTargetPackage: String = TARGET_PACKAGE
+
+    @Volatile
     private var pendingRetainedAcceptNode: AccessibilityNodeInfo? = null
     private var pendingAcceptRunnable: Runnable? = null
     private var pendingRejectRunnable: Runnable? = null
 
     private var evalWakeLock: PowerManager.WakeLock? = null
+
+    fun getEffectiveTargetPackage(): String = AppConfigRepository.effectiveRapidoTargetPackage()
+
+    private fun applyServiceTargetPackage(targetPkg: String) {
+        try {
+            val info = serviceInfo ?: AccessibilityServiceInfo()
+            info.packageNames = arrayOf(targetPkg)
+            info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                    AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                    AccessibilityEvent.TYPE_VIEW_CLICKED
+            info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+            info.flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                    AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+            serviceInfo = info
+            lastAppliedTargetPackage = targetPkg
+        } catch (e: Exception) {
+            Log.w(TAG, "Unable to update AccessibilityServiceInfo packageNames to $targetPkg: ${e.message}")
+        }
+    }
 
     private fun getScreenDimensionsPx(): Pair<Float, Float> {
         return try {
@@ -234,6 +262,17 @@ open class RapidoAccessibilityService : AccessibilityService() {
                 Log.i(TAG, "LicenseManager access status changed: $status -> Operating in ${if (isPro) "PRO MODE" else "FREE MODE"}")
             }
         }
+
+        // Reactive listener for remote Rapido target package updates from admin_settings/app_config
+        serviceScope.launch {
+            AppConfigRepository.currentAppConfig.collectLatest {
+                val targetPkg = getEffectiveTargetPackage()
+                if (isServiceRunning && targetPkg != lastAppliedTargetPackage) {
+                    applyServiceTargetPackage(targetPkg)
+                    Log.i(TAG, "Updated monitored Rapido package dynamically to $targetPkg")
+                }
+            }
+        }
     }
 
     override fun onServiceConnected() {
@@ -241,26 +280,18 @@ open class RapidoAccessibilityService : AccessibilityService() {
         isServiceRunning = true
         instance = this
 
-        // CRITICAL: Explicitly set AccessibilityServiceInfo packageNames to target driver app only
-        val info = serviceInfo ?: AccessibilityServiceInfo()
-        info.packageNames = arrayOf(TARGET_PACKAGE)
-        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
-                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
-                AccessibilityEvent.TYPE_VIEW_CLICKED
-        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-        info.flags = AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
-                AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
-                AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
-        serviceInfo = info
+        // CRITICAL: Explicitly set AccessibilityServiceInfo packageNames to effective remote target driver app
+        val targetPkg = getEffectiveTargetPackage()
+        applyServiceTargetPackage(targetPkg)
 
         TTSManager.init(this)
-        Log.d(TAG, "Accessibility Service connected and operational for package: $TARGET_PACKAGE.")
+        Log.d(TAG, "Accessibility Service connected and operational for package: $targetPkg.")
         AppSettings.addLog(
             title = "Service Connected",
-            message = "Rapido Captain Auto-Accept Accessibility Service active for $TARGET_PACKAGE.",
+            message = "Rapido Captain Auto-Accept Accessibility Service active for $targetPkg.",
             severity = LogSeverity.INFO
         )
-        broadcastLog("Accessibility Service started and monitoring $TARGET_PACKAGE.")
+        broadcastLog("Accessibility Service started and monitoring $targetPkg.")
     }
 
     override fun onDestroy() {
@@ -298,9 +329,10 @@ open class RapidoAccessibilityService : AccessibilityService() {
         }
 
         // 1. Strict Target Package Filtering (Prevent Self-Scanning & Infinite Loops)
-        // If event.packageName is null, empty, equals this app's own packageName, or DOES NOT equal "com.rapido.rider", ignore it immediately.
+        // Uses remote-configurable rapidoTargetPackage (default: "com.rapido.rider").
+        val targetPkg = getEffectiveTargetPackage()
         val eventPkg = event.packageName?.toString() ?: ""
-        if (eventPkg.isEmpty() || eventPkg == packageName || eventPkg != TARGET_PACKAGE) {
+        if (eventPkg.isEmpty() || eventPkg == packageName || eventPkg != targetPkg) {
             return
         }
 
@@ -359,9 +391,10 @@ open class RapidoAccessibilityService : AccessibilityService() {
             }
 
             // 1. Card-Level Layout Isolation: Extract distinct order card containers across candidate windows
-            // and parse each container independently into a strictly isolated ParsedRideOffer.
-            // Texts from different cards are NEVER merged.
-            val offers = RideOfferParser.parseCards(candidateWindows)
+            // and parse each container independently into a strictly isolated ParsedRideOffer
+            // (excluding Rapido's left-side mini-tab strip on multi-order screens).
+            val screenWidthPx = getScreenDimensionsPx().first.toInt()
+            val offers = RideOfferParser.parseCards(candidateWindows, screenWidthPx)
             parsedOffers = offers
 
             if (offers.isEmpty()) {
@@ -426,7 +459,8 @@ open class RapidoAccessibilityService : AccessibilityService() {
                         }
 
                         val isPro = PassManager.isAccessGranted(this@RapidoAccessibilityService)
-                        offers = RideOfferParser.parseCards(candidate)
+                        val screenWidthPx = getScreenDimensionsPx().first.toInt()
+                        offers = RideOfferParser.parseCards(candidate, screenWidthPx)
                         if (offers.isNotEmpty()) {
                             val newOffers = synchronized(processedOfferIds) {
                                 offers.filter { !processedOfferIds.contains(it.id) }
@@ -782,6 +816,17 @@ open class RapidoAccessibilityService : AccessibilityService() {
             pendingAcceptRunnable = acceptRunnable
             mainHandler.postDelayed(acceptRunnable, acceptDelayMs)
         } else if (isAutoAccept && evaluatedOffers.isNotEmpty()) {
+            // Optional Remote-Controlled Expansion: When top floating popup fails filters and
+            // "See N more orders >" is visible, auto-tap it to inspect the full order list instead of rejecting.
+            if (tryExpandMoreOrdersIfConfigured(
+                    rootWindows = rootWindows,
+                    isProMode = isProMode,
+                    hasAnyActiveFilterEnabled = hasAnyActiveFilterEnabled
+                )
+            ) {
+                return
+            }
+
             // Smart Auto-Reject: Execute only if Pro Mode or at least 1 evaluation filter is BOTH unlocked & enabled
             val canAutoReject = (isProMode || hasAnyActiveFilterEnabled) &&
                 !LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) &&
@@ -840,23 +885,88 @@ open class RapidoAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Checks if the currently active window's package is TARGET_PACKAGE (Rapido).
+     * When `rapidoAutoExpandMoreOrders` is enabled remotely and the current popup offer fails
+     * active filters while "See N more orders >" is visible, taps that chip to inspect the full
+     * order list without prematurely dismissing it.
+     */
+    private fun tryExpandMoreOrdersIfConfigured(
+        rootWindows: List<AccessibilityNodeInfo>,
+        isProMode: Boolean,
+        hasAnyActiveFilterEnabled: Boolean
+    ): Boolean {
+        if (!AppConfigRepository.isRapidoAutoExpandMoreOrdersEnabled()) return false
+        if (!AppSettings.isAutoClickEnabled(this)) return false
+        if (!GlobalAdminManager.canExecuteActions(this)) return false
+        if (!LicenseManager.hasAnyAutoAcceptCapability()) return false
+        if (!isProMode && !hasAnyActiveFilterEnabled) return false
+
+        val nowElapsed = SystemClock.elapsedRealtime()
+        if (nowElapsed - lastMoreOrdersExpandTime < MORE_ORDERS_EXPAND_COOLDOWN_MS) {
+            return false
+        }
+
+        val screenWidthPx = getScreenDimensionsPx().first.toInt()
+        for (root in rootWindows) {
+            val expandNode = RideOfferParser.findSeeMoreOrdersNode(root, screenWidthPx) ?: continue
+            try {
+                val clicked = expandNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (clicked) {
+                    lastMoreOrdersExpandTime = nowElapsed
+                    AppSettings.addLog(
+                        title = "Expanded More Orders",
+                        message = "Top offer failed filters; tapped 'See more orders' to inspect full order list.",
+                        severity = LogSeverity.INFO
+                    )
+                    broadcastLog("Tapped 'See more orders' to inspect remaining rides.")
+                    return true
+                }
+                val bounds = Rect()
+                expandNode.getBoundsInScreen(bounds)
+                if (!bounds.isEmpty && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    lastMoreOrdersExpandTime = nowElapsed
+                    val cx = bounds.centerX().toFloat()
+                    val cy = bounds.centerY().toFloat()
+                    serviceScope.launch(Dispatchers.Main) {
+                        val path = Path().apply { moveTo(cx, cy) }
+                        val gesture = GestureDescription.Builder()
+                            .addStroke(GestureDescription.StrokeDescription(path, 0L, 60L))
+                            .build()
+                        dispatchGesture(gesture, null, null)
+                    }
+                    AppSettings.addLog(
+                        title = "Expanded More Orders",
+                        message = "Top offer failed filters; dispatched tap on 'See more orders' chip.",
+                        severity = LogSeverity.INFO
+                    )
+                    broadcastLog("Tapped 'See more orders' to inspect remaining rides.")
+                    return true
+                }
+            } finally {
+                recycleNode(expandNode)
+            }
+        }
+        return false
+    }
+
+    /**
+     * Checks if the currently active window's package matches the effective Rapido package.
      * If not, dispatches an Intent to bring the target app to the foreground
      * so that gesture dispatches hit the correct application.
      */
     fun bringTargetAppToForeground() {
+        val targetPkg = getEffectiveTargetPackage()
         try {
             val currentPkg = rootInActiveWindow?.packageName?.toString()
-            if (currentPkg != TARGET_PACKAGE) {
-                Log.i(TAG, "Current active window package ($currentPkg) is not $TARGET_PACKAGE. Bringing target app to foreground.")
-                val launchIntent = packageManager.getLaunchIntentForPackage(TARGET_PACKAGE)?.apply {
+            if (currentPkg != targetPkg) {
+                Log.i(TAG, "Current active window package ($currentPkg) is not $targetPkg. Bringing target app to foreground.")
+                val launchIntent = packageManager.getLaunchIntentForPackage(targetPkg)?.apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 }
                 if (launchIntent != null) {
                     startActivity(launchIntent)
-                    Log.i(TAG, "Dispatched startActivity for $TARGET_PACKAGE")
+                    Log.i(TAG, "Dispatched startActivity for $targetPkg")
                 } else {
-                    Log.w(TAG, "Launch intent for $TARGET_PACKAGE returned null.")
+                    Log.w(TAG, "Launch intent for $targetPkg returned null.")
                 }
             }
         } catch (e: Exception) {
@@ -1240,14 +1350,15 @@ open class RapidoAccessibilityService : AccessibilityService() {
                 }
 
                 // 3. Check if offer card is still present while target app window remains visible
-                val targetWindowVisible = rootWindows.any { it.packageName?.toString() == TARGET_PACKAGE }
+                val targetPkg = getEffectiveTargetPackage()
+                val targetWindowVisible = rootWindows.any { it.packageName?.toString() == targetPkg }
                 val stillHasOffer = hasActiveRideOfferOnScreen(rootWindows)
                 if (!stillHasOffer && targetWindowVisible) {
                     if (cardDisappearedAt == null) {
                         cardDisappearedAt = SystemClock.elapsedRealtime()
                     } else if (SystemClock.elapsedRealtime() - cardDisappearedAt >= 400L) {
                         // Card has been gone for >= 400ms inside target app with no error indicators -> Order accepted!
-                        Log.i(TAG, "verifyAcceptanceTransition: offer card vanished cleanly inside $TARGET_PACKAGE without errors.")
+                        Log.i(TAG, "verifyAcceptanceTransition: offer card vanished cleanly inside $targetPkg without errors.")
                         return@withContext AcceptanceState.CONFIRMED_ACCEPTED
                     }
                 } else {
@@ -1268,7 +1379,8 @@ open class RapidoAccessibilityService : AccessibilityService() {
             if (hasRejectionOrMissedIndicators(finalWindows)) {
                 return@withContext AcceptanceState.REJECTED_OR_TAKEN
             }
-            val finalTargetVisible = finalWindows.any { it.packageName?.toString() == TARGET_PACKAGE }
+            val targetPkg = getEffectiveTargetPackage()
+            val finalTargetVisible = finalWindows.any { it.packageName?.toString() == targetPkg }
             if (hasActiveTripIndicators(finalWindows) || (finalTargetVisible && !hasActiveRideOfferOnScreen(finalWindows))) {
                 return@withContext AcceptanceState.CONFIRMED_ACCEPTED
             }
@@ -1406,11 +1518,13 @@ open class RapidoAccessibilityService : AccessibilityService() {
         val rootList = mutableListOf<AccessibilityNodeInfo>()
         val seenWindowIds = mutableSetOf<Int>()
 
+        val targetPkg = getEffectiveTargetPackage()
+
         // 1. Check primary active window root (strictly ignore own app and non-target packages)
         val activeRoot = rootInActiveWindow
         if (activeRoot != null) {
             val rootPkg = activeRoot.packageName?.toString() ?: ""
-            if (rootPkg == packageName || (rootPkg.isNotEmpty() && rootPkg != TARGET_PACKAGE)) {
+            if (rootPkg == packageName || (rootPkg.isNotEmpty() && rootPkg != targetPkg)) {
                 recycleNode(activeRoot)
             } else {
                 rootList.add(activeRoot)
@@ -1430,7 +1544,7 @@ open class RapidoAccessibilityService : AccessibilityService() {
                         }
                         val windowRoot = window.root ?: continue
                         val winPkg = windowRoot.packageName?.toString() ?: ""
-                        if (winPkg == packageName || (winPkg.isNotEmpty() && winPkg != TARGET_PACKAGE)) {
+                        if (winPkg == packageName || (winPkg.isNotEmpty() && winPkg != targetPkg)) {
                             recycleNode(windowRoot)
                             continue
                         }
@@ -1871,7 +1985,10 @@ open class RapidoAccessibilityService : AccessibilityService() {
         val trimmed = content.trim()
         if (trimmed.isEmpty() || trimmed.length > 50) return false
         if (CHAT_OR_NOTIFICATION_REGEX.containsMatchIn(trimmed)) return false
-        return ACCEPT_REGEX.containsMatchIn(trimmed)
+        if (ACCEPT_REGEX.containsMatchIn(trimmed)) return true
+        return AppConfigRepository.effectiveRapidoAcceptKeywords().any { kw ->
+            trimmed.equals(kw, ignoreCase = true)
+        }
     }
 
     fun isRapidoAcceptId(viewId: String): Boolean {

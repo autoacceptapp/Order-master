@@ -1,10 +1,6 @@
 package com.example
 
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
-import android.os.Build
-import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -14,6 +10,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -25,15 +22,22 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.AccessibilityNew
+import androidx.compose.material.icons.filled.BatteryChargingFull
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -46,12 +50,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import android.widget.Toast
-import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -60,6 +62,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -69,12 +72,13 @@ import com.example.ui.theme.AmberContainer
 import com.example.ui.theme.OnAmberContainer
 import com.example.ui.theme.PrimaryEmerald
 
+private const val OEM_HEALTH_PREFS = "oem_health_checklist_prefs"
+private const val KEY_OEM_AUTOSTART_VISITED = "oem_autostart_visited"
+
 /**
- * Educational Dialog & Step-by-Step UI Guide for Android 13 & Android 14+ Restricted Settings.
- *
- * Explains how users can bypass the OS dialog:
- * "Restricted setting: For your security, this setting is currently unavailable"
- * when enabling the Captain Auto-Accept Accessibility Service.
+ * Interactive 3-step visual guide & dialog for Android 13/14+ Restricted Settings:
+ * `Open App Info → Tap ⋮ 3-dots → Allow restricted settings`
+ * (with quick-launch into Accessibility Settings to unlock the ⋮ menu if hidden).
  */
 @Composable
 fun RestrictedSettingsGuideDialog(
@@ -84,8 +88,10 @@ fun RestrictedSettingsGuideDialog(
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
+    var activeVisualStep by remember { mutableIntStateOf(0) }
 
     val handleOpenAppInfo: () -> Unit = {
+        activeVisualStep = 1
         if (onOpenAppInfo != null) {
             onOpenAppInfo()
         } else {
@@ -94,6 +100,7 @@ fun RestrictedSettingsGuideDialog(
     }
 
     val handleOpenAccessibility: () -> Unit = {
+        activeVisualStep = 0
         if (onOpenAccessibility != null) {
             onOpenAccessibility()
         } else {
@@ -124,7 +131,7 @@ fun RestrictedSettingsGuideDialog(
                     .fillMaxWidth()
                     .verticalScroll(scrollState)
                     .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 // Header with Close Icon
                 Row(
@@ -146,23 +153,18 @@ fun RestrictedSettingsGuideDialog(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Security,
-                                contentDescription = "Security Alert",
+                                contentDescription = "Restricted Settings Security Guide",
                                 tint = AmberAccent,
                                 modifier = Modifier.size(26.dp)
                             )
                         }
 
                         Column {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    text = "Restricted Setting Guide",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
+                            Text(
+                                text = "Allow Restricted Settings",
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))
@@ -170,7 +172,7 @@ fun RestrictedSettingsGuideDialog(
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = "Android 13\u201316 Requirement",
+                                    text = "Android 13\u201316 Sideload Unlock",
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                                     color = AmberAccent
                                 )
@@ -181,16 +183,22 @@ fun RestrictedSettingsGuideDialog(
                     IconButton(
                         onClick = onDismiss,
                         modifier = Modifier
-                            .size(36.dp)
+                            .size(48.dp)
                             .testTag("close_restricted_dialog_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
-                            contentDescription = "Close",
+                            contentDescription = "Close Restricted Settings Guide",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
+
+                // Interactive 3-Step Visual Strip: Open App Info -> Tap ⋮ 3-dots -> Allow restricted settings
+                VisualThreeStepFlowStrip(
+                    activeStep = activeVisualStep,
+                    onSelectStep = { activeVisualStep = it }
+                )
 
                 // Educational Context Banner
                 Card(
@@ -212,7 +220,7 @@ fun RestrictedSettingsGuideDialog(
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
-                            text = "On Android 13\u201316, the 3-dots 'Allow restricted settings' option inside App Info ONLY appears after you first open Accessibility Settings and tap the greyed-out Order Master service once.",
+                            text = "Apps installed directly from GitHub APK show 'Restricted setting' on Android 13+. Unlock it in 3 quick taps: Open App Info \u2192 Tap \u22EE (3-dots) \u2192 Allow restricted settings.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 18.sp
@@ -220,53 +228,44 @@ fun RestrictedSettingsGuideDialog(
                     }
                 }
 
-                // Step-by-Step Instructions (Exact Android 13-16 OS sequence)
+                // Step-by-Step Instructions
                 Column(
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    // Step 1: Must trigger the OS Restricted Settings dialog first
                     StepInstructionItem(
                         stepNumber = 1,
-                        title = "Open Accessibility Settings & tap once",
-                        description = "Tap '${context.getString(R.string.accessibility_service_name)}' once to trigger Android's 'Restricted setting' popup, then press Back to return here.",
-                        icon = Icons.Default.AccessibilityNew,
-                        actionLabel = "Open Accessibility Settings",
-                        onActionClick = handleOpenAccessibility,
-                        actionTestTag = "step1_open_accessibility_btn"
-                    )
-
-                    // Step 2: Open App Info where 3-dots menu is now unlocked
-                    StepInstructionItem(
-                        stepNumber = 2,
                         title = "Open App Info",
-                        description = "Open Order Master's App Info page so you can unlock the restricted setting.",
+                        description = "Open Order Master's App Info screen. (If the \u22EE 3-dots icon is hidden, tap Accessibility once first so Android shows it.)",
                         icon = Icons.Default.Settings,
-                        actionLabel = "Open App Info (3-Dots -> Allow)",
+                        isHighlighted = activeVisualStep == 0,
+                        actionLabel = "Open App Info",
                         onActionClick = handleOpenAppInfo,
                         actionTestTag = "step2_open_app_info_btn"
                     )
 
-                    // Step 3: Tap 3 dots & Allow restricted settings
                     StepInstructionItem(
-                        stepNumber = 3,
-                        title = "Tap 3 dots (\u22EE) -> Allow restricted settings",
-                        description = "Tap the 3 dots (\u22EE) in the top-right corner of App Info, choose 'Allow restricted settings', and verify with Fingerprint, PIN, or Pattern.",
+                        stepNumber = 2,
+                        title = "Tap \u22EE (3-dots) in top-right",
+                        description = "Look at the top-right corner of App Info and tap the 3-dots (\u22EE) menu icon.",
                         icon = Icons.Default.MoreVert,
-                        badgeText = "Fingerprint / PIN auth"
+                        isHighlighted = activeVisualStep == 1,
+                        badgeText = "Top-right \u22EE"
                     )
 
-                    // Step 4: Return & enable Accessibility Service
                     StepInstructionItem(
-                        stepNumber = 4,
-                        title = "Return to Accessibility & toggle ON",
-                        description = "Open Accessibility Settings again, select '${context.getString(R.string.accessibility_service_name)}', and switch it ON.",
+                        stepNumber = 3,
+                        title = "Allow restricted settings & Enable",
+                        description = "Tap 'Allow restricted settings', verify with Fingerprint/PIN, then return to Accessibility Settings and switch '${context.getString(R.string.accessibility_service_name)}' ON.",
                         icon = Icons.Default.Fingerprint,
-                        badgeText = "Final unlock step"
+                        isHighlighted = activeVisualStep == 2,
+                        actionLabel = "Open Accessibility",
+                        onActionClick = handleOpenAccessibility,
+                        actionTestTag = "step1_open_accessibility_btn"
                     )
                 }
 
-                // Helpful note / troubleshooting tip
+                // Troubleshooting Tip
                 Card(
                     colors = CardDefaults.cardColors(
                         containerColor = AmberContainer.copy(alpha = 0.35f)
@@ -288,14 +287,14 @@ fun RestrictedSettingsGuideDialog(
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = "Why is 3-dots (\u22EE) missing?",
+                                text = "Not seeing the \u22EE 3-dots menu?",
                                 style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                                 color = OnAmberContainer
                             )
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Android hides the 3-dots 'Allow restricted settings' menu until you first attempt to turn on Accessibility (Step 1). Complete Step 1 once, then open App Info in Step 2.",
+                            text = "Android hides the \u22EE option until you tap the greyed-out Accessibility service once. Tap 'Open Accessibility Settings' below, tap Order Master once, press Back, then open App Info.",
                             style = MaterialTheme.typography.bodySmall,
                             color = OnAmberContainer,
                             fontSize = 11.sp,
@@ -304,12 +303,35 @@ fun RestrictedSettingsGuideDialog(
                     }
                 }
 
-                // Action Buttons Footer: Exact Two-Step Order
+                // Action Buttons Footer
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Step 1 Action: Open Accessibility Settings
+                    Button(
+                        onClick = handleOpenAppInfo,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("open_app_info_settings_button"),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AmberAccent,
+                            contentColor = Color.Black
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "1. Open App Info (\u22EE \u2192 Allow Restricted)",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+
                     Button(
                         onClick = handleOpenAccessibility,
                         modifier = Modifier
@@ -329,42 +351,16 @@ fun RestrictedSettingsGuideDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "1. Open Accessibility Settings",
+                            text = "2. Open Accessibility Settings",
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                         )
                     }
 
-                    // Step 2 Action: Open App Info (Allow Restricted)
-                    Button(
-                        onClick = handleOpenAppInfo,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .testTag("open_app_info_settings_button"),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = AmberAccent,
-                            contentColor = Color.Black
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.OpenInNew,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "2. Open App Info (Allow Restricted)",
-                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
-                        )
-                    }
-
-                    // Tertiary Action: Dismiss
                     OutlinedButton(
                         onClick = onDismiss,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(40.dp)
+                            .height(48.dp)
                             .testTag("dismiss_restricted_dialog_button"),
                         shape = RoundedCornerShape(12.dp)
                     ) {
@@ -379,6 +375,79 @@ fun RestrictedSettingsGuideDialog(
     }
 }
 
+@Composable
+private fun VisualThreeStepFlowStrip(
+    activeStep: Int,
+    onSelectStep: (Int) -> Unit
+) {
+    val steps = listOf(
+        Triple("Open\nApp Info", Icons.Default.Settings, 0),
+        Triple("Tap \u22EE\n3-Dots", Icons.Default.MoreVert, 1),
+        Triple("Allow\nRestricted", Icons.Default.LockOpen, 2)
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+            .padding(horizontal = 8.dp, vertical = 10.dp)
+            .testTag("restricted_visual_3step_bar"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        steps.forEachIndexed { index, (label, icon, stepIdx) ->
+            val isSelected = activeStep == stepIdx
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(
+                        if (isSelected) AmberAccent.copy(alpha = 0.18f) else Color.Transparent
+                    )
+                    .clickable { onSelectStep(stepIdx) }
+                    .padding(vertical = 6.dp, horizontal = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isSelected) AmberAccent else MaterialTheme.colorScheme.surface
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = if (isSelected) Color.Black else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        lineHeight = 13.sp
+                    ),
+                    color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+            if (index < steps.lastIndex) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    tint = AmberAccent.copy(alpha = 0.7f),
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+    }
+}
+
 /**
  * Individual step presentation item with sequential badge, icon, and optional quick-action.
  */
@@ -388,17 +457,31 @@ private fun StepInstructionItem(
     title: String,
     description: String,
     icon: ImageVector,
+    isHighlighted: Boolean = false,
     badgeText: String? = null,
     actionLabel: String? = null,
     onActionClick: (() -> Unit)? = null,
     actionTestTag: String? = null
 ) {
+    val borderColor = if (isHighlighted) AmberAccent.copy(alpha = 0.65f) else Color.Transparent
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+            containerColor = if (isHighlighted) {
+                AmberContainer.copy(alpha = 0.22f)
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+            }
         ),
         shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (isHighlighted) {
+                    Modifier.border(1.dp, borderColor, RoundedCornerShape(12.dp))
+                } else {
+                    Modifier
+                }
+            )
     ) {
         Column(
             modifier = Modifier
@@ -411,22 +494,22 @@ private fun StepInstructionItem(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Step Number Badge
                 Box(
                     modifier = Modifier
                         .size(28.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer),
+                        .background(
+                            if (isHighlighted) AmberAccent else MaterialTheme.colorScheme.primaryContainer
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = "$stepNumber",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                        color = if (isHighlighted) Color.Black else MaterialTheme.colorScheme.onPrimaryContainer
                     )
                 }
 
-                // Step Title & Icon
                 Row(
                     modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
@@ -435,7 +518,7 @@ private fun StepInstructionItem(
                     Icon(
                         imageVector = icon,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = if (isHighlighted) AmberAccent else MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
@@ -496,10 +579,11 @@ private fun TextButtonWithTag(
 ) {
     Row(
         modifier = Modifier
+            .defaultMinSize(minHeight = 40.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f))
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
             .then(if (testTag != null) Modifier.testTag(testTag) else Modifier),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -515,6 +599,300 @@ private fun TextButtonWithTag(
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(14.dp)
         )
+    }
+}
+
+/**
+ * 1-Tap Permission & OEM Health Checklist Card for the Dashboard and Settings screens.
+ * Tracks live status for Accessibility Service, Floating Overlay, Battery Optimization Off,
+ * and OEM Auto-Start (Xiaomi/Oppo/Vivo/Realme) with direct 1-tap system intents and
+ * Android 13/14 Restricted Settings unlock guidance.
+ */
+@Composable
+fun PermissionOemHealthChecklistCard(
+    isAccessibilityEnabled: Boolean,
+    isOverlayEnabled: Boolean,
+    isBatteryUnrestricted: Boolean,
+    onClickAccessibility: () -> Unit,
+    onClickOverlay: () -> Unit,
+    onClickBattery: () -> Unit,
+    onClickOemAutoStart: () -> Unit,
+    onOpenRestrictedGuide: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val prefs = remember(context) {
+        context.getSharedPreferences(OEM_HEALTH_PREFS, Context.MODE_PRIVATE)
+    }
+    var isOemVisited by remember {
+        mutableStateOf(prefs.getBoolean(KEY_OEM_AUTOSTART_VISITED, false))
+    }
+    val isAggressiveOem = remember { PermissionUtils.isAggressiveOemDevice() }
+    val brandName = remember { PermissionUtils.getDeviceBrandName() }
+
+    val coreReadyCount = listOf(
+        isAccessibilityEnabled,
+        isOverlayEnabled,
+        isBatteryUnrestricted
+    ).count { it }
+    val totalReadyCount = coreReadyCount + if (isOemVisited || !isAggressiveOem) 1 else 0
+    val allHealthy = isAccessibilityEnabled && isOverlayEnabled && isBatteryUnrestricted && (isOemVisited || !isAggressiveOem)
+
+    var expanded by remember(allHealthy) { mutableStateOf(!allHealthy) }
+
+    val accentColor = if (allHealthy) PrimaryEmerald else AmberAccent
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .border(1.dp, accentColor.copy(alpha = 0.45f), RoundedCornerShape(18.dp))
+            .testTag("permission_oem_health_checklist_card"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Header row (collapsible when all healthy)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 48.dp)
+                    .clickable { expanded = !expanded }
+                    .testTag("health_checklist_header"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(accentColor.copy(alpha = 0.16f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = if (allHealthy) Icons.Default.CheckCircle else Icons.Default.Warning,
+                            contentDescription = "Setup Health Status",
+                            tint = accentColor,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = "Permission & OEM Health Checklist",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = if (allHealthy) {
+                                "All 4 checks configured ($brandName)"
+                            } else {
+                                "$totalReadyCount/4 ready \u2022 Tap any item below to fix in 1 tap"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Icon(
+                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (expanded) "Collapse checklist" else "Expand checklist",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HealthChecklistRow(
+                        title = "Accessibility Service",
+                        subtitle = if (isAccessibilityEnabled) {
+                            "Active & monitoring Rapido orders"
+                        } else if (PermissionUtils.isAndroid13OrHigher()) {
+                            "Required \u2022 Tap to enable (Android 13+ unlock guided)"
+                        } else {
+                            "Required \u2022 Tap to switch ON"
+                        },
+                        icon = Icons.Default.AccessibilityNew,
+                        isGranted = isAccessibilityEnabled,
+                        actionLabel = if (isAccessibilityEnabled) "Done" else "Enable",
+                        onClick = onClickAccessibility,
+                        testTag = "health_row_accessibility"
+                    )
+
+                    HealthChecklistRow(
+                        title = "Floating Overlay",
+                        subtitle = if (isOverlayEnabled) {
+                            "Allowed over Rapido Captain"
+                        } else {
+                            "Required to stay active over ride popups"
+                        },
+                        icon = Icons.Default.Layers,
+                        isGranted = isOverlayEnabled,
+                        actionLabel = if (isOverlayEnabled) "Done" else "Allow",
+                        onClick = onClickOverlay,
+                        testTag = "health_row_overlay"
+                    )
+
+                    HealthChecklistRow(
+                        title = "Battery Optimization Off",
+                        subtitle = if (isBatteryUnrestricted) {
+                            "Unrestricted background execution enabled"
+                        } else {
+                            "Prevent Android from killing auto-accept in background"
+                        },
+                        icon = Icons.Default.BatteryChargingFull,
+                        isGranted = isBatteryUnrestricted,
+                        actionLabel = if (isBatteryUnrestricted) "Done" else "Fix",
+                        onClick = onClickBattery,
+                        testTag = "health_row_battery"
+                    )
+
+                    HealthChecklistRow(
+                        title = "OEM Auto-Start ($brandName)",
+                        subtitle = if (isOemVisited) {
+                            "Auto-Start settings opened \u2022 Tap to re-verify"
+                        } else if (isAggressiveOem) {
+                            "Important on Xiaomi/Oppo/Vivo/Realme so service survives"
+                        } else {
+                            "Optional background startup permission"
+                        },
+                        icon = Icons.Default.PowerSettingsNew,
+                        isGranted = isOemVisited || !isAggressiveOem,
+                        actionLabel = if (isOemVisited) "Check" else "Open",
+                        onClick = {
+                            prefs.edit().putBoolean(KEY_OEM_AUTOSTART_VISITED, true).apply()
+                            isOemVisited = true
+                            onClickOemAutoStart()
+                        },
+                        testTag = "health_row_oem_autostart"
+                    )
+
+                    if (!isAccessibilityEnabled && PermissionUtils.isAndroid13OrHigher()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(AmberContainer.copy(alpha = 0.28f))
+                                .border(1.dp, AmberAccent.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                                .clickable(onClick = onOpenRestrictedGuide)
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .testTag("health_open_restricted_guide_button"),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Security,
+                                    contentDescription = "Restricted Settings Unlock",
+                                    tint = AmberAccent,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "Seeing 'Restricted setting'? Open 3-step unlock guide",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = null,
+                                tint = AmberAccent,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HealthChecklistRow(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    isGranted: Boolean,
+    actionLabel: String,
+    onClick: () -> Unit,
+    testTag: String
+) {
+    val statusColor = if (isGranted) PrimaryEmerald else AmberAccent
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (isGranted) {
+                    PrimaryEmerald.copy(alpha = 0.08f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                }
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .testTag(testTag),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(statusColor.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = if (isGranted) Icons.Default.CheckCircle else icon,
+                contentDescription = title,
+                tint = statusColor,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                lineHeight = 15.sp
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(statusColor.copy(alpha = 0.18f))
+                .padding(horizontal = 10.dp, vertical = 6.dp)
+        ) {
+            Text(
+                text = actionLabel,
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                color = if (isGranted) PrimaryEmerald else MaterialTheme.colorScheme.onSurface
+            )
+        }
     }
 }
 
@@ -572,7 +950,7 @@ fun RestrictedSettingsNoticeBanner(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Seeing \"Restricted setting unavailable\"? Tap for 4-step unlock guide.",
+                        text = "App Info \u2192 \u22EE 3-dots \u2192 Allow restricted settings (3-step guide).",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp

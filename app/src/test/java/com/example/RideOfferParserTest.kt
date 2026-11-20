@@ -2,6 +2,8 @@ package com.example
 
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.data.repository.AppConfigRepository
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -15,6 +17,11 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class RideOfferParserTest {
+
+    @After
+    fun tearDown() {
+        AppConfigRepository.applyAppConfigFromMap(null)
+    }
 
     @Test
     fun `test field identification helpers`() {
@@ -471,6 +478,283 @@ class RideOfferParserTest {
             service.isPotentialOfferEvent(chatEvent)
         )
     }
+
+    @Test
+    fun `test base plus tip fare summing ignores customer added extra badge without double counting`() {
+        // Direct inline base + tip expressions
+        val (sum1, parts1) = RideOfferParser.extractFareValue("₹55 + ₹10")
+        assertEquals(65.0, sum1 ?: 0.0, 0.01)
+        assertEquals(listOf(55.0, 10.0), parts1)
+
+        val (sum2, parts2) = RideOfferParser.extractFareValue("₹56 + ₹13")
+        assertEquals(69.0, sum2 ?: 0.0, 0.01)
+        assertEquals(listOf(56.0, 13.0), parts2)
+
+        // Tip badge noise must NEVER be treated as a fare node or extract a fare value
+        assertTrue(TextAnalysisEngine.isTipBadgeNoise("Customer added ₹10.0 extra"))
+        assertFalse(RideOfferParser.isFareNode("Customer added ₹10.0 extra", ""))
+        assertNull(RideOfferParser.extractFareValue("Customer added ₹10.0 extra").first)
+
+        // TextAnalysisEngine combined text must sum ₹55 + ₹10 = ₹65 and NOT double count ₹10.0 from badge
+        val (engineFare, _) = TextAnalysisEngine.extractCurrencies("₹55 + ₹10  Customer added ₹10.0 extra")
+        assertEquals(65.0, engineFare ?: 0.0, 0.01)
+
+        // Full card containing both "₹55 + ₹10" AND "Customer added ₹10.0 extra" badge
+        @Suppress("DEPRECATION")
+        val card = AccessibilityNodeInfo.obtain()
+        card.className = "androidx.cardview.widget.CardView"
+        card.viewIdResourceName = "com.rapido.rider:id/order_card"
+        card.setBoundsInScreen(Rect(240, 120, 1040, 620))
+
+        @Suppress("DEPRECATION")
+        val fareNode = AccessibilityNodeInfo.obtain()
+        fareNode.text = "₹55 + ₹10"
+        fareNode.setBoundsInScreen(Rect(260, 140, 560, 210))
+
+        @Suppress("DEPRECATION")
+        val tipBadgeNode = AccessibilityNodeInfo.obtain()
+        tipBadgeNode.text = "Customer added ₹10.0 extra"
+        tipBadgeNode.setBoundsInScreen(Rect(260, 215, 760, 260))
+
+        @Suppress("DEPRECATION")
+        val pickupNode = AccessibilityNodeInfo.obtain()
+        pickupNode.text = "Pickup 0.9 km"
+        pickupNode.setBoundsInScreen(Rect(260, 270, 560, 310))
+
+        @Suppress("DEPRECATION")
+        val dropNode = AccessibilityNodeInfo.obtain()
+        dropNode.text = "Drop 3.8 km"
+        dropNode.setBoundsInScreen(Rect(260, 320, 560, 360))
+
+        @Suppress("DEPRECATION")
+        val dropLocNode = AccessibilityNodeInfo.obtain()
+        dropLocNode.text = "Koramangala 4th Block"
+        dropLocNode.viewIdResourceName = "com.rapido.rider:id/drop_location"
+        dropLocNode.setBoundsInScreen(Rect(260, 370, 880, 420))
+
+        @Suppress("DEPRECATION")
+        val acceptBtn = AccessibilityNodeInfo.obtain()
+        acceptBtn.text = "Accept"
+        acceptBtn.isClickable = true
+        acceptBtn.isEnabled = true
+        acceptBtn.setBoundsInScreen(Rect(280, 500, 1000, 600))
+
+        org.robolectric.Shadows.shadowOf(card).addChild(fareNode)
+        org.robolectric.Shadows.shadowOf(card).addChild(tipBadgeNode)
+        org.robolectric.Shadows.shadowOf(card).addChild(pickupNode)
+        org.robolectric.Shadows.shadowOf(card).addChild(dropNode)
+        org.robolectric.Shadows.shadowOf(card).addChild(dropLocNode)
+        org.robolectric.Shadows.shadowOf(card).addChild(acceptBtn)
+
+        val parsed = RideOfferParser.parseCardContainer(card, screenWidthPx = 1080)
+        assertNotNull(parsed)
+        assertEquals(65.0, parsed?.totalFare ?: 0.0, 0.01)
+        assertEquals(0.9, parsed?.pickupDistanceKm ?: 0.0, 0.01)
+        assertEquals(3.8, parsed?.dropDistanceKm ?: 0.0, 0.01)
+        assertEquals("Koramangala 4th Block", parsed?.dropLocation)
+        assertFalse(parsed?.dropLocation?.contains("Customer added", ignoreCase = true) == true)
+
+        // Split sibling nodes: "₹55" and "+ ₹10" alongside tip badge -> strictly 65.0
+        val splitOffer = TextAnalysisEngine.parseTargetOfferFromNodes(
+            listOf("₹55", "+ ₹10", "Customer added ₹10.0 extra", "Pickup 1.2 km", "Drop 4.0 km", "Accept")
+        )
+        assertNotNull(splitOffer)
+        assertEquals(65.0, splitOffer?.fare ?: 0.0, 0.01)
+    }
+
+    @Test
+    fun `test 3 orders screen ignores left mini-tab sidebar and isolates each card accept button`() {
+        @Suppress("DEPRECATION")
+        val root = AccessibilityNodeInfo.obtain()
+        root.setBoundsInScreen(Rect(0, 0, 1080, 2400))
+
+        // Narrow left-side mini-tab strip (x = 0..190 < 22% of 1080px = 237px)
+        @Suppress("DEPRECATION")
+        val leftSidebar = AccessibilityNodeInfo.obtain()
+        leftSidebar.className = "android.widget.LinearLayout"
+        leftSidebar.viewIdResourceName = "com.rapido.rider:id/order_tabs_strip"
+        leftSidebar.setBoundsInScreen(Rect(0, 150, 190, 1100))
+
+        listOf("₹42" to 200, "₹80" to 420, "₹65" to 640).forEach { (tabPrice, topY) ->
+            @Suppress("DEPRECATION")
+            val tabItem = AccessibilityNodeInfo.obtain()
+            tabItem.text = tabPrice
+            tabItem.isClickable = true
+            tabItem.setBoundsInScreen(Rect(12, topY, 180, topY + 140))
+            org.robolectric.Shadows.shadowOf(leftSidebar).addChild(tabItem)
+        }
+        org.robolectric.Shadows.shadowOf(root).addChild(leftSidebar)
+
+        // Right-side RecyclerView with 3 isolated order cards
+        @Suppress("DEPRECATION")
+        val listContainer = AccessibilityNodeInfo.obtain()
+        listContainer.className = "androidx.recyclerview.widget.RecyclerView"
+        listContainer.setBoundsInScreen(Rect(220, 150, 1060, 2200))
+
+        fun buildOrderCard(
+            topY: Int,
+            fareStr: String,
+            tipBadge: String?,
+            pickupStr: String,
+            dropStr: String,
+            dropLocality: String
+        ): Pair<AccessibilityNodeInfo, AccessibilityNodeInfo> {
+            @Suppress("DEPRECATION")
+            val card = AccessibilityNodeInfo.obtain()
+            card.className = "androidx.cardview.widget.CardView"
+            card.viewIdResourceName = "com.rapido.rider:id/order_card"
+            card.setBoundsInScreen(Rect(240, topY, 1040, topY + 520))
+
+            @Suppress("DEPRECATION")
+            val fare = AccessibilityNodeInfo.obtain()
+            fare.text = fareStr
+            fare.setBoundsInScreen(Rect(260, topY + 20, 560, topY + 80))
+
+            @Suppress("DEPRECATION")
+            val pickup = AccessibilityNodeInfo.obtain()
+            pickup.text = pickupStr
+            pickup.setBoundsInScreen(Rect(260, topY + 100, 560, topY + 150))
+
+            @Suppress("DEPRECATION")
+            val drop = AccessibilityNodeInfo.obtain()
+            drop.text = dropStr
+            drop.setBoundsInScreen(Rect(260, topY + 160, 560, topY + 210))
+
+            @Suppress("DEPRECATION")
+            val dropLoc = AccessibilityNodeInfo.obtain()
+            dropLoc.text = dropLocality
+            dropLoc.viewIdResourceName = "com.rapido.rider:id/drop_location"
+            dropLoc.setBoundsInScreen(Rect(260, topY + 220, 960, topY + 280))
+
+            @Suppress("DEPRECATION")
+            val accept = AccessibilityNodeInfo.obtain()
+            accept.text = "Accept"
+            accept.isClickable = true
+            accept.isEnabled = true
+            accept.setBoundsInScreen(Rect(270, topY + 390, 1010, topY + 490))
+
+            org.robolectric.Shadows.shadowOf(card).addChild(fare)
+            if (tipBadge != null) {
+                @Suppress("DEPRECATION")
+                val badge = AccessibilityNodeInfo.obtain()
+                badge.text = tipBadge
+                badge.setBoundsInScreen(Rect(570, topY + 20, 1000, topY + 80))
+                org.robolectric.Shadows.shadowOf(card).addChild(badge)
+            }
+            org.robolectric.Shadows.shadowOf(card).addChild(pickup)
+            org.robolectric.Shadows.shadowOf(card).addChild(drop)
+            org.robolectric.Shadows.shadowOf(card).addChild(dropLoc)
+            org.robolectric.Shadows.shadowOf(card).addChild(accept)
+            return card to accept
+        }
+
+        val (card1, accept1) = buildOrderCard(160, "₹42", null, "Pickup 0.8 km", "Drop 2.1 km", "BTM Layout")
+        val (card2, accept2) = buildOrderCard(720, "₹80", null, "Pickup 1.1 km", "Drop 5.0 km", "Kempegowda Airport Road")
+        val (card3, accept3) = buildOrderCard(
+            1280,
+            "₹55 + ₹10",
+            "Customer added ₹10.0 extra",
+            "Pickup 1.0 km",
+            "Drop 3.2 km",
+            "Indiranagar 100 Feet Road"
+        )
+
+        org.robolectric.Shadows.shadowOf(listContainer).addChild(card1)
+        org.robolectric.Shadows.shadowOf(listContainer).addChild(card2)
+        org.robolectric.Shadows.shadowOf(listContainer).addChild(card3)
+        org.robolectric.Shadows.shadowOf(root).addChild(listContainer)
+
+        val offers = RideOfferParser.parseCards(listOf(root), screenWidthPx = 1080)
+        assertEquals("Left mini-tab sidebar must be ignored leaving strictly 3 cards", 3, offers.size)
+
+        assertEquals(42.0, offers[0].totalFare ?: 0.0, 0.01)
+        assertEquals(80.0, offers[1].totalFare ?: 0.0, 0.01)
+        assertEquals("Kempegowda Airport Road", offers[1].dropLocation)
+        assertEquals(65.0, offers[2].totalFare ?: 0.0, 0.01)
+        assertEquals("Indiranagar 100 Feet Road", offers[2].dropLocation)
+
+        // Simulate filter evaluation: minFare=60, blacklisted drop="airport"
+        val blacklistedDrop = "airport"
+        val matching = offers.filter { offer ->
+            val fareOk = (offer.totalFare ?: 0.0) >= 60.0
+            val dropOk = !offer.dropLocation.contains(blacklistedDrop, ignoreCase = true)
+            fareOk && dropOk
+        }
+        assertEquals("Only Card 3 should match filters", 1, matching.size)
+        val matchedCard = matching.first()
+        assertEquals(65.0, matchedCard.totalFare ?: 0.0, 0.01)
+
+        // Verify accept button belongs strictly to Card 3's bounds (NOT Card 1 or Card 2)
+        val matchedAcceptBounds = Rect()
+        matchedCard.acceptButton?.getBoundsInScreen(matchedAcceptBounds)
+        val card3Bounds = Rect()
+        card3.getBoundsInScreen(card3Bounds)
+        val accept3Bounds = Rect()
+        accept3.getBoundsInScreen(accept3Bounds)
+        val accept1Bounds = Rect()
+        accept1.getBoundsInScreen(accept1Bounds)
+        val accept2Bounds = Rect()
+        accept2.getBoundsInScreen(accept2Bounds)
+
+        assertEquals(accept3Bounds, matchedAcceptBounds)
+        assertTrue("Matched Accept button must reside inside Card 3 bounds", card3Bounds.contains(matchedAcceptBounds))
+        assertFalse(matchedAcceptBounds == accept1Bounds)
+        assertFalse(matchedAcceptBounds == accept2Bounds)
+    }
+
+    @Test
+    fun `test see more orders node detection for floating popup expansion`() {
+        assertTrue(RideOfferParser.isSeeMoreOrdersText("See 1 more orders >"))
+        assertTrue(RideOfferParser.isSeeMoreOrdersText("See 2 more order"))
+        assertTrue(RideOfferParser.isSeeMoreOrdersText("View 3 more orders"))
+        assertFalse(RideOfferParser.isSeeMoreOrdersText("Accept Order"))
+
+        @Suppress("DEPRECATION")
+        val root = AccessibilityNodeInfo.obtain()
+        root.setBoundsInScreen(Rect(0, 0, 1080, 2400))
+
+        @Suppress("DEPRECATION")
+        val expandBtn = AccessibilityNodeInfo.obtain()
+        expandBtn.text = "See 1 more orders >"
+        expandBtn.isClickable = true
+        expandBtn.isEnabled = true
+        expandBtn.setBoundsInScreen(Rect(260, 1800, 820, 1900))
+        org.robolectric.Shadows.shadowOf(root).addChild(expandBtn)
+
+        val found = RideOfferParser.findSeeMoreOrdersNode(root, screenWidthPx = 1080)
+        assertNotNull("Expected to find clickable 'See 1 more orders >' node", found)
+        assertEquals("See 1 more orders >", found?.text?.toString())
+    }
+
+    @Test
+    fun `test remote rapido regex and accept keywords work and malformed regex falls back safely`() {
+        AppConfigRepository.applyAppConfigFromMap(
+            mapOf(
+                "rapidoAcceptButtonKeywords" to listOf("Tap To Grab", "Quick Accept"),
+                "rapidoFareRegex" to """PAYOUT\s*:\s*(\d+(?:\.\d{1,2})?)""",
+                "rapidoDistanceRegex" to """DIST\s*:\s*(\d+(?:\.\d{1,2})?)\s*(km|m)"""
+            )
+        )
+
+        val (customFare, _) = RideOfferParser.extractFareValue("PAYOUT: 92")
+        assertEquals(92.0, customFare ?: 0.0, 0.01)
+        val customDist = RideOfferParser.extractDistanceValue("DIST: 3.4 km")
+        assertEquals(3.4, customDist ?: 0.0, 0.01)
+        assertTrue(TextAnalysisEngine.hasAcceptAction("Tap To Grab"))
+
+        // Malformed remote regex must fall back seamlessly to built-in ₹ and km parsing
+        AppConfigRepository.applyAppConfigFromMap(
+            mapOf(
+                "rapidoFareRegex" to "[broken((",
+                "rapidoDistanceRegex" to "((invalid"
+            )
+        )
+        val (fallbackFare, _) = RideOfferParser.extractFareValue("₹55 + ₹10")
+        assertEquals(65.0, fallbackFare ?: 0.0, 0.01)
+        val fallbackDist = RideOfferParser.extractDistanceValue("2.5 km")
+        assertEquals(2.5, fallbackDist ?: 0.0, 0.01)
+    }
 }
+
 
 

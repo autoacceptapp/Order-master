@@ -19,6 +19,7 @@ class AppConfigTest {
     fun tearDown() {
         AppConfigRepository.paymentConfigTestListenerFactory = null
         AppConfigRepository.applyPaymentConfigFromMap(null)
+        AppConfigRepository.applyAppConfigFromMap(null)
     }
 
     @Test
@@ -395,6 +396,91 @@ class AppConfigTest {
         assertEquals(199, PassTier.MONTHLY.effectivePriceInInr())
         assertEquals(249, PassTier.REMOVE_ADS.effectivePriceInInr())
     }
+
+    @Test
+    fun testAppConfigRemoteFieldSettingsDefaultsOverridesAndClamping() {
+        // Default values
+        val defaults = AppConfigRepository.applyAppConfigFromMap(null)
+        assertEquals(24, defaults.paidPassOfflineGraceHours)
+        assertEquals(24, AppConfigRepository.effectivePaidPassOfflineGraceHours())
+        assertEquals("com.rapido.rider", defaults.rapidoTargetPackage)
+        assertEquals("com.rapido.rider", AppConfigRepository.effectiveRapidoTargetPackage())
+        assertEquals(AppConfigRepository.DEFAULT_RAPIDO_ACCEPT_KEYWORDS, defaults.rapidoAcceptButtonKeywords)
+        assertFalse(defaults.rapidoAutoExpandMoreOrders)
+        assertFalse(AppConfigRepository.isRapidoAutoExpandMoreOrdersEnabled())
+
+        // Valid remote overrides (List accept keywords + custom package + 48h grace + auto-expand true)
+        val overridden = AppConfigRepository.applyAppConfigFromMap(
+            mapOf(
+                "minSupportedVersionCode" to 3L,
+                "latestVersionCode" to 5L,
+                "dynamicAppDownloadUrl" to "https://example.com/app.apk",
+                "paidPassOfflineGraceHours" to 48L,
+                "rapidoTargetPackage" to "com.rapido.captain.beta",
+                "rapidoAcceptButtonKeywords" to listOf("Accept Now", "Grab Ride", "Accept Now"),
+                "rapidoAutoExpandMoreOrders" to true
+            )
+        )
+        assertEquals(48, overridden.paidPassOfflineGraceHours)
+        assertEquals(48, AppConfigRepository.effectivePaidPassOfflineGraceHours())
+        assertEquals("com.rapido.captain.beta", overridden.rapidoTargetPackage)
+        assertEquals("com.rapido.captain.beta", AppConfigRepository.effectiveRapidoTargetPackage())
+        assertEquals(listOf("Accept Now", "Grab Ride"), overridden.rapidoAcceptButtonKeywords)
+        assertTrue(overridden.rapidoAutoExpandMoreOrders)
+        assertTrue(AppConfigRepository.isRapidoAutoExpandMoreOrdersEnabled())
+
+        // Lower clamp (0 / 1 -> 2) & comma-separated String keywords & invalid package fallback
+        val clampedLow = AppConfigRepository.applyAppConfigFromMap(
+            mapOf(
+                "paidPassOfflineGraceHours" to 1L,
+                "rapidoTargetPackage" to "invalid_no_dot_pkg",
+                "rapidoAcceptButtonKeywords" to "Tap Accept, Take Order, स्वीकार",
+                "rapidoAutoExpandMoreOrders" to "false"
+            )
+        )
+        assertEquals(2, clampedLow.paidPassOfflineGraceHours)
+        assertEquals("com.rapido.rider", clampedLow.rapidoTargetPackage)
+        assertEquals(listOf("Tap Accept", "Take Order", "स्वीकार"), clampedLow.rapidoAcceptButtonKeywords)
+        assertFalse(clampedLow.rapidoAutoExpandMoreOrders)
+
+        // Upper clamp (120 -> 72) & empty keywords fallback to defaults
+        val clampedHigh = AppConfigRepository.applyAppConfigFromMap(
+            mapOf(
+                "paidPassOfflineGraceHours" to 120L,
+                "rapidoAcceptButtonKeywords" to emptyList<String>()
+            )
+        )
+        assertEquals(72, clampedHigh.paidPassOfflineGraceHours)
+        assertEquals(AppConfigRepository.DEFAULT_RAPIDO_ACCEPT_KEYWORDS, clampedHigh.rapidoAcceptButtonKeywords)
+    }
+
+    @Test
+    fun testAppConfigRemoteRegexCompilationAndMalformedFallback() {
+        // Valid remote regexes compile cleanly
+        AppConfigRepository.applyAppConfigFromMap(
+            mapOf(
+                "rapidoFareRegex" to """(?:₹|INR)\s*(\d+(?:\.\d{1,2})?)""",
+                "rapidoDistanceRegex" to """(\d+(?:\.\d{1,2})?)\s*(km|m)"""
+            )
+        )
+        val fareRegex = AppConfigRepository.effectiveRapidoFareRegex()
+        val distRegex = AppConfigRepository.effectiveRapidoDistanceRegex()
+        assertTrue("Valid remote fare regex should compile", fareRegex != null)
+        assertTrue("Valid remote distance regex should compile", distRegex != null)
+        assertEquals("75", fareRegex!!.find("Fare INR 75")?.groupValues?.get(1))
+        assertEquals("2.4", distRegex!!.find("Drop 2.4 km")?.groupValues?.get(1))
+
+        // Malformed regex patterns must NOT crash and must return null for safe built-in fallback
+        AppConfigRepository.applyAppConfigFromMap(
+            mapOf(
+                "rapidoFareRegex" to "[unclosed_group(",
+                "rapidoDistanceRegex" to "(?invalid_regex"
+            )
+        )
+        assertNull("Malformed remote fare regex must fall back to null", AppConfigRepository.effectiveRapidoFareRegex())
+        assertNull("Malformed remote distance regex must fall back to null", AppConfigRepository.effectiveRapidoDistanceRegex())
+    }
 }
+
 
 
