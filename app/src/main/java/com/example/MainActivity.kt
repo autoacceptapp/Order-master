@@ -39,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -48,6 +49,8 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.data.repository.AppConfig
 import com.example.data.repository.AppConfigRepository
 import androidx.lifecycle.lifecycleScope
+import com.example.ui.components.resolveInAppMessageCategoryLabel
+import com.example.ui.components.resolveInAppMessageIcon
 import com.example.ui.screens.OnboardingScreen
 import com.example.ui.screens.SplashScreen
 import com.example.ui.theme.CaptainAutoAcceptTheme
@@ -266,6 +269,7 @@ class MainActivity : ComponentActivity() {
                     when {
                         activeMessage != null -> {
                             val message = activeMessage!!
+                            val categoryLabel = resolveInAppMessageCategoryLabel(message.targetUid)
                             AlertDialog(
                                 onDismissRequest = {
                                     InAppMessageManager.dismissMessage(message.id)
@@ -277,19 +281,27 @@ class MainActivity : ComponentActivity() {
                                 ),
                                 icon = {
                                     Icon(
-                                        imageVector = Icons.Default.Campaign,
-                                        contentDescription = null,
+                                        imageVector = resolveInAppMessageIcon(message.targetUid),
+                                        contentDescription = categoryLabel,
                                         tint = MaterialTheme.colorScheme.primary
                                     )
                                 },
                                 title = {
-                                    Text(
-                                        text = message.title,
-                                        style = MaterialTheme.typography.titleLarge.copy(
-                                            fontWeight = FontWeight.Bold
-                                        ),
-                                        modifier = Modifier.testTag("in_app_message_title")
-                                    )
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = categoryLabel,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.testTag("in_app_message_category_label")
+                                        )
+                                        Text(
+                                            text = message.title,
+                                            style = MaterialTheme.typography.titleLarge.copy(
+                                                fontWeight = FontWeight.Bold
+                                            ),
+                                            modifier = Modifier.testTag("in_app_message_title")
+                                        )
+                                    }
                                 },
                                 text = {
                                     Text(

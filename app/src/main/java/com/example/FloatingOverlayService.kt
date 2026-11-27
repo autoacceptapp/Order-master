@@ -12,12 +12,14 @@ import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import androidx.annotation.VisibleForTesting
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.util.Log
@@ -127,10 +129,85 @@ class FloatingOverlayService : Service() {
 
         @Volatile
         var isServiceRunning: Boolean = false
-            private set
+            internal set
 
         @Volatile
         private var activeInstance: FloatingOverlayService? = null
+
+        @Volatile
+        private var isTemporarilyUntouchable: Boolean = false
+
+        fun isTemporarilyUntouchable(): Boolean = isTemporarilyUntouchable
+
+        /**
+         * Sets whether the floating overlay window is temporarily untouchable.
+         * When untouchable is true, FLAG_NOT_TOUCHABLE is added to windowLayoutParams so that
+         * synthesized coordinate taps (dispatchGesture) pass straight through to underlying
+         * Rapido buttons without triggering the overlay's touch listener (which would otherwise
+         * toggle AUTO -> VOICE mode).
+         */
+        fun setTemporarilyUntouchable(untouchable: Boolean) {
+            isTemporarilyUntouchable = untouchable
+            val instance = activeInstance ?: return
+            if (!isServiceRunning) return
+
+            val updateAction = Runnable {
+                try {
+                    val root = instance.overlayRoot ?: return@Runnable
+                    val params = instance.windowLayoutParams ?: return@Runnable
+                    val wasUntouchable = (params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
+                    if (untouchable == wasUntouchable) return@Runnable
+
+                    if (untouchable) {
+                        params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                    } else {
+                        params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                    }
+                    instance.safeUpdateViewLayout(root, params)
+                    Log.d(TAG, "Floating overlay setTemporarilyUntouchable=$untouchable (flags=${params.flags})")
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Failed to update overlay touchable state ($untouchable): ${e.message}")
+                }
+            }
+
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                updateAction.run()
+            } else {
+                instance.mainHandler.post(updateAction)
+            }
+        }
+
+        /**
+         * Returns the current on-screen bounds of the floating overlay window,
+         * or null if the service is not active or the overlay is not attached.
+         */
+        fun getCurrentOverlayBoundsOnScreen(): Rect? {
+            val instance = activeInstance ?: return null
+            if (!isServiceRunning || !instance.isViewAttached) return null
+            val root = instance.overlayRoot ?: return null
+            val params = instance.windowLayoutParams ?: return null
+            val loc = IntArray(2)
+            try {
+                root.getLocationOnScreen(loc)
+            } catch (_: Throwable) {}
+            val x = if (loc[0] != 0) loc[0] else params.x
+            val y = if (loc[1] != 0) loc[1] else params.y
+            val fallbackSizePx = try {
+                root.resources?.displayMetrics?.density?.let { (70f * it).roundToInt() } ?: 150
+            } catch (_: Throwable) {
+                150
+            }
+            val w = if (root.width > 0) root.width else (if (params.width > 0) params.width else fallbackSizePx)
+            val h = if (root.height > 0) root.height else (if (params.height > 0) params.height else fallbackSizePx)
+            return Rect(x, y, x + w, y + h)
+        }
+
+        @VisibleForTesting
+        internal fun setActiveInstanceForTesting(service: FloatingOverlayService?) {
+            activeInstance = service
+            isServiceRunning = (service != null)
+            isTemporarilyUntouchable = false
+        }
 
         /**
          * Communicates a newly accepted fare to update the center badge in-process without startService.
@@ -169,17 +246,24 @@ class FloatingOverlayService : Service() {
         }
     }
 
-    private var windowManager: WindowManager? = null
-    private var overlayRoot: FrameLayout? = null
-    private var overlayCard: LinearLayout? = null
-    private var tvFare: TextView? = null
-    private var tvMode: TextView? = null
-    private var windowLayoutParams: WindowManager.LayoutParams? = null
+    var windowManager: WindowManager? = null
+        internal set
+    var overlayRoot: FrameLayout? = null
+        internal set
+    var overlayCard: LinearLayout? = null
+        internal set
+    var tvFare: TextView? = null
+        internal set
+    var tvMode: TextView? = null
+        internal set
+    var windowLayoutParams: WindowManager.LayoutParams? = null
+        internal set
 
-    private var isViewAttached = false
+    var isViewAttached = false
+        internal set
     internal var voiceAutoEnabledByOverlay = false
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private val mainHandler = Handler(Looper.getMainLooper())
+    internal val mainHandler = Handler(Looper.getMainLooper())
 
     private val accessVerificationRunnable = object : Runnable {
         override fun run() {
@@ -735,7 +819,7 @@ class FloatingOverlayService : Service() {
      * Safely updates WindowManager layout parameters, strictly verifying attachment state
      * to eliminate BadTokenException and IllegalArgumentException crashes during rotations or teardown.
      */
-    private fun safeUpdateViewLayout(view: View?, params: WindowManager.LayoutParams?) {
+    internal fun safeUpdateViewLayout(view: View?, params: WindowManager.LayoutParams?) {
         if (view == null || params == null) return
         if (!isViewAttached || !view.isAttachedToWindow || view.windowToken == null) {
             Log.d(TAG, "safeUpdateViewLayout: view not attached or windowToken is null (isViewAttached=$isViewAttached, isAttachedToWindow=${view.isAttachedToWindow}, windowToken=${view.windowToken}). Skipping update.")
@@ -1001,6 +1085,7 @@ class FloatingOverlayService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isServiceRunning = false
+        isTemporarilyUntouchable = false
         voiceAutoEnabledByOverlay = false
         if (activeInstance === this) {
             activeInstance = null

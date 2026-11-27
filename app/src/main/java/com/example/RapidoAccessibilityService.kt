@@ -50,8 +50,8 @@ open class RapidoAccessibilityService : AccessibilityService() {
         const val DEBOUNCE_WINDOW_MS = 100L // 100ms debounce to balance ultra-fast response with frame rate stability
         const val COOLDOWN_MS = 2000L // 2 seconds delay between order acceptance
         const val REJECT_DEBOUNCE_MS = 400L // 400ms debounce after rejecting an invalid card
-        const val MAX_TRAVERSAL_TIMEOUT_MS = 45L // Strictly under 50ms traversal timeout to eliminate ANRs
-        const val MAX_TRAVERSAL_DEPTH = 12       // Strictly limit recursion depth to prevent ANRs on nested layouts
+        const val MAX_TRAVERSAL_TIMEOUT_MS = 120L // Increased from 45L to 120L to prevent early aborts on deeply nested Compose layouts
+        const val MAX_TRAVERSAL_DEPTH = 25       // Increased from 12 to 25 to fully traverse deeply nested Rapido hierarchies
         const val MIN_COORDINATE_TAP_INTERVAL_MS = 2000L // Strict rate-limiter: min 2000ms delay between coordinate taps
         const val MORE_ORDERS_EXPAND_COOLDOWN_MS = 1500L // Prevent rapid re-tapping of "See N more orders"
         const val UI_SNAPSHOT_CAPTURE_INTERVAL_MS = 2000L
@@ -85,6 +85,31 @@ open class RapidoAccessibilityService : AccessibilityService() {
         const val FREE_MODE_MAX_ACCEPT_DELAY_MS = 2000L
         const val PRO_MODE_MIN_ACCEPT_DELAY_MS = 300L
         const val PRO_MODE_MAX_ACCEPT_DELAY_MS = 5000L
+
+        @androidx.annotation.VisibleForTesting
+        fun isOfferProcessedForTesting(service: RapidoAccessibilityService, offerId: String): Boolean {
+            return synchronized(service.processedOfferIds) { service.processedOfferIds.contains(offerId) }
+        }
+
+        @androidx.annotation.VisibleForTesting
+        fun addProcessedOfferForTesting(service: RapidoAccessibilityService, offerId: String) {
+            synchronized(service.processedOfferIds) { service.processedOfferIds.add(offerId) }
+        }
+
+        @androidx.annotation.VisibleForTesting
+        fun removeProcessedOfferForTesting(service: RapidoAccessibilityService, offerId: String) {
+            synchronized(service.processedOfferIds) { service.processedOfferIds.remove(offerId) }
+        }
+
+        @androidx.annotation.VisibleForTesting
+        fun clearProcessedOffersForTesting(service: RapidoAccessibilityService) {
+            synchronized(service.processedOfferIds) { service.processedOfferIds.clear() }
+        }
+
+        @androidx.annotation.VisibleForTesting
+        fun getProcessedOfferCountForTesting(service: RapidoAccessibilityService): Int {
+            return synchronized(service.processedOfferIds) { service.processedOfferIds.size }
+        }
 
         /**
          * Computes the effective auto-accept click delay:
@@ -1019,7 +1044,8 @@ open class RapidoAccessibilityService : AccessibilityService() {
      * Evaluates multiple simultaneous order offers isolated by tree grouping, logs card-level validation,
      * speaks announcements in order (QUEUE_ADD), and executes ACTION_CLICK strictly within the bounds of the best offer.
      */
-    private fun processOrderQueue(offers: List<ParsedRideOffer>, rootWindows: List<AccessibilityNodeInfo>, isProMode: Boolean) {
+    @androidx.annotation.VisibleForTesting
+    internal fun processOrderQueue(offers: List<ParsedRideOffer>, rootWindows: List<AccessibilityNodeInfo>, isProMode: Boolean) {
         val unprocessedOffers = synchronized(processedOfferIds) {
             offers.filter { !processedOfferIds.contains(it.id) }
         }
@@ -1028,6 +1054,9 @@ open class RapidoAccessibilityService : AccessibilityService() {
         }
 
         val isAutoAccept = AppSettings.isAutoAcceptEnabled(this)
+        val isAutoClick = AppSettings.isAutoClickEnabled(this)
+        val hasActiveAccess = LicenseManager.hasAnyAutoAcceptCapability()
+        val shouldRecordProcessed = isAutoClick && hasActiveAccess
 
         // UI Logging Requirement: Log total distinct unprocessed order cards detected
         AppSettings.addLog(
@@ -1046,13 +1075,16 @@ open class RapidoAccessibilityService : AccessibilityService() {
         // Sequential Queue Evaluation: Always evaluate offers via live entitlement-gated evaluator
         // (Free Mode with 0 active filters bypasses all locked/stale filters; Point-unlocked filters enforce only active unlocks; Pro Mode enforces all enabled filters)
         unprocessedOffers.forEachIndexed { index, offer ->
-            // Record in deduplication set
-            synchronized(processedOfferIds) {
-                if (processedOfferIds.size >= maxProcessedHistory) {
-                    val firstKey = processedOfferIds.iterator().next()
-                    processedOfferIds.remove(firstKey)
+            // Record in deduplication set ONLY when Auto-Click is enabled and access is active,
+            // so switching from VOICE to AUTO while the card is still visible picks it up immediately.
+            if (shouldRecordProcessed) {
+                synchronized(processedOfferIds) {
+                    if (processedOfferIds.size >= maxProcessedHistory) {
+                        val firstKey = processedOfferIds.iterator().next()
+                        processedOfferIds.remove(firstKey)
+                    }
+                    processedOfferIds.add(offer.id)
                 }
-                processedOfferIds.add(offer.id)
             }
 
             val evaluation = evaluateOfferWithEffectiveLicensing(this, offer)
@@ -1503,16 +1535,11 @@ open class RapidoAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * Executes the ACTION_CLICK strictly targeting the Accept button node
-     * located inside the spatial bounds of the selected best matching order card.
-     */
-    /**
-     * Executes the ACTION_CLICK strictly targeting the Accept button node
-     * located inside the spatial bounds of the selected best matching order card.
-     * Implements a robust "Wait-for-Success" state machine that verifies UI transition
+     * Executes the acceptance click specifically within the card's bounding box and verifies transition
      * to eliminate false-positive acceptance logs and announcements.
      */
-    private suspend fun executeCardAcceptClick(
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun executeCardAcceptClick(
         offer: ParsedRideOffer,
         evaluation: RideEvaluation,
         retainedAcceptNode: AccessibilityNodeInfo? = null
@@ -1528,23 +1555,57 @@ open class RapidoAccessibilityService : AccessibilityService() {
             // Re-verify Global Kill Switch, Ban status, Licensing & Auto-Click toggle after the randomized delay
             if (!GlobalAdminManager.canExecuteActions(this)) {
                 Log.w(TAG, "executeCardAcceptClick blocked: Global kill switch active or user banned.")
+                synchronized(processedOfferIds) { processedOfferIds.remove(offer.id) }
                 return
             }
             if (!LicenseManager.hasAnyAutoAcceptCapability()) {
                 Log.w(TAG, "executeCardAcceptClick blocked: License expired or no filter/feature unlocked.")
+                synchronized(processedOfferIds) { processedOfferIds.remove(offer.id) }
                 return
             }
             if (!AppSettings.isAutoAcceptEnabled(this) || !AppSettings.isAutoClickEnabled(this)) {
                 Log.i(TAG, "executeCardAcceptClick skipped: Auto-Click disabled during delay (Voice-Only TTS mode).")
+                synchronized(processedOfferIds) { processedOfferIds.remove(offer.id) }
                 return
             }
 
-            // 1. If the isolated raw card already has an acceptButton clone, try clicking that first
-            if (retainedAcceptNode != null) {
+            // 1. Fresh Accept Node Lookup: Always prefer a fresh findAcceptNodeInBounds lookup
+            // from current getAllRootWindows() first (since retainedAcceptNode becomes stale when
+            // Rapido's countdown ring updates the UI).
+            val rootWindows = getAllRootWindows()
+            try {
+                for (root in rootWindows) {
+                    val targetNode = findAcceptNodeInBounds(root, cardBounds) ?: continue
+                    try {
+                        val clickable = findClickableParentOrSelf(targetNode) ?: targetNode
+                        clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        Log.i(TAG, "executeCardAcceptClick: fresh in-bounds ACTION_CLICK success=$clicked")
+                        if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                            bringTargetAppToForeground()
+                            delay(250L)
+                            clicked = executeAutoAcceptGesture(clickable)
+                            Log.i(TAG, "executeCardAcceptClick: fresh in-bounds gesture success=$clicked")
+                        }
+                        if (clickable !== targetNode) {
+                            recycleNode(clickable)
+                        }
+                        if (clicked) break
+                    } finally {
+                        recycleNode(targetNode)
+                    }
+                }
+            } finally {
+                for (root in rootWindows) {
+                    recycleNode(root)
+                }
+            }
+
+            // 2. Fall back to pre-delay retainedAcceptNode if fresh lookup did not succeed
+            if (!clicked && retainedAcceptNode != null) {
                 try {
                     val clickableTarget = findClickableParentOrSelf(retainedAcceptNode) ?: retainedAcceptNode
                     clicked = clickableTarget.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    Log.i(TAG, "executeCardAcceptClick: direct acceptButton click success=$clicked")
+                    Log.i(TAG, "executeCardAcceptClick: fallback retainedAcceptNode click success=$clicked")
                     if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                         clicked = executeAutoAcceptGesture(clickableTarget)
                     }
@@ -1552,38 +1613,7 @@ open class RapidoAccessibilityService : AccessibilityService() {
                         recycleNode(clickableTarget)
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "executeCardAcceptClick: direct acceptButton click failed, trying search in bounds", e)
-                }
-            }
-
-            // 2. Search strictly within card bounds across active windows
-            if (!clicked) {
-                val rootWindows = getAllRootWindows()
-                try {
-                    for (root in rootWindows) {
-                        val targetNode = findAcceptNodeInBounds(root, cardBounds) ?: continue
-                        try {
-                            val clickable = findClickableParentOrSelf(targetNode) ?: targetNode
-                            clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                            Log.i(TAG, "executeCardAcceptClick: in-bounds ACTION_CLICK success=$clicked")
-                            if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                                bringTargetAppToForeground()
-                                delay(250L)
-                                clicked = executeAutoAcceptGesture(clickable)
-                                Log.i(TAG, "executeCardAcceptClick: fallback gesture success=$clicked")
-                            }
-                            if (clickable !== targetNode) {
-                                recycleNode(clickable)
-                            }
-                            if (clicked) break
-                        } finally {
-                            recycleNode(targetNode)
-                        }
-                    }
-                } finally {
-                    for (root in rootWindows) {
-                        recycleNode(root)
-                    }
+                    Log.w(TAG, "executeCardAcceptClick: fallback retainedAcceptNode click failed", e)
                 }
             }
 
@@ -1640,9 +1670,13 @@ open class RapidoAccessibilityService : AccessibilityService() {
                     }
                     AcceptanceState.STALLED_OR_TIMED_OUT -> {
                         lastProcessTime = SystemClock.elapsedRealtime()
+                        // Remove from processedOfferIds so the still-visible card can be retried on next accessibility event
+                        synchronized(processedOfferIds) {
+                            processedOfferIds.remove(offer.id)
+                        }
                         AppSettings.addLog(
                             title = "Order Acceptance Stalled",
-                            message = "Accept button was clicked, but order screen did not transition within 3.5s.",
+                            message = "Accept button was clicked, but order screen did not transition within 3.5s. Removed from processedOfferIds for retry.",
                             severity = LogSeverity.WARNING,
                             evaluation = evaluation
                         )
@@ -1651,9 +1685,13 @@ open class RapidoAccessibilityService : AccessibilityService() {
                 }
             } else {
                 lastProcessTime = SystemClock.elapsedRealtime()
+                // Remove from processedOfferIds so the still-visible card can be retried on next accessibility event
+                synchronized(processedOfferIds) {
+                    processedOfferIds.remove(offer.id)
+                }
                 AppSettings.addLog(
                     title = "Click Attempt Failed",
-                    message = "Accept button could not be clicked within card boundaries.",
+                    message = "Accept button could not be clicked within card boundaries. Removed from processedOfferIds for retry.",
                     severity = LogSeverity.WARNING,
                     evaluation = evaluation
                 )
@@ -1662,6 +1700,9 @@ open class RapidoAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.e(TAG, "Error executing card accept click", e)
             lastProcessTime = SystemClock.elapsedRealtime()
+            synchronized(processedOfferIds) {
+                processedOfferIds.remove(offer.id)
+            }
         } finally {
             recycleNode(retainedAcceptNode)
             isPendingExecution = false
@@ -2158,7 +2199,8 @@ open class RapidoAccessibilityService : AccessibilityService() {
         return executeAutoAcceptGesture(node)
     }
 
-    private suspend fun dispatchTapAtCoordinates(x: Float, y: Float): Boolean {
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun dispatchTapAtCoordinates(x: Float, y: Float): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) return false
         if (!GlobalAdminManager.canExecuteActions(this)) {
             Log.w(TAG, "dispatchTapAtCoordinates blocked: Service offline or user is banned.")
@@ -2182,43 +2224,62 @@ open class RapidoAccessibilityService : AccessibilityService() {
         }
         lastCoordinateTapTime = now
 
-        return suspendCancellableCoroutine { continuation ->
-            try {
-                val clickPath = Path().apply {
-                    moveTo(x, y)
+        // Prevent Floating Overlay Tap Interception:
+        // Set FloatingOverlayService to temporarily untouchable so synthesized touch passes through to Rapido.
+        val overlayBounds = FloatingOverlayService.getCurrentOverlayBoundsOnScreen()
+        val isOverOverlay = overlayBounds != null && overlayBounds.contains(x.toInt(), y.toInt())
+        FloatingOverlayService.setTemporarilyUntouchable(true)
+        if (isOverOverlay) {
+            delay(50L)
+        }
+
+        return try {
+            suspendCancellableCoroutine { continuation ->
+                continuation.invokeOnCancellation {
+                    FloatingOverlayService.setTemporarilyUntouchable(false)
                 }
-                val stroke = GestureDescription.StrokeDescription(clickPath, 0L, 50L)
-                val gesture = GestureDescription.Builder().addStroke(stroke).build()
-
-                val dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-                    override fun onCompleted(gestureDescription: GestureDescription?) {
-                        super.onCompleted(gestureDescription)
-                        Log.d(TAG, "dispatchTapAtCoordinates completed at ($x, $y)")
-                        if (continuation.isActive) {
-                            continuation.resume(true)
-                        }
+                try {
+                    val clickPath = Path().apply {
+                        moveTo(x, y)
                     }
+                    val stroke = GestureDescription.StrokeDescription(clickPath, 0L, 50L)
+                    val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
-                    override fun onCancelled(gestureDescription: GestureDescription?) {
-                        super.onCancelled(gestureDescription)
-                        Log.w(TAG, "dispatchTapAtCoordinates cancelled at ($x, $y)")
+                    val dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                        override fun onCompleted(gestureDescription: GestureDescription?) {
+                            super.onCompleted(gestureDescription)
+                            Log.d(TAG, "dispatchTapAtCoordinates completed at ($x, $y)")
+                            if (continuation.isActive) {
+                                continuation.resume(true)
+                            }
+                        }
+
+                        override fun onCancelled(gestureDescription: GestureDescription?) {
+                            super.onCancelled(gestureDescription)
+                            Log.w(TAG, "dispatchTapAtCoordinates cancelled at ($x, $y)")
+                            if (continuation.isActive) {
+                                continuation.resume(false)
+                            }
+                        }
+                    }, null)
+
+                    if (!dispatched) {
+                        Log.w(TAG, "dispatchGesture returned false immediately at ($x, $y)")
                         if (continuation.isActive) {
                             continuation.resume(false)
                         }
                     }
-                }, null)
-
-                if (!dispatched) {
-                    Log.w(TAG, "dispatchGesture returned false immediately at ($x, $y)")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in dispatchTapAtCoordinates", e)
                     if (continuation.isActive) {
                         continuation.resume(false)
                     }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in dispatchTapAtCoordinates", e)
-                if (continuation.isActive) {
-                    continuation.resume(false)
-                }
+            }
+        } finally {
+            serviceScope.launch {
+                delay(200L)
+                FloatingOverlayService.setTemporarilyUntouchable(false)
             }
         }
     }

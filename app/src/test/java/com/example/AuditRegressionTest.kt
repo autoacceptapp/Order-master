@@ -1,10 +1,17 @@
 package com.example
 
 import android.content.Context
+import android.graphics.PixelFormat
+import android.graphics.Rect
+import android.view.WindowManager
+import android.widget.FrameLayout
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -32,6 +39,7 @@ class AuditRegressionTest {
         LicenseManager.resetStateForTesting(context)
         AppSettings.resetBusinessStateForTest(context)
         ApkDownloader.cancelDownload(context)
+        FloatingOverlayService.setActiveInstanceForTesting(null)
     }
 
     @Test
@@ -603,6 +611,149 @@ class AuditRegressionTest {
         assertEquals(
             "Insufficient points balance",
             (failedWithReason as LicenseManager.ActionQueueOutcome.Failed).errorMessage
+        )
+    }
+
+    @Test
+    fun `accessibility traversal depth and timeout limits are updated to prevent early aborts`() {
+        assertEquals(120L, RapidoAccessibilityService.MAX_TRAVERSAL_TIMEOUT_MS)
+        assertEquals(25, RapidoAccessibilityService.MAX_TRAVERSAL_DEPTH)
+
+        // Verify countAcceptNodesInSubtree runs safely without timing out on empty root
+        val root = android.view.accessibility.AccessibilityNodeInfo.obtain()
+        val count = RideOfferParser.countAcceptNodesInSubtree(root, maxCount = 2, screenWidthPx = 1080)
+        assertEquals(0, count)
+    }
+
+    @Test
+    fun `floating overlay service setTemporarilyUntouchable updates flag safely and bounds detection works`() {
+        // Without active instance, toggling untouchable is safe no-op
+        FloatingOverlayService.setActiveInstanceForTesting(null)
+        assertFalse(FloatingOverlayService.isTemporarilyUntouchable())
+        FloatingOverlayService.setTemporarilyUntouchable(true)
+        assertTrue(FloatingOverlayService.isTemporarilyUntouchable())
+        assertNull(FloatingOverlayService.getCurrentOverlayBoundsOnScreen())
+        FloatingOverlayService.setTemporarilyUntouchable(false)
+        assertFalse(FloatingOverlayService.isTemporarilyUntouchable())
+
+        // With mock/test instance
+        val service = FloatingOverlayService()
+        val root = FrameLayout(context)
+        val params = WindowManager.LayoutParams(
+            150,
+            150,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            x = 200
+            y = 300
+        }
+        service.overlayRoot = root
+        service.windowLayoutParams = params
+        service.isViewAttached = true
+        FloatingOverlayService.setActiveInstanceForTesting(service)
+
+        val bounds = FloatingOverlayService.getCurrentOverlayBoundsOnScreen()
+        assertNotNull(bounds)
+        assertEquals(200, bounds!!.left)
+        assertEquals(300, bounds.top)
+
+        // Toggle untouchable
+        FloatingOverlayService.setTemporarilyUntouchable(true)
+        assertTrue(FloatingOverlayService.isTemporarilyUntouchable())
+        assertTrue((params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0)
+
+        // Toggle back to touchable
+        FloatingOverlayService.setTemporarilyUntouchable(false)
+        assertFalse(FloatingOverlayService.isTemporarilyUntouchable())
+        assertTrue((params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) == 0)
+
+        FloatingOverlayService.setActiveInstanceForTesting(null)
+    }
+
+    @Test
+    fun `processedOfferIds does not record offer when auto-click is disabled or access is inactive`() {
+        val service = RapidoAccessibilityService()
+        RapidoAccessibilityService.clearProcessedOffersForTesting(service)
+
+        val offer = ParsedRideOffer(
+            cardId = "test_offer_voice_101",
+            rawText = "₹120 Pickup 1.0 km Drop 5.0 km [Accept]",
+            totalFare = 120.0,
+            pickupDistanceKm = 1.0,
+            dropDistanceKm = 5.0,
+            hasAcceptButton = true
+        )
+
+        // Case A: Auto-Click disabled (Voice-Only mode) -> offer must NOT be added to processedOfferIds
+        AppSettings.setAutoAcceptEnabled(context, true)
+        AppSettings.setAutoClickEnabled(context, false)
+        LicenseManager.saveAuthoritativeLicensingCache(
+            context = context,
+            passTier = PassTier.DAILY,
+            passExpiry = System.currentTimeMillis() + 86_400_000L,
+            trialClaimed = 0L,
+            trialExpiry = 0L,
+            trialUsed = true
+        )
+        LicenseManager.refreshAccessStatus(context)
+        assertTrue(LicenseManager.isAccessGranted())
+
+        service.processOrderQueue(listOf(offer), emptyList(), isProMode = true)
+        assertFalse(
+            "Offer must NOT be permanently added to processedOfferIds in Voice-Only mode",
+            RapidoAccessibilityService.isOfferProcessedForTesting(service, offer.id)
+        )
+
+        // Case B: Auto-Click enabled with active access -> offer IS added to processedOfferIds
+        AppSettings.setAutoClickEnabled(context, true)
+        service.processOrderQueue(listOf(offer), emptyList(), isProMode = true)
+        assertTrue(
+            "Offer must be added to processedOfferIds when Auto-Click is enabled and access is active",
+            RapidoAccessibilityService.isOfferProcessedForTesting(service, offer.id)
+        )
+
+        // Clean up
+        RapidoAccessibilityService.clearProcessedOffersForTesting(service)
+    }
+
+    @Test
+    fun `executeCardAcceptClick removes offer from processedOfferIds when click fails or stalls`() = runBlocking {
+        val service = RapidoAccessibilityService()
+        RapidoAccessibilityService.clearProcessedOffersForTesting(service)
+
+        val offer = ParsedRideOffer(
+            cardId = "test_failed_offer_202",
+            rawText = "₹90 Pickup 0.5 km Drop 3.0 km [Accept]",
+            totalFare = 90.0,
+            pickupDistanceKm = 0.5,
+            dropDistanceKm = 3.0,
+            hasAcceptButton = true,
+            bounds = Rect(100, 200, 500, 600)
+        )
+        val evaluation = RideEvaluation(
+            offer = offer,
+            isAutoAcceptEnabled = true,
+            passesFare = true,
+            passesPickupDistance = true,
+            isAccepted = true,
+            decisionReason = "Valid test offer"
+        )
+
+        // Pre-seed offer in processedOfferIds as if queued
+        RapidoAccessibilityService.addProcessedOfferForTesting(service, offer.id)
+        assertTrue(RapidoAccessibilityService.isOfferProcessedForTesting(service, offer.id))
+
+        // When auto-click is disabled or blocked during delay, executeCardAcceptClick removes offer for retry
+        AppSettings.setAutoAcceptEnabled(context, true)
+        AppSettings.setAutoClickEnabled(context, false) // Disabled during delay
+
+        service.executeCardAcceptClick(offer, evaluation, retainedAcceptNode = null)
+
+        assertFalse(
+            "Offer must be removed from processedOfferIds on failed/skipped click to allow retry",
+            RapidoAccessibilityService.isOfferProcessedForTesting(service, offer.id)
         )
     }
 }

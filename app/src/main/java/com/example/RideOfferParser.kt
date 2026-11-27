@@ -300,7 +300,7 @@ object RideOfferParser {
 
         var count = 0
         val startTime = System.currentTimeMillis()
-        val timeoutMs = 45L
+        val timeoutMs = 100L // Increased from 45L to 100L to prevent miscounting multi-order containers
 
         try {
             while (queue.isNotEmpty()) {

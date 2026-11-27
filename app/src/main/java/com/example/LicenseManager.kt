@@ -33,6 +33,7 @@ import javax.crypto.spec.SecretKeySpec
 import javax.net.ssl.HttpsURLConnection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -686,9 +687,35 @@ object LicenseManager {
     private val docInitAttempted = AtomicBoolean(false)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
+    internal const val SILENT_PROFILE_UPDATE_DEFERRED_MESSAGE =
+        "Background profile sync deferred while a user action has priority."
+
+    internal val USER_TRIGGERED_ACTION_TYPES: Set<String> = setOf(
+        "PURCHASE_PASS",
+        "ACTIVATE_PASS_PAYMENT",
+        "REWARD_AD_WATCHED",
+        "UNLOCK_FEATURE",
+        "UNLOCK_MULTIPLE_FEATURES",
+        "CLAIM_REFERRAL"
+    )
+
     @Volatile
     private var lastActionCompletedAtMs: Long = 0L
     private val actionInFlight = AtomicBoolean(false)
+    private val backgroundProfileUpdateInFlight = AtomicBoolean(false)
+
+    @Volatile
+    private var deferredProfileUpdateJob: Job? = null
+
+    @VisibleForTesting
+    internal fun isSilentBackgroundAction(actionType: String): Boolean {
+        return actionType.trim().equals("UPDATE_PROFILE", ignoreCase = true)
+    }
+
+    @VisibleForTesting
+    internal fun isUserTriggeredAction(actionType: String): Boolean {
+        return USER_TRIGGERED_ACTION_TYPES.contains(actionType.trim().uppercase(Locale.ROOT))
+    }
 
     @VisibleForTesting
     internal fun getLastActionDispatchElapsedForTesting(): Long = lastActionCompletedAtMs
@@ -704,13 +731,28 @@ object LicenseManager {
         actionInFlight.set(inFlight)
     }
 
+    @VisibleForTesting
+    internal fun isBackgroundProfileUpdateInFlightForTesting(): Boolean =
+        backgroundProfileUpdateInFlight.get()
+
+    @VisibleForTesting
+    internal fun setBackgroundProfileUpdateInFlightForTesting(inFlight: Boolean) {
+        backgroundProfileUpdateInFlight.set(inFlight)
+    }
+
     /**
-     * Anchors the client-side 13.5s rate-limit cooldown to an action's terminal completion
-     * (`COMPLETED`, `REJECTED`, or `FAILED`), matching Admin App Step 7A which writes
-     * `users/{uid}.lastActionTime = FieldValue.serverTimestamp()` on terminal transition.
+     * Anchors the client-side 13.5s rate-limit cooldown to a foreground/user action's terminal
+     * completion (`COMPLETED`, `REJECTED`, or `FAILED`), matching Admin App Step 7A & Step 11A
+     * where silent `UPDATE_PROFILE` does NOT overwrite `users/{uid}.lastActionTime`.
      */
     @VisibleForTesting
-    internal fun recordActionTerminalCompletion(nowElapsed: Long = safeElapsedRealtime()) {
+    internal fun recordActionTerminalCompletion(
+        nowElapsed: Long = safeElapsedRealtime(),
+        actionType: String? = null
+    ) {
+        if (actionType != null && isSilentBackgroundAction(actionType)) {
+            return
+        }
         val marker = if (nowElapsed == 0L) -1L else nowElapsed
         if (lastActionCompletedAtMs == 0L || marker > lastActionCompletedAtMs) {
             lastActionCompletedAtMs = marker
@@ -756,12 +798,35 @@ object LicenseManager {
     }
 
     /**
-     * Checks whether a new action submission is permitted right now (neither in-flight nor
-     * inside the 13.5s post-completion cooldown window). Returns a friendly local message
-     * instead of hitting Firestore `PERMISSION_DENIED`.
+     * Returns `true` only when no explicit user-triggered action is currently in flight,
+     * no other background profile sync is in flight, and the 13.5s user-action cooldown window
+     * is completely clear. Otherwise silent `UPDATE_PROFILE` must defer to give user actions priority.
      */
     @VisibleForTesting
-    internal fun checkActionSubmissionAllowed(nowElapsed: Long = safeElapsedRealtime()): Result<Unit> {
+    internal fun canDispatchSilentProfileUpdate(nowElapsed: Long = safeElapsedRealtime()): Boolean {
+        return !actionInFlight.get() &&
+            !backgroundProfileUpdateInFlight.get() &&
+            computeActionCooldownRemainingMs(nowElapsed) == 0L
+    }
+
+    /**
+     * Checks whether a new action submission is permitted right now.
+     * - Silent `UPDATE_PROFILE` defers whenever any user action is in-flight or in cooldown.
+     * - Explicit user actions check only `actionInFlight` and the 13.5s user cooldown (never
+     *   blocked by a silent background `UPDATE_PROFILE`).
+     */
+    @VisibleForTesting
+    internal fun checkActionSubmissionAllowed(
+        nowElapsed: Long = safeElapsedRealtime(),
+        actionType: String? = null
+    ): Result<Unit> {
+        if (actionType != null && isSilentBackgroundAction(actionType)) {
+            return if (canDispatchSilentProfileUpdate(nowElapsed)) {
+                Result.success(Unit)
+            } else {
+                Result.failure(IllegalStateException(SILENT_PROFILE_UPDATE_DEFERRED_MESSAGE))
+            }
+        }
         if (actionInFlight.get() || computeActionCooldownRemainingMs(nowElapsed) > 0L) {
             return Result.failure(IllegalStateException(ACTION_COOLDOWN_FRIENDLY_MESSAGE))
         }
@@ -823,21 +888,89 @@ object LicenseManager {
         return initPayload
     }
 
-    @VisibleForTesting
-    internal fun shouldDispatchProfileUpdate(userKey: String, fields: Map<String, Any>): Boolean {
-        if (fields.isEmpty()) return false
+    private fun computeProfileUpdateHash(userKey: String, fields: Map<String, Any>): String? {
+        if (fields.isEmpty()) return null
         val normalized = fields.entries
             .filter { it.key != "userId" }
             .sortedBy { it.key }
             .joinToString("|") { "${it.key}=${it.value}" }
-        if (normalized.isEmpty()) return false
-        val newHash = "$userKey::$normalized"
+        if (normalized.isEmpty()) return null
+        return "$userKey::$normalized"
+    }
+
+    @VisibleForTesting
+    internal fun shouldDispatchProfileUpdate(userKey: String, fields: Map<String, Any>): Boolean {
+        val newHash = computeProfileUpdateHash(userKey, fields) ?: return false
         synchronized(profileUpdateLock) {
             if (profileUpdateDispatchedHash == newHash) {
                 return false
             }
             profileUpdateDispatchedHash = newHash
             return true
+        }
+    }
+
+    private fun resetProfileUpdateHashIfMatches(userKey: String, fields: Map<String, Any>) {
+        val targetHash = computeProfileUpdateHash(userKey, fields) ?: return
+        synchronized(profileUpdateLock) {
+            if (profileUpdateDispatchedHash == targetHash) {
+                profileUpdateDispatchedHash = null
+            }
+        }
+    }
+
+    private fun cancelDeferredProfileUpdateJob() {
+        synchronized(profileUpdateLock) {
+            deferredProfileUpdateJob?.cancel()
+            deferredProfileUpdateJob = null
+        }
+    }
+
+    private fun scheduleDeferredSilentProfileUpdate(
+        userKey: String,
+        updatesNeeded: Map<String, Any>,
+        attempt: Int
+    ) {
+        if (attempt >= 4 || updatesNeeded.isEmpty()) return
+        val delayMs = (computeActionCooldownRemainingMs() + 500L).coerceAtLeast(1_500L)
+        synchronized(profileUpdateLock) {
+            deferredProfileUpdateJob?.cancel()
+            deferredProfileUpdateJob = scope.launch {
+                delay(delayMs)
+                dispatchSilentProfileUpdateWithPriority(userKey, updatesNeeded, attempt)
+            }
+        }
+    }
+
+    private fun dispatchSilentProfileUpdateWithPriority(
+        userKey: String,
+        updatesNeeded: Map<String, Any>,
+        attempt: Int = 0
+    ) {
+        if (updatesNeeded.isEmpty()) return
+        if (!canDispatchSilentProfileUpdate()) {
+            Log.d(
+                TAG,
+                "Deferring silent UPDATE_PROFILE (attempt=$attempt) to preserve priority for active/recent user action."
+            )
+            scheduleDeferredSilentProfileUpdate(userKey, updatesNeeded, attempt + 1)
+            return
+        }
+        if (!shouldDispatchProfileUpdate(userKey, updatesNeeded)) return
+
+        scope.launch {
+            try {
+                val result = executeActionQueueRequest("UPDATE_PROFILE", updatesNeeded)
+                if (result.isFailure) {
+                    resetProfileUpdateHashIfMatches(userKey, updatesNeeded)
+                    if (result.exceptionOrNull()?.message == SILENT_PROFILE_UPDATE_DEFERRED_MESSAGE) {
+                        scheduleDeferredSilentProfileUpdate(userKey, updatesNeeded, attempt + 1)
+                    }
+                }
+            } catch (e: Exception) {
+                resetProfileUpdateHashIfMatches(userKey, updatesNeeded)
+                Log.w(TAG, "Failed updating user document fields via Action Queue: ${e.message}")
+            }
         }
     }
 
@@ -1025,6 +1158,8 @@ object LicenseManager {
         docInitAttempted.set(false)
         lastActionCompletedAtMs = 0L
         actionInFlight.set(false)
+        backgroundProfileUpdateInFlight.set(false)
+        cancelDeferredProfileUpdateJob()
         _pointsBalance.value = 0
         _hasClaimedReferral.value = false
         _referralCount.value = 0
@@ -1526,6 +1661,8 @@ object LicenseManager {
         lastSuccessfulServerSyncElapsedMs = 0L
         lastActionCompletedAtMs = 0L
         actionInFlight.set(false)
+        backgroundProfileUpdateInFlight.set(false)
+        cancelDeferredProfileUpdateJob()
         profileUpdateDispatchedHash = null
         activeUserDocUid = null
         _accessStatus.value = AccessStatus.Loading
@@ -1720,6 +1857,7 @@ object LicenseManager {
             try {
                 mainHandler.removeCallbacks(periodicTimestampCrossCheckRunnable)
             } catch (_: Exception) {}
+            cancelDeferredProfileUpdateJob()
         }
     }
 
@@ -1949,15 +2087,16 @@ object LicenseManager {
         recordCooldownOnTerminal: Boolean = true
     ): ActionQueueOutcome {
         val cleanStatus = status?.trim()?.uppercase(Locale.ROOT) ?: "PENDING"
+        val shouldRecordCooldown = recordCooldownOnTerminal && !isSilentBackgroundAction(actionType)
         if (cleanStatus == "COMPLETED") {
-            if (recordCooldownOnTerminal) {
-                recordActionTerminalCompletion(nowElapsed)
+            if (shouldRecordCooldown) {
+                recordActionTerminalCompletion(nowElapsed, actionType)
             }
             return ActionQueueOutcome.Completed
         }
         if (cleanStatus == "FAILED" || cleanStatus == "REJECTED") {
-            if (recordCooldownOnTerminal) {
-                recordActionTerminalCompletion(nowElapsed)
+            if (shouldRecordCooldown) {
+                recordActionTerminalCompletion(nowElapsed, actionType)
             }
             val rawError = errorMessage?.takeIf { it.isNotBlank() }
                 ?: error?.takeIf { it.isNotBlank() }
@@ -2066,18 +2205,32 @@ object LicenseManager {
             payload = effectivePayload
         )
 
+        val isSilentProfileSync = isSilentBackgroundAction(actionType)
         val canSubmit = actionDispatchMutex.withLock {
-            val gate = checkActionSubmissionAllowed()
-            if (gate.isFailure) {
-                gate
+            if (isSilentProfileSync) {
+                val gate = checkActionSubmissionAllowed(actionType = actionType)
+                if (gate.isFailure) {
+                    gate
+                } else {
+                    backgroundProfileUpdateInFlight.set(true)
+                    Result.success(Unit)
+                }
             } else {
-                actionInFlight.set(true)
-                Result.success(Unit)
+                val gate = checkActionSubmissionAllowed(actionType = actionType)
+                if (gate.isFailure) {
+                    gate
+                } else {
+                    actionInFlight.set(true)
+                    Result.success(Unit)
+                }
             }
         }
         if (canSubmit.isFailure) {
             return@withContext Result.failure(
-                canSubmit.exceptionOrNull() ?: IllegalStateException(ACTION_COOLDOWN_FRIENDLY_MESSAGE)
+                canSubmit.exceptionOrNull() ?: IllegalStateException(
+                    if (isSilentProfileSync) SILENT_PROFILE_UPDATE_DEFERRED_MESSAGE
+                    else ACTION_COOLDOWN_FRIENDLY_MESSAGE
+                )
             )
         }
 
@@ -2086,6 +2239,12 @@ object LicenseManager {
                 db.collection(COLL_PENDING_ACTIONS).add(actionData).await()
             } catch (e: FirebaseFirestoreException) {
                 if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                    if (isSilentProfileSync) {
+                        Log.w(TAG, "Silent UPDATE_PROFILE hit PERMISSION_DENIED on add; leaving user action cooldown untouched.")
+                        return@withContext Result.failure(
+                            IllegalStateException(SILENT_PROFILE_UPDATE_DEFERRED_MESSAGE, e)
+                        )
+                    }
                     Log.w(TAG, "Action $actionType hit PERMISSION_DENIED on add; syncing lastActionTime and enforcing local cooldown.")
                     try {
                         val userSnap = resolveUserDocumentSnapshot(db, currentUser.uid)
@@ -2097,7 +2256,7 @@ object LicenseManager {
                         Log.w(TAG, "Failed syncing lastActionTime after PERMISSION_DENIED: ${syncErr.message}")
                     }
                     if (computeActionCooldownRemainingMs() == 0L) {
-                        recordActionTerminalCompletion()
+                        recordActionTerminalCompletion(actionType = actionType)
                     }
                     return@withContext Result.failure(
                         IllegalStateException(ACTION_COOLDOWN_FRIENDLY_MESSAGE, e)
@@ -2142,9 +2301,11 @@ object LicenseManager {
                                     errorCode = snapshot.getString("errorCode")
                                 )) {
                                     ActionQueueOutcome.Completed -> {
-                                        updateLastActionCooldownFromServerTimestamp(
-                                            extractServerTimestampMs(snapshot.get("processedAt"))
-                                        )
+                                        if (!isSilentProfileSync) {
+                                            updateLastActionCooldownFromServerTimestamp(
+                                                extractServerTimestampMs(snapshot.get("processedAt"))
+                                            )
+                                        }
                                         Log.i(TAG, "Action $actionType (doc ${docRef.id}) marked COMPLETED by Admin server.")
                                         if (isResumed.compareAndSet(false, true)) {
                                             listenerRegistration?.remove()
@@ -2152,9 +2313,11 @@ object LicenseManager {
                                         }
                                     }
                                     is ActionQueueOutcome.Failed -> {
-                                        updateLastActionCooldownFromServerTimestamp(
-                                            extractServerTimestampMs(snapshot.get("processedAt"))
-                                        )
+                                        if (!isSilentProfileSync) {
+                                            updateLastActionCooldownFromServerTimestamp(
+                                                extractServerTimestampMs(snapshot.get("processedAt"))
+                                            )
+                                        }
                                         Log.w(TAG, "Action $actionType (doc ${docRef.id}) marked FAILED/REJECTED: ${snapOutcome.errorMessage}")
                                         if (isResumed.compareAndSet(false, true)) {
                                             listenerRegistration?.remove()
@@ -2197,16 +2360,20 @@ object LicenseManager {
                         errorCode = finalSnap.getString("errorCode")
                     )) {
                         ActionQueueOutcome.Completed -> {
-                            updateLastActionCooldownFromServerTimestamp(
-                                extractServerTimestampMs(finalSnap.get("processedAt"))
-                            )
+                            if (!isSilentProfileSync) {
+                                updateLastActionCooldownFromServerTimestamp(
+                                    extractServerTimestampMs(finalSnap.get("processedAt"))
+                                )
+                            }
                             Log.i(TAG, "Action $actionType (doc ${docRef.id}) confirmed COMPLETED on post-timeout check.")
                             return@withContext Result.success(finalSnap)
                         }
                         is ActionQueueOutcome.Failed -> {
-                            updateLastActionCooldownFromServerTimestamp(
-                                extractServerTimestampMs(finalSnap.get("processedAt"))
-                            )
+                            if (!isSilentProfileSync) {
+                                updateLastActionCooldownFromServerTimestamp(
+                                    extractServerTimestampMs(finalSnap.get("processedAt"))
+                                )
+                            }
                             return@withContext Result.failure(IllegalStateException(finalOutcome.errorMessage))
                         }
                         ActionQueueOutcome.Pending -> Unit
@@ -2225,7 +2392,11 @@ object LicenseManager {
 
             outcome
         } finally {
-            actionInFlight.set(false)
+            if (isSilentProfileSync) {
+                backgroundProfileUpdateInFlight.set(false)
+            } else {
+                actionInFlight.set(false)
+            }
         }
     }
 
@@ -2604,15 +2775,10 @@ object LicenseManager {
                 )
                 _referralCode.value = code?.takeIf { it.isNotBlank() }
 
-                // Only dispatch UPDATE_PROFILE when firebaseUid, linkedHardwareId, or userEmail differ from server doc
-                if (updatesNeeded.isNotEmpty() && shouldDispatchProfileUpdate(customUserId, updatesNeeded)) {
-                    scope.launch {
-                        try {
-                            executeActionQueueRequest("UPDATE_PROFILE", updatesNeeded)
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed updating user document fields via Action Queue: ${e.message}")
-                        }
-                    }
+                // Only dispatch silent UPDATE_PROFILE when canonical profile fields differ from server doc,
+                // deferring automatically whenever an explicit user action is in flight or inside its 13.5s cooldown.
+                if (updatesNeeded.isNotEmpty()) {
+                    dispatchSilentProfileUpdateWithPriority(customUserId, updatesNeeded)
                 }
 
                 refreshAccessStatus()

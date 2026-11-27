@@ -3,6 +3,7 @@ package com.example
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import com.example.auth.GoogleAuthManager
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
@@ -34,9 +35,10 @@ data class InAppMessage(
  * InAppMessageManager
  *
  * Real-time listener and manager for in-app popups and broadcast messages:
- * 1. Global Messages (`global_messages` collection) -> broadcast to all users.
+ * 1. Global Messages (`global_messages` collection) -> broadcast to all users, with strict
+ *    defense-in-depth `targetUid` filtering (allows only blank/null, "ALL", or current user's UID).
  * 2. Targeted Messages (`users/{uid}/messages` subcollection) -> specific to current user.
- * 3. Records dismissed message IDs in SharedPreferences to avoid showing duplicates.
+ * 3. Deduplicates by `messageId` across both streams and records dismissed IDs in SharedPreferences.
  */
 object InAppMessageManager {
 
@@ -53,6 +55,9 @@ object InAppMessageManager {
 
     @Volatile
     private var appContext: Context? = null
+
+    @Volatile
+    private var bypassUiDelayForTesting: Boolean = false
 
     private var globalListener: ListenerRegistration? = null
     private var userMessageListener: ListenerRegistration? = null
@@ -81,6 +86,86 @@ object InAppMessageManager {
     }
 
     /**
+     * Strict defense-in-depth recipient check for `global_messages` documents.
+     * Allows ONLY documents where `targetUid` is missing/blank, `"ALL"` (case-insensitive),
+     * or exact-matches `currentUid`. Silently drops any document addressed to another user.
+     */
+    @VisibleForTesting
+    internal fun isGlobalMessageAllowedForUser(targetUid: String?, currentUid: String?): Boolean {
+        val normalizedTarget = targetUid?.trim()
+        if (normalizedTarget.isNullOrEmpty()) return true
+        if (normalizedTarget.equals("ALL", ignoreCase = true)) return true
+        val normalizedCurrent = currentUid?.trim()
+        return !normalizedCurrent.isNullOrEmpty() && normalizedTarget == normalizedCurrent
+    }
+
+    /**
+     * Parses, recipient-filters, and enqueues a document from `global_messages`.
+     * Returns `true` if the message was accepted and enqueued, or `false` if silently dropped,
+     * blank, already dismissed, or deduplicated across streams.
+     */
+    @VisibleForTesting
+    internal fun processGlobalMessageDocument(
+        id: String,
+        title: String?,
+        message: String?,
+        targetUid: String?,
+        timestamp: Long,
+        currentUid: String?
+    ): Boolean {
+        val cleanId = id.trim()
+        val cleanMessage = message?.trim().orEmpty()
+        if (cleanId.isEmpty() || cleanMessage.isEmpty()) return false
+
+        if (!isGlobalMessageAllowedForUser(targetUid, currentUid)) {
+            Log.d(TAG, "Silently dropped global_messages doc $cleanId addressed to another user.")
+            return false
+        }
+
+        val inAppMsg = InAppMessage(
+            id = cleanId,
+            title = title?.trim()?.takeIf { it.isNotEmpty() } ?: "Announcement",
+            message = cleanMessage,
+            targetUid = targetUid?.trim(),
+            timestamp = timestamp
+        )
+        return enqueueMessage(inAppMsg)
+    }
+
+    /**
+     * Parses and enqueues a document from `users/{uid}/messages`, sharing the exact same
+     * `messageId` deduplication and dismissal pipeline as `global_messages`.
+     */
+    @VisibleForTesting
+    internal fun processUserMessageDocument(
+        id: String,
+        title: String?,
+        message: String?,
+        targetUid: String?,
+        timestamp: Long,
+        currentUid: String
+    ): Boolean {
+        val cleanId = id.trim()
+        val cleanMessage = message?.trim().orEmpty()
+        val cleanCurrentUid = currentUid.trim()
+        if (cleanId.isEmpty() || cleanMessage.isEmpty() || cleanCurrentUid.isEmpty()) return false
+
+        if (!isGlobalMessageAllowedForUser(targetUid, cleanCurrentUid)) {
+            Log.d(TAG, "Silently dropped user message doc $cleanId with mismatched targetUid.")
+            return false
+        }
+
+        val inAppMsg = InAppMessage(
+            id = cleanId,
+            title = title?.trim()?.takeIf { it.isNotEmpty() } ?: "Direct Message",
+            message = cleanMessage,
+            targetUid = targetUid?.trim()?.takeIf { it.isNotEmpty() } ?: cleanCurrentUid,
+            timestamp = timestamp
+        )
+        return enqueueMessage(inAppMsg)
+    }
+
+    /**
      * Initializes the manager with the application context.
      * Loads dismissed IDs from SharedPreferences and sets up Firestore real-time listeners.
      */
@@ -104,11 +189,12 @@ object InAppMessageManager {
                     }
 
                     if (authState.isLoggedIn && !uid.isNullOrBlank() && isFirebaseReady(ctx)) {
-                        startGlobalMessageListener(ctx)
+                        startGlobalMessageListener(ctx, uid)
                         startUserMessageListener(ctx, uid)
                     } else {
                         stopGlobalMessageListener()
                         stopUserMessageListener()
+                        clearPendingQueueInMemory()
                     }
                 }
             }
@@ -125,12 +211,13 @@ object InAppMessageManager {
     }
 
     private fun markMessageDismissedLocally(messageId: String) {
-        val ctx = appContext ?: return
-        synchronized(dismissedIds) {
+        val snapshotSet = synchronized(dismissedIds) {
             dismissedIds.add(messageId)
+            dismissedIds.toSet()
         }
+        val ctx = appContext ?: return
         val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putStringSet(KEY_DISMISSED_IDS, synchronized(dismissedIds) { dismissedIds.toSet() }).apply()
+        prefs.edit().putStringSet(KEY_DISMISSED_IDS, snapshotSet).apply()
     }
 
     fun isMessageDismissed(messageId: String): Boolean {
@@ -155,6 +242,16 @@ object InAppMessageManager {
         // Step 1: Immediately clear active message so Compose cleans up the exiting dialog
         _activeMessage.value = null
 
+        if (bypassUiDelayForTesting) {
+            synchronized(queueLock) {
+                val next = pendingQueue.firstOrNull { !isMessageDismissed(it.id) }
+                if (next != null) {
+                    _activeMessage.value = next
+                }
+            }
+            return
+        }
+
         // Step 2: Debounce popping the next queued message by 300ms to allow Compose dialog exit transition to finish cleanly
         scope.launch(Dispatchers.Main) {
             delay(300L)
@@ -169,18 +266,28 @@ object InAppMessageManager {
     }
 
     /**
-     * Enqueues a message to be shown if it hasn't been dismissed yet.
+     * Enqueues a message to be shown if it hasn't been dismissed, isn't currently active,
+     * and isn't already queued (deduplicating across `global_messages` and `users/{uid}/messages`).
      */
-    private fun enqueueMessage(message: InAppMessage) {
-        if (isMessageDismissed(message.id)) return
+    private fun enqueueMessage(message: InAppMessage): Boolean {
+        if (message.id.isBlank() || message.message.isBlank()) return false
+        if (isMessageDismissed(message.id)) return false
 
+        val shouldPromoteImmediately: Boolean
         synchronized(queueLock) {
-            if (pendingQueue.none { it.id == message.id }) {
-                pendingQueue.add(message)
+            if (_activeMessage.value?.id == message.id || pendingQueue.any { it.id == message.id }) {
+                return false
+            }
+            pendingQueue.add(message)
+            if (bypassUiDelayForTesting && _activeMessage.value == null) {
+                _activeMessage.value = pendingQueue.firstOrNull { !isMessageDismissed(it.id) }
+                shouldPromoteImmediately = false
+            } else {
+                shouldPromoteImmediately = _activeMessage.value == null
             }
         }
 
-        if (_activeMessage.value == null) {
+        if (shouldPromoteImmediately) {
             scope.launch(Dispatchers.Main) {
                 delay(150L)
                 synchronized(queueLock) {
@@ -190,19 +297,29 @@ object InAppMessageManager {
                 }
             }
         }
+        return true
+    }
+
+    private fun clearPendingQueueInMemory() {
+        synchronized(queueLock) {
+            pendingQueue.clear()
+            _activeMessage.value = null
+        }
     }
 
     /**
      * Real-time listener for `global_messages` collection.
+     * Applies strict client-side `targetUid` recipient filtering so legacy targeted documents
+     * addressed to other users are silently dropped.
      */
-    private fun startGlobalMessageListener(context: Context) {
+    private fun startGlobalMessageListener(context: Context, fallbackUid: String? = null) {
         if (!isFirebaseReady(context)) return
-        val currentUser = try {
-            FirebaseAuth.getInstance().currentUser
+        val initialUid = try {
+            FirebaseAuth.getInstance().currentUser?.uid
         } catch (_: Exception) {
             null
-        }
-        if (currentUser == null || currentUser.uid.isBlank()) return
+        } ?: fallbackUid
+        if (initialUid.isNullOrBlank()) return
 
         synchronized(listenerLock) {
             if (globalListener != null) return
@@ -217,25 +334,24 @@ object InAppMessageManager {
                             return@addSnapshotListener
                         }
 
+                        val liveCurrentUid = try {
+                            FirebaseAuth.getInstance().currentUser?.uid
+                        } catch (_: Exception) {
+                            null
+                        } ?: activeMessageUid ?: initialUid
+
                         snapshot?.documents?.forEach { doc ->
-                            val id = doc.id
-                            val title = doc.getString("title") ?: "Announcement"
-                            val message = doc.getString("message") ?: ""
-                            val targetUid = doc.getString("targetUid")
                             val timestamp = doc.getTimestamp("timestamp")?.toDate()?.time
                                 ?: doc.getLong("timestamp")
                                 ?: 0L
-
-                            if (message.isNotBlank()) {
-                                val inAppMsg = InAppMessage(
-                                    id = id,
-                                    title = title,
-                                    message = message,
-                                    targetUid = targetUid,
-                                    timestamp = timestamp
-                                )
-                                enqueueMessage(inAppMsg)
-                            }
+                            processGlobalMessageDocument(
+                                id = doc.id,
+                                title = doc.getString("title"),
+                                message = doc.getString("message"),
+                                targetUid = doc.getString("targetUid"),
+                                timestamp = timestamp,
+                                currentUid = liveCurrentUid
+                            )
                         }
                     }
             } catch (e: Exception) {
@@ -257,37 +373,30 @@ object InAppMessageManager {
                 userMessageListener?.remove()
                 activeMessageUid = uid
                 userMessageListener = db.collection(COLL_USERS)
-                .document(uid)
-                .collection(COLL_USER_MESSAGES)
-                .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(10)
-                .addSnapshotListener { snapshot, error ->
-                    if (error != null) {
-                        Log.w(TAG, "User messages listener error: ${error.message}")
-                        return@addSnapshotListener
-                    }
+                    .document(uid)
+                    .collection(COLL_USER_MESSAGES)
+                    .orderBy("timestamp", Query.Direction.DESCENDING)
+                    .limit(10)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null) {
+                            Log.w(TAG, "User messages listener error: ${error.message}")
+                            return@addSnapshotListener
+                        }
 
-                    snapshot?.documents?.forEach { doc ->
-                        val id = doc.id
-                        val title = doc.getString("title") ?: "Direct Message"
-                        val message = doc.getString("message") ?: ""
-                        val targetUid = doc.getString("targetUid") ?: uid
-                        val timestamp = doc.getTimestamp("timestamp")?.toDate()?.time
-                            ?: doc.getLong("timestamp")
-                            ?: 0L
-
-                        if (message.isNotBlank()) {
-                            val inAppMsg = InAppMessage(
-                                id = id,
-                                title = title,
-                                message = message,
-                                targetUid = targetUid,
-                                timestamp = timestamp
+                        snapshot?.documents?.forEach { doc ->
+                            val timestamp = doc.getTimestamp("timestamp")?.toDate()?.time
+                                ?: doc.getLong("timestamp")
+                                ?: 0L
+                            processUserMessageDocument(
+                                id = doc.id,
+                                title = doc.getString("title"),
+                                message = doc.getString("message"),
+                                targetUid = doc.getString("targetUid"),
+                                timestamp = timestamp,
+                                currentUid = uid
                             )
-                            enqueueMessage(inAppMsg)
                         }
                     }
-                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start user message listener: ${e.message}", e)
             }
@@ -306,6 +415,35 @@ object InAppMessageManager {
             userMessageListener?.remove()
             userMessageListener = null
             activeMessageUid = null
+        }
+    }
+
+    @VisibleForTesting
+    internal fun getPendingQueueSnapshotForTesting(): List<InAppMessage> {
+        return synchronized(queueLock) { pendingQueue.toList() }
+    }
+
+    @VisibleForTesting
+    internal fun resetForTesting(context: Context? = null, bypassUiDelay: Boolean = true) {
+        stopGlobalMessageListener()
+        stopUserMessageListener()
+        bypassUiDelayForTesting = bypassUiDelay
+        synchronized(queueLock) {
+            pendingQueue.clear()
+            _activeMessage.value = null
+        }
+        synchronized(dismissedIds) {
+            dismissedIds.clear()
+        }
+        if (context != null) {
+            appContext = context.applicationContext
+            context.applicationContext
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .clear()
+                .commit()
+        } else {
+            appContext = null
         }
     }
 }

@@ -1,7 +1,7 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Campaign
@@ -12,16 +12,38 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.InAppMessageManager
+
+internal fun isDirectInAppMessage(targetUid: String?): Boolean {
+    val trimmed = targetUid?.trim()
+    return !trimmed.isNullOrBlank() && !trimmed.equals("ALL", ignoreCase = true)
+}
+
+internal fun resolveInAppMessageIcon(targetUid: String?): ImageVector {
+    return if (isDirectInAppMessage(targetUid)) {
+        Icons.Default.MarkEmailRead
+    } else {
+        Icons.Default.Campaign
+    }
+}
+
+internal fun resolveInAppMessageCategoryLabel(targetUid: String?): String {
+    return if (isDirectInAppMessage(targetUid)) {
+        "Direct Message"
+    } else {
+        "Announcement"
+    }
+}
 
 /**
  * InAppMessageDialog
@@ -37,7 +59,9 @@ fun InAppMessageDialog(
 
     val message = activeMessage ?: return
 
-    val isDirectMessage = !message.targetUid.isNullOrBlank()
+    val isDirectMessage = !message.targetUid.isNullOrBlank() &&
+        !message.targetUid.trim().equals("ALL", ignoreCase = true)
+    val categoryLabel = resolveInAppMessageCategoryLabel(message.targetUid)
 
     AlertDialog(
         onDismissRequest = {
@@ -46,19 +70,27 @@ fun InAppMessageDialog(
         icon = {
             Icon(
                 imageVector = if (isDirectMessage) Icons.Default.MarkEmailRead else Icons.Default.Campaign,
-                contentDescription = null,
+                contentDescription = categoryLabel,
                 tint = MaterialTheme.colorScheme.primary
             )
         },
         title = {
-            Text(
-                text = message.title,
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.3).sp
-                ),
-                modifier = Modifier.testTag("in_app_message_title")
-            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = categoryLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.testTag("in_app_message_category_label")
+                )
+                Text(
+                    text = message.title,
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = (-0.3).sp
+                    ),
+                    modifier = Modifier.testTag("in_app_message_title")
+                )
+            }
         },
         text = {
             Text(
