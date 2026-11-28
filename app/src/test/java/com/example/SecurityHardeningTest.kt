@@ -826,22 +826,22 @@ class SecurityHardeningTest {
             unlocked = mapOf(FeatureIds.DESTINATION_BLACKLIST to futureExpiry)
         )
 
-        // 1. Canonical blockedLocations trims, deduplicates case-insensitively, and sorts
+        // 1. Canonical blacklistedDestinations trims, deduplicates case-insensitively, and sorts
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf(
                 "isDestinationBlacklistEnabled" to true,
-                "blockedLocations" to listOf("  Airport ", "Toll Gate", "airport")
+                "blacklistedDestinations" to listOf("  Airport ", "Toll Gate", "airport")
             )
         )
         assertEquals(listOf("Airport", "Toll Gate"), AppSettings.getBlockedLocations(context))
 
-        // 2. Subsequent canonical blockedLocations update replaces list cleanly
+        // 2. Subsequent canonical blacklistedDestinations update replaces list cleanly
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf(
                 "isDestinationBlacklistEnabled" to true,
-                "blockedLocations" to listOf("Highway Toll", "Railway Station", "highway toll", "Slum Area")
+                "blacklistedDestinations" to listOf("Highway Toll", "Railway Station", "highway toll", "Slum Area")
             )
         )
         assertEquals(
@@ -891,7 +891,7 @@ class SecurityHardeningTest {
             context,
             mapOf(
                 "minFare" to 75.0,
-                "blockedLocations" to listOf("AdminZone")
+                "blacklistedDestinations" to listOf("AdminZone")
             )
         )
         assertEquals(75f, AppSettings.getMinFare(context), 0.01f)
@@ -1108,7 +1108,7 @@ class SecurityHardeningTest {
         assertEquals(mapOf(FeatureIds.MIN_FARE to canonicalExpiry), AppSettings.unlockedFeaturesFlow.value)
         assertEquals(setOf(FeatureIds.AUTO_CLICK), AppSettings.lockedFeaturesFlow.value)
 
-        // Fallback to legacy aliases works cleanly when canonical keys are absent
+        // Legacy snake_case aliases are strictly ignored when canonical keys are absent
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf(
@@ -1116,8 +1116,8 @@ class SecurityHardeningTest {
                 "locked_features" to listOf(FeatureIds.TTS_VOICE)
             )
         )
-        assertEquals(mapOf(FeatureIds.MAX_FARE to legacyExpiry), AppSettings.unlockedFeaturesFlow.value)
-        assertEquals(setOf(FeatureIds.TTS_VOICE), AppSettings.lockedFeaturesFlow.value)
+        assertEquals(emptyMap<String, Long>(), AppSettings.unlockedFeaturesFlow.value)
+        assertEquals(emptySet<String>(), AppSettings.lockedFeaturesFlow.value)
 
         AppSettings.resetBusinessStateForTest(context)
     }
@@ -1419,7 +1419,7 @@ class SecurityHardeningTest {
         assertEquals(setOf(FeatureIds.AUTO_CLICK), AppSettings.lockedFeaturesFlow.value)
         assertEquals(listOf("Airport", "Railway Station"), AppSettings.getBlockedLocations(context))
 
-        // 2. AppSettings: graceful fallback to legacy keys for unmigrated pre-v2 documents
+        // 2. AppSettings: legacy-only keys are strictly ignored (canonical Schema v2 only)
         AppSettings.resetBusinessStateForTest(context)
         AppSettings.applyFirestoreSnapshotForTest(
             context,
@@ -1431,10 +1431,10 @@ class SecurityHardeningTest {
                 "blockedLocations" to listOf("Old Bus Stand", "Airport")
             )
         )
-        assertEquals(legacyPassExp, AppSettings.passExpiryTimestampFlow.value)
-        assertEquals(mapOf(FeatureIds.MAX_FARE to legacyFeatureExp), AppSettings.unlockedFeaturesFlow.value)
-        assertEquals(setOf(FeatureIds.TTS_VOICE), AppSettings.lockedFeaturesFlow.value)
-        assertEquals(listOf("Airport", "Old Bus Stand"), AppSettings.getBlockedLocations(context))
+        assertEquals(0L, AppSettings.passExpiryTimestampFlow.value)
+        assertEquals(emptyMap<String, Long>(), AppSettings.unlockedFeaturesFlow.value)
+        assertEquals(emptySet<String>(), AppSettings.lockedFeaturesFlow.value)
+        assertEquals(emptyList<String>(), AppSettings.getBlockedLocations(context))
 
         // 3. LicenseManager.parseUserProfileSnapshotMap: canonical v2 precedence
         val parsedV2 = LicenseManager.parseUserProfileSnapshotMap(
@@ -1486,7 +1486,7 @@ class SecurityHardeningTest {
         assertEquals("Permanent", (banState as UserBanState.Banned).formattedDateTime)
         GlobalAdminManager.syncBanStateFromLicenseManager(null, null)
 
-        // 4. LicenseManager.parseUserProfileSnapshotMap: legacy pre-v2 fallback (points fallback when pointsBalance absent)
+        // 4. LicenseManager.parseUserProfileSnapshotMap: legacy pre-v2 keys are strictly ignored
         val parsedLegacy = LicenseManager.parseUserProfileSnapshotMap(
             mapOf(
                 "uid" to "uid_legacy",
@@ -1501,18 +1501,18 @@ class SecurityHardeningTest {
                 "banUntilTimestamp" to (now + 60_000L)
             )
         )
-        assertEquals(1, parsedLegacy.schemaVersion)
+        assertEquals(2, parsedLegacy.schemaVersion)
         assertEquals("uid_legacy", parsedLegacy.firebaseUid)
-        assertEquals("legacy@example.com", parsedLegacy.userEmail)
-        assertEquals("DEV-LEGACY", parsedLegacy.linkedHardwareId)
-        assertEquals(85L, parsedLegacy.pointsBalance)
-        assertEquals(85, parsedLegacy.points)
-        assertEquals(legacyPassExp, parsedLegacy.passExpiryTimestamp)
-        assertEquals(legacyRemoveAdsExp, parsedLegacy.removeAdsExpiryTimestamp)
-        assertEquals(mapOf(FeatureIds.MAX_FARE to legacyFeatureExp), parsedLegacy.unlockedFeatures)
-        assertEquals(setOf(FeatureIds.TTS_VOICE), parsedLegacy.lockedFeatures)
-        assertEquals(listOf("Legacy Drop"), parsedLegacy.blacklistedDestinations)
-        assertEquals(now + 60_000L, LicenseManager.resolveEffectiveBanUntilMs(parsedLegacy, now))
+        assertNull(parsedLegacy.userEmail)
+        assertNull(parsedLegacy.linkedHardwareId)
+        assertEquals(0L, parsedLegacy.pointsBalance)
+        assertEquals(0, parsedLegacy.points)
+        assertEquals(0L, parsedLegacy.passExpiryTimestamp)
+        assertEquals(0L, parsedLegacy.removeAdsExpiryTimestamp)
+        assertEquals(emptyMap<String, Long>(), parsedLegacy.unlockedFeatures)
+        assertEquals(emptySet<String>(), parsedLegacy.lockedFeatures)
+        assertNull(parsedLegacy.blacklistedDestinations)
+        assertNull(LicenseManager.resolveEffectiveBanUntilMs(parsedLegacy, now))
 
         AppSettings.resetBusinessStateForTest(context)
     }
@@ -1520,7 +1520,7 @@ class SecurityHardeningTest {
     @Test
     fun profilePayloadsEmitOnlyCanonicalSchemaVersion2Keys() {
         val forbiddenLegacyKeys = setOf(
-            "email", "hardwareId", "deviceId", "userId",
+            "firebaseUid", "legacyCustomUserId", "email", "hardwareId", "deviceId", "userId",
             "blacklistedDestinations", "blockedLocations"
         )
 
@@ -1531,7 +1531,7 @@ class SecurityHardeningTest {
             legacyCustomId = "OM-USER-OLD1"
         )
         assertEquals(
-            setOf("firebaseUid", "userEmail", "linkedHardwareId", "legacyCustomUserId"),
+            setOf("uid", "userEmail", "linkedHardwareId"),
             initPayload.keys
         )
         assertTrue(initPayload.keys.intersect(forbiddenLegacyKeys).isEmpty())
@@ -1545,7 +1545,7 @@ class SecurityHardeningTest {
             authEmail = "driver@example.com"
         )
         assertEquals(
-            setOf("firebaseUid", "userEmail", "linkedHardwareId"),
+            setOf("uid", "userEmail", "linkedHardwareId"),
             updatePayload.keys
         )
         assertTrue(updatePayload.keys.intersect(forbiddenLegacyKeys).isEmpty())
@@ -1661,16 +1661,16 @@ class SecurityHardeningTest {
         assertEquals(420, parsedBoth.points)
         assertEquals(420L, AppSettings.pointsBalanceFlow.value)
 
-        // Case 2: Only points exists -> falls back to points identically in both
+        // Case 2: Only legacy points exists -> ignored strictly (resolves 0L identically in both)
         val pointsOnlyDoc: Map<String, Any?> = mapOf(
             "points" to 175
         )
         AppSettings.applyFirestoreSnapshotForTest(context, pointsOnlyDoc)
         val parsedPointsOnly = LicenseManager.parseUserProfileSnapshotMap(pointsOnlyDoc)
-        assertEquals(175L, LicenseManager.resolvePointsBalanceFromMap(pointsOnlyDoc))
-        assertEquals(175L, parsedPointsOnly.pointsBalance)
-        assertEquals(175, parsedPointsOnly.points)
-        assertEquals(175L, AppSettings.pointsBalanceFlow.value)
+        assertEquals(0L, LicenseManager.resolvePointsBalanceFromMap(pointsOnlyDoc))
+        assertEquals(0L, parsedPointsOnly.pointsBalance)
+        assertEquals(0, parsedPointsOnly.points)
+        assertEquals(0L, AppSettings.pointsBalanceFlow.value)
 
         // Case 3: Neither field exists -> defaults to 0L identically in both
         val emptyDoc: Map<String, Any?> = mapOf("activePassType" to "none")
@@ -1753,7 +1753,7 @@ class SecurityHardeningTest {
         assertEquals(canonicalMinFareExp, LicenseManager.unlockedFeatures.value[FeatureIds.MIN_FARE])
         assertEquals(canonicalAutoClickExp, LicenseManager.unlockedFeatures.value[FeatureIds.AUTO_CLICK])
 
-        // Case 2: Canonical unlockedFeatures absent -> gracefully falls back to legacy unlockedExpiries with 0 refreshes
+        // Case 2: Canonical unlockedFeatures absent (only legacy unlockedExpiries present) -> ignored, triggers profile refresh
         LicenseManager.resetStateForTesting(context)
         val legacyMaxFareExp = now + 5_400_000L
         val legacyTtsExp = now + 5_400_000L
@@ -1770,11 +1770,11 @@ class SecurityHardeningTest {
             onMissingFeaturesRefresh = { legacyRefreshCalls++ }
         )
 
-        assertTrue("Legacy unlockedExpiries fallback must succeed immediately", legacyResult.isSuccess)
-        assertEquals(0, legacyRefreshCalls)
+        assertTrue("Legacy-only unlockedExpiries must not populate unlocked features directly", legacyResult.isFailure)
+        assertEquals(1, legacyRefreshCalls)
         assertEquals(190, LicenseManager.pointsBalance.value)
-        assertEquals(legacyMaxFareExp, LicenseManager.unlockedFeatures.value[FeatureIds.MAX_FARE])
-        assertEquals(legacyTtsExp, LicenseManager.unlockedFeatures.value[FeatureIds.TTS_VOICE])
+        assertNull(LicenseManager.unlockedFeatures.value[FeatureIds.MAX_FARE])
+        assertNull(LicenseManager.unlockedFeatures.value[FeatureIds.TTS_VOICE])
 
         // Case 3: Missing feature in action doc triggers fallback profile refresh callback
         LicenseManager.resetStateForTesting(context)
@@ -1830,14 +1830,14 @@ class SecurityHardeningTest {
         assertFalse("Canonical isAutoClickEnabled=false must override legacy isAutoAcceptEnabled=true", AppSettings.isAutoClickEnabled(context))
         assertFalse("Canonical isAutoClickEnabled=false must override legacy isAutoAcceptEnabled=true for auto-accept", AppSettings.isAutoAcceptEnabled(context))
 
-        // 3. Canonical isAutoClickEnabled absent -> falls back to legacy isAutoAcceptEnabled=true
-        assertEquals(true, AppSettings.resolveCanonicalAutoClickFromMap(mapOf("isAutoAcceptEnabled" to true)))
+        // 3. Canonical isAutoClickEnabled absent -> legacy isAutoAcceptEnabled is strictly ignored (returns null)
+        assertNull(AppSettings.resolveCanonicalAutoClickFromMap(mapOf("isAutoAcceptEnabled" to true)))
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf("isAutoAcceptEnabled" to true)
         )
-        assertTrue("Fallback to legacy isAutoAcceptEnabled=true when canonical key is absent", AppSettings.isAutoClickEnabled(context))
-        assertTrue("Fallback to legacy isAutoAcceptEnabled=true for auto-accept when canonical key is absent", AppSettings.isAutoAcceptEnabled(context))
+        assertFalse("Legacy isAutoAcceptEnabled must be ignored when canonical key is absent", AppSettings.isAutoClickEnabled(context))
+        assertFalse("Legacy isAutoAcceptEnabled must be ignored for auto-accept when canonical key is absent", AppSettings.isAutoAcceptEnabled(context))
 
         // 4. UPDATE_PROFILE payloads emit canonical isAutoClickEnabled and NEVER obsolete isAutoAcceptEnabled
         val uid = "uid_step10b_autoclick"
@@ -1871,9 +1871,8 @@ class SecurityHardeningTest {
         )
         assertTrue("Canonical user doc must not trigger unnecessary UPDATE_PROFILE writes", noUpdates.isEmpty())
 
-        // Even if legacy isAutoAcceptEnabled is passed into buildActionQueuePayload for UPDATE_PROFILE,
-        // it is translated to canonical isAutoClickEnabled and obsolete keys are stripped
-        val translatedEnvelope = LicenseManager.buildActionQueuePayload(
+        // Legacy isAutoAcceptEnabled passed into buildActionQueuePayload is strictly stripped (not translated)
+        val strippedEnvelope = LicenseManager.buildActionQueuePayload(
             firebaseUid = uid,
             userEmail = email,
             hardwareId = hwId,
@@ -1882,9 +1881,9 @@ class SecurityHardeningTest {
             actionType = "UPDATE_PROFILE",
             payload = mapOf("isAutoAcceptEnabled" to true)
         )
-        assertEquals(true, translatedEnvelope["isAutoClickEnabled"])
-        assertFalse(translatedEnvelope.containsKey("isAutoAcceptEnabled"))
-        assertFalse(translatedEnvelope.containsKey("autoAcceptEnabled"))
+        assertFalse(strippedEnvelope.containsKey("isAutoClickEnabled"))
+        assertFalse(strippedEnvelope.containsKey("isAutoAcceptEnabled"))
+        assertFalse(strippedEnvelope.containsKey("autoAcceptEnabled"))
 
         // When both are passed on UPDATE_PROFILE, explicit canonical isAutoClickEnabled wins
         val explicitCanonicalEnvelope = LicenseManager.buildActionQueuePayload(

@@ -284,21 +284,6 @@ object AppConfigRepository {
         else -> null
     }
 
-    private fun parseIntFromMap(map: Map<*, *>?, vararg keys: String): Int? {
-        if (map.isNullOrEmpty()) return null
-        val normalizedMap = HashMap<String, Any?>(map.size)
-        for ((k, v) in map) {
-            val keyStr = (k as? String)?.trim()?.lowercase(Locale.ROOT) ?: continue
-            if (keyStr.isNotEmpty()) {
-                normalizedMap[keyStr] = v
-            }
-        }
-        for (key in keys) {
-            parsePositiveInt(normalizedMap[key.lowercase(Locale.ROOT)])?.let { return it }
-        }
-        return null
-    }
-
     private fun parseFeatureRatesMap(raw: Any?): Map<String, Int> {
         val map = raw as? Map<*, *> ?: return emptyMap()
         val parsed = LinkedHashMap<String, Int>()
@@ -313,17 +298,15 @@ object AppConfigRepository {
     }
 
     /**
-     * Parses raw `admin_settings/payment_config` document fields using canonical Admin App keys first,
-     * falling back cleanly to legacy keys during transition and hardcoded defaults if absent/invalid.
+     * Parses raw `admin_settings/payment_config` document fields strictly using canonical Admin App keys,
+     * falling back to hardcoded `PassPricingConfig` defaults only when a canonical field is absent or invalid.
      *
      * Canonical schema:
+     * - UPI Details: `adminUpiId`, `adminPayeeName`
      * - Pass Points Costs: `dailyPoints`, `weeklyPoints`, `monthlyPoints`, `removeAdsPoints`
-     *   (fallbacks: `*PointsCost`, `passPointsCost` map)
      * - Pass INR Prices: `dailyPriceInr`, `weeklyPriceInr`, `monthlyPriceInr`, `removeAdsPriceInr`,
      *   optional `validPassAmountsInr`
-     *   (fallbacks: `*Price`, `passPricesInr` map, `priceInInr` map)
      * - Feature Hourly Rates: `featureHourlyRates`
-     *   (fallbacks: `featureRates`, `featurePricesPtsPerHr`, `featurePrices`)
      */
     @VisibleForTesting
     internal fun parsePaymentConfigMap(data: Map<String, Any?>?): PaymentConfig {
@@ -334,52 +317,22 @@ object AppConfigRepository {
         val upi = (data["adminUpiId"] as? String)?.trim().orEmpty()
         val payee = (data["adminPayeeName"] as? String)?.trim().orEmpty()
 
-        val passPricesInrMap = data["passPricesInr"] as? Map<*, *>
-        val priceInInrMap = data["priceInInr"] as? Map<*, *>
-        val passPointsCostMap = data["passPointsCost"] as? Map<*, *>
-
         val dailyPrice = parsePositiveInt(data["dailyPriceInr"])
-            ?: parsePositiveInt(data["dailyPrice"])
-            ?: parseIntFromMap(passPricesInrMap, "daily", "daily_pass")
-            ?: parseIntFromMap(priceInInrMap, "daily", "daily_pass")
             ?: PassPricingConfig.DAILY_PRICE_INR
-
         val weeklyPrice = parsePositiveInt(data["weeklyPriceInr"])
-            ?: parsePositiveInt(data["weeklyPrice"])
-            ?: parseIntFromMap(passPricesInrMap, "weekly", "weekly_pass")
-            ?: parseIntFromMap(priceInInrMap, "weekly", "weekly_pass")
             ?: PassPricingConfig.WEEKLY_PRICE_INR
-
         val monthlyPrice = parsePositiveInt(data["monthlyPriceInr"])
-            ?: parsePositiveInt(data["monthlyPrice"])
-            ?: parseIntFromMap(passPricesInrMap, "monthly", "monthly_pass")
-            ?: parseIntFromMap(priceInInrMap, "monthly", "monthly_pass")
             ?: PassPricingConfig.MONTHLY_PRICE_INR
-
         val removeAdsPrice = parsePositiveInt(data["removeAdsPriceInr"])
-            ?: parsePositiveInt(data["removeAdsPrice"])
-            ?: parseIntFromMap(passPricesInrMap, "remove_ads", "remove_ads_pass")
-            ?: parseIntFromMap(priceInInrMap, "remove_ads", "remove_ads_pass")
             ?: PassPricingConfig.REMOVE_ADS_PRICE_INR
 
         val dailyPts = parsePositiveInt(data["dailyPoints"])
-            ?: parsePositiveInt(data["dailyPointsCost"])
-            ?: parseIntFromMap(passPointsCostMap, "daily", "daily_pass")
             ?: PassPricingConfig.DAILY_POINTS
-
         val weeklyPts = parsePositiveInt(data["weeklyPoints"])
-            ?: parsePositiveInt(data["weeklyPointsCost"])
-            ?: parseIntFromMap(passPointsCostMap, "weekly", "weekly_pass")
             ?: PassPricingConfig.WEEKLY_POINTS
-
         val monthlyPts = parsePositiveInt(data["monthlyPoints"])
-            ?: parsePositiveInt(data["monthlyPointsCost"])
-            ?: parseIntFromMap(passPointsCostMap, "monthly", "monthly_pass")
             ?: PassPricingConfig.MONTHLY_POINTS
-
         val removeAdsPts = parsePositiveInt(data["removeAdsPoints"])
-            ?: parsePositiveInt(data["removeAdsPointsCost"])
-            ?: parseIntFromMap(passPointsCostMap, "remove_ads", "remove_ads_pass")
             ?: PassPricingConfig.REMOVE_ADS_POINTS
 
         val parsedValidAmounts = (data["validPassAmountsInr"] as? Iterable<*>)
@@ -388,12 +341,7 @@ object AppConfigRepository {
             ?.takeIf { it.isNotEmpty() }
             ?: listOf(dailyPrice, weeklyPrice, monthlyPrice, removeAdsPrice).distinct()
 
-        // Layer legacy maps from lowest to highest precedence, then apply canonical `featureHourlyRates` on top
-        val mergedRates = LinkedHashMap<String, Int>()
-        mergedRates.putAll(parseFeatureRatesMap(data["featurePrices"]))
-        mergedRates.putAll(parseFeatureRatesMap(data["featurePricesPtsPerHr"]))
-        mergedRates.putAll(parseFeatureRatesMap(data["featureRates"]))
-        mergedRates.putAll(parseFeatureRatesMap(data["featureHourlyRates"]))
+        val featureRates = parseFeatureRatesMap(data["featureHourlyRates"])
 
         return PaymentConfig(
             adminUpiId = upi,
@@ -406,7 +354,7 @@ object AppConfigRepository {
             weeklyPoints = weeklyPts,
             monthlyPoints = monthlyPts,
             removeAdsPoints = removeAdsPts,
-            featureHourlyRates = mergedRates.toMap(),
+            featureHourlyRates = featureRates,
             validPassAmountsInr = parsedValidAmounts
         )
     }

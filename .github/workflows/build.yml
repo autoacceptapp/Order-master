@@ -139,12 +139,9 @@ jobs:
             BUILD_TYPE="release"
           fi
 
-          # 1. Monotonic Version Code: Must strictly increase on every build (>= 102 to avoid downgrade)
+          # 1. Monotonic Version Code: Strictly increases on every build (never drops or freezes at RUN_NUM >= 102)
           RUN_NUM="${{ github.run_number }}"
-          VERSION_CODE="${RUN_NUM}"
-          if [ "${VERSION_CODE}" -lt 102 ]; then
-            VERSION_CODE=$((100 + RUN_NUM))
-          fi
+          VERSION_CODE=$((100 + RUN_NUM))
 
           # 2. Extract Base Semantic Version Name from gradle.properties
           BASE_VERSION_NAME=$(grep -E "^VERSION_NAME=" gradle.properties 2>/dev/null | cut -d'=' -f2 | tr -d ' "\r\n' || true)

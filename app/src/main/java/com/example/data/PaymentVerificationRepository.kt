@@ -373,8 +373,9 @@ class PaymentVerificationRepository(
         }
 
         /**
-         * Builds the canonical `pending_verifications/{utr}` document payload using canonical `uid`
-         * and `firebaseUid` (no duplicate `userId` field), strictly matching unified `firestore.rules`.
+         * Builds the canonical `pending_verifications/{utr}` document payload using strictly
+         * canonical keys (`uid`, `utr`, `passTier`, `passName`, `amount`, `deviceHardwareId`,
+         * `status`, `isUsed`, `createdAt`), matching unified `firestore.rules`.
          */
         @VisibleForTesting
         internal fun buildPendingVerificationPayload(
@@ -389,15 +390,14 @@ class PaymentVerificationRepository(
                 "Invalid canonical passTier '$canonicalTier' for pending_verifications"
             }
             return mapOf(
-                "status" to "PENDING",
-                "passName" to tier.title,
-                "passTier" to canonicalTier,
-                "amount" to tier.effectivePriceInInr(),
-                "isUsed" to false,
-                "utr" to utr,
                 "uid" to firebaseUid,
-                "firebaseUid" to firebaseUid,
+                "utr" to utr,
+                "passTier" to canonicalTier,
+                "passName" to tier.title,
+                "amount" to tier.effectivePriceInInr(),
                 "deviceHardwareId" to deviceHardwareId,
+                "status" to "PENDING",
+                "isUsed" to false,
                 "createdAt" to createdAtValue
             )
         }
@@ -664,10 +664,7 @@ class PaymentVerificationRepository(
                     val amount = existingSnap.getLong("amount")
                         ?: requiredTier.effectivePriceInInr().toLong()
                     val claimedBy = existingSnap.getString("claimedByUserId")
-                        ?: existingSnap.getString("claimedBy")
                     val docOwnerId = existingSnap.getString("uid")
-                        ?: existingSnap.getString("firebaseUid")
-                        ?: existingSnap.getString("userId")
                     val docTierId = existingSnap.getString("passTier")
                     val resolvedTierId = existingSnap.getString("resolvedPassTier")
                     val autoAdjustedFromRaw = existingSnap.get("autoAdjustedFromRequestedTier")
@@ -706,7 +703,6 @@ class PaymentVerificationRepository(
                         }
                         UtrSnapshotDecision.REJECTED -> {
                             val rawErr = existingSnap.getString("errorMessage")
-                                ?: existingSnap.getString("reason")
                                 ?: "Payment verification for UTR $utr was rejected."
                             val errCode = existingSnap.getString("errorCode")
                             val decision = classifyVerificationRejection(rawErr, errCode)
@@ -874,10 +870,7 @@ class PaymentVerificationRepository(
                 val status = existingSnap.getString("status") ?: ""
                 val isUsed = existingSnap.getBoolean("isUsed") ?: false
                 val claimedBy = existingSnap.getString("claimedByUserId")
-                    ?: existingSnap.getString("claimedBy")
                 val docOwnerId = existingSnap.getString("uid")
-                    ?: existingSnap.getString("firebaseUid")
-                    ?: existingSnap.getString("userId")
 
                 when (evaluateUtrSnapshot(status, isUsed, claimedBy, docOwnerId, userId, firebaseUid)) {
                     UtrSnapshotDecision.ALREADY_CLAIMED_BY_OTHER -> {
@@ -903,7 +896,6 @@ class PaymentVerificationRepository(
                     }
                     UtrSnapshotDecision.REJECTED -> {
                         val rawErr = existingSnap.getString("errorMessage")
-                            ?: existingSnap.getString("reason")
                             ?: "Payment verification was rejected. Please check your UTR."
                         val errCode = existingSnap.getString("errorCode")
                         val decision = classifyVerificationRejection(rawErr, errCode)
@@ -951,10 +943,7 @@ class PaymentVerificationRepository(
                             val currentStatus = docSnap.getString("status") ?: ""
                             val currentUsed = docSnap.getBoolean("isUsed") ?: false
                             val currentClaimedBy = docSnap.getString("claimedByUserId")
-                                ?: docSnap.getString("claimedBy")
                             val docOwnerId = docSnap.getString("uid")
-                                ?: docSnap.getString("firebaseUid")
-                                ?: docSnap.getString("userId")
 
                             when (evaluateUtrSnapshot(currentStatus, currentUsed, currentClaimedBy, docOwnerId, userId, firebaseUid)) {
                                 UtrSnapshotDecision.ALREADY_CLAIMED_BY_OTHER -> {
@@ -971,7 +960,6 @@ class PaymentVerificationRepository(
                                 }
                                 UtrSnapshotDecision.REJECTED -> {
                                     val rawErr = docSnap.getString("errorMessage")
-                                        ?: docSnap.getString("reason")
                                         ?: "Payment verification was rejected. Please check your UTR."
                                     val errCode = docSnap.getString("errorCode")
                                     val decision = classifyVerificationRejection(rawErr, errCode)
@@ -1148,10 +1136,7 @@ class PaymentVerificationRepository(
                 val amount = snapshot.getLong("amount")
                     ?: (preferredTier?.effectivePriceInInr()?.toLong() ?: 0L)
                 val claimedBy = snapshot.getString("claimedByUserId")
-                    ?: snapshot.getString("claimedBy")
                 val docOwnerId = snapshot.getString("uid")
-                    ?: snapshot.getString("firebaseUid")
-                    ?: snapshot.getString("userId")
                 val docTierId = snapshot.getString("passTier")
                 val resolvedTierId = snapshot.getString("resolvedPassTier")
                 val autoAdjustedFromRaw = snapshot.get("autoAdjustedFromRequestedTier")
@@ -1224,7 +1209,6 @@ class PaymentVerificationRepository(
                     }
                     UtrSnapshotDecision.REJECTED -> {
                         val rawErr = snapshot.getString("errorMessage")
-                            ?: snapshot.getString("reason")
                             ?: "Payment verification for UTR $utr was rejected."
                         val errCode = snapshot.getString("errorCode")
                         val decision = classifyVerificationRejection(rawErr, errCode)

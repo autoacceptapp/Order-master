@@ -62,17 +62,13 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // Users Collection: Strictly READ-ONLY for authenticated clients at users/{firebaseUid}
-    // Preserves firebaseUid == request.auth.uid and uid == request.auth.uid ownership read checks.
-    // Direct client writes (including points, pointsBalance, activePassType, passExpiryTimestamp,
-    // removeAdsExpiryTimestamp, isBanned, unlockedFeatures) are strictly blocked; writes are admin-only.
+    // Users Collection: Strictly READ-ONLY for authenticated clients at users/{uid}
+    // Enforces request.auth.uid == userId with firebaseUid fallback matching order-master-admin.
+    // Direct client writes are strictly blocked; writes are admin-only.
     match /users/{userId} {
       allow read: if isAdmin() || (isAuthenticated() && (
         request.auth.uid == userId ||
-        (resource != null && (
-          ('firebaseUid' in resource.data && resource.data.firebaseUid == request.auth.uid) ||
-          ('uid' in resource.data && resource.data.uid == request.auth.uid)
-        ))
+        (resource != null && 'firebaseUid' in resource.data && resource.data.firebaseUid == request.auth.uid)
       ));
       allow write: if isAdmin();
 
@@ -109,39 +105,39 @@ service cloud.firestore {
                !(get(userDoc).data.lastActionTime is float));
     }
 
-    // Helper: Enforces flat canonical pending_actions key allowlist and blocks nested/privileged fields
+    // Helper: Enforces flat canonical pending_actions key allowlist and blocks nested/privileged/legacy fields
     function hasValidPendingActionSchema(data) {
       let hasAllowedKeys = data.keys().hasOnly([
-        'uid', 'firebaseUid', 'userId',
+        'uid',
         'userEmail', 'displayName', 'photoUrl',
         'actionType', 'status',
-        'createdAt', 'timestamp',
+        'createdAt',
         'appVersion', 'versionCode', 'appSignatureSha256', 'deviceIntegrityOk',
-        'linkedHardwareId', 'hardwareId', 'deviceId',
-        'newHardwareId', 'new_hardware_id',
-        'oldHardwareId', 'old_hardware_id', 'previousHardwareId',
-        'oldEmail', 'old_email', 'previousEmail',
-        'oldFirebaseUid', 'old_uid', 'previousUid',
-        'legacyCustomUserId', 'oldDocumentId', 'old_document_id',
-        'previousDocumentId', 'migratedFromDocId',
-        'referralCode', 'code',
-        'passTier', 'passType', 'pass_type',
-        'utr', 'transactionId', 'paymentRef', 'refNo',
-        'amount', 'paymentAmount',
-        'featureId', 'featureKey', 'featureName', 'feature', 'featureIds', 'hours',
-        'pointsCost', 'durationDays', 'durationMs', 'condition',
-        'autoAcceptEnabled', 'isAutoAcceptEnabled',
+        'linkedHardwareId',
+        'referralCode',
+        'passTier',
+        'utr',
+        'amount',
+        'featureId', 'featureIds', 'hours',
         'isFloatingOverlayEnabled', 'isVoiceAnnouncerEnabled', 'isAutoClickEnabled',
         'isMinFareEnabled', 'minFare', 'isMaxFareEnabled', 'maxFare',
         'isMaxPickupDistanceEnabled', 'maxPickupDistance',
         'isMaxDropDistanceEnabled', 'maxDropDistance',
         'isMinPerKmRateEnabled', 'minPerKmRate', 'clickDelayMs',
-        'isDestinationBlacklistEnabled', 'blockedLocations', 'blacklistedDestinations',
-        'currentFolder', 'current_folder'
+        'isDestinationBlacklistEnabled', 'blacklistedDestinations',
+        'currentFolder'
       ]);
       let noNestedOrPrivilegedFields = !('payload' in data) &&
                                        !('data' in data) &&
+                                       !('firebaseUid' in data) &&
+                                       !('legacyCustomUserId' in data) &&
+                                       !('userId' in data) &&
                                        !('email' in data) &&
+                                       !('hardwareId' in data) &&
+                                       !('deviceId' in data) &&
+                                       !('blockedLocations' in data) &&
+                                       !('isAutoAcceptEnabled' in data) &&
+                                       !('autoAcceptEnabled' in data) &&
                                        !('isAdmin' in data) &&
                                        !('role' in data) &&
                                        !('points' in data) &&
@@ -159,78 +155,41 @@ service cloud.firestore {
                                        !('errorMessage' in data) &&
                                        !('resolvedUserId' in data) &&
                                        !('banUntil' in data) &&
-                                       !('banUntilTimestamp' in data) &&
                                        !('isBanned' in data) &&
                                        !('hardwareBanned' in data) &&
                                        !('isPaymentVerified' in data) &&
-                                       !('locked_features' in data) &&
                                        !('lockedFeatures' in data) &&
-                                       !('unlocked_features' in data) &&
                                        !('unlockedFeatures' in data) &&
-                                       !('featureExpiries' in data) &&
                                        !('trialExpiry' in data) &&
-                                       !('freeTrialExpiry' in data) &&
-                                       !('trialExpiresAt' in data) &&
                                        !('trialClaimed' in data) &&
                                        !('trialUsed' in data) &&
-                                       !('hasUsedFreeTrial' in data) &&
                                        !('removeAdsExpiryTimestamp' in data) &&
-                                       !('removeAdsExpiryMs' in data) &&
-                                       !('remove_ads_expiry_timestamp' in data) &&
-                                       !('trialStartedAt' in data) &&
                                        !('hasClaimedReferral' in data) &&
                                        !('referredBy' in data) &&
                                        !('lastSecurityViolation' in data) &&
-                                       !('lastActionTime' in data) &&
-                                       !('lastPendingActionAt' in data) &&
-                                       !('lastActionAt' in data);
+                                       !('lastActionTime' in data);
       return hasAllowedKeys && noNestedOrPrivilegedFields;
     }
 
-    // Helper: Enforces flat canonical parameter types and numeric bounds on pending_actions
+    // Helper: Enforces flat canonical parameter types on pending_actions
     function hasValidPendingActionFields(data) {
-      let hasValidFlatTypes = (!('userEmail' in data) || data.userEmail is string) &&
-                              (!('passTier' in data) || data.passTier is string) &&
-                              (!('utr' in data) || data.utr is string) &&
-                              (!('referralCode' in data) || data.referralCode is string) &&
-                              (!('hardwareId' in data) || data.hardwareId is string) &&
-                              (!('linkedHardwareId' in data) || data.linkedHardwareId is string) &&
-                              (!('featureId' in data) || data.featureId is string) &&
-                              (!('featureIds' in data) || data.featureIds is list) &&
-                              (!('hours' in data) || data.hours is int || data.hours is float) &&
-                              (!('currentFolder' in data) || data.currentFolder is string) &&
-                              (!('current_folder' in data) || data.current_folder is string);
-      let hasValidPointsCost = !('pointsCost' in data) || (
-        (data.pointsCost is int || data.pointsCost is float) &&
-        data.pointsCost >= 0 &&
-        data.pointsCost <= 100000
-      );
-      let hasValidDurationMs = !('durationMs' in data) || (
-        (data.durationMs is int || data.durationMs is float) &&
-        data.durationMs >= 0 &&
-        data.durationMs <= 315360000000
-      );
-      let hasValidDurationDays = !('durationDays' in data) || (
-        (data.durationDays is int || data.durationDays is float) &&
-        data.durationDays >= 0 &&
-        data.durationDays <= 3650
-      );
-      let hasValidCondition = !('condition' in data) || (data.condition is string || data.condition is map);
-      return hasValidFlatTypes &&
-             hasValidPointsCost &&
-             hasValidDurationMs &&
-             hasValidDurationDays &&
-             hasValidCondition;
+      return (!('userEmail' in data) || data.userEmail is string) &&
+             (!('passTier' in data) || data.passTier is string) &&
+             (!('utr' in data) || data.utr is string) &&
+             (!('referralCode' in data) || data.referralCode is string) &&
+             (!('linkedHardwareId' in data) || data.linkedHardwareId is string) &&
+             (!('featureId' in data) || data.featureId is string) &&
+             (!('featureIds' in data) || data.featureIds is list) &&
+             (!('hours' in data) || data.hours is int || data.hours is float) &&
+             (!('currentFolder' in data) || data.currentFolder is string);
     }
 
-    // Helper: Strict Zero-Trust validation for client-enqueued pending actions (Flat Canonical Contract)
+    // Helper: Strict Zero-Trust validation for client-enqueued pending actions (Canonical Schema v2)
     function isValidPendingAction() {
       let data = request.resource.data;
       let hasCanonicalOwner = ('uid' in data) &&
                               data.uid is string &&
-                              data.uid == request.auth.uid &&
-                              (!('firebaseUid' in data) || (data.firebaseUid is string && data.firebaseUid == request.auth.uid)) &&
-                              (!('userId' in data) || (data.userId is string && data.userId == request.auth.uid));
+                              data.uid == request.auth.uid;
       let hasPendingStatus = ('status' in data) && data.status == 'PENDING';
       let hasAllowedType = ('actionType' in data) &&
                            data.actionType is string &&
@@ -261,16 +220,13 @@ service cloud.firestore {
              hasValidPendingActionFields(data);
     }
 
-    // Helper: Strict Zero-Trust validation for client UTR verification submissions
+    // Helper: Strict Zero-Trust validation for client UTR verification submissions (Canonical Keys Only)
     function isValidPendingVerificationCreate() {
       let data = request.resource.data;
-      let hasOwner = (('uid' in data && data.uid == request.auth.uid) ||
-                      ('firebaseUid' in data && data.firebaseUid == request.auth.uid)) &&
-                     (!('userId' in data) || data.userId == request.auth.uid);
+      let hasOwner = ('uid' in data) && data.uid is string && data.uid == request.auth.uid;
       let hasAllowedKeys = data.keys().hasOnly([
-        'deviceHardwareId', 'hardwareId', 'passName', 'passTier', 'passType',
-        'amount', 'paymentAmount', 'utr', 'status', 'isUsed', 'userId',
-        'firebaseUid', 'uid', 'userEmail', 'email', 'timestamp', 'createdAt', 'submittedAt', 'notes'
+        'uid', 'utr', 'passTier', 'passName', 'amount',
+        'deviceHardwareId', 'status', 'isUsed', 'createdAt'
       ]);
       let hasValidCoreFields = ('status' in data) && data.status == 'PENDING' &&
                                ('isUsed' in data) && data.isUsed == false &&
@@ -280,8 +236,6 @@ service cloud.firestore {
                                (!('deviceHardwareId' in data) || data.deviceHardwareId is string) &&
                                (!('passName' in data) || data.passName is string) &&
                                (!('passTier' in data) || data.passTier is string) &&
-                               (!('passType' in data) || data.passType is string) &&
-                               (!('timestamp' in data) || data.timestamp is timestamp || data.timestamp is int || data.timestamp is float) &&
                                (!('createdAt' in data) || data.createdAt is timestamp || data.createdAt is int || data.createdAt is float);
       return hasOwner && hasAllowedKeys && hasValidCoreFields;
     }
@@ -309,19 +263,15 @@ service cloud.firestore {
         isValidPendingVerificationCreate()
       );
       allow read: if isAdmin() || (
-        isAuthenticated() && (
-          ('uid' in resource.data && resource.data.uid == request.auth.uid) ||
-          ('firebaseUid' in resource.data && resource.data.firebaseUid == request.auth.uid) ||
-          ('userId' in resource.data && resource.data.userId == request.auth.uid)
-        )
+        isAuthenticated() &&
+        'uid' in resource.data &&
+        resource.data.uid == request.auth.uid
       );
       allow update: if isAdmin();
       allow delete: if isAdmin() || (
-        isAuthenticated() && (
-          ('uid' in resource.data && resource.data.uid == request.auth.uid) ||
-          ('firebaseUid' in resource.data && resource.data.firebaseUid == request.auth.uid) ||
-          ('userId' in resource.data && resource.data.userId == request.auth.uid)
-        ) &&
+        isAuthenticated() &&
+        'uid' in resource.data &&
+        resource.data.uid == request.auth.uid &&
         resource.data.status == 'PENDING'
       );
     }

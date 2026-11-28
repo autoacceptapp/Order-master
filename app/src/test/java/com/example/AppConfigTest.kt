@@ -163,7 +163,7 @@ class AppConfigTest {
     }
 
     @Test
-    fun testLegacyTopLevelAndFeatureRatesFallbackWhenCanonicalMissing() {
+    fun testLegacyTopLevelAndFeatureRatesAreIgnoredAndFallBackToDefaults() {
         val legacyDoc: Map<String, Any?> = mapOf(
             "dailyPointsCost" to 110L,
             "weeklyPointsCost" to 520L,
@@ -183,25 +183,25 @@ class AppConfigTest {
 
         val applied = AppConfigRepository.applyPaymentConfigFromMap(legacyDoc)
 
-        assertEquals(110, applied.dailyPoints)
-        assertEquals(520, applied.weeklyPoints)
-        assertEquals(1600, applied.monthlyPoints)
-        assertEquals(1750, applied.removeAdsPoints)
+        assertEquals(PassPricingConfig.DAILY_POINTS, applied.dailyPoints)
+        assertEquals(PassPricingConfig.WEEKLY_POINTS, applied.weeklyPoints)
+        assertEquals(PassPricingConfig.MONTHLY_POINTS, applied.monthlyPoints)
+        assertEquals(PassPricingConfig.REMOVE_ADS_POINTS, applied.removeAdsPoints)
 
-        assertEquals(11, applied.dailyPriceInr)
-        assertEquals(55, applied.weeklyPriceInr)
-        assertEquals(189, applied.monthlyPriceInr)
-        assertEquals(219, applied.removeAdsPriceInr)
-        assertEquals(listOf(11, 55, 189, 219), applied.validPassAmountsInr)
+        assertEquals(PassPricingConfig.DAILY_PRICE_INR, applied.dailyPriceInr)
+        assertEquals(PassPricingConfig.WEEKLY_PRICE_INR, applied.weeklyPriceInr)
+        assertEquals(PassPricingConfig.MONTHLY_PRICE_INR, applied.monthlyPriceInr)
+        assertEquals(PassPricingConfig.REMOVE_ADS_PRICE_INR, applied.removeAdsPriceInr)
+        assertEquals(listOf(9, 49, 179, 199), applied.validPassAmountsInr)
 
-        assertEquals(14, FeatureIds.getEffectivePointsPerHour(FeatureIds.MIN_FARE))
-        assertEquals(12, FeatureIds.getEffectivePointsPerHour(FeatureIds.TTS_VOICE))
-        assertEquals(110, PassTier.DAILY.effectivePointsCost())
-        assertEquals(219, PassTier.REMOVE_ADS.effectivePriceInInr())
+        assertEquals(10, FeatureIds.getEffectivePointsPerHour(FeatureIds.MIN_FARE))
+        assertEquals(10, FeatureIds.getEffectivePointsPerHour(FeatureIds.TTS_VOICE))
+        assertEquals(PassPricingConfig.DAILY_POINTS, PassTier.DAILY.effectivePointsCost())
+        assertEquals(PassPricingConfig.REMOVE_ADS_PRICE_INR, PassTier.REMOVE_ADS.effectivePriceInInr())
     }
 
     @Test
-    fun testLegacyMapFallbacksPassPointsCostPriceInInrAndFeaturePrices() {
+    fun testLegacyMapKeysPassPointsCostPriceInInrAndFeaturePricesAreIgnored() {
         val legacyMapOnlyDoc: Map<String, Any?> = mapOf(
             "passPointsCost" to mapOf(
                 "daily" to 130L,
@@ -226,20 +226,18 @@ class AppConfigTest {
 
         val applied = AppConfigRepository.applyPaymentConfigFromMap(legacyMapOnlyDoc)
 
-        assertEquals(130, applied.dailyPoints)
-        assertEquals(540, applied.weeklyPoints)
-        assertEquals(1650, applied.monthlyPoints)
-        assertEquals(1850, applied.removeAdsPoints)
+        assertEquals(PassPricingConfig.DAILY_POINTS, applied.dailyPoints)
+        assertEquals(PassPricingConfig.WEEKLY_POINTS, applied.weeklyPoints)
+        assertEquals(PassPricingConfig.MONTHLY_POINTS, applied.monthlyPoints)
+        assertEquals(PassPricingConfig.REMOVE_ADS_POINTS, applied.removeAdsPoints)
 
-        assertEquals(12, applied.dailyPriceInr)
-        assertEquals(52, applied.weeklyPriceInr)
-        assertEquals(185, applied.monthlyPriceInr)
-        assertEquals(209, applied.removeAdsPriceInr)
+        assertEquals(PassPricingConfig.DAILY_PRICE_INR, applied.dailyPriceInr)
+        assertEquals(PassPricingConfig.WEEKLY_PRICE_INR, applied.weeklyPriceInr)
+        assertEquals(PassPricingConfig.MONTHLY_PRICE_INR, applied.monthlyPriceInr)
+        assertEquals(PassPricingConfig.REMOVE_ADS_PRICE_INR, applied.removeAdsPriceInr)
 
-        // featurePricesPtsPerHr takes precedence over featurePrices
-        assertEquals(16, FeatureIds.getEffectivePointsPerHour(FeatureIds.MAX_FARE))
-        // featurePrices still works when higher-precedence maps do not define the feature
-        assertEquals(13, FeatureIds.getEffectivePointsPerHour(FeatureIds.FLOATING_OVERLAY))
+        assertEquals(10, FeatureIds.getEffectivePointsPerHour(FeatureIds.MAX_FARE))
+        assertEquals(10, FeatureIds.getEffectivePointsPerHour(FeatureIds.FLOATING_OVERLAY))
     }
 
     @Test
@@ -307,8 +305,8 @@ class AppConfigTest {
 
         assertEquals(22, FeatureIds.getEffectivePointsPerHour(FeatureIds.MIN_FARE))
         assertEquals(30, FeatureIds.getEffectivePointsPerHour(FeatureIds.AUTO_CLICK))
-        // Non-overlapping legacy feature key remains available during transition
-        assertEquals(17, FeatureIds.getEffectivePointsPerHour(FeatureIds.MAX_PICKUP_DISTANCE))
+        // Legacy featureRates entries are strictly ignored; unspecified features use default rate
+        assertEquals(10, FeatureIds.getEffectivePointsPerHour(FeatureIds.MAX_PICKUP_DISTANCE))
     }
 
     @Test

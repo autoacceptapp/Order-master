@@ -70,6 +70,45 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_SHOW_UPDATE_DIALOG = "extra_show_update_dialog"
         const val EXTRA_LATEST_VERSION = "extra_latest_version"
         const val EXTRA_OPEN_STORE = "extra_open_store"
+        const val FALLBACK_RELEASES_URL = "https://github.com/autoacceptapp/Order-master/releases/latest"
+
+        @androidx.annotation.VisibleForTesting
+        internal fun shouldRequireForceUpdate(
+            isInAppUpdateActive: Boolean,
+            minSupportedVersionCode: Int,
+            currentVersionCode: Int
+        ): Boolean {
+            return isInAppUpdateActive &&
+                minSupportedVersionCode > 1 &&
+                currentVersionCode < minSupportedVersionCode
+        }
+
+        internal fun openExternalUpdateLink(context: Context, rawUrl: String?): Boolean {
+            val trimmed = rawUrl?.trim().orEmpty()
+            val candidateUrl = if (
+                trimmed.startsWith("https://", ignoreCase = true) ||
+                trimmed.startsWith("http://", ignoreCase = true)
+            ) {
+                trimmed
+            } else {
+                FALLBACK_RELEASES_URL
+            }
+            return try {
+                val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(candidateUrl)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(browserIntent)
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to open update link '$candidateUrl': ${e.message}", e)
+                Toast.makeText(
+                    context,
+                    "Unable to open update link: ${e.message ?: "No compatible browser found"}",
+                    Toast.LENGTH_LONG
+                ).show()
+                false
+            }
+        }
     }
 
     // Reactive state flow to reflect accessibility service state dynamically
@@ -213,52 +252,48 @@ class MainActivity : ComponentActivity() {
                     )
                 } else {
                     val appConfig by AppConfigRepository.observeAppConfig().collectAsState(initial = AppConfig())
+                    val isInAppUpdateActive by GlobalAdminManager.isInAppUpdateActive.collectAsState()
                     @Suppress("UNUSED_VARIABLE")
                     val paymentConfig by AppConfigRepository.observePaymentConfig().collectAsState(
                         initial = com.example.data.repository.PaymentConfig()
                     )
-                    val isForceUpdateRequired = BuildConfig.VERSION_CODE < appConfig.minSupportedVersionCode
-
-                    // 1. Force Update Dialog (Strict, non-dismissible, blocks the app if version is too old)
-                    if (isForceUpdateRequired) {
-                    ForceUpdateDialog(
-                        appConfig = appConfig,
-                        onUpdateClick = { url ->
-                            val trimmedUrl = url.trim()
-                            if (trimmedUrl.endsWith(".apk", ignoreCase = true)) {
-                                ApkDownloader.startDownload(
-                                    context = applicationContext,
-                                    downloadUrl = trimmedUrl,
-                                    fileName = "OrderMaster-v${appConfig.minSupportedVersionCode}.apk"
-                                )
-                            } else if (trimmedUrl.isNotEmpty()) {
-                                try {
-                                    val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(trimmedUrl)).apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                    startActivity(browserIntent)
-                                } catch (e: Exception) {
-                                    Toast.makeText(
-                                        applicationContext,
-                                        "Cannot open update link: ${e.message}",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
-                            } else {
-                                // Fallback to GitHub releases if URL is empty
-                                try {
-                                    val fallbackIntent = Intent(
-                                        Intent.ACTION_VIEW,
-                                        Uri.parse("https://github.com/autoacceptapp/Order-master/releases/latest")
-                                    ).apply {
-                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    }
-                                    startActivity(fallbackIntent)
-                                } catch (_: Exception) {}
-                            }
-                        }
+                    val isForceUpdateRequired = shouldRequireForceUpdate(
+                        isInAppUpdateActive = isInAppUpdateActive,
+                        minSupportedVersionCode = appConfig.minSupportedVersionCode,
+                        currentVersionCode = BuildConfig.VERSION_CODE
                     )
-                } else {
+
+                    // 1. Force Update Dialog (Strict, non-dismissible when Admin enables in-app updates & version is outdated)
+                    if (isForceUpdateRequired) {
+                        ForceUpdateDialog(
+                            appConfig = appConfig,
+                            onUpdateClick = { url ->
+                                val trimmedUrl = url.trim()
+                                if (trimmedUrl.endsWith(".apk", ignoreCase = true)) {
+                                    try {
+                                        ApkDownloader.startDownload(
+                                            context = applicationContext,
+                                            downloadUrl = trimmedUrl,
+                                            fileName = "OrderMaster-v${appConfig.minSupportedVersionCode}.apk"
+                                        )
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "In-app APK download failed, falling back to browser: ${e.message}", e)
+                                        Toast.makeText(
+                                            applicationContext,
+                                            "In-app download failed (${e.message ?: "error"}). Opening download page...",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                        openExternalUpdateLink(applicationContext, trimmedUrl)
+                                    }
+                                } else {
+                                    openExternalUpdateLink(applicationContext, trimmedUrl)
+                                }
+                            },
+                            onOpenFallbackLink = { url ->
+                                openExternalUpdateLink(applicationContext, url)
+                            }
+                        )
+                    } else {
                     val updateState by GitHubUpdateManager.updateState.collectAsState()
                     val isUpdateDialogVisible by GitHubUpdateManager.isDialogVisible.collectAsState()
                     val activeMessage by InAppMessageManager.activeMessage.collectAsState()
@@ -521,10 +556,18 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ForceUpdateDialog(
     appConfig: AppConfig,
-    onUpdateClick: (String) -> Unit
+    onUpdateClick: (String) -> Unit,
+    onOpenFallbackLink: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val downloadState by ApkDownloader.downloadState.collectAsState()
+    val triggerFallbackLink: (String) -> Unit = { url ->
+        if (onOpenFallbackLink != null) {
+            onOpenFallbackLink(url)
+        } else {
+            MainActivity.openExternalUpdateLink(context, url)
+        }
+    }
 
     // Strictly disable back navigation
     BackHandler(enabled = true) {
@@ -537,7 +580,13 @@ fun ForceUpdateDialog(
         if (downloadState is DownloadState.ReadyToInstall && !ApkDownloader.canRequestPackageInstalls(context)) {
             try {
                 context.startActivity(ApkDownloader.createManageUnknownAppSourcesIntent(context))
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Toast.makeText(
+                    context,
+                    "Unable to open install permissions: ${e.message ?: "error"}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 
@@ -633,10 +682,19 @@ fun ForceUpdateDialog(
                 is DownloadState.ReadyToInstall -> {
                     Button(
                         onClick = {
-                            if (ApkDownloader.canRequestPackageInstalls(context)) {
-                                ApkDownloader.promptInstall(context, state.apkFile)
-                            } else {
-                                context.startActivity(ApkDownloader.createManageUnknownAppSourcesIntent(context))
+                            try {
+                                if (ApkDownloader.canRequestPackageInstalls(context)) {
+                                    ApkDownloader.promptInstall(context, state.apkFile)
+                                } else {
+                                    context.startActivity(ApkDownloader.createManageUnknownAppSourcesIntent(context))
+                                }
+                            } catch (e: Exception) {
+                                Toast.makeText(
+                                    context,
+                                    "Could not launch installer: ${e.message ?: "error"}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                triggerFallbackLink(appConfig.dynamicAppDownloadUrl)
                             }
                         },
                         shape = RoundedCornerShape(12.dp),
@@ -666,6 +724,21 @@ fun ForceUpdateDialog(
                         Text("Update Now", fontWeight = FontWeight.Bold)
                     }
                 }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    val fallbackUrl = appConfig.dynamicAppDownloadUrl.trim().ifBlank {
+                        MainActivity.FALLBACK_RELEASES_URL
+                    }
+                    triggerFallbackLink(fallbackUrl)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("force_update_fallback_link_btn")
+            ) {
+                Text("Open Download Page in Browser")
             }
         },
         shape = RoundedCornerShape(20.dp),

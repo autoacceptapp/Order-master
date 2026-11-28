@@ -59,7 +59,7 @@ class ExampleRobolectricTest {
         AppSettings.applyFirestoreSnapshotForTest(
             context,
             mapOf(
-                "isAutoAcceptEnabled" to true,
+                "isAutoClickEnabled" to true,
                 "minFare" to 75.0,
                 "maxFare" to 800.0,
                 "maxPickupDistance" to 2.5
@@ -1118,18 +1118,18 @@ class ExampleRobolectricTest {
             )
         )
         val snapshotData = mapOf<String, Any?>(
-            "isAutoAcceptEnabled" to true,
+            "isAutoClickEnabled" to true,
             "minFare" to 85.0,
             "maxPickupDistance" to 2.0,
             "isFloatingOverlayEnabled" to true,
             "isVoiceAnnouncerEnabled" to true,
             "activePassType" to "DAILY_PASS",
             "passExpiryTimestamp" to futureExpiry,
-            "unlocked_features" to mapOf(
+            "unlockedFeatures" to mapOf(
                 FeatureIds.FARE_FILTERS to futureExpiry,
                 FeatureIds.TTS_VOICE to futureExpiry
             ),
-            "blockedLocations" to listOf("Airport", "Highway Toll")
+            "blacklistedDestinations" to listOf("Airport", "Highway Toll")
         )
         AppSettings.applyFirestoreSnapshotForTest(context, snapshotData)
 

@@ -596,9 +596,8 @@ class PaymentVerificationTest {
     @Test
     fun testPendingVerificationPayloadMatchesFirestoreRulesAllowlist() {
         val unifiedAllowedKeys = setOf(
-            "deviceHardwareId", "hardwareId", "passName", "passTier", "passType",
-            "amount", "paymentAmount", "utr", "status", "isUsed", "userId",
-            "firebaseUid", "uid", "userEmail", "email", "timestamp", "createdAt", "submittedAt", "notes"
+            "uid", "utr", "passTier", "passName", "amount",
+            "deviceHardwareId", "status", "isUsed", "createdAt"
         )
         val utr = "426719823451"
         val authUid = "uid_1"
@@ -611,8 +610,8 @@ class PaymentVerificationTest {
 
         // Core owner & state invariants of isValidPendingVerificationCreate()
         assertEquals(authUid, payload["uid"])
-        assertEquals(authUid, payload["firebaseUid"])
-        assertFalse("Payload must not duplicate userId alongside canonical uid/firebaseUid", payload.containsKey("userId"))
+        assertFalse("Payload must not duplicate legacy firebaseUid alongside canonical uid", payload.containsKey("firebaseUid"))
+        assertFalse("Payload must not duplicate userId alongside canonical uid", payload.containsKey("userId"))
         assertEquals("PENDING", payload["status"])
         assertEquals(false, payload["isUsed"])
         assertEquals(utr, payload["utr"])
@@ -623,9 +622,10 @@ class PaymentVerificationTest {
         assertEquals(PassTier.MONTHLY.canonicalId, payload["passTier"])
         assertEquals("monthly", payload["passTier"])
         assertEquals(com.google.firebase.firestore.FieldValue.serverTimestamp(), payload["createdAt"])
-        assertTrue(
-            "Unexpected keys outside unified firestore.rules allowlist: ${payload.keys - unifiedAllowedKeys}",
-            unifiedAllowedKeys.containsAll(payload.keys)
+        assertEquals(
+            "Pending verification payload keys must match exact canonical allowlist",
+            unifiedAllowedKeys,
+            payload.keys
         )
         assertFalse(payload.containsKey("userEmail"))
         assertFalse(payload.containsKey("linkedHardwareId"))
@@ -690,10 +690,10 @@ class PaymentVerificationTest {
         )
 
         assertEquals("uid_canonical_99", payload["uid"])
-        assertEquals("uid_canonical_99", payload["firebaseUid"])
+        assertFalse("Action queue payload must not emit duplicate firebaseUid", payload.containsKey("firebaseUid"))
         assertEquals(PassTier.REMOVE_ADS.canonicalId, payload["passTier"])
         assertFalse("Action queue payload must not include duplicate userId", payload.containsKey("userId"))
-        assertTrue(payload.keys.containsAll(setOf("uid", "firebaseUid", "actionType", "status", "createdAt")))
+        assertTrue(payload.keys.containsAll(setOf("uid", "actionType", "status", "createdAt")))
         assertEquals(com.google.firebase.firestore.FieldValue.serverTimestamp(), payload["createdAt"])
         assertTrue(
             "Unexpected keys outside unified firestore.rules allowlist: ${payload.keys - LicenseManager.PENDING_ACTION_ALLOWED_KEYS}",
@@ -726,7 +726,7 @@ class PaymentVerificationTest {
         fun assertPassesUnifiedPendingActionRules(doc: Map<String, Any>) {
             // 1. Canonical owner check
             assertEquals("uid must equal auth.uid", authUid, doc["uid"])
-            assertEquals("firebaseUid must equal auth.uid", authUid, doc["firebaseUid"])
+            assertFalse("firebaseUid must not be emitted", doc.containsKey("firebaseUid"))
             assertFalse("userId must not be emitted", doc.containsKey("userId"))
 
             // 2. Status & actionType allowlist
@@ -977,6 +977,8 @@ class PaymentVerificationTest {
     @Test
     fun testAllClientFirestorePayloadBuildersEmitZeroLegacyAliasKeys() {
         val forbiddenLegacyKeys = setOf(
+            "firebaseUid",
+            "legacyCustomUserId",
             "email",
             "hardwareId",
             "deviceId",
@@ -1069,7 +1071,7 @@ class PaymentVerificationTest {
             )
             assertNoLegacyKeys("buildActionQueuePayload($actionType)", built)
             assertEquals(uid, built["uid"])
-            assertEquals(uid, built["firebaseUid"])
+            assertFalse("buildActionQueuePayload($actionType) must not emit firebaseUid", built.containsKey("firebaseUid"))
             assertEquals(userEmail, built["userEmail"])
             assertEquals(hwId, built["linkedHardwareId"])
         }

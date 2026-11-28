@@ -7,6 +7,8 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.FrameLayout
 import androidx.test.core.app.ApplicationProvider
+import com.google.firebase.Timestamp
+import java.util.Date
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -494,7 +496,7 @@ class AuditRegressionTest {
                 mapOf(
                     "activePassType" to rawPassType,
                     "passExpiryTimestamp" to futureExpiry,
-                    "isAutoAcceptEnabled" to true
+                    "isAutoClickEnabled" to true
                 )
             )
             LicenseManager.setLicensingForTesting(
@@ -518,17 +520,19 @@ class AuditRegressionTest {
     }
 
     @Test
-    fun `firebaseUid is populated on INIT_PROFILE and preserved in UPDATE_PROFILE without write loops`() {
+    fun `canonical uid is populated on INIT_PROFILE and preserved in UPDATE_PROFILE without write loops`() {
         val initPayload = LicenseManager.buildInitProfilePayload(
             firebaseUid = "uid_abc_123",
             userEmail = "captain@example.com",
             hardwareId = "hw_xyz",
             legacyCustomId = "OM-USER-OLD"
         )
-        assertEquals("uid_abc_123", initPayload["firebaseUid"])
+        assertEquals("uid_abc_123", initPayload["uid"])
+        assertFalse("INIT_PROFILE must not emit legacy firebaseUid alias", initPayload.containsKey("firebaseUid"))
+        assertFalse("INIT_PROFILE must not emit legacyCustomUserId", initPayload.containsKey("legacyCustomUserId"))
+        assertEquals(setOf("uid", "userEmail", "linkedHardwareId"), initPayload.keys)
         assertEquals("captain@example.com", initPayload["userEmail"])
         assertEquals("hw_xyz", initPayload["linkedHardwareId"])
-        assertEquals("OM-USER-OLD", initPayload["legacyCustomUserId"])
 
         // Canonical document already in sync -> zero UPDATE_PROFILE writes (no write loop)
         val noUpdates = LicenseManager.computeNeededProfileUpdates(
@@ -541,7 +545,7 @@ class AuditRegressionTest {
         )
         assertTrue("Already-canonical doc must trigger zero updates", noUpdates.isEmpty())
 
-        // Document missing firebaseUid -> repaired once while preserving UID
+        // Document missing uid -> repaired once while preserving UID
         val missingUidRepair = LicenseManager.computeNeededProfileUpdates(
             snapshotFirebaseUid = null,
             snapshotHardwareId = "hw_xyz",
@@ -550,11 +554,11 @@ class AuditRegressionTest {
             currentHardwareId = "hw_xyz",
             authEmail = "captain@example.com"
         )
-        assertEquals(mapOf("firebaseUid" to "uid_abc_123"), missingUidRepair)
+        assertEquals(mapOf("uid" to "uid_abc_123"), missingUidRepair)
         assertTrue(LicenseManager.shouldDispatchProfileUpdate("uid_abc_123", missingUidRepair))
         assertFalse("Duplicate hash suppresses repeated dispatch", LicenseManager.shouldDispatchProfileUpdate("uid_abc_123", missingUidRepair))
 
-        // Canonical lookup wins when present; fallback firebaseUid doc used when canonical missing
+        // Canonical lookup wins when present; fallback uid doc used when canonical missing
         assertEquals(
             "uid_abc_123",
             LicenseManager.selectResolvedUserDocumentPath("uid_abc_123", canonicalExists = true, fallbackDocIds = listOf("legacy_1"))
@@ -900,6 +904,200 @@ class AuditRegressionTest {
         assertTrue(
             "Trip screen with OTP and Navigate to must trigger hasActiveTripIndicators",
             service.hasActiveTripIndicators(listOf(tripRoot))
+        )
+    }
+
+    @Test
+    fun `INIT_PROFILE completion without trial fields never clobbers live 48h trial points or referralCode`() {
+        val now = LicenseManager.getCurrentServerTimeMs()
+        val trialClaimed = now - 1_000L
+        val trialExpiry = now + (48L * 60L * 60L * 1000L)
+
+        // Simulate users/{uid} snapshot listener already populating live 48h trial + points + referralCode
+        LicenseManager.setLicensingForTesting(
+            trialClaimed = trialClaimed,
+            trialExpiry = trialExpiry,
+            trialUsed = true
+        )
+        LicenseManager.setProfileStateForTesting(
+            points = 150,
+            referralCode = "OM987654"
+        )
+        assertEquals("trials", LicenseManager.currentFolder.value)
+        assertTrue(LicenseManager.accessStatus.value is AccessStatus.TrialActive)
+
+        // Case 1: INIT_PROFILE completes with actionDoc missing trialClaimed/trialExpiry/points/referralCode
+        LicenseManager.applyInitProfileActionData(
+            context = context,
+            actionData = mapOf(
+                "status" to "COMPLETED",
+                "actionType" to "INIT_PROFILE"
+            )
+        )
+
+        assertEquals(
+            "Live trial folder must NOT be overwritten to free_mod when actionDoc lacks trial fields",
+            "trials",
+            LicenseManager.currentFolder.value
+        )
+        assertTrue(
+            "Live TrialActive accessStatus must be preserved",
+            LicenseManager.accessStatus.value is AccessStatus.TrialActive
+        )
+        assertEquals(
+            "Live trial expiry must not be clobbered to 0L",
+            trialExpiry,
+            LicenseManager.trialInfo.value?.trialExpiryTimestamp
+        )
+        assertEquals(
+            "Live pointsBalance must not be overwritten to 0 when omitted from actionDoc",
+            150,
+            LicenseManager.pointsBalance.value
+        )
+        assertEquals(
+            "Live referralCode must not be overwritten when omitted or blank in actionDoc",
+            "OM987654",
+            LicenseManager.referralCode.value
+        )
+
+        // Case 2: Even if actionDoc explicitly contains zeroed trial fields or blank referralCode,
+        // an already-active live trial (serverTrialExpiry > now) must never be clobbered
+        LicenseManager.applyInitProfileActionData(
+            context = context,
+            actionData = mapOf(
+                "status" to "COMPLETED",
+                "trialClaimed" to 0L,
+                "trialExpiry" to 0L,
+                "referralCode" to "   "
+            )
+        )
+        assertEquals("trials", LicenseManager.currentFolder.value)
+        assertTrue(LicenseManager.accessStatus.value is AccessStatus.TrialActive)
+        assertEquals(trialExpiry, LicenseManager.trialInfo.value?.trialExpiryTimestamp)
+        assertEquals("OM987654", LicenseManager.referralCode.value)
+    }
+
+    @Test
+    fun `INIT_PROFILE completion parses both Firestore Timestamp and Long millis for active 48h trial`() {
+        val now = LicenseManager.getCurrentServerTimeMs()
+        val claimedMs = now - 2_000L
+        val expiryMs = now + (48L * 60L * 60L * 1000L)
+
+        // Case A: Firestore Timestamp fields (as written by server-side Admin SDK / Firestore)
+        val claimedTs = Timestamp(Date(claimedMs))
+        val expiryTs = Timestamp(Date(expiryMs))
+        LicenseManager.applyInitProfileActionData(
+            context = context,
+            actionData = mapOf(
+                "status" to "COMPLETED",
+                "trialClaimed" to claimedTs,
+                "trialExpiry" to expiryTs,
+                "pointsBalance" to 50L,
+                "referralCode" to "OM48HR01"
+            )
+        )
+
+        assertEquals("trials", LicenseManager.currentFolder.value)
+        assertTrue(
+            "Expected TrialActive immediately after INIT_PROFILE with Firestore Timestamp trial fields",
+            LicenseManager.accessStatus.value is AccessStatus.TrialActive
+        )
+        assertEquals(50, LicenseManager.pointsBalance.value)
+        assertEquals("OM48HR01", LicenseManager.referralCode.value)
+
+        // Case B: Numeric Long millisecond fields
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.applyInitProfileActionData(
+            context = context,
+            actionData = mapOf(
+                "status" to "COMPLETED",
+                "trialClaimed" to claimedMs,
+                "trialExpiry" to expiryMs,
+                "pointsBalance" to 75,
+                "referralCode" to "OM48HR02"
+            )
+        )
+
+        assertEquals("trials", LicenseManager.currentFolder.value)
+        assertTrue(
+            "Expected TrialActive immediately after INIT_PROFILE with Long millis trial fields",
+            LicenseManager.accessStatus.value is AccessStatus.TrialActive
+        )
+        assertEquals(expiryMs, LicenseManager.trialInfo.value?.trialExpiryTimestamp)
+        assertEquals(75, LicenseManager.pointsBalance.value)
+        assertEquals("OM48HR02", LicenseManager.referralCode.value)
+
+        // Case C: Missing trial fields before user snapshot arrives defers to snapshot listener (remains Loading)
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.applyInitProfileActionData(
+            context = context,
+            actionData = mapOf("status" to "COMPLETED")
+        )
+        assertTrue(
+            "When actionDoc lacks trial fields before snapshot arrives, status should stay Loading awaiting users/{uid}",
+            LicenseManager.accessStatus.value is AccessStatus.Loading
+        )
+
+        // Case D: Explicit ineligible trial (0L/0L, trialUsed=true) with no live trial transitions to free_mod/Expired
+        LicenseManager.resetStateForTesting(context)
+        LicenseManager.applyInitProfileActionData(
+            context = context,
+            actionData = mapOf(
+                "status" to "COMPLETED",
+                "trialClaimed" to 0L,
+                "trialExpiry" to 0L,
+                "trialUsed" to true
+            )
+        )
+        assertEquals("free_mod", LicenseManager.currentFolder.value)
+        assertTrue(LicenseManager.accessStatus.value is AccessStatus.Expired)
+    }
+
+    @Test
+    fun `force update guard respects Admin isInAppUpdateActive flag and minSupportedVersionCode gt 1`() {
+        // Admin disabled in-app updates -> NEVER freezes screen even when minSupportedVersionCode > current
+        assertFalse(
+            "Force update must NOT trigger when Admin disables isInAppUpdateActive",
+            MainActivity.shouldRequireForceUpdate(
+                isInAppUpdateActive = false,
+                minSupportedVersionCode = 250,
+                currentVersionCode = 102
+            )
+        )
+
+        // Default minSupportedVersionCode == 1 -> NEVER triggers force update
+        assertFalse(
+            "Force update must NOT trigger when minSupportedVersionCode <= 1",
+            MainActivity.shouldRequireForceUpdate(
+                isInAppUpdateActive = true,
+                minSupportedVersionCode = 1,
+                currentVersionCode = 0
+            )
+        )
+
+        // Current version meets or exceeds minSupportedVersionCode -> NOT required
+        assertFalse(
+            MainActivity.shouldRequireForceUpdate(
+                isInAppUpdateActive = true,
+                minSupportedVersionCode = 202,
+                currentVersionCode = 202
+            )
+        )
+        assertFalse(
+            MainActivity.shouldRequireForceUpdate(
+                isInAppUpdateActive = true,
+                minSupportedVersionCode = 202,
+                currentVersionCode = 205
+            )
+        )
+
+        // Admin enabled + minSupportedVersionCode > 1 + currentVersionCode < minSupported -> required
+        assertTrue(
+            MainActivity.shouldRequireForceUpdate(
+                isInAppUpdateActive = true,
+                minSupportedVersionCode = 203,
+                currentVersionCode = 202
+            )
         )
     }
 }

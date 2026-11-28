@@ -853,7 +853,7 @@ object LicenseManager {
     ): Map<String, Any> {
         val updatesNeeded = mutableMapOf<String, Any>()
         if (expectedFirebaseUid.isNotBlank() && snapshotFirebaseUid.orEmpty() != expectedFirebaseUid) {
-            updatesNeeded["firebaseUid"] = expectedFirebaseUid
+            updatesNeeded["uid"] = expectedFirebaseUid
         }
         if (currentHardwareId.isNotBlank() && snapshotHardwareId.orEmpty() != currentHardwareId) {
             updatesNeeded["linkedHardwareId"] = currentHardwareId
@@ -865,7 +865,7 @@ object LicenseManager {
             updatesNeeded["isAutoClickEnabled"] = desiredAutoClickEnabled
         }
         if (updatesNeeded.isNotEmpty() && expectedFirebaseUid.isNotBlank()) {
-            updatesNeeded["firebaseUid"] = expectedFirebaseUid
+            updatesNeeded["uid"] = expectedFirebaseUid
         }
         return updatesNeeded
     }
@@ -875,23 +875,18 @@ object LicenseManager {
         firebaseUid: String,
         userEmail: String,
         hardwareId: String,
-        legacyCustomId: String? = null
+        @Suppress("UNUSED_PARAMETER") legacyCustomId: String? = null
     ): Map<String, Any> {
-        val initPayload = mutableMapOf<String, Any>(
-            "firebaseUid" to firebaseUid,
+        return mapOf(
+            "uid" to firebaseUid,
             "userEmail" to userEmail,
             "linkedHardwareId" to hardwareId
         )
-        if (!legacyCustomId.isNullOrBlank() && legacyCustomId != firebaseUid) {
-            initPayload["legacyCustomUserId"] = legacyCustomId
-        }
-        return initPayload
     }
 
     private fun computeProfileUpdateHash(userKey: String, fields: Map<String, Any>): String? {
         if (fields.isEmpty()) return null
         val normalized = fields.entries
-            .filter { it.key != "userId" }
             .sortedBy { it.key }
             .joinToString("|") { "${it.key}=${it.value}" }
         if (normalized.isEmpty()) return null
@@ -1944,36 +1939,30 @@ object LicenseManager {
 
     @VisibleForTesting
     internal val PENDING_ACTION_ALLOWED_KEYS: Set<String> = setOf(
-        "uid", "firebaseUid", "userId",
+        "uid",
         "userEmail", "displayName", "photoUrl",
         "actionType", "status",
-        "createdAt", "timestamp",
+        "createdAt",
         "appVersion", "versionCode", "appSignatureSha256", "deviceIntegrityOk",
-        "linkedHardwareId", "hardwareId", "deviceId",
-        "newHardwareId", "new_hardware_id",
-        "oldHardwareId", "old_hardware_id", "previousHardwareId",
-        "oldEmail", "old_email", "previousEmail",
-        "oldFirebaseUid", "old_uid", "previousUid",
-        "legacyCustomUserId", "oldDocumentId", "old_document_id",
-        "previousDocumentId", "migratedFromDocId",
-        "referralCode", "code",
-        "passTier", "passType", "pass_type",
-        "utr", "transactionId", "paymentRef", "refNo",
-        "amount", "paymentAmount",
-        "featureId", "featureKey", "featureName", "feature", "featureIds", "hours",
-        "pointsCost", "durationDays", "durationMs", "condition",
-        "autoAcceptEnabled", "isAutoAcceptEnabled",
+        "linkedHardwareId",
+        "referralCode",
+        "passTier",
+        "utr",
+        "amount",
+        "featureId", "featureIds", "hours",
         "isFloatingOverlayEnabled", "isVoiceAnnouncerEnabled", "isAutoClickEnabled",
         "isMinFareEnabled", "minFare", "isMaxFareEnabled", "maxFare",
         "isMaxPickupDistanceEnabled", "maxPickupDistance",
         "isMaxDropDistanceEnabled", "maxDropDistance",
         "isMinPerKmRateEnabled", "minPerKmRate", "clickDelayMs",
-        "isDestinationBlacklistEnabled", "blockedLocations", "blacklistedDestinations",
-        "currentFolder", "current_folder"
+        "isDestinationBlacklistEnabled", "blacklistedDestinations",
+        "currentFolder"
     )
 
     @VisibleForTesting
     internal val FORBIDDEN_LEGACY_PAYLOAD_KEYS = setOf(
+        "firebaseUid",
+        "legacyCustomUserId",
         "email",
         "hardwareId",
         "deviceId",
@@ -2000,14 +1989,7 @@ object LicenseManager {
         val actionData = hashMapOf<String, Any>()
         val isPassTierAction = actionType.equals("PURCHASE_PASS", ignoreCase = true) ||
             actionType.equals("ACTIVATE_PASS_PAYMENT", ignoreCase = true)
-        val hasExplicitAutoClick = payload.containsKey("isAutoClickEnabled")
         for ((k, v) in payload) {
-            if (k == "isAutoAcceptEnabled" || k == "autoAcceptEnabled") {
-                if (actionType.equals("UPDATE_PROFILE", ignoreCase = true) && !hasExplicitAutoClick && v is Boolean) {
-                    actionData["isAutoClickEnabled"] = v
-                }
-                continue
-            }
             if (k in FORBIDDEN_LEGACY_PAYLOAD_KEYS) continue
             if (k !in PENDING_ACTION_ALLOWED_KEYS) continue
             if (actionType == "REWARD_AD_WATCHED" && k == "amount") continue
@@ -2018,7 +2000,6 @@ object LicenseManager {
             actionData[k] = v
         }
         actionData["uid"] = firebaseUid
-        actionData["firebaseUid"] = firebaseUid
         actionData["userEmail"] = userEmail
         actionData["linkedHardwareId"] = hardwareId
         actionData["deviceIntegrityOk"] = deviceIntegrityOk
@@ -2137,7 +2118,7 @@ object LicenseManager {
         }
         val fallbackSnap = try {
             db.collection(COLL_USERS)
-                .whereEqualTo("firebaseUid", uid)
+                .whereEqualTo("uid", uid)
                 .limit(1)
                 .get()
                 .await()
@@ -2296,8 +2277,6 @@ object LicenseManager {
                                     actionType = actionType,
                                     status = snapshot.getString("status"),
                                     errorMessage = snapshot.getString("errorMessage"),
-                                    error = snapshot.getString("error"),
-                                    reason = snapshot.getString("reason"),
                                     errorCode = snapshot.getString("errorCode")
                                 )) {
                                     ActionQueueOutcome.Completed -> {
@@ -2355,8 +2334,6 @@ object LicenseManager {
                         actionType = actionType,
                         status = finalSnap.getString("status"),
                         errorMessage = finalSnap.getString("errorMessage"),
-                        error = finalSnap.getString("error"),
-                        reason = finalSnap.getString("reason"),
                         errorCode = finalSnap.getString("errorCode")
                     )) {
                         ActionQueueOutcome.Completed -> {
@@ -2424,10 +2401,8 @@ object LicenseManager {
         )
         result.fold(
             onSuccess = { snap ->
-                var newBalance = snap.getLong("newPointsBalance")?.toInt()
-                    ?: snap.getLong("newBalance")?.toInt()
-                    ?: snap.getLong("pointsBalance")?.toInt()
-                    ?: snap.getLong("points")?.toInt()
+                var newBalance = (snap.get("newPointsBalance") as? Number)?.toInt()
+                    ?: (snap.get("pointsBalance") as? Number)?.toInt()
                 if (newBalance == null) {
                     appContext?.let { refreshUserPassStatusFromServer(it) }
                     newBalance = _pointsBalance.value
@@ -2453,10 +2428,8 @@ object LicenseManager {
 
         result.fold(
             onSuccess = { snap ->
-                var newBalance = snap.getLong("newPointsBalance")?.toInt()
-                    ?: snap.getLong("newBalance")?.toInt()
-                    ?: snap.getLong("pointsBalance")?.toInt()
-                    ?: snap.getLong("points")?.toInt()
+                var newBalance = (snap.get("newPointsBalance") as? Number)?.toInt()
+                    ?: (snap.get("pointsBalance") as? Number)?.toInt()
                 if (newBalance == null) {
                     appContext?.let { refreshUserPassStatusFromServer(it) }
                     newBalance = _pointsBalance.value
@@ -2747,16 +2720,11 @@ object LicenseManager {
                 hasLoadedLicensing = true
 
                 val currentHwId = ctx?.let { HardwareIdManager.getPermanentHardwareId(it) } ?: ""
-                // Check canonical keys strictly so unmigrated docs get canonical UPDATE_PROFILE fields populated
+                // Check canonical Schema v2 keys strictly
+                val existingUid = snapshot.getString("uid")
                 val existingLinkedHw = snapshot.getString("linkedHardwareId")
                 val existingEmail = snapshot.getString("userEmail")
-                val existingFirebaseUid = snapshot.getString("firebaseUid")
                 val existingAutoClick = snapshot.getBoolean("isAutoClickEnabled")
-                val legacyAutoAcceptToMigrate = if (existingAutoClick == null) {
-                    snapshot.getBoolean("isAutoAcceptEnabled")
-                } else {
-                    null
-                }
                 val authEmail = try {
                     FirebaseAuth.getInstance().currentUser?.email.orEmpty()
                 } catch (_: Exception) {
@@ -2764,14 +2732,14 @@ object LicenseManager {
                 }
 
                 val updatesNeeded = computeNeededProfileUpdates(
-                    snapshotFirebaseUid = existingFirebaseUid,
+                    snapshotFirebaseUid = existingUid,
                     snapshotHardwareId = existingLinkedHw,
                     snapshotEmail = existingEmail,
                     expectedFirebaseUid = customUserId,
                     currentHardwareId = currentHwId,
                     authEmail = authEmail,
                     snapshotAutoClickEnabled = existingAutoClick,
-                    desiredAutoClickEnabled = legacyAutoAcceptToMigrate
+                    desiredAutoClickEnabled = null
                 )
                 _referralCode.value = code?.takeIf { it.isNotBlank() }
 
@@ -2813,27 +2781,29 @@ object LicenseManager {
 
                             if (actionResult.isSuccess) {
                                 val actionDoc = actionResult.getOrNull()
-                                val newPoints = (actionDoc?.getLong("pointsBalance")
-                                    ?: actionDoc?.getLong("points"))?.toInt() ?: 0
-                                val newReferral = actionDoc?.getString("referralCode") ?: generateReferralCode()
-                                _referralCode.value = newReferral
-                                _pointsBalance.value = newPoints
-                                val now = getCurrentServerTimeMs()
-                                val serverTrialClaimedMs = actionDoc?.getLong("trialClaimed") ?: 0L
-                                val serverTrialExpiryMs = actionDoc?.getLong("trialExpiry") ?: 0L
-                                if (serverTrialClaimedMs > 0L && serverTrialExpiryMs > now && DeviceUtils.isFreeTrialAllowed(context)) {
-                                    serverTrialClaimed = serverTrialClaimedMs
-                                    serverTrialExpiry = serverTrialExpiryMs
-                                    serverTrialUsed = true
-                                    _currentFolder.value = "trials"
+                                val hasPointsInActionDoc = actionDoc?.contains("pointsBalance") == true
+                                val parsedPoints = if (hasPointsInActionDoc) {
+                                    (actionDoc?.get("pointsBalance") as? Number)?.toInt()
                                 } else {
-                                    serverTrialClaimed = serverTrialClaimedMs
-                                    serverTrialExpiry = serverTrialExpiryMs
-                                    serverTrialUsed = actionDoc?.getBoolean("trialUsed") ?: true
-                                    _currentFolder.value = "free_mod"
+                                    null
                                 }
-                                hasLoadedLicensing = true
-                                refreshAccessStatus()
+                                val parsedReferral = actionDoc?.getString("referralCode")?.takeIf { it.isNotBlank() }
+                                val hasTrialFieldsInActionDoc = actionDoc?.contains("trialClaimed") == true ||
+                                    actionDoc?.contains("trialExpiry") == true
+                                val serverTrialClaimedMs = extractServerTimestampMs(actionDoc?.get("trialClaimed")) ?: 0L
+                                val serverTrialExpiryMs = extractServerTimestampMs(actionDoc?.get("trialExpiry")) ?: 0L
+                                val trialUsedInActionDoc = actionDoc?.get("trialUsed") as? Boolean
+
+                                applyInitProfileResolvedFields(
+                                    context = context,
+                                    hasPointsInActionDoc = hasPointsInActionDoc,
+                                    parsedPoints = parsedPoints,
+                                    parsedReferral = parsedReferral,
+                                    hasTrialFieldsInActionDoc = hasTrialFieldsInActionDoc,
+                                    serverTrialClaimedMs = serverTrialClaimedMs,
+                                    serverTrialExpiryMs = serverTrialExpiryMs,
+                                    trialUsedInActionDoc = trialUsedInActionDoc
+                                )
                                 if (!legacyCustomId.isNullOrBlank()) {
                                     DeviceUtils.clearSavedCustomUserId(context)
                                 }
@@ -2872,7 +2842,7 @@ object LicenseManager {
                         scope.launch {
                             val fallbackDoc = try {
                                 db.collection(COLL_USERS)
-                                    .whereEqualTo("firebaseUid", customUserId)
+                                    .whereEqualTo("uid", customUserId)
                                     .limit(1)
                                     .get()
                                     .await()
@@ -2971,14 +2941,12 @@ object LicenseManager {
     }
 
     /**
-     * Resolves user points balance consistently across `LicenseManager` and `AppSettings`:
-     * prefers `pointsBalance` (authoritative field written by Admin App), falls back to `points`,
-     * and defaults to `0L`.
+     * Resolves canonical user points balance strictly from `pointsBalance` (defaulting to `0L`).
      */
     @VisibleForTesting
     internal fun resolvePointsBalanceFromMap(data: Map<String, Any?>?): Long {
         if (data == null) return 0L
-        val raw = (data["pointsBalance"] as? Number) ?: (data["points"] as? Number)
+        val raw = data["pointsBalance"] as? Number
         return raw?.toLong() ?: 0L
     }
 
@@ -3011,40 +2979,27 @@ object LicenseManager {
     )
 
     /**
-     * Canonical `users/{uid}` parser aligned with Admin App Steps 4A–7A (`schemaVersion = 2`).
-     * Reads `pointsBalance` first with fallback to `points` (defaulting to `0L`) identically to
-     * `AppSettings`, and prefers canonical keys with read-only legacy fallbacks.
+     * Canonical Schema v2 `users/{uid}` parser aligned strictly with Admin App (`schemaVersion = 2`).
+     * Reads strictly canonical fields with zero legacy alias fallbacks.
      */
     @VisibleForTesting
     internal fun parseUserProfileSnapshotMap(data: Map<String, Any?>?): ParsedUserProfileSnapshot {
         if (data == null) return ParsedUserProfileSnapshot()
 
-        val schemaVersion = (data["schemaVersion"] as? Number)?.toInt() ?: 1
-        val firebaseUid = (data["firebaseUid"] as? String)?.takeIf { it.isNotBlank() }
-            ?: (data["uid"] as? String)?.takeIf { it.isNotBlank() }
+        val schemaVersion = (data["schemaVersion"] as? Number)?.toInt() ?: 2
+        val firebaseUid = (data["uid"] as? String)?.takeIf { it.isNotBlank() }
         val userEmail = (data["userEmail"] as? String)?.takeIf { it.isNotBlank() }
-            ?: (data["email"] as? String)?.takeIf { it.isNotBlank() }
         val linkedHardwareId = (data["linkedHardwareId"] as? String)?.takeIf { it.isNotBlank() }
-            ?: (data["hardwareId"] as? String)?.takeIf { it.isNotBlank() }
-            ?: (data["deviceId"] as? String)?.takeIf { it.isNotBlank() }
 
-        val rawPoints = (data["pointsBalance"] as? Number) ?: (data["points"] as? Number)
+        val rawPoints = data["pointsBalance"] as? Number
         val pointsBalance = resolvePointsBalanceFromMap(data)
         val points = pointsBalance.toInt()
 
         val activePassType = data["activePassType"] as? String
-        val passExpiryTimestamp = extractServerTimestampMs(data["passExpiryTimestamp"])
-            ?: extractServerTimestampMs(data["pass_expiry_date"])
-            ?: extractServerTimestampMs(data["passExpiry"])
-            ?: 0L
-        val removeAdsExpiryTimestamp = extractServerTimestampMs(data["removeAdsExpiryTimestamp"])
-            ?: extractServerTimestampMs(data["removeAdsExpiryMs"])
-            ?: extractServerTimestampMs(data["remove_ads_expiry_timestamp"])
-            ?: 0L
+        val passExpiryTimestamp = extractServerTimestampMs(data["passExpiryTimestamp"]) ?: 0L
+        val removeAdsExpiryTimestamp = extractServerTimestampMs(data["removeAdsExpiryTimestamp"]) ?: 0L
 
-        val rawUnlocked = (data["unlockedFeatures"] as? Map<*, *>)
-            ?: (data["unlocked_features"] as? Map<*, *>)
-            ?: (data["featureExpiries"] as? Map<*, *>)
+        val rawUnlocked = data["unlockedFeatures"] as? Map<*, *>
         val unlockedFeatures = rawUnlocked?.mapNotNull { (k, v) ->
             val featureKey = k as? String ?: return@mapNotNull null
             val exp = when (v) {
@@ -3057,7 +3012,7 @@ object LicenseManager {
             featureKey to exp
         }?.toMap() ?: emptyMap()
 
-        val rawLocked = data["lockedFeatures"] ?: data["locked_features"]
+        val rawLocked = data["lockedFeatures"]
         val lockedFeatures: Set<String> = when (rawLocked) {
             is List<*> -> rawLocked.mapNotNull { (it as? String)?.trim()?.lowercase(Locale.ROOT) }
                 .filter { it.isNotEmpty() }.toSet()
@@ -3068,14 +3023,8 @@ object LicenseManager {
             else -> emptySet()
         }
 
-        val hasBlacklistKey = data.containsKey("blacklistedDestinations") || data.containsKey("blockedLocations")
-        val blacklistedDestinations = if (hasBlacklistKey) {
-            val rawBlacklist = if (data.containsKey("blacklistedDestinations")) {
-                data["blacklistedDestinations"]
-            } else {
-                data["blockedLocations"]
-            }
-            (rawBlacklist as? List<*>)
+        val blacklistedDestinations = if (data.containsKey("blacklistedDestinations")) {
+            (data["blacklistedDestinations"] as? List<*>)
                 ?.mapNotNull { (it as? String)?.trim() }
                 ?.filter { it.isNotEmpty() }
                 ?.distinctBy { it.lowercase(Locale.ROOT) }
@@ -3087,9 +3036,7 @@ object LicenseManager {
 
         val isBanned = data["isBanned"] as? Boolean ?: false
         val banUntilTimestamp = extractServerTimestampMs(data["banUntil"])
-            ?: extractServerTimestampMs(data["banUntilTimestamp"])
         val banReason = (data["banReason"] as? String)?.takeIf { it.isNotBlank() }
-            ?: (data["reason"] as? String)?.takeIf { it.isNotBlank() }
 
         val referralCode = (data["referralCode"] as? String)?.takeIf { it.isNotBlank() }
         val hasClaimedReferral = data["hasClaimedReferral"] as? Boolean
@@ -3817,8 +3764,6 @@ object LicenseManager {
                     _pointsBalance.value = updatedBal
                 }
                 var newExpiry = snap.getLong("expiryTimestamp")
-                    ?: snap.getLong("featureExpiry")
-                    ?: snap.getLong("newExpiry")
                 if (newExpiry != null) {
                     val updatedMap = _unlockedFeatures.value.toMutableMap()
                     updatedMap[pricing.id] = newExpiry
@@ -3887,9 +3832,7 @@ object LicenseManager {
                 val actionData = snap.data ?: buildMap {
                     snap.get("newPointsBalance")?.let { put("newPointsBalance", it) }
                     snap.get("pointsBalance")?.let { put("pointsBalance", it) }
-                    snap.get("points")?.let { put("points", it) }
                     snap.get("unlockedFeatures")?.let { put("unlockedFeatures", it) }
-                    snap.get("unlockedExpiries")?.let { put("unlockedExpiries", it) }
                 }
                 applyCompletedMultiFeatureUnlockSnapshot(
                     actionData = actionData,
@@ -3914,26 +3857,20 @@ object LicenseManager {
     }
 
     /**
-     * Reads canonical `unlockedFeatures` from a completed `UNLOCK_MULTIPLE_FEATURES` action
-     * snapshot first, falling back to legacy `unlockedExpiries` when `unlockedFeatures` is absent.
+     * Reads strictly canonical `unlockedFeatures` from a completed `UNLOCK_MULTIPLE_FEATURES` action snapshot.
      */
     @VisibleForTesting
     internal fun extractUnlockedFeaturesFromActionData(
         actionData: Map<String, Any?>?
     ): Map<String, Long> {
         if (actionData == null) return emptyMap()
-        fun parseExpiryMap(raw: Any?): Map<String, Long> {
-            val map = raw as? Map<*, *> ?: return emptyMap()
-            return map.mapNotNull { (k, v) ->
-                val key = (k as? String)?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }
-                    ?: return@mapNotNull null
-                val exp = extractServerTimestampMs(v) ?: return@mapNotNull null
-                key to exp
-            }.toMap()
-        }
-        val canonical = parseExpiryMap(actionData["unlockedFeatures"])
-        if (canonical.isNotEmpty()) return canonical
-        return parseExpiryMap(actionData["unlockedExpiries"])
+        val map = actionData["unlockedFeatures"] as? Map<*, *> ?: return emptyMap()
+        return map.mapNotNull { (k, v) ->
+            val key = (k as? String)?.trim()?.lowercase(Locale.ROOT)?.takeIf { it.isNotEmpty() }
+                ?: return@mapNotNull null
+            val exp = extractServerTimestampMs(v) ?: return@mapNotNull null
+            key to exp
+        }.toMap()
     }
 
     @VisibleForTesting
@@ -3944,7 +3881,6 @@ object LicenseManager {
     ): Result<Map<String, Long>> {
         val newBalance = (actionData?.get("newPointsBalance") as? Number)?.toInt()
             ?: (actionData?.get("pointsBalance") as? Number)?.toInt()
-            ?: (actionData?.get("points") as? Number)?.toInt()
         if (newBalance != null) {
             _pointsBalance.value = newBalance
         }
@@ -4009,6 +3945,123 @@ object LicenseManager {
         hasLoadedTrial = true
         hasLoadedLicensing = true
         refreshAccessStatus()
+    }
+
+    private fun applyInitProfileResolvedFields(
+        context: Context,
+        hasPointsInActionDoc: Boolean,
+        parsedPoints: Int?,
+        parsedReferral: String?,
+        hasTrialFieldsInActionDoc: Boolean,
+        serverTrialClaimedMs: Long,
+        serverTrialExpiryMs: Long,
+        trialUsedInActionDoc: Boolean?
+    ) {
+        if (hasPointsInActionDoc && parsedPoints != null) {
+            _pointsBalance.value = parsedPoints
+        }
+        if (!parsedReferral.isNullOrBlank()) {
+            _referralCode.value = parsedReferral
+        }
+
+        val now = getCurrentServerTimeMs()
+        val hasActiveTrialInActionDoc = serverTrialClaimedMs > 0L && serverTrialExpiryMs > now
+        if (hasTrialFieldsInActionDoc || hasActiveTrialInActionDoc) {
+            if (hasActiveTrialInActionDoc && DeviceUtils.isFreeTrialAllowed(context)) {
+                serverTrialClaimed = serverTrialClaimedMs
+                serverTrialExpiry = serverTrialExpiryMs
+                serverTrialUsed = true
+                hasLoadedTrial = true
+                _currentFolder.value = computeCurrentFolder(
+                    passTier = serverPassTier,
+                    passExpiry = serverPassExpiry,
+                    trialClaimed = serverTrialClaimed,
+                    trialExpiry = serverTrialExpiry,
+                    now = now
+                )
+                saveAuthoritativeLicensingCache(
+                    context = context,
+                    passTier = serverPassTier,
+                    passExpiry = serverPassExpiry,
+                    trialClaimed = serverTrialClaimed,
+                    trialExpiry = serverTrialExpiry,
+                    trialUsed = serverTrialUsed,
+                    removeAdsExpiry = serverRemoveAdsExpiry
+                )
+                hasLoadedLicensing = true
+            } else if (serverTrialExpiry <= now) {
+                serverTrialClaimed = serverTrialClaimedMs
+                serverTrialExpiry = serverTrialExpiryMs
+                serverTrialUsed = trialUsedInActionDoc ?: true
+                hasLoadedTrial = true
+                _currentFolder.value = if (serverPassTier?.isProPass == true && serverPassExpiry > now) {
+                    computeCurrentFolder(
+                        passTier = serverPassTier,
+                        passExpiry = serverPassExpiry,
+                        trialClaimed = 0L,
+                        trialExpiry = 0L,
+                        now = now
+                    )
+                } else {
+                    "free_mod"
+                }
+                hasLoadedLicensing = true
+            } else {
+                Log.d(
+                    TAG,
+                    "INIT_PROFILE actionDoc lacked active trial while live trial is active (expiry=$serverTrialExpiry > now=$now); preserving live trial state."
+                )
+            }
+        } else {
+            Log.d(
+                TAG,
+                "INIT_PROFILE actionDoc does not contain trialClaimed/trialExpiry; deferring trial state to active users/{uid} snapshot listener."
+            )
+        }
+        refreshAccessStatus(context)
+    }
+
+    @VisibleForTesting
+    internal fun applyInitProfileActionData(
+        context: Context,
+        actionData: Map<String, Any?>?
+    ) {
+        val hasPointsInActionDoc = actionData != null && actionData.containsKey("pointsBalance")
+        val parsedPoints = if (hasPointsInActionDoc) {
+            (actionData?.get("pointsBalance") as? Number)?.toInt()
+        } else {
+            null
+        }
+        val parsedReferral = (actionData?.get("referralCode") as? String)?.takeIf { it.isNotBlank() }
+        val hasTrialFieldsInActionDoc = actionData != null &&
+            (actionData.containsKey("trialClaimed") || actionData.containsKey("trialExpiry"))
+        val serverTrialClaimedMs = extractServerTimestampMs(actionData?.get("trialClaimed")) ?: 0L
+        val serverTrialExpiryMs = extractServerTimestampMs(actionData?.get("trialExpiry")) ?: 0L
+        val trialUsedInActionDoc = actionData?.get("trialUsed") as? Boolean
+
+        applyInitProfileResolvedFields(
+            context = context,
+            hasPointsInActionDoc = hasPointsInActionDoc,
+            parsedPoints = parsedPoints,
+            parsedReferral = parsedReferral,
+            hasTrialFieldsInActionDoc = hasTrialFieldsInActionDoc,
+            serverTrialClaimedMs = serverTrialClaimedMs,
+            serverTrialExpiryMs = serverTrialExpiryMs,
+            trialUsedInActionDoc = trialUsedInActionDoc
+        )
+    }
+
+    @VisibleForTesting
+    internal fun setProfileStateForTesting(
+        points: Int? = null,
+        referralCode: String? = null
+    ) {
+        if (points != null) {
+            _pointsBalance.value = points
+        }
+        if (referralCode != null) {
+            _referralCode.value = referralCode
+        }
     }
 }
 

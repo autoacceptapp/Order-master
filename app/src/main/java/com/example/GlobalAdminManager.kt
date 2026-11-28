@@ -121,7 +121,6 @@ object GlobalAdminManager {
                     if (snapshot != null && snapshot.exists()) {
                         val active = snapshot.getBoolean("isServiceActive") ?: true
                         val message = snapshot.getString("offlineMessage")
-                            ?: snapshot.getString("message")
                             ?: "Service is currently offline for scheduled maintenance. Please check back later."
                         val paymentActive = snapshot.getBoolean("isPaymentSystemActive") ?: true
                         val updateActive = snapshot.getBoolean("isInAppUpdateActive") ?: true

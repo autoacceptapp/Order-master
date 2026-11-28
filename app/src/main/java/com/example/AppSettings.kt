@@ -880,19 +880,19 @@ object AppSettings {
                         appScope.launch(Dispatchers.IO) {
                             val fallbackDoc = try {
                                 db.collection(COLL_USERS)
-                                    .whereEqualTo("firebaseUid", uid)
+                                    .whereEqualTo("uid", uid)
                                     .limit(1)
                                     .get()
                                     .await()
                                     ?.documents
                                     ?.firstOrNull()
                             } catch (e: Exception) {
-                                Log.w(TAG, "AppSettings firebaseUid fallback query failed: ${e.message}")
+                                Log.w(TAG, "AppSettings uid fallback query failed: ${e.message}")
                                 null
                             }
 
                             if (fallbackDoc != null && fallbackDoc.exists() && fallbackDoc.id != uid) {
-                                Log.i(TAG, "AppSettings resolved user config ${fallbackDoc.id} via firebaseUid fallback")
+                                Log.i(TAG, "AppSettings resolved user config ${fallbackDoc.id} via uid fallback")
                                 val fbReg = fallbackDoc.reference.addSnapshotListener(firestoreExecutor) { fbSnap, fbErr ->
                                     if (fbErr != null) {
                                         Log.w(TAG, "Fallback Firestore snapshot error on users/${fallbackDoc.id}: ${fbErr.message}")
@@ -979,18 +979,11 @@ object AppSettings {
     }
 
     /**
-     * Resolves canonical `isAutoClickEnabled` from a Firestore `users/{uid}` snapshot map first,
-     * falling back to obsolete legacy `isAutoAcceptEnabled` ONLY when `isAutoClickEnabled` is absent.
+     * Resolves canonical `isAutoClickEnabled` strictly from a Firestore `users/{uid}` snapshot map.
      */
     @VisibleForTesting
     internal fun resolveCanonicalAutoClickFromMap(data: Map<String, Any?>): Boolean? {
-        if (data.containsKey("isAutoClickEnabled")) {
-            (data["isAutoClickEnabled"] as? Boolean)?.let { return it }
-        }
-        if (data.containsKey("isAutoAcceptEnabled")) {
-            (data["isAutoAcceptEnabled"] as? Boolean)?.let { return it }
-        }
-        return null
+        return data["isAutoClickEnabled"] as? Boolean
     }
 
     private fun applyRawMapToRam(context: Context?, data: Map<String, Any?>?, docExists: Boolean) {
@@ -1001,15 +994,10 @@ object AppSettings {
         }
 
         val passTypeVal = data["activePassType"] as? String
-        val passExpiryVal = extractTimestampMs(data["passExpiryTimestamp"])
-            ?: extractTimestampMs(data["pass_expiry_date"])
-            ?: extractTimestampMs(data["passExpiry"])
-            ?: 0L
+        val passExpiryVal = extractTimestampMs(data["passExpiryTimestamp"]) ?: 0L
         val pointsBalanceVal = LicenseManager.resolvePointsBalanceFromMap(data)
 
-        val rawFeatures = (data["unlockedFeatures"] as? Map<*, *>)
-            ?: (data["unlocked_features"] as? Map<*, *>)
-            ?: (data["featureExpiries"] as? Map<*, *>)
+        val rawFeatures = data["unlockedFeatures"] as? Map<*, *>
         val unlockedFeaturesVal = rawFeatures?.mapNotNull { (k, v) ->
             val featureKey = k as? String ?: return@mapNotNull null
             val exp = when (v) {
@@ -1022,7 +1010,7 @@ object AppSettings {
             featureKey to exp
         }?.toMap() ?: emptyMap()
 
-        val rawLocked = data["lockedFeatures"] ?: data["locked_features"]
+        val rawLocked = data["lockedFeatures"]
         val lockedFeaturesVal: Set<String> = when (rawLocked) {
             is List<*> -> rawLocked.mapNotNull { (it as? String)?.trim()?.lowercase() }
                 .filter { it.isNotEmpty() }.toSet()
@@ -1132,14 +1120,8 @@ object AppSettings {
             }
 
             val hasCanonicalBlacklist = data.containsKey("blacklistedDestinations")
-            val hasLegacyBlacklist = data.containsKey("blockedLocations")
-            val finalBlockedList = if ((hasCanonicalBlacklist || hasLegacyBlacklist) && !hasLocalUserFilterPref(context, FKEY_BLOCKED_LOCATIONS)) {
-                val rawBlacklist = if (hasCanonicalBlacklist) {
-                    data["blacklistedDestinations"]
-                } else {
-                    data["blockedLocations"]
-                }
-                val blockedLocationsList = (rawBlacklist as? List<*>)
+            val finalBlockedList = if (hasCanonicalBlacklist && !hasLocalUserFilterPref(context, FKEY_BLOCKED_LOCATIONS)) {
+                val blockedLocationsList = (data["blacklistedDestinations"] as? List<*>)
                     ?.mapNotNull { it as? String }
                     ?: emptyList()
                 blockedLocationsList
@@ -1151,19 +1133,19 @@ object AppSettings {
                 parseBlockedLocationsString(fPrefs.getString(FKEY_BLOCKED_LOCATIONS, null))
             } else current.blockedLocations
 
-            val finalOverlayEnabled = if ((data.containsKey("isFloatingOverlayEnabled") || data.containsKey("floatingOverlayEnabled")) &&
+            val finalOverlayEnabled = if (data.containsKey("isFloatingOverlayEnabled") &&
                 !hasLocalUserFilterPref(context, FKEY_OVERLAY_ENABLED)
             ) {
-                (data["isFloatingOverlayEnabled"] as? Boolean) ?: (data["floatingOverlayEnabled"] as? Boolean) ?: rawOverlayEnabled
+                (data["isFloatingOverlayEnabled"] as? Boolean) ?: rawOverlayEnabled
             } else {
                 fPrefs?.takeIf { it.contains(FKEY_OVERLAY_ENABLED) }?.getBoolean(FKEY_OVERLAY_ENABLED, rawOverlayEnabled)
                     ?: rawOverlayEnabled
             }
 
-            val finalVoiceEnabled = if ((data.containsKey("isVoiceAnnouncerEnabled") || data.containsKey("voiceAnnouncerEnabled")) &&
+            val finalVoiceEnabled = if (data.containsKey("isVoiceAnnouncerEnabled") &&
                 !hasLocalUserFilterPref(context, FKEY_VOICE_ENABLED)
             ) {
-                (data["isVoiceAnnouncerEnabled"] as? Boolean) ?: (data["voiceAnnouncerEnabled"] as? Boolean) ?: rawVoiceEnabled
+                (data["isVoiceAnnouncerEnabled"] as? Boolean) ?: rawVoiceEnabled
             } else {
                 fPrefs?.takeIf { it.contains(FKEY_VOICE_ENABLED) }?.getBoolean(FKEY_VOICE_ENABLED, rawVoiceEnabled)
                     ?: rawVoiceEnabled
