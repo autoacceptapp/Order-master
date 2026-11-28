@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -75,6 +76,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.PrimaryEmerald
@@ -340,24 +342,25 @@ fun FareFilterCard(
                                 if (onUnlockClick != null) {
                                     FilledTonalButton(
                                         onClick = onUnlockClick,
-                                        shape = RoundedCornerShape(6.dp),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                         modifier = Modifier
-                                            .height(26.dp)
+                                            .heightIn(min = 36.dp)
                                             .testTag("${testTag}_unlock_button")
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Lock,
                                             contentDescription = null,
-                                            modifier = Modifier.size(11.dp)
+                                            modifier = Modifier.size(12.dp)
                                         )
                                         Spacer(modifier = Modifier.width(4.dp))
                                         Text(
                                             text = "Unlock ($pointsPerHour Pts/Hr)",
                                             maxLines = 1,
                                             softWrap = false,
+                                            overflow = TextOverflow.Ellipsis,
                                             style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 10.sp,
+                                                fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold
                                             )
                                         )
@@ -684,6 +687,7 @@ fun FareFilterCard(
                                             text = "₹${presetVal.toInt()}",
                                             maxLines = 1,
                                             softWrap = false,
+                                            overflow = TextOverflow.Ellipsis,
                                             fontSize = 12.sp,
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                         )

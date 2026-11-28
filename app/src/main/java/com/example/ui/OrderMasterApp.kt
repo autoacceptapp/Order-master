@@ -4,7 +4,9 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,8 +16,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -138,6 +142,8 @@ fun OrderMasterApp(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(MaterialTheme.colorScheme.background)
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
                     .testTag("startup_loading_screen"),
                 contentAlignment = Alignment.Center
             ) {
@@ -268,7 +274,9 @@ fun OrderMasterApp(
                         if (!isMainTab) {
                             IconButton(
                                 onClick = { navController.popBackStack() },
-                                modifier = Modifier.testTag("top_bar_back_button")
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("top_bar_back_button")
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
@@ -327,22 +335,44 @@ fun OrderMasterApp(
                         }
                     },
                     actions = {
-                        // Contextual '?' Help Button on all main tabs (48dp touch target)
+                        // Clearly visible 'Help' pill button on all main tabs (48dp min touch height)
                         if (isMainTab) {
-                            IconButton(
-                                onClick = {
-                                    tutorialInitialStep = if (currentRoute == Screen.Filters.route) 1 else 0
-                                    showTutorialGuide = true
-                                },
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
                                 modifier = Modifier
-                                    .size(48.dp)
+                                    .heightIn(min = 36.dp)
+                                    .padding(vertical = 4.dp)
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .clickable {
+                                        tutorialInitialStep = if (currentRoute == Screen.Filters.route) 1 else 0
+                                        showTutorialGuide = true
+                                    }
                                     .testTag("top_bar_help_button")
                             ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Outlined.HelpOutline,
-                                    contentDescription = "Madad / App Guide",
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Outlined.HelpOutline,
+                                        contentDescription = "Help",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Help",
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    )
+                                }
                             }
                         }
 
@@ -514,7 +544,15 @@ fun OrderMasterApp(
                                 contentDescription = "Home"
                             )
                         },
-                        label = { Text("Home", fontWeight = FontWeight.SemiBold) },
+                        label = {
+                            Text(
+                                text = "Home",
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        },
                         modifier = Modifier.testTag("nav_tab_home")
                     )
 
@@ -538,7 +576,15 @@ fun OrderMasterApp(
                                 contentDescription = "Filters"
                             )
                         },
-                        label = { Text("Filters", fontWeight = FontWeight.SemiBold) },
+                        label = {
+                            Text(
+                                text = "Filters",
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        },
                         modifier = Modifier.testTag("nav_tab_filters")
                     )
 
@@ -562,7 +608,15 @@ fun OrderMasterApp(
                                 contentDescription = "History"
                             )
                         },
-                        label = { Text("History", fontWeight = FontWeight.SemiBold) },
+                        label = {
+                            Text(
+                                text = "History",
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        },
                         modifier = Modifier.testTag("nav_tab_history")
                     )
                 }

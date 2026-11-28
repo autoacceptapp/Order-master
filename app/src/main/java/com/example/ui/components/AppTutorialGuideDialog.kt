@@ -17,8 +17,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
@@ -159,6 +162,9 @@ fun AppTutorialGuideDialog(
         Surface(
             modifier = modifier
                 .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding()
                 .padding(12.dp)
                 .clip(RoundedCornerShape(24.dp))
                 .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(24.dp))
@@ -612,9 +618,11 @@ fun AppTutorialGuideDialog(
                                 text = when {
                                     isHindi -> "1-टैप बेस्ट सेटिंग्स लगाएं"
                                     isEnglish -> "Apply Best Settings"
-                                    else -> "1-Tap Best Settings Lagayein"
+                                    else -> "1-Tap Mein Best Settings Lagayein"
                                 },
-                                fontWeight = FontWeight.ExtraBold
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold)
                             )
                         }
                     }

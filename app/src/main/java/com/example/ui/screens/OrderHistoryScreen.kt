@@ -10,13 +10,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -149,9 +152,18 @@ fun OrderHistoryScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .imePadding()
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        Text(
+            text = "Meri Pichhli Kamai & Rides",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+
         // Kamai Summary Bar (3 compact stat tiles)
         Row(
             modifier = Modifier
@@ -242,21 +254,39 @@ fun OrderHistoryScreen(
 
         // Status Filter Chips Row
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             FilterChip(
                 selected = statusFilter == HistoryFilter.ALL,
                 onClick = { viewModel.setHistoryStatusFilter(HistoryFilter.ALL) },
-                label = { Text("Sabhi ($totalOrdersCount)", fontWeight = FontWeight.SemiBold) },
+                label = {
+                    Text(
+                        "Sabhi ($totalOrdersCount)",
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.heightIn(min = 48.dp)
             )
             FilterChip(
                 selected = statusFilter == HistoryFilter.ACCEPTED,
                 onClick = { viewModel.setHistoryStatusFilter(HistoryFilter.ACCEPTED) },
-                label = { Text("Li Gayi", fontWeight = FontWeight.SemiBold) },
+                label = {
+                    Text(
+                        "Li Gayi (Accepted)",
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 leadingIcon = {
                     Icon(
                         imageVector = Icons.Default.CheckCircle,
@@ -271,7 +301,15 @@ fun OrderHistoryScreen(
             FilterChip(
                 selected = statusFilter == HistoryFilter.IGNORED,
                 onClick = { viewModel.setHistoryStatusFilter(HistoryFilter.IGNORED) },
-                label = { Text("Chhodi Gayi", fontWeight = FontWeight.SemiBold) },
+                label = {
+                    Text(
+                        "Chhodi Gayi (Skipped)",
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
                 leadingIcon = {
                     Icon(
                         imageVector = Icons.Default.ErrorOutline,
@@ -344,7 +382,9 @@ fun OrderHistoryScreen(
                             isAdNoFill && !RewardedAdManager.isAdLoaded() -> "Retry (+5 Pts)"
                             else -> "Ad Dekhein (+5 Pts)"
                         },
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -427,7 +467,8 @@ private fun KamaiSummaryTile(
                     fontWeight = FontWeight.ExtraBold,
                     color = tint
                 ),
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = label,
@@ -435,7 +476,8 @@ private fun KamaiSummaryTile(
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 ),
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

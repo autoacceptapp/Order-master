@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -113,6 +114,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -207,13 +209,17 @@ fun PaymentVerificationScreen(
                     Column {
                         Text(
                             text = "UPI Payment Check",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = "Bank SMS Se Turant Pass Chalu",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 },
@@ -241,7 +247,9 @@ fun PaymentVerificationScreen(
                                     fontWeight = FontWeight.Bold,
                                     color = PrimaryEmerald,
                                     fontSize = 11.sp
-                                )
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -252,7 +260,8 @@ fun PaymentVerificationScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .imePadding(),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -327,7 +336,10 @@ fun PaymentVerificationScreen(
                                     label = {
                                         Text(
                                             text = "${tier.title} (₹$chipPrice)",
-                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     },
                                     leadingIcon = if (isSelected) {
@@ -1187,7 +1199,7 @@ private fun VerificationSuccessCard(
                 colors = ButtonDefaults.buttonColors(containerColor = PrimaryEmerald),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .heightIn(min = 48.dp)
                     .testTag("continue_to_app_button")
             ) {
                 Icon(
@@ -1196,7 +1208,12 @@ private fun VerificationSuccessCard(
                     modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Continue to Order Master", fontWeight = FontWeight.Bold)
+                Text(
+                    "Continue to Order Master",
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }

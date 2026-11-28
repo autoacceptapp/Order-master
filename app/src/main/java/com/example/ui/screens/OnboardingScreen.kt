@@ -54,6 +54,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.AppSettings
@@ -144,7 +145,7 @@ fun OnboardingScreen(
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 16.dp),
+                .padding(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             // Scrollable Language Selector Area
@@ -226,7 +227,8 @@ fun OnboardingScreen(
                                 color = MaterialTheme.colorScheme.onSecondaryContainer,
                                 textAlign = TextAlign.Center,
                                 maxLines = 1,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 7.dp)
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp)
                             )
                         }
                     }
@@ -263,11 +265,13 @@ fun OnboardingScreen(
                     Text(
                         text = when (selectedCode) {
                             "en" -> "Listen Audio Guide"
-                            "hi" -> "सुनके समझें (Audio Guide)"
-                            "gu" -> "સાંભળીને સમજો (Audio Guide)"
-                            "mr" -> "ऐकून समजून घ्या (Audio Guide)"
-                            else -> "Sunke Samjho (Audio Guide)"
+                            "hi" -> "सुनके समझें (Listen)"
+                            "gu" -> "સાંભળીને સમજો (Listen)"
+                            "mr" -> "ऐकून समजून घ्या (Listen)"
+                            else -> "Sunke Samjho (Listen)"
                         },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                     )
                 }
@@ -445,11 +449,13 @@ fun OnboardingScreen(
                     Text(
                         text = when (selectedCode) {
                             "en" -> "Start App"
-                            "hi" -> "शुरू करें"
-                            "gu" -> "શરૂ કરો"
-                            "mr" -> "सुरू करा"
-                            else -> "Shuru Karein"
+                            "hi" -> "शुरू करें (Start App)"
+                            "gu" -> "શરૂ કરો (Start App)"
+                            "mr" -> "सुरू करा (Start App)"
+                            else -> "Shuru Karein (Start App)"
                         },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold)
                     )
                     Spacer(modifier = Modifier.width(8.dp))

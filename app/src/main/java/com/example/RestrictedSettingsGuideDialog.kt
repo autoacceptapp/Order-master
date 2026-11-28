@@ -686,96 +686,100 @@ fun PermissionOemHealthChecklistCard(
                             modifier = Modifier.size(20.dp)
                         )
                     }
-                    Column {
-                        Text(
-                            text = "Permission & OEM Health Checklist",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = if (allHealthy) {
-                                "All 4 checks configured ($brandName)"
-                            } else {
-                                "$totalReadyCount/4 ready \u2022 Tap any item below to fix in 1 tap"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Zaroori Permissions Checklist",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = if (allHealthy) {
+                            "Sab 4 checks ready hain ($brandName)"
+                        } else {
+                            "$totalReadyCount/4 ready • 1 tap me theek karein"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
                 }
-
-                Icon(
-                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = if (expanded) "Collapse checklist" else "Expand checklist",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
 
-            AnimatedVisibility(visible = expanded) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    HealthChecklistRow(
-                        title = "Accessibility Service",
-                        subtitle = if (isAccessibilityEnabled) {
-                            "Active & monitoring Rapido orders"
-                        } else if (PermissionUtils.isAndroid13OrHigher()) {
-                            "Required \u2022 Tap to enable (Android 13+ unlock guided)"
-                        } else {
-                            "Required \u2022 Tap to switch ON"
-                        },
-                        icon = Icons.Default.AccessibilityNew,
-                        isGranted = isAccessibilityEnabled,
-                        actionLabel = if (isAccessibilityEnabled) "Done" else "Enable",
-                        onClick = onClickAccessibility,
-                        testTag = "health_row_accessibility"
-                    )
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = if (expanded) "Collapse checklist" else "Expand checklist",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
 
-                    HealthChecklistRow(
-                        title = "Floating Overlay",
-                        subtitle = if (isOverlayEnabled) {
-                            "Allowed over Rapido Captain"
-                        } else {
-                            "Required to stay active over ride popups"
-                        },
-                        icon = Icons.Default.Layers,
-                        isGranted = isOverlayEnabled,
-                        actionLabel = if (isOverlayEnabled) "Done" else "Allow",
-                        onClick = onClickOverlay,
-                        testTag = "health_row_overlay"
-                    )
+        AnimatedVisibility(visible = expanded) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                HealthChecklistRow(
+                    title = "Accessibility Service",
+                    subtitle = if (isAccessibilityEnabled) {
+                        "Chalu hai • Rapido rides padh raha hai"
+                    } else if (PermissionUtils.isAndroid13OrHigher()) {
+                        "Zaroori • Tap karke ON karein (Android 13+ guide)"
+                    } else {
+                        "Zaroori • Tap karke ON karein"
+                    },
+                    icon = Icons.Default.AccessibilityNew,
+                    isGranted = isAccessibilityEnabled,
+                    actionLabel = if (isAccessibilityEnabled) "ON Hai" else "ON Karein",
+                    onClick = onClickAccessibility,
+                    testTag = "health_row_accessibility"
+                )
 
-                    HealthChecklistRow(
-                        title = "Battery Optimization Off",
-                        subtitle = if (isBatteryUnrestricted) {
-                            "Unrestricted background execution enabled"
-                        } else {
-                            "Prevent Android from killing auto-accept in background"
-                        },
-                        icon = Icons.Default.BatteryChargingFull,
-                        isGranted = isBatteryUnrestricted,
-                        actionLabel = if (isBatteryUnrestricted) "Done" else "Fix",
-                        onClick = onClickBattery,
-                        testTag = "health_row_battery"
-                    )
+                HealthChecklistRow(
+                    title = "Floating Overlay",
+                    subtitle = if (isOverlayEnabled) {
+                        "Rapido ke upar chhota button chalu"
+                    } else {
+                        "Screen par button dikhane ke liye allow karein"
+                    },
+                    icon = Icons.Default.Layers,
+                    isGranted = isOverlayEnabled,
+                    actionLabel = if (isOverlayEnabled) "ON Hai" else "Allow",
+                    onClick = onClickOverlay,
+                    testTag = "health_row_overlay"
+                )
 
-                    HealthChecklistRow(
-                        title = "OEM Auto-Start ($brandName)",
-                        subtitle = if (isOemVisited) {
-                            "Auto-Start settings opened \u2022 Tap to re-verify"
-                        } else if (isAggressiveOem) {
-                            "Important on Xiaomi/Oppo/Vivo/Realme so service survives"
-                        } else {
-                            "Optional background startup permission"
-                        },
-                        icon = Icons.Default.PowerSettingsNew,
-                        isGranted = isOemVisited || !isAggressiveOem,
-                        actionLabel = if (isOemVisited) "Check" else "Open",
-                        onClick = {
-                            prefs.edit().putBoolean(KEY_OEM_AUTOSTART_VISITED, true).apply()
-                            isOemVisited = true
-                            onClickOemAutoStart()
-                        },
-                        testTag = "health_row_oem_autostart"
-                    )
+                HealthChecklistRow(
+                    title = "Battery Saver Band",
+                    subtitle = if (isBatteryUnrestricted) {
+                        "Background me bina ruke chalega"
+                    } else {
+                        "App background me band na ho isliye fix karein"
+                    },
+                    icon = Icons.Default.BatteryChargingFull,
+                    isGranted = isBatteryUnrestricted,
+                    actionLabel = if (isBatteryUnrestricted) "ON Hai" else "Fix",
+                    onClick = onClickBattery,
+                    testTag = "health_row_battery"
+                )
+
+                HealthChecklistRow(
+                    title = "OEM Auto-Start ($brandName)",
+                    subtitle = if (isOemVisited) {
+                        "Auto-Start check ho gaya • Dobara dekhein"
+                    } else if (isAggressiveOem) {
+                        "Xiaomi/Oppo/Vivo/Realme me zaroori setting"
+                    } else {
+                        "Background startup permission (optional)"
+                    },
+                    icon = Icons.Default.PowerSettingsNew,
+                    isGranted = isOemVisited || !isAggressiveOem,
+                    actionLabel = if (isOemVisited) "Check" else "Open",
+                    onClick = {
+                        prefs.edit().putBoolean(KEY_OEM_AUTOSTART_VISITED, true).apply()
+                        isOemVisited = true
+                        onClickOemAutoStart()
+                    },
+                    testTag = "health_row_oem_autostart"
+                )
 
                     if (!isAccessibilityEnabled && PermissionUtils.isAndroid13OrHigher()) {
                         Row(

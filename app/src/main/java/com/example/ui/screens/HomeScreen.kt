@@ -83,6 +83,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.AccessStatus
@@ -305,7 +306,7 @@ fun HomeScreen(
             onSimulateOffer = { viewModel.simulateRideOffer() },
             modifier = Modifier
                 .fillMaxWidth()
-                .height(380.dp)
+                .heightIn(min = 320.dp, max = 420.dp)
         )
     }
 }
@@ -567,9 +568,11 @@ private fun MasterToggleCard(
                 Text(
                     text = when {
                         !isServiceRunningInSystem -> "Permission ON Karein"
-                        isAutoAcceptEnabled -> "BAND KAREIN (Pause)"
-                        else -> "CHALU KAREIN (Start)"
+                        isAutoAcceptEnabled -> "Band Karein"
+                        else -> "CHALU KAREIN"
                     },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold)
                 )
             }
@@ -757,7 +760,8 @@ private fun GuidedStepChip(
                     fontSize = 10.sp
                 ),
                 color = color,
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -1217,13 +1221,15 @@ private fun GoogleAuthStatusCard(
                                 fontSize = 14.sp
                             ),
                             color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = userEmail ?: "Aapka data safe sync me hai",
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 } else {

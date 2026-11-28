@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -93,6 +94,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -355,10 +357,11 @@ fun FilterSettingsScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .imePadding()
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
         // =========================================================================================
-        // STICKY TOP BAR: 3 SMART MODES 1-TAP PRESET BAR + LAMBA ROUTE QUICK PRESET
+        // STICKY TOP BAR: 1-TAP SMART MODES (Safe Mode, Zyada Kamai, Lamba Route, Reset)
         // =========================================================================================
         SmartModesStickyBar(
             activeMode = activeSmartMode,
@@ -372,6 +375,10 @@ fun FilterSettingsScreen(
                 if (applied) {
                     Toast.makeText(context, "Lamba Route Mode ON (₹150+ • ₹15/km)!", Toast.LENGTH_SHORT).show()
                 }
+            },
+            onResetDefaults = {
+                viewModel.resetToSafeDefaults()
+                Toast.makeText(context, filterCopy.resetSuccessToast, Toast.LENGTH_SHORT).show()
             },
             modifier = Modifier
                 .fillMaxWidth()
@@ -676,7 +683,8 @@ fun FilterSettingsScreen(
                                         fontSize = 11.sp,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                         maxLines = 1,
-                                        softWrap = false
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -768,7 +776,8 @@ fun FilterSettingsScreen(
                                         fontSize = 11.sp,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                         maxLines = 1,
-                                        softWrap = false
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -860,7 +869,8 @@ fun FilterSettingsScreen(
                                         fontSize = 11.sp,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                         maxLines = 1,
-                                        softWrap = false
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -1733,24 +1743,25 @@ private fun FilterCard(
                                 if (onUnlockClick != null) {
                                     FilledTonalButton(
                                         onClick = onUnlockClick,
-                                        shape = RoundedCornerShape(6.dp),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                         modifier = Modifier
-                                            .height(26.dp)
+                                            .heightIn(min = 36.dp)
                                             .testTag("${testTag}_unlock_button")
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Lock,
                                             contentDescription = null,
-                                            modifier = Modifier.size(11.dp)
+                                            modifier = Modifier.size(12.dp)
                                         )
                                         Spacer(modifier = Modifier.width(4.dp))
                                         Text(
                                             text = "Unlock ($pointsPerHour Pts/Hr)",
                                             maxLines = 1,
                                             softWrap = false,
+                                            overflow = TextOverflow.Ellipsis,
                                             style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 10.sp,
+                                                fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold
                                             )
                                         )
@@ -1886,6 +1897,7 @@ private fun SmartModesStickyBar(
     headerLabel: String,
     onSelectMode: (AppSettings.SmartMode) -> Unit,
     onApplyLongRoute: () -> Unit = {},
+    onResetDefaults: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -1907,7 +1919,8 @@ private fun SmartModesStickyBar(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Tune,
@@ -1917,27 +1930,49 @@ private fun SmartModesStickyBar(
                     )
                     Text(
                         text = headerLabel,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
 
+                Spacer(modifier = Modifier.width(8.dp))
+
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
+                    color = if (activeMode == AppSettings.SmartMode.CUSTOM) {
+                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.16f)
+                    } else {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (activeMode == AppSettings.SmartMode.CUSTOM) {
+                            MaterialTheme.colorScheme.tertiary.copy(alpha = 0.4f)
+                        } else {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                        }
+                    ),
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
-                        .clickable(onClick = onApplyLongRoute)
-                        .testTag("smart_mode_lamba_route")
+                        .clickable { onSelectMode(AppSettings.SmartMode.CUSTOM) }
+                        .testTag("smart_mode_custom")
                 ) {
                     Text(
-                        text = "Lamba Route (₹150+)",
+                        text = if (activeMode == AppSettings.SmartMode.CUSTOM) customLabel else "Preset ON",
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.Bold,
                             fontSize = 10.sp
                         ),
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        color = if (activeMode == AppSettings.SmartMode.CUSTOM) {
+                            MaterialTheme.colorScheme.tertiary
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
@@ -1967,15 +2002,31 @@ private fun SmartModesStickyBar(
                         .weight(1f)
                         .testTag("smart_mode_zyada_kamai")
                 )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 SmartModeChip(
-                    label = customLabel,
-                    icon = Icons.Default.Tune,
-                    isSelected = activeMode == AppSettings.SmartMode.CUSTOM,
-                    selectedColor = MaterialTheme.colorScheme.tertiary,
-                    onClick = { onSelectMode(AppSettings.SmartMode.CUSTOM) },
+                    label = "Lamba Route",
+                    icon = Icons.Default.DirectionsCar,
+                    isSelected = false,
+                    selectedColor = MaterialTheme.colorScheme.secondary,
+                    onClick = onApplyLongRoute,
                     modifier = Modifier
-                        .weight(0.85f)
-                        .testTag("smart_mode_custom")
+                        .weight(1f)
+                        .testTag("smart_mode_lamba_route")
+                )
+                SmartModeChip(
+                    label = "Reset",
+                    icon = Icons.Default.RestartAlt,
+                    isSelected = false,
+                    selectedColor = MaterialTheme.colorScheme.tertiary,
+                    onClick = onResetDefaults,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("smart_mode_reset")
                 )
             }
         }
@@ -2014,13 +2065,15 @@ private fun SmartModeChip(
                 tint = if (isSelected) selectedColor else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp)
             )
-            Spacer(modifier = Modifier.width(5.dp))
+            Spacer(modifier = Modifier.width(6.dp))
             Text(
                 text = label,
                 maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
-                    fontSize = 11.sp,
+                    fontSize = 12.sp,
                     color = if (isSelected) selectedColor else MaterialTheme.colorScheme.onSurface
                 )
             )
@@ -2155,12 +2208,12 @@ private data class LocalizedFilterCopy(
 private fun getLocalizedFilterCopy(lang: String): LocalizedFilterCopy {
     return when (lang) {
         "en" -> LocalizedFilterCopy(
-            smartModesHeader = "3 Smart Modes (1-Tap Setup)",
+            smartModesHeader = "⚡ 1-Tap Smart Modes",
             safeModeLabel = "Safe Mode",
             zyadaKamaiLabel = "Zyada Kamai",
             customLabel = "Custom",
             customHintToast = "Adjust any filter below to customize",
-            summaryHeading = "What Do My Rules Mean?",
+            summaryHeading = "💡 Abhi Kya Set Hai?",
             listenButtonLabel = "Listen Explanation",
             resetButtonLabel = "Reset All (Safe Default)",
             resetSuccessToast = "All filters reset to Safe Default!",
@@ -2202,12 +2255,12 @@ private fun getLocalizedFilterCopy(lang: String): LocalizedFilterCopy {
             autoClickSpeech = "Auto click accept button. Keep it ON for automatic ride acceptance, or turn OFF for voice alerts only."
         )
         "hi" -> LocalizedFilterCopy(
-            smartModesHeader = "3 स्मार्ट मोड (1-टैप में सेट करें)",
+            smartModesHeader = "⚡ 1-टैप स्मार्ट मोड",
             safeModeLabel = "सेफ मोड",
             zyadaKamaiLabel = "ज़्यादा कमाई",
             customLabel = "कस्टम",
             customHintToast = "नीचे कोई भी फ़िल्टर अपने हिसाब से बदलें",
-            summaryHeading = "इसका मतलब क्या है?",
+            summaryHeading = "💡 अभी क्या सेट है?",
             listenButtonLabel = "सुनके समझें",
             resetButtonLabel = "सब रीसेट करें (सेफ डिफ़ॉल्ट)",
             resetSuccessToast = "सभी फ़िल्टर सेफ डिफ़ॉल्ट पर सेट हो गए!",
@@ -2249,12 +2302,12 @@ private fun getLocalizedFilterCopy(lang: String): LocalizedFilterCopy {
             autoClickSpeech = "अपने आप एक्सेप्ट बटन। इसे चालू रखेंगे तो सही राइड खुद एक्सेप्ट होगी, वरना सिर्फ आवाज़ में बताएगा।"
         )
         else -> LocalizedFilterCopy(
-            smartModesHeader = "3 Smart Modes (1-Tap Setup)",
+            smartModesHeader = "⚡ 1-Tap Smart Modes",
             safeModeLabel = "Safe Mode",
             zyadaKamaiLabel = "Zyada Kamai",
             customLabel = "Custom",
             customHintToast = "Neeche kisi bhi filter ko apne hisab se badlein",
-            summaryHeading = "Iska Matlab Kya Hai?",
+            summaryHeading = "💡 Abhi Kya Set Hai?",
             listenButtonLabel = "Sunke Samjho",
             resetButtonLabel = "Sab Reset Karein (Safe Default)",
             resetSuccessToast = "Sabhi filters Safe Default par set ho gaye!",

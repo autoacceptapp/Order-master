@@ -68,6 +68,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.BuildConfig
@@ -223,7 +224,8 @@ fun ProfileScreen(
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.weight(1f, fill = false)
                             ) {
                                 Text(
                                     text = "CAPTAIN ID: ${customProfileId.take(12).uppercase()}",
@@ -231,6 +233,8 @@ fun ProfileScreen(
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
                                     ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                 )
                             }
@@ -255,7 +259,9 @@ fun ProfileScreen(
                                         style = MaterialTheme.typography.labelMedium.copy(
                                             fontWeight = FontWeight.Bold,
                                             color = if (isProOrTrial) PrimaryEmerald else Color(0xFFB45309)
-                                        )
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -544,9 +550,12 @@ fun ProfileScreen(
                         Column {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    text = "Pass & Points Wallet",
+                                    text = "Mera Pass & Points",
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Surface(
@@ -559,6 +568,8 @@ fun ProfileScreen(
                                             fontWeight = FontWeight.Bold,
                                             color = Color(0xFFB45309)
                                         ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
                                 }
@@ -575,6 +586,8 @@ fun ProfileScreen(
                                                 fontSize = 10.sp,
                                                 color = Color(0xFF8B5CF6)
                                             ),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                     }
@@ -602,7 +615,12 @@ fun ProfileScreen(
                             .heightIn(min = 48.dp)
                             .testTag("profile_manage_subscription_button")
                     ) {
-                        Text("Store", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
+                        Text(
+                            "Store",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             }
@@ -658,7 +676,10 @@ fun ProfileScreen(
                                     style = MaterialTheme.typography.titleMedium.copy(
                                         fontWeight = FontWeight.Bold
                                     ),
-                                    color = MaterialTheme.colorScheme.onSurface
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
                                 )
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
@@ -671,6 +692,8 @@ fun ProfileScreen(
                                             fontSize = 10.sp,
                                             color = MaterialTheme.colorScheme.primary
                                         ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
                                 }
@@ -794,7 +817,9 @@ private fun StatTile(
                 style = MaterialTheme.typography.titleLarge.copy(
                     fontWeight = FontWeight.ExtraBold,
                     color = color
-                )
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
@@ -803,7 +828,8 @@ private fun StatTile(
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface
                 ),
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
             Text(
                 text = subtitle,
@@ -811,7 +837,8 @@ private fun StatTile(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 10.sp
                 ),
-                maxLines = 1
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
