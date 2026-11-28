@@ -278,20 +278,6 @@ fun AppSettingsScreen(
                 )
             }
 
-            // 1.5 1-Tap Permission & OEM Health Checklist (Accessibility, Overlay, Battery, OEM Auto-Start)
-            item {
-                PermissionOemHealthChecklistCard(
-                    isAccessibilityEnabled = isAccessibilityEnabled,
-                    isOverlayEnabled = isOverlayEnabled,
-                    isBatteryUnrestricted = isBatteryUnrestricted,
-                    onClickAccessibility = launchAccessibilityWithRestrictedFallback,
-                    onClickOverlay = { PermissionUtils.openOverlaySettings(context) },
-                    onClickBattery = { PermissionUtils.openBatteryOptimizationSettings(context) },
-                    onClickOemAutoStart = { PermissionUtils.openOemAutoStartSettings(context) },
-                    onOpenRestrictedGuide = { showRestrictedSettingsDialog = true }
-                )
-            }
-
             // Android 13/14+ Restricted Settings Help Notice
             if (!isAccessibilityEnabled && PermissionUtils.isAndroid13OrHigher()) {
                 item {

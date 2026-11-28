@@ -16,6 +16,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -1457,6 +1459,7 @@ private fun android.content.Context.findActivity(): Activity? {
  * EarnFreePointsCard - Prominently displays the AdMob Rewarded Video Ad option.
  * Captains can watch a short ad to earn 5 free Points credited directly via Zero-Trust Action Queue.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EarnFreePointsCard(
     isLoggedIn: Boolean,
@@ -1529,23 +1532,27 @@ fun EarnFreePointsCard(
             }
 
             Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
                         text = "Free Points Kamayein",
-                        style = MaterialTheme.typography.titleMedium.copy(
+                        modifier = Modifier.align(Alignment.CenterVertically),
+                        style = MaterialTheme.typography.titleSmall.copy(
                             fontWeight = FontWeight.Bold
                         )
                     )
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = AmberAccent.copy(alpha = 0.2f)
+                        color = AmberAccent.copy(alpha = 0.2f),
+                        modifier = Modifier.align(Alignment.CenterVertically)
                     ) {
                         Text(
-                            text = "+5 PTS",
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            text = "+5 Pts",
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.ExtraBold,
                                 color = AmberAccent

@@ -325,8 +325,15 @@ fun FilterSettingsScreen(
     val currentLang = settingsState.voiceLanguage.trim().lowercase(Locale.ROOT)
     val filterCopy = remember(currentLang) { getLocalizedFilterCopy(currentLang) }
     val activeSmartMode = remember(settingsState) { AppSettings.detectActiveSmartMode(settingsState) }
-    val plainSummaryText = remember(settingsState, currentLang) {
-        AppSettings.buildPlainLanguageFilterSummary(settingsState, currentLang)
+    val summaryLang = remember(currentLang) {
+        when (currentLang) {
+            "en" -> "en"
+            "hi" -> "hi"
+            else -> "hinglish"
+        }
+    }
+    val plainSummaryText = remember(settingsState, summaryLang) {
+        AppSettings.buildPlainLanguageFilterSummary(settingsState, summaryLang)
     }
 
     val handleSmartModeClick: (AppSettings.SmartMode) -> Unit = { mode ->
@@ -1806,22 +1813,17 @@ private fun FilterCard(
                             )
                         )
                         if (!exampleText.isNullOrBlank()) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                            ) {
-                                Text(
-                                    text = exampleText,
-                                    style = MaterialTheme.typography.labelSmall.copy(
-                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        fontWeight = FontWeight.Medium,
-                                        lineHeight = 15.sp
-                                    ),
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                )
-                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = exampleText,
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                                    fontWeight = FontWeight.Normal,
+                                    fontSize = 11.5.sp
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
@@ -2213,7 +2215,7 @@ private fun getLocalizedFilterCopy(lang: String): LocalizedFilterCopy {
             zyadaKamaiLabel = "Zyada Kamai",
             customLabel = "Custom",
             customHintToast = "Adjust any filter below to customize",
-            summaryHeading = "💡 Abhi Kya Set Hai?",
+            summaryHeading = "💡 Active Filter Summary",
             listenButtonLabel = "Listen Explanation",
             resetButtonLabel = "Reset All (Safe Default)",
             resetSuccessToast = "All filters reset to Safe Default!",

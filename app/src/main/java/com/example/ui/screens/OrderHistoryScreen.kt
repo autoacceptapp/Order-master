@@ -280,7 +280,7 @@ fun OrderHistoryScreen(
                 onClick = { viewModel.setHistoryStatusFilter(HistoryFilter.ACCEPTED) },
                 label = {
                     Text(
-                        "Li Gayi (Accepted)",
+                        "Li Gayi",
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         softWrap = false,
@@ -303,7 +303,7 @@ fun OrderHistoryScreen(
                 onClick = { viewModel.setHistoryStatusFilter(HistoryFilter.IGNORED) },
                 label = {
                     Text(
-                        "Chhodi Gayi (Skipped)",
+                        "Chhodi",
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         softWrap = false,

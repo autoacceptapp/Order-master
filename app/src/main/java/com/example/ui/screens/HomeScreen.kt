@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,6 +37,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayArrow
@@ -244,18 +247,94 @@ fun HomeScreen(
         )
 
         // =========================================================================================
-        // COMPONENT 1.1: 1-TAP PERMISSION & OEM HEALTH CHECKLIST
+        // COMPONENT 1.1: COLLAPSIBLE 1-TAP PERMISSION & OEM HEALTH CHECKLIST
         // =========================================================================================
-        PermissionOemHealthChecklistCard(
-            isAccessibilityEnabled = isServiceRunningInSystem,
-            isOverlayEnabled = isOverlayEnabled,
-            isBatteryUnrestricted = isBatteryUnrestricted,
-            onClickAccessibility = launchAccessibilitySettingsWithGuideFallback,
-            onClickOverlay = { PermissionUtils.openOverlaySettings(context) },
-            onClickBattery = { PermissionUtils.openBatteryOptimizationSettings(context) },
-            onClickOemAutoStart = { PermissionUtils.openOemAutoStartSettings(context) },
-            onOpenRestrictedGuide = onOpenRestrictedSettingsGuide
-        )
+        var showAllPermissionsChecklist by remember { mutableStateOf(false) }
+        val readyCoreCount = listOf(
+            isServiceRunningInSystem,
+            isOverlayEnabled,
+            isBatteryUnrestricted
+        ).count { it }
+
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 48.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .clickable { showAllPermissionsChecklist = !showAllPermissionsChecklist }
+                .testTag("home_permissions_expand_toggle")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Security,
+                        contentDescription = null,
+                        tint = if (readyCoreCount == 3) PrimaryEmerald else AmberAccent,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "Sabhi 4 Permissions Dekhein",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = (if (readyCoreCount == 3) PrimaryEmerald else AmberAccent).copy(alpha = 0.14f)
+                    ) {
+                        Text(
+                            text = if (readyCoreCount == 3) "Ready" else "$readyCoreCount/3",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = if (readyCoreCount == 3) PrimaryEmerald else AmberAccent
+                            ),
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                    Icon(
+                        imageVector = if (showAllPermissionsChecklist) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (showAllPermissionsChecklist) "Chhupayein" else "Sabhi 4 Permissions Dekhein",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        AnimatedVisibility(visible = showAllPermissionsChecklist) {
+            PermissionOemHealthChecklistCard(
+                isAccessibilityEnabled = isServiceRunningInSystem,
+                isOverlayEnabled = isOverlayEnabled,
+                isBatteryUnrestricted = isBatteryUnrestricted,
+                onClickAccessibility = launchAccessibilitySettingsWithGuideFallback,
+                onClickOverlay = { PermissionUtils.openOverlaySettings(context) },
+                onClickBattery = { PermissionUtils.openBatteryOptimizationSettings(context) },
+                onClickOemAutoStart = { PermissionUtils.openOemAutoStartSettings(context) },
+                onOpenRestrictedGuide = onOpenRestrictedSettingsGuide,
+                defaultExpanded = true
+            )
+        }
 
         // =========================================================================================
         // COMPONENT 1.2: INTERACTIVE APP & FILTER SETUP GUIDE BANNER

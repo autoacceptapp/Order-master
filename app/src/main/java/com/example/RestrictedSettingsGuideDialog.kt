@@ -618,7 +618,8 @@ fun PermissionOemHealthChecklistCard(
     onClickBattery: () -> Unit,
     onClickOemAutoStart: () -> Unit,
     onOpenRestrictedGuide: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    defaultExpanded: Boolean? = null
 ) {
     val context = LocalContext.current
     val prefs = remember(context) {
@@ -638,7 +639,7 @@ fun PermissionOemHealthChecklistCard(
     val totalReadyCount = coreReadyCount + if (isOemVisited || !isAggressiveOem) 1 else 0
     val allHealthy = isAccessibilityEnabled && isOverlayEnabled && isBatteryUnrestricted && (isOemVisited || !isAggressiveOem)
 
-    var expanded by remember(allHealthy) { mutableStateOf(!allHealthy) }
+    var expanded by remember(allHealthy, defaultExpanded) { mutableStateOf(defaultExpanded ?: !allHealthy) }
 
     val accentColor = if (allHealthy) PrimaryEmerald else AmberAccent
 
