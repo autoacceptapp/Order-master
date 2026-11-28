@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.view.WindowManager
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.FrameLayout
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.runBlocking
@@ -754,6 +755,151 @@ class AuditRegressionTest {
         assertFalse(
             "Offer must be removed from processedOfferIds on failed/skipped click to allow retry",
             RapidoAccessibilityService.isOfferProcessedForTesting(service, offer.id)
+        )
+    }
+
+    @Test
+    fun `test ACTIVE_TRIP_INDICATORS_REGEX rejects offer card text and matches genuine active trip UI`() {
+        val offerCardPhrases = listOf(
+            "Pickup 1.2 km",
+            "Pickup: MG Road Metro Station",
+            "Drop: Koramangala 4th Block",
+            "Drop-off location: Whitefield",
+            "Emergency SOS contact",
+            "Google Maps navigation to drop",
+            "Navigate",
+            "Arrived",
+            "₹50 0.8 km Pickup Indiranagar 3.2 km Drop Koramangala Accept"
+        )
+        for (phrase in offerCardPhrases) {
+            assertFalse(
+                "Offer card phrase must NOT match active trip regex: $phrase",
+                RapidoAccessibilityService.ACTIVE_TRIP_INDICATORS_REGEX.containsMatchIn(phrase)
+            )
+        }
+
+        val activeTripPhrases = listOf(
+            "Enter OTP",
+            "Ask customer for OTP: 4821",
+            "Start ride after customer boards",
+            "Start trip",
+            "Call customer directly",
+            "Call rider",
+            "Contact rider",
+            "Navigate to pickup point",
+            "Arrived at pickup",
+            "Arrived at location",
+            "Arrived at passenger location",
+            "Drop-off at Rajkot Station",
+            "Pick up customer"
+        )
+        for (phrase in activeTripPhrases) {
+            assertTrue(
+                "Active trip phrase must match active trip regex: $phrase",
+                RapidoAccessibilityService.ACTIVE_TRIP_INDICATORS_REGEX.containsMatchIn(phrase)
+            )
+        }
+    }
+
+    @Test
+    fun `findClickableParentWithinCard strictly rejects oversized outer card container`() {
+        val service = RapidoAccessibilityService()
+        val cardBounds = Rect(100, 200, 500, 800) // height = 600, width = 400
+
+        @Suppress("DEPRECATION")
+        val outerCard = AccessibilityNodeInfo.obtain()
+        outerCard.isClickable = true
+        outerCard.isEnabled = true
+        outerCard.setBoundsInScreen(Rect(100, 200, 500, 800)) // height = 600 (> 0.45 * 600 and > 280px)
+
+        @Suppress("DEPRECATION")
+        val innerLabel = AccessibilityNodeInfo.obtain()
+        innerLabel.isClickable = false
+        innerLabel.isEnabled = true
+        innerLabel.setBoundsInScreen(Rect(350, 720, 480, 780)) // height = 60
+
+        org.robolectric.Shadows.shadowOf(outerCard).addChild(innerLabel)
+
+        // The outerCard is clickable, but oversized (height = 600px).
+        // findClickableParentWithinCard must reject outerCard and return null!
+        val result = service.findClickableParentWithinCard(innerLabel, cardBounds)
+        assertNull("findClickableParentWithinCard must NOT return oversized outer card container", result)
+
+        // Case 2: Intermediate Button container within card is clickable and <= 280px / <= 0.45 * card height
+        @Suppress("DEPRECATION")
+        val buttonContainer = AccessibilityNodeInfo.obtain()
+        buttonContainer.isClickable = true
+        buttonContainer.isEnabled = true
+        buttonContainer.setBoundsInScreen(Rect(340, 710, 490, 790)) // height = 80px <= 270px and <= 280px
+
+        @Suppress("DEPRECATION")
+        val buttonLabel = AccessibilityNodeInfo.obtain()
+        buttonLabel.isClickable = false
+        buttonLabel.isEnabled = true
+        buttonLabel.setBoundsInScreen(Rect(350, 720, 480, 780))
+
+        org.robolectric.Shadows.shadowOf(outerCard).addChild(buttonContainer)
+        org.robolectric.Shadows.shadowOf(buttonContainer).addChild(buttonLabel)
+
+        val buttonResult = service.findClickableParentWithinCard(buttonLabel, cardBounds)
+        assertNotNull("findClickableParentWithinCard must return proper button container", buttonResult)
+        assertEquals(buttonContainer, buttonResult)
+    }
+
+    @Test
+    fun `findClickableParentOrSelf rejects container with height greater than 280px`() {
+        val service = RapidoAccessibilityService()
+
+        @Suppress("DEPRECATION")
+        val giantContainer = AccessibilityNodeInfo.obtain()
+        giantContainer.isClickable = true
+        giantContainer.isEnabled = true
+        giantContainer.setBoundsInScreen(Rect(0, 0, 1080, 600)) // height = 600 > 280
+
+        @Suppress("DEPRECATION")
+        val child = AccessibilityNodeInfo.obtain()
+        child.isClickable = false
+        child.isEnabled = true
+        child.setBoundsInScreen(Rect(100, 100, 200, 150))
+
+        org.robolectric.Shadows.shadowOf(giantContainer).addChild(child)
+
+        val result = service.findClickableParentOrSelf(child)
+        assertNull("findClickableParentOrSelf must not climb to container > 280px", result)
+    }
+
+    @Test
+    fun `hasActiveTripIndicators accurately distinguishes active trip screens from ride offer screens`() {
+        val service = RapidoAccessibilityService()
+
+        // Screen 1: Ride offer card on screen
+        @Suppress("DEPRECATION")
+        val offerRoot = AccessibilityNodeInfo.obtain()
+        @Suppress("DEPRECATION")
+        val pickup = AccessibilityNodeInfo.obtain().apply { text = "Pickup 1.5 km away at Indiranagar" }
+        @Suppress("DEPRECATION")
+        val drop = AccessibilityNodeInfo.obtain().apply { text = "Drop 4.2 km at Koramangala" }
+        org.robolectric.Shadows.shadowOf(offerRoot).addChild(pickup)
+        org.robolectric.Shadows.shadowOf(offerRoot).addChild(drop)
+
+        assertFalse(
+            "Offer screen must NOT trigger hasActiveTripIndicators",
+            service.hasActiveTripIndicators(listOf(offerRoot))
+        )
+
+        // Screen 2: Active trip screen with OTP
+        @Suppress("DEPRECATION")
+        val tripRoot = AccessibilityNodeInfo.obtain()
+        @Suppress("DEPRECATION")
+        val otpNode = AccessibilityNodeInfo.obtain().apply { text = "Ask rider to enter OTP 5821" }
+        @Suppress("DEPRECATION")
+        val navigateNode = AccessibilityNodeInfo.obtain().apply { text = "Navigate to pickup" }
+        org.robolectric.Shadows.shadowOf(tripRoot).addChild(otpNode)
+        org.robolectric.Shadows.shadowOf(tripRoot).addChild(navigateNode)
+
+        assertTrue(
+            "Trip screen with OTP and Navigate to must trigger hasActiveTripIndicators",
+            service.hasActiveTripIndicators(listOf(tripRoot))
         )
     }
 }

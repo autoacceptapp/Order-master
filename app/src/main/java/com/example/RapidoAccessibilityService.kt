@@ -505,9 +505,10 @@ open class RapidoAccessibilityService : AccessibilityService() {
             pattern = """(?i)(?:another\s+captain|already\s+booked|expired|missed|ride\s+taken|taken\s+by|too\s+late|could\s+not\s+be\s+assigned|assigned\s+to\s+another|ride\s+cancelled|booking\s+failed|offer\s+expired)"""
         )
 
-        // Indicators on screen that ride acceptance succeeded and active trip/navigation has started
+        // Indicators on screen that ride acceptance succeeded and active trip/navigation has started.
+        // Unambiguous trip patterns only; strictly excludes generic offer card addresses ("Pickup", "Drop", "Emergency").
         val ACTIVE_TRIP_INDICATORS_REGEX = Regex(
-            pattern = """(?i)(?:navigate|drop[- ]?off|arrive[d]?|start\s+(?:ride|trip)|pick[- ]?up|enter\s+otp|\botp\b|call\s+(?:customer|rider)|chat\s+with|emergency|contact\s+rider)"""
+            pattern = """(?i)(?:\benter\s+otp\b|\botp\s*:\s*\d+|\bstart\s+(?:ride|trip)\b|\bcall\s+(?:customer|rider)\b|\bcontact\s+rider\b|\bnavigate\s+to\b|\barrived?\s+at\s+(?:passenger\s+location|pickup|location|customer)\b|\bdrop[- ]?off\s+at\b|\bpick[\s-]?up\s+(?:customer|rider|passenger)\b)"""
         )
     }
 
@@ -1403,17 +1404,33 @@ open class RapidoAccessibilityService : AccessibilityService() {
                 for (root in rootWindows) {
                     val targetNode = findRejectNodeInBounds(root, cardBounds) ?: continue
                     try {
-                        val clickable = findClickableParentOrSelf(targetNode) ?: targetNode
-                        clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        Log.i(TAG, "executeCardRejectClick: in-bounds ACTION_CLICK success=$clicked")
-                        if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        val clickable = findClickableParentWithinCard(targetNode, cardBounds)
+                            ?: if (targetNode.isClickable) {
+                                val b = Rect()
+                                targetNode.getBoundsInScreen(b)
+                                if (b.height() <= 280 && (cardBounds.isEmpty || b.height() <= cardBounds.height() * 0.45f)) {
+                                    @Suppress("DEPRECATION")
+                                    AccessibilityNodeInfo.obtain(targetNode)
+                                } else null
+                            } else null
+
+                        if (clickable != null) {
+                            clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            Log.i(TAG, "executeCardRejectClick: in-bounds ACTION_CLICK success=$clicked")
+                            if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                bringTargetAppToForeground()
+                                delay(250L)
+                                clicked = dispatchTapGesture(clickable)
+                                Log.i(TAG, "executeCardRejectClick: fallback gesture success=$clicked")
+                            }
+                            if (clickable !== targetNode) {
+                                recycleNode(clickable)
+                            }
+                        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                             bringTargetAppToForeground()
                             delay(250L)
-                            clicked = dispatchTapGesture(clickable)
-                            Log.i(TAG, "executeCardRejectClick: fallback gesture success=$clicked")
-                        }
-                        if (clickable !== targetNode) {
-                            recycleNode(clickable)
+                            clicked = dispatchTapGesture(targetNode)
+                            Log.i(TAG, "executeCardRejectClick: fallback gesture on targetNode success=$clicked")
                         }
                         if (clicked) break
                     } finally {
@@ -1577,16 +1594,87 @@ open class RapidoAccessibilityService : AccessibilityService() {
                 for (root in rootWindows) {
                     val targetNode = findAcceptNodeInBounds(root, cardBounds) ?: continue
                     try {
-                        val clickable = findClickableParentOrSelf(targetNode) ?: targetNode
-                        clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        Log.i(TAG, "executeCardAcceptClick: fresh in-bounds ACTION_CLICK success=$clicked")
-                        if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        val clickable = findClickableParentWithinCard(targetNode, cardBounds)
+                            ?: if (targetNode.isClickable) {
+                                val b = Rect()
+                                targetNode.getBoundsInScreen(b)
+                                if (b.height() <= 280 && (cardBounds.isEmpty || b.height() <= cardBounds.height() * 0.45f)) {
+                                    @Suppress("DEPRECATION")
+                                    AccessibilityNodeInfo.obtain(targetNode)
+                                } else null
+                            } else null
+
+                        if (clickable != null) {
+                            clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            Log.i(TAG, "executeCardAcceptClick: fresh in-bounds ACTION_CLICK success=$clicked")
+                        } else {
+                            Log.i(TAG, "executeCardAcceptClick: no clickable button widget found within button size constraints")
+                        }
+
+                        // If ACTION_CLICK succeeded, verify whether the card or accept button is still on screen after 450ms
+                        if (clicked) {
+                            delay(450L)
+                            val postClickWindows = getAllRootWindows()
+                            var stillPresent = false
+                            try {
+                                for (postRoot in postClickWindows) {
+                                    val stillNode = findAcceptNodeInBounds(postRoot, cardBounds)
+                                    if (stillNode != null) {
+                                        stillPresent = true
+                                        recycleNode(stillNode)
+                                        break
+                                    }
+                                }
+                                if (!stillPresent) {
+                                    stillPresent = hasActiveRideOfferOnScreen(postClickWindows)
+                                }
+                            } finally {
+                                for (postRoot in postClickWindows) {
+                                    recycleNode(postRoot)
+                                }
+                            }
+
+                            if (stillPresent) {
+                                Log.w(TAG, "executeCardAcceptClick: card/accept button still on screen after 450ms despite ACTION_CLICK=true. Falling back to coordinate tap on Accept button node.")
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                    bringTargetAppToForeground()
+                                    delay(100L)
+                                    FloatingOverlayService.setTemporarilyUntouchable(true)
+                                    val freshRoots = getAllRootWindows()
+                                    var gestureDispatched = false
+                                    try {
+                                        for (freshRoot in freshRoots) {
+                                            val freshAccept = findAcceptNodeInBounds(freshRoot, cardBounds) ?: continue
+                                            try {
+                                                gestureDispatched = executeAutoAcceptGesture(freshAccept)
+                                                if (gestureDispatched) break
+                                            } finally {
+                                                recycleNode(freshAccept)
+                                            }
+                                        }
+                                    } finally {
+                                        for (freshRoot in freshRoots) {
+                                            recycleNode(freshRoot)
+                                        }
+                                    }
+                                    if (!gestureDispatched) {
+                                        gestureDispatched = executeAutoAcceptGesture(targetNode)
+                                    }
+                                    clicked = gestureDispatched
+                                    Log.i(TAG, "executeCardAcceptClick: accept button node coordinate fallback success=$clicked")
+                                }
+                            }
+                        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                            // If ACTION_CLICK was false or no clickable parent widget existed within size constraints,
+                            // immediately fallback to coordinate tap on the actual Accept button node
                             bringTargetAppToForeground()
                             delay(250L)
-                            clicked = executeAutoAcceptGesture(clickable)
+                            FloatingOverlayService.setTemporarilyUntouchable(true)
+                            clicked = executeAutoAcceptGesture(targetNode)
                             Log.i(TAG, "executeCardAcceptClick: fresh in-bounds gesture success=$clicked")
                         }
-                        if (clickable !== targetNode) {
+
+                        if (clickable != null && clickable !== targetNode) {
                             recycleNode(clickable)
                         }
                         if (clicked) break
@@ -1603,13 +1691,52 @@ open class RapidoAccessibilityService : AccessibilityService() {
             // 2. Fall back to pre-delay retainedAcceptNode if fresh lookup did not succeed
             if (!clicked && retainedAcceptNode != null) {
                 try {
-                    val clickableTarget = findClickableParentOrSelf(retainedAcceptNode) ?: retainedAcceptNode
-                    clicked = clickableTarget.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    Log.i(TAG, "executeCardAcceptClick: fallback retainedAcceptNode click success=$clicked")
-                    if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                        clicked = executeAutoAcceptGesture(clickableTarget)
+                    val clickableTarget = findClickableParentWithinCard(retainedAcceptNode, cardBounds)
+                        ?: if (retainedAcceptNode.isClickable) {
+                            val b = Rect()
+                            retainedAcceptNode.getBoundsInScreen(b)
+                            if (b.height() <= 280 && (cardBounds.isEmpty || b.height() <= cardBounds.height() * 0.45f)) {
+                                @Suppress("DEPRECATION")
+                                AccessibilityNodeInfo.obtain(retainedAcceptNode)
+                            } else null
+                        } else null
+
+                    if (clickableTarget != null) {
+                        clicked = clickableTarget.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        Log.i(TAG, "executeCardAcceptClick: fallback retainedAcceptNode click success=$clicked")
+                        if (clicked) {
+                            delay(450L)
+                            val postClickWindows = getAllRootWindows()
+                            var stillPresent = false
+                            try {
+                                for (postRoot in postClickWindows) {
+                                    val stillNode = findAcceptNodeInBounds(postRoot, cardBounds)
+                                    if (stillNode != null) {
+                                        stillPresent = true
+                                        recycleNode(stillNode)
+                                        break
+                                    }
+                                }
+                                if (!stillPresent) {
+                                    stillPresent = hasActiveRideOfferOnScreen(postClickWindows)
+                                }
+                            } finally {
+                                for (postRoot in postClickWindows) {
+                                    recycleNode(postRoot)
+                                }
+                            }
+                            if (stillPresent && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                Log.w(TAG, "executeCardAcceptClick: retainedAcceptNode still on screen after 450ms. Dispatching coordinate tap on retainedAcceptNode.")
+                                FloatingOverlayService.setTemporarilyUntouchable(true)
+                                clicked = executeAutoAcceptGesture(retainedAcceptNode)
+                            }
+                        }
                     }
-                    if (clickableTarget !== retainedAcceptNode) {
+                    if (!clicked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        FloatingOverlayService.setTemporarilyUntouchable(true)
+                        clicked = executeAutoAcceptGesture(retainedAcceptNode)
+                    }
+                    if (clickableTarget != null && clickableTarget !== retainedAcceptNode) {
                         recycleNode(clickableTarget)
                     }
                 } catch (e: Exception) {
@@ -1633,6 +1760,7 @@ open class RapidoAccessibilityService : AccessibilityService() {
 
                 bringTargetAppToForeground()
                 delay(250L)
+                FloatingOverlayService.setTemporarilyUntouchable(true)
                 clicked = dispatchTapAtCoordinates(tapX, tapY)
                 Log.i(TAG, "executeCardAcceptClick: coordinate fallback tap at ($tapX, $tapY) success=$clicked")
             }
@@ -1716,7 +1844,8 @@ open class RapidoAccessibilityService : AccessibilityService() {
      * Verifies that the order was actually won (active navigation/trip UI appears or offer card
      * cleanly disappears without error toasts).
      */
-    private suspend fun verifyAcceptanceTransition(
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun verifyAcceptanceTransition(
         offer: ParsedRideOffer,
         evaluation: RideEvaluation,
         cardBounds: Rect
@@ -1729,8 +1858,6 @@ open class RapidoAccessibilityService : AccessibilityService() {
         // Wait initial 250ms for Rapido network request and UI response dispatch
         delay(pollIntervalMs)
 
-        var cardDisappearedAt: Long? = null
-
         while (SystemClock.elapsedRealtime() - startTime < timeoutMs && isServiceRunning) {
             val rootWindows = getAllRootWindows()
             try {
@@ -1742,24 +1869,8 @@ open class RapidoAccessibilityService : AccessibilityService() {
 
                 // 2. Check for Active Trip / Navigation nodes
                 if (hasActiveTripIndicators(rootWindows)) {
-                    Log.i(TAG, "verifyAcceptanceTransition: active trip transition confirmed (Navigate/Arrive detected).")
+                    Log.i(TAG, "verifyAcceptanceTransition: active trip transition confirmed (OTP/Start Ride/Navigate detected).")
                     return@withContext AcceptanceState.CONFIRMED_ACCEPTED
-                }
-
-                // 3. Check if offer card is still present while target app window remains visible
-                val targetPkg = getEffectiveTargetPackage()
-                val targetWindowVisible = rootWindows.any { it.packageName?.toString() == targetPkg }
-                val stillHasOffer = hasActiveRideOfferOnScreen(rootWindows)
-                if (!stillHasOffer && targetWindowVisible) {
-                    if (cardDisappearedAt == null) {
-                        cardDisappearedAt = SystemClock.elapsedRealtime()
-                    } else if (SystemClock.elapsedRealtime() - cardDisappearedAt >= 400L) {
-                        // Card has been gone for >= 400ms inside target app with no error indicators -> Order accepted!
-                        Log.i(TAG, "verifyAcceptanceTransition: offer card vanished cleanly inside $targetPkg without errors.")
-                        return@withContext AcceptanceState.CONFIRMED_ACCEPTED
-                    }
-                } else {
-                    cardDisappearedAt = null
                 }
             } finally {
                 for (root in rootWindows) {
@@ -1776,10 +1887,15 @@ open class RapidoAccessibilityService : AccessibilityService() {
             if (hasRejectionOrMissedIndicators(finalWindows)) {
                 return@withContext AcceptanceState.REJECTED_OR_TAKEN
             }
-            val targetPkg = getEffectiveTargetPackage()
-            val finalTargetVisible = finalWindows.any { it.packageName?.toString() == targetPkg }
-            if (hasActiveTripIndicators(finalWindows) || (finalTargetVisible && !hasActiveRideOfferOnScreen(finalWindows))) {
+            if (hasActiveTripIndicators(finalWindows)) {
+                Log.i(TAG, "verifyAcceptanceTransition: active trip transition confirmed on final check.")
                 return@withContext AcceptanceState.CONFIRMED_ACCEPTED
+            }
+            val stillHasOffer = hasActiveRideOfferOnScreen(finalWindows)
+            if (!stillHasOffer) {
+                // The offer card disappeared/expired without active trip confirmation -> order expired or taken
+                Log.w(TAG, "verifyAcceptanceTransition: offer card disappeared but no active trip indicators found. Marked as expired/taken.")
+                return@withContext AcceptanceState.REJECTED_OR_TAKEN
             }
         } finally {
             for (root in finalWindows) {
@@ -1791,7 +1907,8 @@ open class RapidoAccessibilityService : AccessibilityService() {
         return@withContext AcceptanceState.STALLED_OR_TIMED_OUT
     }
 
-    private fun hasRejectionOrMissedIndicators(rootWindows: List<AccessibilityNodeInfo>): Boolean {
+    @androidx.annotation.VisibleForTesting
+    internal fun hasRejectionOrMissedIndicators(rootWindows: List<AccessibilityNodeInfo>): Boolean {
         for (root in rootWindows) {
             if (scanTreeForTextPatterns(root, REJECTION_INDICATORS_REGEX)) {
                 return true
@@ -1800,7 +1917,8 @@ open class RapidoAccessibilityService : AccessibilityService() {
         return false
     }
 
-    private fun hasActiveTripIndicators(rootWindows: List<AccessibilityNodeInfo>): Boolean {
+    @androidx.annotation.VisibleForTesting
+    internal fun hasActiveTripIndicators(rootWindows: List<AccessibilityNodeInfo>): Boolean {
         for (root in rootWindows) {
             if (scanTreeForTextPatterns(root, ACTIVE_TRIP_INDICATORS_REGEX)) {
                 return true
@@ -2323,8 +2441,29 @@ open class RapidoAccessibilityService : AccessibilityService() {
         return clicked
     }
 
-    fun findClickableParentOrSelf(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        if (node.isClickable && node.isEnabled) {
+    /**
+     * Finds a clickable parent node for [node] within [cardBounds], strictly rejecting any
+     * parent container that is larger than standard button dimensions (e.g. height > cardBounds.height() * 0.45f,
+     * height > 280px, or area > 70% of the entire card area). This prevents accessibility clicks from climbing
+     * onto the outer order card container (CardView / ConstraintLayout) which consumes the click without accepting.
+     */
+    fun findClickableParentWithinCard(node: AccessibilityNodeInfo, cardBounds: Rect): AccessibilityNodeInfo? {
+        val nodeBounds = Rect()
+        node.getBoundsInScreen(nodeBounds)
+
+        fun isOversized(bounds: Rect): Boolean {
+            if (bounds.isEmpty) return false
+            if (bounds.height() > 280) return true
+            if (!cardBounds.isEmpty) {
+                if (bounds.height() > cardBounds.height() * 0.45f) return true
+                val cardArea = cardBounds.width().toLong() * cardBounds.height()
+                val nodeArea = bounds.width().toLong() * bounds.height()
+                if (cardArea > 0 && nodeArea > (cardArea * 0.70)) return true
+            }
+            return false
+        }
+
+        if (node.isClickable && node.isEnabled && !isOversized(nodeBounds)) {
             @Suppress("DEPRECATION")
             return AccessibilityNodeInfo.obtain(node)
         }
@@ -2334,6 +2473,55 @@ open class RapidoAccessibilityService : AccessibilityService() {
         val maxDepth = 10
 
         while (current != null && depth < maxDepth) {
+            val parentBounds = Rect()
+            current.getBoundsInScreen(parentBounds)
+
+            // If the parent is oversized (e.g. full card container), stop climbing immediately
+            if (isOversized(parentBounds)) {
+                recycleNode(current)
+                break
+            }
+
+            if (current.isClickable && current.isEnabled) {
+                return current
+            }
+
+            val parent = current.parent
+            recycleNode(current)
+            current = parent
+            depth++
+        }
+
+        current?.let { recycleNode(it) }
+
+        if (node.isClickable && node.isEnabled && !isOversized(nodeBounds)) {
+            @Suppress("DEPRECATION")
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        return null
+    }
+
+    fun findClickableParentOrSelf(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val nodeBounds = Rect()
+        node.getBoundsInScreen(nodeBounds)
+        if (node.isClickable && node.isEnabled && (nodeBounds.isEmpty || nodeBounds.height() <= 280)) {
+            @Suppress("DEPRECATION")
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        var current: AccessibilityNodeInfo? = node.parent
+        var depth = 0
+        val maxDepth = 10
+
+        while (current != null && depth < maxDepth) {
+            val parentBounds = Rect()
+            current.getBoundsInScreen(parentBounds)
+            if (!parentBounds.isEmpty && parentBounds.height() > 280) {
+                // Reject climbing onto outer screen or card containers (>280px height)
+                recycleNode(current)
+                break
+            }
             if (current.isClickable && current.isEnabled) {
                 return current
             }
