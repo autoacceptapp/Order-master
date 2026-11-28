@@ -232,14 +232,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                if (!isLanguageSelected) {
-                    SplashScreen(
-                        isFirstLaunch = true,
-                        onLanguageSelected = { selectedCode ->
-                            AppSettings.setAppLanguage(applicationContext, selectedCode)
-                        }
-                    )
-                } else if (!isOnboardingCompleted) {
+                if (!isLanguageSelected || !isOnboardingCompleted) {
                     OnboardingScreen(
                         onFinish = {
                             AppSettings.setOnboardingCompleted(applicationContext, true)

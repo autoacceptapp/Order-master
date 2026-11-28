@@ -164,16 +164,19 @@ class AuditRegressionTest {
     }
 
     @Test
-    fun `tutorial steps and voice demo labels are complete in Hindi and English with intact UTF-8 text`() {
+    fun `tutorial steps and voice demo labels are complete in Hindi, Hinglish, and English with intact UTF-8 text`() {
         val hindiSteps = com.example.ui.components.getTutorialSteps(context, isHindi = true)
+        val hinglishSteps = com.example.ui.components.getTutorialSteps(context, isHindi = false, langCode = "hinglish")
         val englishSteps = com.example.ui.components.getTutorialSteps(context, isHindi = false)
 
-        assertEquals(7, hindiSteps.size)
-        assertEquals(7, englishSteps.size)
+        assertEquals(3, hindiSteps.size)
+        assertEquals(3, hinglishSteps.size)
+        assertEquals(3, englishSteps.size)
 
         val devanagariRegex = Regex("[\\u0900-\\u097F]+")
         hindiSteps.forEachIndexed { index, step ->
             assertTrue("Hindi step ${index + 1} badge blank", step.badge.isNotBlank())
+            assertTrue("Hindi step ${index + 1} tabLabel blank", step.tabLabel.isNotBlank())
             assertTrue("Hindi step ${index + 1} title blank", step.title.isNotBlank())
             assertTrue("Hindi step ${index + 1} shortDesc blank", step.shortDesc.isNotBlank())
             assertTrue("Hindi step ${index + 1} detailExplainer blank", step.detailExplainer.isNotBlank())
@@ -187,14 +190,14 @@ class AuditRegressionTest {
             assertFalse("Question-mark placeholder found in Hindi step ${index + 1}", step.detailExplainer.contains("??"))
         }
 
-        assertTrue("Hindi step 3 must contain Rupee symbol", hindiSteps[2].detailExplainer.contains('\u20B9'))
-        assertTrue("Hindi step 4 must contain Rupee symbol", hindiSteps[3].detailExplainer.contains('\u20B9'))
+        assertTrue("Hindi step 2 must contain Rupee symbol", hindiSteps[1].detailExplainer.contains('\u20B9'))
+        assertTrue("English step 2 must contain Rupee symbol", englishSteps[1].detailExplainer.contains('\u20B9'))
 
-        englishSteps.forEachIndexed { index, step ->
-            assertTrue("English step ${index + 1} title blank", step.title.isNotBlank())
-            assertTrue("English step ${index + 1} detailExplainer blank", step.detailExplainer.isNotBlank())
-            assertTrue("English step ${index + 1} speechText blank", step.speechText.isNotBlank())
-            assertFalse("Replacement char found in English step ${index + 1}", step.detailExplainer.contains('\uFFFD'))
+        (englishSteps + hinglishSteps).forEachIndexed { index, step ->
+            assertTrue("Step ${index + 1} title blank", step.title.isNotBlank())
+            assertTrue("Step ${index + 1} detailExplainer blank", step.detailExplainer.isNotBlank())
+            assertTrue("Step ${index + 1} speechText blank", step.speechText.isNotBlank())
+            assertFalse("Replacement char found in step ${index + 1}", step.detailExplainer.contains('\uFFFD'))
         }
 
         val hindiVoiceLabels = com.example.ui.components.getVoiceDemoFieldLabels(isHindi = true)
@@ -1100,5 +1103,148 @@ class AuditRegressionTest {
             )
         )
     }
+
+    @Test
+    fun `smart modes apply unlocked filters only, auto-detect Custom on edit, and reset safely`() {
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        // Unlock everything first
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.MAX_FARE to futureExpiry,
+                FeatureIds.MAX_PICKUP_DISTANCE to futureExpiry,
+                FeatureIds.MAX_DROP_DISTANCE to futureExpiry,
+                FeatureIds.MIN_PER_KM_RATE to futureExpiry,
+                FeatureIds.DESTINATION_BLACKLIST to futureExpiry
+            )
+        )
+
+        val safeResult = AppSettings.applySmartMode(context, AppSettings.SmartMode.SAFE)
+        assertTrue(safeResult.appliedCount >= 5)
+        assertTrue(safeResult.missingFeatureIds.isEmpty())
+        assertEquals(AppSettings.SmartMode.SAFE, AppSettings.detectActiveSmartMode(AppSettings.settingsState.value))
+        assertEquals(50.0f, AppSettings.settingsState.value.minFare, 0.01f)
+        assertEquals(2.5f, AppSettings.settingsState.value.maxPickupDistance, 0.01f)
+        assertEquals(10.0f, AppSettings.settingsState.value.minPerKmRate, 0.01f)
+
+        val zyadaResult = AppSettings.applySmartMode(context, AppSettings.SmartMode.ZYADA_KAMAI)
+        assertTrue(zyadaResult.appliedCount >= 4)
+        assertEquals(AppSettings.SmartMode.ZYADA_KAMAI, AppSettings.detectActiveSmartMode(AppSettings.settingsState.value))
+        assertEquals(80.0f, AppSettings.settingsState.value.minFare, 0.01f)
+        assertFalse(AppSettings.settingsState.value.isMaxFareEnabled)
+        assertEquals(14.0f, AppSettings.settingsState.value.minPerKmRate, 0.01f)
+
+        // Modifying any filter automatically switches active mode to CUSTOM
+        AppSettings.setMinFare(context, 95.0f)
+        assertEquals(AppSettings.SmartMode.CUSTOM, AppSettings.detectActiveSmartMode(AppSettings.settingsState.value))
+
+        // Reset restores Safe Mode defaults
+        val resetCount = AppSettings.resetAllFiltersToSafeDefault(context)
+        assertTrue(resetCount >= 5)
+        assertEquals(AppSettings.SmartMode.SAFE, AppSettings.detectActiveSmartMode(AppSettings.settingsState.value))
+
+        // Locked features are never bypassed by applySmartMode
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(FeatureIds.MIN_FARE to futureExpiry)
+        )
+        val partialResult = AppSettings.applySmartMode(context, AppSettings.SmartMode.SAFE)
+        assertEquals(1, partialResult.appliedCount)
+        assertTrue(partialResult.missingFeatureIds.contains(FeatureIds.MIN_PER_KM_RATE))
+    }
+
+    @Test
+    fun `plain language filter summary generates accurate human sentences across languages`() {
+        val futureExpiry = System.currentTimeMillis() + 3_600_000L
+        LicenseManager.setFeatureLocksForTesting(
+            unlocked = mapOf(
+                FeatureIds.MIN_FARE to futureExpiry,
+                FeatureIds.MAX_FARE to futureExpiry,
+                FeatureIds.MAX_PICKUP_DISTANCE to futureExpiry,
+                FeatureIds.MAX_DROP_DISTANCE to futureExpiry,
+                FeatureIds.MIN_PER_KM_RATE to futureExpiry,
+                FeatureIds.DESTINATION_BLACKLIST to futureExpiry
+            )
+        )
+        AppSettings.applySmartMode(context, AppSettings.SmartMode.SAFE)
+        val state = AppSettings.settingsState.value
+
+        val hinglishSummary = AppSettings.buildPlainLanguageFilterSummary(state, "hinglish")
+        assertTrue(hinglishSummary.contains("₹50"))
+        assertTrue(hinglishSummary.contains("2.5 km"))
+        assertTrue(hinglishSummary.contains("₹10/km"))
+
+        val hindiSummary = AppSettings.buildPlainLanguageFilterSummary(state, "hi")
+        assertTrue(hindiSummary.contains("₹50"))
+        assertTrue(hindiSummary.contains("2.5 km से दूर पिकअप"))
+
+        val englishSummary = AppSettings.buildPlainLanguageFilterSummary(state, "en")
+        assertTrue(englishSummary.contains("₹50"))
+        assertTrue(englishSummary.contains("pickup over 2.5 km"))
+
+        val guSummary = AppSettings.buildPlainLanguageFilterSummary(state, "gu")
+        assertTrue(guSummary.contains("₹50"))
+
+        val mrSummary = AppSettings.buildPlainLanguageFilterSummary(state, "mr")
+        assertTrue(mrSummary.contains("₹50"))
+
+        val emptyState = state.copy(
+            isMinFareEnabled = false,
+            isMaxFareEnabled = false,
+            isMaxPickupDistanceEnabled = false,
+            isMaxDropDistanceEnabled = false,
+            isMinPerKmRateEnabled = false,
+            isDestinationBlacklistEnabled = false
+        )
+        val emptyHinglish = AppSettings.buildPlainLanguageFilterSummary(emptyState, "hinglish")
+        assertTrue(emptyHinglish.contains("Abhi koi filter ON nahi hai"))
+        assertTrue(emptyHinglish.contains("har ride par"))
+    }
+
+    @Test
+    fun `guided setup state tracks next incomplete step accurately`() {
+        val baseSettings = SettingsState(
+            isMinFareEnabled = false,
+            isMaxFareEnabled = false,
+            isMaxPickupDistanceEnabled = false,
+            isMaxDropDistanceEnabled = false,
+            isMinPerKmRateEnabled = false
+        )
+
+        val step1 = com.example.ui.screens.computeGuidedSetupState(
+            isAccessibilityEnabled = false,
+            settingsState = baseSettings,
+            isAutomationActive = false
+        )
+        assertEquals(1, step1.nextIncompleteStep)
+        assertFalse(step1.step1PermissionDone)
+
+        val step2 = com.example.ui.screens.computeGuidedSetupState(
+            isAccessibilityEnabled = true,
+            settingsState = baseSettings,
+            isAutomationActive = false
+        )
+        assertEquals(2, step2.nextIncompleteStep)
+        assertTrue(step2.step1PermissionDone)
+        assertFalse(step2.step2FilterDone)
+
+        val configuredSettings = baseSettings.copy(isMinFareEnabled = true, minFare = 50f)
+        val step3 = com.example.ui.screens.computeGuidedSetupState(
+            isAccessibilityEnabled = true,
+            settingsState = configuredSettings,
+            isAutomationActive = false
+        )
+        assertEquals(3, step3.nextIncompleteStep)
+        assertTrue(step3.step2FilterDone)
+        assertFalse(step3.step3StartDone)
+
+        val ready = com.example.ui.screens.computeGuidedSetupState(
+            isAccessibilityEnabled = true,
+            settingsState = configuredSettings,
+            isAutomationActive = true
+        )
+        assertEquals(0, ready.nextIncompleteStep)
+        assertTrue(ready.step1PermissionDone && ready.step2FilterDone && ready.step3StartDone)
+    }
 }
+
 

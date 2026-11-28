@@ -46,6 +46,9 @@ object TTSManager {
     @Volatile
     private var lastSpokenTimestamp: Long = 0L
 
+    @Volatile
+    private var pendingGuideSpeech: String? = null
+
     /**
      * Initializes the native Android TextToSpeech engine.
      */
@@ -57,6 +60,16 @@ object TTSManager {
                     isTtsReady = true
                     applySettings(context)
                     Log.i(TAG, "Native TextToSpeech engine initialized successfully.")
+                    val queued = pendingGuideSpeech
+                    pendingGuideSpeech = null
+                    if (!queued.isNullOrBlank()) {
+                        try {
+                            val utteranceId = "tts_guide_${System.currentTimeMillis()}"
+                            textToSpeech?.speak(queued, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to flush pending guide speech", e)
+                        }
+                    }
                 } else {
                     isTtsReady = false
                     Log.w(TAG, "Native TextToSpeech initialization failed with status: $status")
@@ -74,7 +87,7 @@ object TTSManager {
     fun parseLocale(languageCode: String): Locale {
         val clean = languageCode.trim().lowercase(Locale.ROOT)
         return when (clean) {
-            "hi" -> Locale.Builder().setLanguage("hi").setRegion("IN").build()
+            "hi", "hinglish" -> Locale.Builder().setLanguage("hi").setRegion("IN").build()
             "gu" -> Locale.Builder().setLanguage("gu").setRegion("IN").build()
             "mr" -> Locale.Builder().setLanguage("mr").setRegion("IN").build()
             "bn" -> Locale.Builder().setLanguage("bn").setRegion("IN").build()
@@ -141,6 +154,7 @@ object TTSManager {
     fun speakGreeting(context: Context, languageCode: String) {
         val langObj = AppSettings.SUPPORTED_LANGUAGES.find { it.code.equals(languageCode, ignoreCase = true) }
         val greeting = langObj?.sampleGreeting ?: when (languageCode.trim().lowercase(Locale.ROOT)) {
+            "hinglish" -> "Namaste! Order Master shuru karne ke liye taiyar hai."
             "hi" -> "नमस्ते"
             "gu" -> "નમસ્તે"
             "mr" -> "नमस्कार"
@@ -152,7 +166,7 @@ object TTSManager {
             "pa" -> "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ"
             else -> "Hello"
         }
-        speak(context, greeting, TextToSpeech.QUEUE_FLUSH)
+        speakGuide(context, greeting, flush = true)
     }
 
     /**
@@ -306,6 +320,28 @@ object TTSManager {
     }
 
     /**
+     * Speaks user-requested UI tutorial / "Sunke Samjho" explanations immediately,
+     * even if the automatic ride-offer Voice Announcer toggle is currently OFF or locked.
+     */
+    fun speakGuide(context: Context, text: String, flush: Boolean = true) {
+        if (text.isBlank()) return
+        if (!isTtsReady || textToSpeech == null) {
+            pendingGuideSpeech = text
+            init(context)
+            return
+        }
+        try {
+            applySettings(context)
+            val queueMode = if (flush) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+            val utteranceId = "tts_guide_${System.currentTimeMillis()}"
+            textToSpeech?.speak(text, queueMode, null, utteranceId)
+            Log.d(TAG, "TTS guide spoke: $text")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to speak TTS guide explanation", e)
+        }
+    }
+
+    /**
      * Immediately stops any ongoing speech playback.
      */
     fun stop() {
@@ -454,6 +490,7 @@ object TTSManager {
         val fareInt = fare?.toInt()
 
         val message = when (lang) {
+            "hinglish" -> if (fareInt != null) "Ride accept ho gayi! Kiraya $fareInt rupaye." else "Ride accept ho gayi!"
             "hi" -> if (fareInt != null) "राइड स्वीकार कर लिया गया! किराया $fareInt रुपये।" else "राइड स्वीकार कर लिया गया!"
             "gu" -> if (fareInt != null) "રાઇડ સ્વીકારવામાં આવી! ભાડું $fareInt રૂપિયા." else "રાઇડ સ્વીકારવામાં આવી!"
             "mr" -> if (fareInt != null) "राइड स्वीकारली गेली! भाडे $fareInt रुपये." else "राइड स्वीकारली गेली!"
@@ -478,6 +515,12 @@ object TTSManager {
         val lang = AppSettings.getVoiceLanguage(context).lowercase(Locale.ROOT)
 
         val message = when (lang) {
+            "hinglish" -> when {
+                reason.contains("< Min Limit", ignoreCase = true) || reason.contains("below minimum", ignoreCase = true) -> "Ride skip hui: kiraya kam hai."
+                reason.contains("> Max Limit", ignoreCase = true) || reason.contains("exceeds maximum", ignoreCase = true) -> "Ride skip hui: kiraya zyada hai."
+                reason.contains("Pickup distance", ignoreCase = true) || reason.contains("exceeds set maximum limit", ignoreCase = true) -> "Ride skip hui: pickup door hai."
+                else -> "Ride skip hui."
+            }
             "hi" -> when {
                 reason.contains("< Min Limit", ignoreCase = true) || reason.contains("below minimum", ignoreCase = true) -> "राइड छोड़ दिया गया: किराया न्यूनतम से कम है।"
                 reason.contains("> Max Limit", ignoreCase = true) || reason.contains("exceeds maximum", ignoreCase = true) -> "राइड छोड़ दिया गया: किराया अधिकतम सीमा से अधिक है।"
@@ -510,6 +553,7 @@ object TTSManager {
     fun testAnnouncement(context: Context, customMessage: String? = null) {
         val lang = AppSettings.getVoiceLanguage(context).lowercase(Locale.ROOT)
         val message = customMessage ?: when (lang) {
+            "hinglish" -> "Aawaz alert chalu hai! Kiraya 120 rupaye, doori 3 kilometer."
             "hi" -> "आवाज़ उद्घोषक चालू है! किराया 120 रुपये, दूरी 3 किलोमीटर।"
             "gu" -> "અવાજ ઉદ્ઘોષક ચાલુ છે! ભાડું 120 રૂપિયા, અંતર 3 કિલોમીટર."
             "mr" -> "व्हॉइस अनाउंसर चालू आहे! भाडे 120 रुपये, अंतर 3 किलोमीटर."
@@ -521,7 +565,7 @@ object TTSManager {
             "pa" -> "ਵਾਇਸ ਅਨਾਊਂਸਰ ਸਰਗਰਮ ਹੈ! ਕਿਰਾਇਆ 120 ਰੁਪਏ, ਦੂਰੀ 3 ਕਿਲੋਮੀਟਰ।"
             else -> "Voice announcer is active! Fare is 120 rupees, distance 3 kilometers."
         }
-        speak(context, message, TextToSpeech.QUEUE_FLUSH)
+        speakGuide(context, message, flush = true)
     }
 
     /**

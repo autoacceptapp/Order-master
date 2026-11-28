@@ -218,6 +218,40 @@ class OrderMasterViewModel(application: Application) : AndroidViewModel(applicat
         return applied
     }
 
+    fun applySmartMode(mode: AppSettings.SmartMode): AppSettings.SmartModeApplyResult {
+        val app = getApplication<Application>()
+        val result = AppSettings.applySmartMode(app, mode)
+        if (result.appliedCount > 0) {
+            val label = when (mode) {
+                AppSettings.SmartMode.SAFE -> "Safe Mode"
+                AppSettings.SmartMode.ZYADA_KAMAI -> "Zyada Kamai"
+                AppSettings.SmartMode.CUSTOM -> "Custom"
+            }
+            AppSettings.addLog(
+                title = "Smart Mode Applied: $label",
+                message = "Updated ${result.appliedCount} filter rules for $label.",
+                severity = LogSeverity.INFO
+            )
+        }
+        return result
+    }
+
+    fun resetToSafeDefaults(): Int {
+        val app = getApplication<Application>()
+        val resetCount = AppSettings.resetAllFiltersToSafeDefault(app)
+        AppSettings.addLog(
+            title = "Filters Reset to Safe Default",
+            message = "Restored $resetCount unlocked filter rules to Safe Mode defaults.",
+            severity = LogSeverity.INFO
+        )
+        return resetCount
+    }
+
+    fun speakFilterExplanation(text: String) {
+        val app = getApplication<Application>()
+        TTSManager.speakGuide(app, text, flush = true)
+    }
+
     // --- Order History Actions ---
     fun setHistorySearchQuery(query: String) {
         _historySearchQuery.value = query

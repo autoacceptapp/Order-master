@@ -59,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -214,6 +215,7 @@ fun OrderMasterApp(
             var showRestrictedSettingsGuide by remember { mutableStateOf(false) }
             var showGoogleSignInSheet by remember { mutableStateOf(false) }
             var showTutorialGuide by remember { mutableStateOf(false) }
+            var tutorialInitialStep by remember { mutableIntStateOf(0) }
             var showTopBarMenu by remember { mutableStateOf(false) }
 
             // Mandatory Authentication: sheet is strictly forced whenever user is not logged in
@@ -325,6 +327,25 @@ fun OrderMasterApp(
                         }
                     },
                     actions = {
+                        // Contextual '?' Help Button on Home & Filters screens (48dp touch target)
+                        if (currentRoute == Screen.Home.route || currentRoute == Screen.Filters.route) {
+                            IconButton(
+                                onClick = {
+                                    tutorialInitialStep = if (currentRoute == Screen.Filters.route) 1 else 0
+                                    showTutorialGuide = true
+                                },
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .testTag("top_bar_help_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.HelpOutline,
+                                    contentDescription = "Madad / App Guide",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+
                         // Primary Action: Pass & Store Button (48dp touch target)
                         IconButton(
                             onClick = {
@@ -423,6 +444,7 @@ fun OrderMasterApp(
                                     },
                                     onClick = {
                                         showTopBarMenu = false
+                                        tutorialInitialStep = if (currentRoute == Screen.Filters.route) 1 else 0
                                         showTutorialGuide = true
                                     },
                                     modifier = Modifier
@@ -559,6 +581,15 @@ fun OrderMasterApp(
                 HomeScreen(
                     viewModel = viewModel,
                     onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
+                    onNavigateToFilters = {
+                        navController.navigate(Screen.Filters.route) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                     onNavigateToSubscription = { navController.navigate(Screen.Subscription.route) },
                     onNavigateToPaymentVerification = { navController.navigate(Screen.PaymentVerification.route) },
                     onOpenRestrictedSettingsGuide = { showRestrictedSettingsGuide = true },
@@ -662,6 +693,7 @@ fun OrderMasterApp(
     // App & Filter Training Guide Dialog
     if (showTutorialGuide) {
         AppTutorialGuideDialog(
+            initialStep = tutorialInitialStep,
             onDismiss = { showTutorialGuide = false }
         )
     }

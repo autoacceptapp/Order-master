@@ -1867,6 +1867,312 @@ object AppSettings {
         return true
     }
 
+    enum class SmartMode {
+        SAFE,
+        ZYADA_KAMAI,
+        CUSTOM
+    }
+
+    data class SmartModeApplyResult(
+        val appliedCount: Int,
+        val missingFeatureIds: List<String>
+    ) {
+        val isFullyApplied: Boolean get() = missingFeatureIds.isEmpty()
+    }
+
+    /**
+     * Detects whether the user's current filter configuration matches Safe Mode,
+     * Zyada Kamai, or Custom (automatically triggered by any manual slider/toggle edit).
+     */
+    fun detectActiveSmartMode(state: SettingsState): SmartMode {
+        val matchesSafe = state.isMinFareEnabled &&
+            kotlin.math.abs(state.minFare - 50f) < 0.1f &&
+            state.isMaxFareEnabled &&
+            kotlin.math.abs(state.maxFare - 500f) < 0.1f &&
+            state.isMaxPickupDistanceEnabled &&
+            kotlin.math.abs(state.maxPickupDistance - 2.5f) < 0.05f &&
+            state.isMaxDropDistanceEnabled &&
+            kotlin.math.abs(state.maxDropDistance - 15.0f) < 0.1f &&
+            state.isMinPerKmRateEnabled &&
+            kotlin.math.abs(state.minPerKmRate - 10.0f) < 0.1f &&
+            !state.isDestinationBlacklistEnabled
+        if (matchesSafe) return SmartMode.SAFE
+
+        val matchesZyadaKamai = state.isMinFareEnabled &&
+            kotlin.math.abs(state.minFare - 80f) < 0.1f &&
+            !state.isMaxFareEnabled &&
+            state.isMaxPickupDistanceEnabled &&
+            kotlin.math.abs(state.maxPickupDistance - 2.0f) < 0.05f &&
+            state.isMaxDropDistanceEnabled &&
+            kotlin.math.abs(state.maxDropDistance - 20.0f) < 0.1f &&
+            state.isMinPerKmRateEnabled &&
+            kotlin.math.abs(state.minPerKmRate - 14.0f) < 0.1f &&
+            !state.isDestinationBlacklistEnabled
+        if (matchesZyadaKamai) return SmartMode.ZYADA_KAMAI
+
+        return SmartMode.CUSTOM
+    }
+
+    /**
+     * Applies "Safe Mode" or "Zyada Kamai" defaults to all unlocked filters without
+     * bypassing LicenseManager gating. Returns applied filter count + any locked IDs.
+     */
+    fun applySmartMode(context: Context, mode: SmartMode): SmartModeApplyResult {
+        if (mode == SmartMode.CUSTOM) {
+            return SmartModeApplyResult(appliedCount = 0, missingFeatureIds = emptyList())
+        }
+
+        val coreFeatures = listOf(
+            FeatureIds.MIN_FARE,
+            FeatureIds.MAX_FARE,
+            FeatureIds.MAX_PICKUP_DISTANCE,
+            FeatureIds.MAX_DROP_DISTANCE,
+            FeatureIds.MIN_PER_KM_RATE
+        )
+        val missing = coreFeatures.filterNot { LicenseManager.isFeatureUnlocked(it) }
+        var appliedCount = 0
+
+        synchronized(settingsLock) {
+            isBatchApplyingPreset = true
+            try {
+                when (mode) {
+                    SmartMode.SAFE -> {
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)) {
+                            setMinFare(context, 50f, bypassCrossClamping = true)
+                            setMinFareEnabled(context, true)
+                            appliedCount++
+                        }
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)) {
+                            setMaxFare(context, 500f, bypassCrossClamping = true)
+                            setMaxFareEnabled(context, true)
+                            appliedCount++
+                        }
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)) {
+                            setMaxPickupDistance(context, 2.5f)
+                            setMaxPickupDistanceEnabled(context, true)
+                            appliedCount++
+                        }
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)) {
+                            setMaxDropDistance(context, 15.0f)
+                            setMaxDropDistanceEnabled(context, true)
+                            appliedCount++
+                        }
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)) {
+                            setMinPerKmRate(context, 10.0f)
+                            setMinPerKmRateEnabled(context, true)
+                            appliedCount++
+                        }
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)) {
+                            setDestinationBlacklistEnabled(context, false)
+                        }
+                    }
+                    SmartMode.ZYADA_KAMAI -> {
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)) {
+                            setMinFare(context, 80f, bypassCrossClamping = true)
+                            setMinFareEnabled(context, true)
+                            appliedCount++
+                        }
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)) {
+                            setMaxFareEnabled(context, false)
+                            appliedCount++
+                        }
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)) {
+                            setMaxPickupDistance(context, 2.0f)
+                            setMaxPickupDistanceEnabled(context, true)
+                            appliedCount++
+                        }
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)) {
+                            setMaxDropDistance(context, 20.0f)
+                            setMaxDropDistanceEnabled(context, true)
+                            appliedCount++
+                        }
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)) {
+                            setMinPerKmRate(context, 14.0f)
+                            setMinPerKmRateEnabled(context, true)
+                            appliedCount++
+                        }
+                        if (LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)) {
+                            setDestinationBlacklistEnabled(context, false)
+                        }
+                    }
+                    SmartMode.CUSTOM -> Unit
+                }
+            } finally {
+                isBatchApplyingPreset = false
+            }
+        }
+
+        return SmartModeApplyResult(appliedCount = appliedCount, missingFeatureIds = missing)
+    }
+
+    /**
+     * Resets all unlocked filters back to Safe Default beginner settings while
+     * strictly respecting LicenseManager unlocks and admin locks.
+     */
+    fun resetAllFiltersToSafeDefault(context: Context): Int {
+        var resetCount = 0
+        synchronized(settingsLock) {
+            isBatchApplyingPreset = true
+            try {
+                if (LicenseManager.isFeatureUnlocked(FeatureIds.MIN_FARE)) {
+                    setMinFare(context, DEFAULT_MIN_FARE, bypassCrossClamping = true)
+                    setMinFareEnabled(context, true)
+                    resetCount++
+                }
+                if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_FARE)) {
+                    setMaxFare(context, DEFAULT_MAX_FARE, bypassCrossClamping = true)
+                    setMaxFareEnabled(context, true)
+                    resetCount++
+                }
+                if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_PICKUP_DISTANCE)) {
+                    setMaxPickupDistance(context, 2.5f)
+                    setMaxPickupDistanceEnabled(context, true)
+                    resetCount++
+                }
+                if (LicenseManager.isFeatureUnlocked(FeatureIds.MAX_DROP_DISTANCE)) {
+                    setMaxDropDistance(context, 15.0f)
+                    setMaxDropDistanceEnabled(context, true)
+                    resetCount++
+                }
+                if (LicenseManager.isFeatureUnlocked(FeatureIds.MIN_PER_KM_RATE)) {
+                    setMinPerKmRate(context, DEFAULT_MIN_PER_KM_RATE)
+                    setMinPerKmRateEnabled(context, true)
+                    resetCount++
+                }
+                if (LicenseManager.isFeatureUnlocked(FeatureIds.DESTINATION_BLACKLIST)) {
+                    setDestinationBlacklistEnabled(context, false)
+                }
+                if (!LicenseManager.isFeatureLockedByAdmin(FeatureIds.AUTO_CLICK) && LicenseManager.hasAnyAutoAcceptCapability()) {
+                    setAutoClickEnabled(context, true)
+                }
+            } finally {
+                isBatchApplyingPreset = false
+            }
+        }
+        return resetCount
+    }
+
+    /**
+     * Builds a 1-2 sentence plain-language summary ("Iska Matlab Kya Hai?") explaining
+     * the combined effect of all currently active filters.
+     */
+    fun buildPlainLanguageFilterSummary(
+        state: SettingsState,
+        lang: String = state.voiceLanguage
+    ): String {
+        val cleanLang = lang.trim().lowercase(Locale.ROOT)
+        fun fmtKm(km: Float): String {
+            return if (km % 1.0f == 0.0f) km.toInt().toString() else String.format(Locale.US, "%.1f", km)
+        }
+
+        val isEnglish = cleanLang == "en"
+        val isHindiDevanagari = cleanLang == "hi"
+        val isGujarati = cleanLang == "gu"
+        val isMarathi = cleanLang == "mr"
+
+        val skipParts = mutableListOf<String>()
+        if (state.isMinFareEnabled) {
+            val min = state.minFare.toInt()
+            skipParts += when {
+                isEnglish -> "below ₹$min"
+                isHindiDevanagari -> "₹$min से कम"
+                isGujarati -> "₹$min થી ઓછું"
+                isMarathi -> "₹$min पेक्षा कमी"
+                else -> "₹$min se kam"
+            }
+        }
+        if (state.isMaxFareEnabled) {
+            val max = state.maxFare.toInt()
+            skipParts += when {
+                isEnglish -> "above ₹$max"
+                isHindiDevanagari -> "₹$max से ज़्यादा"
+                isGujarati -> "₹$max થી વધુ"
+                isMarathi -> "₹$max पेक्षा जास्त"
+                else -> "₹$max se zyada"
+            }
+        }
+        if (state.isMaxPickupDistanceEnabled) {
+            val p = fmtKm(state.maxPickupDistance)
+            skipParts += when {
+                isEnglish -> "pickup over $p km"
+                isHindiDevanagari -> "$p km से दूर पिकअप"
+                isGujarati -> "$p km થી દૂર પિકઅપ"
+                isMarathi -> "$p km पेक्षा लांब पिकअप"
+                else -> "$p km se door pickup"
+            }
+        }
+        if (state.isMaxDropDistanceEnabled) {
+            val d = fmtKm(state.maxDropDistance)
+            skipParts += when {
+                isEnglish -> "drop over $d km"
+                isHindiDevanagari -> "$d km से लंबा ड्रॉप"
+                isGujarati -> "$d km થી લાંબો ડ્રોપ"
+                isMarathi -> "$d km पेक्षा लांब ड्रॉप"
+                else -> "$d km se lamba drop"
+            }
+        }
+        if (state.isMinPerKmRateEnabled) {
+            val r = state.minPerKmRate.toInt()
+            skipParts += when {
+                isEnglish -> "under ₹$r/km"
+                isHindiDevanagari -> "₹$r/km से कम रेट"
+                isGujarati -> "₹$r/km થી ઓછો દર"
+                isMarathi -> "₹$r/km पेक्षा कमी दर"
+                else -> "₹$r/km se kam rate"
+            }
+        }
+        if (state.isDestinationBlacklistEnabled && state.blockedLocations.isNotEmpty()) {
+            val sampleAreas = state.blockedLocations.take(2).joinToString(", ")
+            skipParts += when {
+                isEnglish -> "blocked areas ($sampleAreas)"
+                isHindiDevanagari -> "बंद इलाके ($sampleAreas)"
+                isGujarati -> "બંધ વિસ્તાર ($sampleAreas)"
+                isMarathi -> "बंद ठिकाणे ($sampleAreas)"
+                else -> "band jagah ($sampleAreas)"
+            }
+        }
+
+        if (skipParts.isEmpty()) {
+            return when {
+                isEnglish -> "No ride filter is ON right now — every incoming ride passes, and ${if (state.isAutoClickEnabled) "auto-accepts" else "only speaks voice alerts"}."
+                isHindiDevanagari -> "अभी कोई फ़िल्टर चालू नहीं है — हर आने वाली राइड पर ${if (state.isAutoClickEnabled) "ऑटो-एक्सेप्ट काम करेगा" else "सिर्फ आवाज़ में अलर्ट मिलेगा"}।"
+                isGujarati -> "અત્યારે કોઈ ફિલ્ટર ચાલુ નથી — દરેક રાઇડ પર ${if (state.isAutoClickEnabled) "ઓટો-એક્સેપ્ટ ચાલશે" else "ફક્ત અવાજથી માહિતી મળશે"}."
+                isMarathi -> "सध्या कोणताही फिल्टर चालू नाही — प्रत्येक राइडवर ${if (state.isAutoClickEnabled) "ऑटो-एक्सेप्ट चालेल" else "फक्त आवाजात माहिती मिळेल"}."
+                else -> "Abhi koi filter ON nahi hai — aane wali har ride par ${if (state.isAutoClickEnabled) "apne aap accept chalega" else "sirf aawaz me alert milega"}."
+            }
+        }
+
+        val joined = when (skipParts.size) {
+            1 -> skipParts[0]
+            2 -> when {
+                isEnglish -> "${skipParts[0]} and ${skipParts[1]}"
+                isHindiDevanagari -> "${skipParts[0]} और ${skipParts[1]}"
+                isGujarati -> "${skipParts[0]} અને ${skipParts[1]}"
+                isMarathi -> "${skipParts[0]} आणि ${skipParts[1]}"
+                else -> "${skipParts[0]} aur ${skipParts[1]}"
+            }
+            else -> {
+                val init = skipParts.dropLast(1).joinToString(", ")
+                val conj = when {
+                    isEnglish -> "and"
+                    isHindiDevanagari -> "और"
+                    isGujarati -> "અને"
+                    isMarathi -> "आणि"
+                    else -> "aur"
+                }
+                "$init, $conj ${skipParts.last()}"
+            }
+        }
+
+        return when {
+            isEnglish -> "Rides $joined will be skipped automatically. Good rides will be ${if (state.isAutoClickEnabled) "accepted automatically" else "announced by voice only"}."
+            isHindiDevanagari -> "$joined वाली राइड अपने आप स्किप होगी। सही राइड ${if (state.isAutoClickEnabled) "अपने आप एक्सेप्ट होगी" else "सिर्फ आवाज़ में सुनाई देगी"}।"
+            isGujarati -> "$joined વાળી રાઇડ આપોઆપ સ્કિપ થશે. સારી રાઇડ ${if (state.isAutoClickEnabled) "આપોઆપ સ્વીકારાશે" else "ફક્ત અવાજમાં સંભળાશે"}."
+            isMarathi -> "$joined असलेली राइड आपोआप स्किप होईल. चांगली राइड ${if (state.isAutoClickEnabled) "आपोआप स्वीकारली जाईल" else "फक्त आवाजात ऐकू येईल"}."
+            else -> "$joined wali ride apne aap skip hogi. Sahi ride ${if (state.isAutoClickEnabled) "apne aap accept hogi" else "sirf aawaz me batayega"}."
+        }
+    }
+
     // --- Fare Range Validation Functions ---
 
     fun isValidMinFare(candidateMin: Float, currentMax: Float = _maxFareFlow.value): Boolean {

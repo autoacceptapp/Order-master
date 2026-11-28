@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
@@ -35,13 +36,17 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CurrencyRupee
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LocationOff
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NearMe
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.WarningAmber
@@ -310,8 +315,41 @@ fun FilterSettingsScreen(
 
     if (showTutorialDialog) {
         AppTutorialGuideDialog(
-            onDismiss = { showTutorialDialog = false }
+            onDismiss = { showTutorialDialog = false },
+            initialStep = 1
         )
+    }
+
+    val currentLang = settingsState.voiceLanguage.trim().lowercase(Locale.ROOT)
+    val filterCopy = remember(currentLang) { getLocalizedFilterCopy(currentLang) }
+    val activeSmartMode = remember(settingsState) { AppSettings.detectActiveSmartMode(settingsState) }
+    val plainSummaryText = remember(settingsState, currentLang) {
+        AppSettings.buildPlainLanguageFilterSummary(settingsState, currentLang)
+    }
+
+    val handleSmartModeClick: (AppSettings.SmartMode) -> Unit = { mode ->
+        if (mode == AppSettings.SmartMode.CUSTOM) {
+            Toast.makeText(context, filterCopy.customHintToast, Toast.LENGTH_SHORT).show()
+        } else {
+            val result = viewModel.applySmartMode(mode)
+            if (result.appliedCount == 0 && result.missingFeatureIds.isNotEmpty()) {
+                val unlockable = result.missingFeatureIds.filterNot { LicenseManager.isFeatureLockedByAdmin(it) }
+                if (unlockable.isNotEmpty()) {
+                    multiFilterPreselectedIds = unlockable.toSet()
+                    showMultiFilterDialog = true
+                } else {
+                    Toast.makeText(context, "Filters are locked by Admin", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                val modeName = if (mode == AppSettings.SmartMode.SAFE) filterCopy.safeModeLabel else filterCopy.zyadaKamaiLabel
+                val suffix = if (result.missingFeatureIds.isNotEmpty()) {
+                    " (${result.missingFeatureIds.size} locked)"
+                } else {
+                    ""
+                }
+                Toast.makeText(context, "$modeName ON!$suffix", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     Column(
@@ -319,6 +357,21 @@ fun FilterSettingsScreen(
             .fillMaxSize()
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
+        // =========================================================================================
+        // STICKY TOP BAR: 3 SMART MODES 1-TAP PRESET BAR
+        // =========================================================================================
+        SmartModesStickyBar(
+            activeMode = activeSmartMode,
+            safeModeLabel = filterCopy.safeModeLabel,
+            zyadaKamaiLabel = filterCopy.zyadaKamaiLabel,
+            customLabel = filterCopy.customLabel,
+            headerLabel = filterCopy.smartModesHeader,
+            onSelectMode = handleSmartModeClick,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 10.dp)
+        )
+
         LazyColumn(
             modifier = Modifier
                 .weight(1f)
@@ -326,34 +379,14 @@ fun FilterSettingsScreen(
                 .testTag("filter_settings_list"),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Screen Section Header
+            // Live Plain-Language "Iska Matlab Kya Hai?" Summary Card
             item {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.padding(bottom = 4.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Tune,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Column {
-                        Text(
-                            text = "Modular Automation Rules",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                        Text(
-                            text = "Individual on/off toggle for each filtering rule.",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        )
-                    }
-                }
+                PlainLanguageSummaryCard(
+                    heading = filterCopy.summaryHeading,
+                    summaryText = plainSummaryText,
+                    onSpeak = { viewModel.speakFilterExplanation(plainSummaryText) },
+                    speakLabel = filterCopy.listenButtonLabel
+                )
             }
 
             // Interactive Tutorial & Filter Training Guide Banner
@@ -492,8 +525,11 @@ fun FilterSettingsScreen(
                         settingsState.minFare > settingsState.maxFare
 
                 FareFilterCard(
-                    title = "Minimum Fare Filter",
-                    description = "Ignore rides paying below this baseline threshold",
+                    title = filterCopy.minFareTitle,
+                    description = filterCopy.minFareDesc,
+                    exampleText = filterCopy.minFareExample,
+                    onSpeakExplain = { viewModel.speakFilterExplanation(filterCopy.minFareSpeech) },
+                    speakContentDescription = filterCopy.listenButtonLabel,
                     icon = Icons.Default.CurrencyRupee,
                     isEnabled = settingsState.isMinFareEnabled,
                     onToggle = { if (isMinFareUnlocked) viewModel.toggleMinFareFilter(it) },
@@ -501,8 +537,8 @@ fun FilterSettingsScreen(
                     onValueChange = { if (isMinFareUnlocked) viewModel.setMinFare(it) },
                     valueRange = AppSettings.MIN_FARE_RANGE_START..AppSettings.MIN_FARE_RANGE_END,
                     presetValues = listOf(40f, 60f, 80f, 100f, 150f),
-                    accentColor = Color(0xFF00E676),
-                    validationWarning = if (minExceedsMax) "Minimum fare cannot exceed maximum fare (₹${settingsState.maxFare.toInt()})" else null,
+                    accentColor = MaterialTheme.colorScheme.primary,
+                    validationWarning = if (minExceedsMax) "Kam kiraya Zyada kiraye (₹${settingsState.maxFare.toInt()}) se bada nahi ho sakta" else null,
                     testTag = "min_fare_filter_card",
                     isProMode = isProMode,
                     isUnlocked = isMinFareUnlocked,
@@ -523,8 +559,11 @@ fun FilterSettingsScreen(
                         settingsState.minFare > settingsState.maxFare
 
                 FareFilterCard(
-                    title = "Maximum Fare Filter",
-                    description = "Ceiling limit for long-distance and surge rides",
+                    title = filterCopy.maxFareTitle,
+                    description = filterCopy.maxFareDesc,
+                    exampleText = filterCopy.maxFareExample,
+                    onSpeakExplain = { viewModel.speakFilterExplanation(filterCopy.maxFareSpeech) },
+                    speakContentDescription = filterCopy.listenButtonLabel,
                     icon = Icons.Default.CurrencyRupee,
                     isEnabled = settingsState.isMaxFareEnabled,
                     onToggle = { if (isMaxFareUnlocked) viewModel.toggleMaxFareFilter(it) },
@@ -532,9 +571,9 @@ fun FilterSettingsScreen(
                     onValueChange = { if (isMaxFareUnlocked) viewModel.setMaxFare(it) },
                     valueRange = AppSettings.MAX_FARE_RANGE_START..AppSettings.MAX_FARE_RANGE_END,
                     presetValues = listOf(200f, 300f, 500f, 800f, 1000f),
-                    accentColor = Color(0xFF00E676),
+                    accentColor = MaterialTheme.colorScheme.primary,
                     secondaryBadgeColor = MaterialTheme.colorScheme.secondaryContainer,
-                    validationWarning = if (minExceedsMax) "Maximum fare must be at least minimum fare (₹${settingsState.minFare.toInt()})" else null,
+                    validationWarning = if (minExceedsMax) "Zyada kiraya Kam kiraye (₹${settingsState.minFare.toInt()}) se kam nahi ho sakta" else null,
                     testTag = "max_fare_filter_card",
                     isProMode = isProMode,
                     isUnlocked = isMaxFareUnlocked,
@@ -551,8 +590,11 @@ fun FilterSettingsScreen(
             // =========================================================================================
             item {
                 FilterCard(
-                    title = "Maximum Pickup Distance Filter",
-                    subtitle = "Strict limit to reach customer (0.0 - 15.0 km)",
+                    title = filterCopy.pickupTitle,
+                    subtitle = filterCopy.pickupDesc,
+                    exampleText = filterCopy.pickupExample,
+                    onSpeakExplain = { viewModel.speakFilterExplanation(filterCopy.pickupSpeech) },
+                    speakContentDescription = filterCopy.listenButtonLabel,
                     icon = Icons.Default.NearMe,
                     isEnabled = settingsState.isMaxPickupDistanceEnabled,
                     onToggle = { if (isPickupUnlocked) viewModel.toggleMaxPickupDistFilter(it) },
@@ -641,8 +683,11 @@ fun FilterSettingsScreen(
             // =========================================================================================
             item {
                 FilterCard(
-                    title = "Maximum Drop Distance Filter",
-                    subtitle = "Filter out rides with excessive trip distance",
+                    title = filterCopy.dropTitle,
+                    subtitle = filterCopy.dropDesc,
+                    exampleText = filterCopy.dropExample,
+                    onSpeakExplain = { viewModel.speakFilterExplanation(filterCopy.dropSpeech) },
+                    speakContentDescription = filterCopy.listenButtonLabel,
                     icon = Icons.Default.DirectionsCar,
                     isEnabled = settingsState.isMaxDropDistanceEnabled,
                     onToggle = { if (isDropUnlocked) viewModel.toggleMaxDropDistFilter(it) },
@@ -728,8 +773,11 @@ fun FilterSettingsScreen(
             // =========================================================================================
             item {
                 FilterCard(
-                    title = "Minimum Rate Per-Km Filter",
-                    subtitle = "Reject offers paying less than ₹/km (fare ÷ total trip distance)",
+                    title = filterCopy.minRateTitle,
+                    subtitle = filterCopy.minRateDesc,
+                    exampleText = filterCopy.minRateExample,
+                    onSpeakExplain = { viewModel.speakFilterExplanation(filterCopy.minRateSpeech) },
+                    speakContentDescription = filterCopy.listenButtonLabel,
                     icon = Icons.Default.Speed,
                     isEnabled = settingsState.isMinPerKmRateEnabled,
                     onToggle = { if (isMinRateUnlocked) viewModel.toggleMinPerKmRate(it) },
@@ -815,8 +863,11 @@ fun FilterSettingsScreen(
             // =========================================================================================
             item {
                 FilterCard(
-                    title = "Destination Blacklist Filter",
-                    subtitle = "Auto-reject rides going to unwanted locations or landmarks",
+                    title = filterCopy.blacklistTitle,
+                    subtitle = filterCopy.blacklistDesc,
+                    exampleText = filterCopy.blacklistExample,
+                    onSpeakExplain = { viewModel.speakFilterExplanation(filterCopy.blacklistSpeech) },
+                    speakContentDescription = filterCopy.listenButtonLabel,
                     icon = Icons.Default.LocationOff,
                     isEnabled = settingsState.isDestinationBlacklistEnabled,
                     onToggle = { if (isBlacklistUnlocked) viewModel.toggleDestinationBlacklist(it) },
@@ -912,8 +963,11 @@ fun FilterSettingsScreen(
             // =========================================================================================
             item {
                 FilterCard(
-                    title = "Voice Announcements (TTS)",
-                    subtitle = "Audible spoken alerts for parsed fares and status",
+                    title = filterCopy.voiceTitle,
+                    subtitle = filterCopy.voiceDesc,
+                    exampleText = filterCopy.voiceExample,
+                    onSpeakExplain = { viewModel.speakFilterExplanation(filterCopy.voiceSpeech) },
+                    speakContentDescription = filterCopy.listenButtonLabel,
                     icon = Icons.Default.RecordVoiceOver,
                     isEnabled = settingsState.isVoiceAnnouncerEnabled,
                     onToggle = { if (isTtsUnlocked) viewModel.toggleVoiceAnnouncer(it) },
@@ -928,16 +982,21 @@ fun FilterSettingsScreen(
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
-                            text = "Speech Language Preference:",
+                            text = "Bhasha Chunein (Voice Language):",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontWeight = FontWeight.SemiBold
                             )
                         )
 
-                        // Language Selection Dropdown
-                        val currentLangObj = remember(settingsState.voiceLanguage) {
-                            SUPPORTED_LANGUAGES.find { it.code.equals(settingsState.voiceLanguage, ignoreCase = true) } ?: SUPPORTED_LANGUAGES.first()
+                        // Language Selection Dropdown (supports Hinglish + all 10 regional languages)
+                        val currentLangDisplay = remember(settingsState.voiceLanguage) {
+                            if (settingsState.voiceLanguage.equals("hinglish", ignoreCase = true)) {
+                                "Hinglish (Aasan Hindi + English)"
+                            } else {
+                                val obj = SUPPORTED_LANGUAGES.find { it.code.equals(settingsState.voiceLanguage, ignoreCase = true) } ?: SUPPORTED_LANGUAGES.first()
+                                "${obj.nativeName} (${obj.englishName})"
+                            }
                         }
                         ExposedDropdownMenuBox(
                             expanded = languageDropdownExpanded && isTtsUnlocked,
@@ -945,7 +1004,7 @@ fun FilterSettingsScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             OutlinedTextField(
-                                value = "${currentLangObj.nativeName} (${currentLangObj.englishName})",
+                                value = currentLangDisplay,
                                 onValueChange = {},
                                 readOnly = true,
                                 enabled = isTtsUnlocked,
@@ -959,6 +1018,13 @@ fun FilterSettingsScreen(
                                 expanded = languageDropdownExpanded && isTtsUnlocked,
                                 onDismissRequest = { languageDropdownExpanded = false }
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("Hinglish (Aasan Hindi + English)") },
+                                    onClick = {
+                                        viewModel.setVoiceLanguage("hinglish")
+                                        languageDropdownExpanded = false
+                                    }
+                                )
                                 SUPPORTED_LANGUAGES.forEach { lang ->
                                     DropdownMenuItem(
                                         text = { Text("${lang.nativeName} (${lang.englishName})") },
@@ -975,7 +1041,9 @@ fun FilterSettingsScreen(
                         FilledTonalButton(
                             onClick = { if (isTtsUnlocked) viewModel.testTtsAnnouncement() },
                             enabled = isTtsUnlocked,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(
@@ -984,19 +1052,22 @@ fun FilterSettingsScreen(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Test Voice Announcement")
+                            Text("Aawaz Test Karein (Test Voice)")
                         }
                     }
                 }
             }
 
             // =========================================================================================
-            // 8. FLOATING WINDOW OVERLAY & AUTO-CLICK MODE
+            // 8. FLOATING WINDOW OVERLAY
             // =========================================================================================
             item {
                 FilterCard(
-                    title = "Floating Window Overlay",
-                    subtitle = "Movable HUD over driver apps showing fare & quick mode toggle",
+                    title = filterCopy.overlayTitle,
+                    subtitle = filterCopy.overlayDesc,
+                    exampleText = filterCopy.overlayExample,
+                    onSpeakExplain = { viewModel.speakFilterExplanation(filterCopy.overlaySpeech) },
+                    speakContentDescription = filterCopy.listenButtonLabel,
                     icon = Icons.Default.Layers,
                     isEnabled = settingsState.isFloatingOverlayEnabled,
                     onToggle = { enable ->
@@ -1104,9 +1175,9 @@ fun FilterSettingsScreen(
                                 Column {
                                     Text(
                                         text = if (settingsState.isAutoAcceptEnabled)
-                                            "Visible on Screen"
+                                            "Screen Par Chalu Hai"
                                         else
-                                            "Hidden (Master Toggle is OFF)",
+                                            "Abhi Band Hai (Home par Start ON karein)",
                                         style = MaterialTheme.typography.labelMedium.copy(
                                             fontWeight = FontWeight.Bold,
                                             color = if (settingsState.isAutoAcceptEnabled)
@@ -1117,9 +1188,9 @@ fun FilterSettingsScreen(
                                     )
                                     Text(
                                         text = if (settingsState.isAutoAcceptEnabled)
-                                            "Draggable floating HUD is displayed over Rapido / driver screens."
+                                            "Rapido ke upar chhota button dikhega — 1 tap me pause ya start karein."
                                         else
-                                            "Overlay automatically hides when Master Automation is disabled.",
+                                            "Jab aap Home screen par Service ON karenge tab ye button dikhega.",
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -1127,154 +1198,257 @@ fun FilterSettingsScreen(
                                 }
                             }
                         }
+                    }
+                }
+            }
 
-                        // Visual Modes & Current Mode Toggle
+            // =========================================================================================
+            // 9. AUTO-CLICK MODE (Always visible standalone card — never hidden inside Overlay!)
+            // =========================================================================================
+            item {
+                val autoClickSwitchEnabled = !isAutoClickAdminLocked && hasAnyAutoCapability
+                val onAutoClickUnlock = {
+                    if (isAutoClickAdminLocked) {
+                        Toast.makeText(context, "Auto-Click is locked by Admin", Toast.LENGTH_SHORT).show()
+                    } else if (hasAnyEvaluationFilterUnlocked) {
+                        featureToUnlock = FeatureIds.AUTO_CLICK
+                    } else {
+                        multiFilterPreselectedIds = setOf(FeatureIds.MIN_FARE, FeatureIds.AUTO_CLICK)
+                        showMultiFilterDialog = true
+                    }
+                }
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("auto_click_filter_card"),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (settingsState.isAutoClickEnabled && autoClickSwitchEnabled)
+                            MaterialTheme.colorScheme.surface
+                        else
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                    ),
+                    border = CardDefaults.outlinedCardBorder().copy(
+                        brush = androidx.compose.ui.graphics.SolidColor(
+                            if (settingsState.isAutoClickEnabled && autoClickSwitchEnabled)
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                            else
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                        )
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Auto-Click Automation Mode",
-                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
-                                )
-                                Spacer(modifier = Modifier.height(3.dp))
-                                val onAutoClickUnlock = {
-                                    if (isAutoClickAdminLocked) {
-                                        Toast.makeText(context, "Auto-Click is locked by Admin", Toast.LENGTH_SHORT).show()
-                                    } else if (hasAnyEvaluationFilterUnlocked) {
-                                        featureToUnlock = FeatureIds.AUTO_CLICK
-                                    } else {
-                                        multiFilterPreselectedIds = setOf(FeatureIds.MIN_FARE, FeatureIds.AUTO_CLICK)
-                                        showMultiFilterDialog = true
-                                    }
-                                }
-                                if (isAutoClickAdminLocked) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = MaterialTheme.colorScheme.errorContainer
-                                    ) {
-                                        Text(
-                                            text = "Locked by Admin",
-                                            maxLines = 1,
-                                            softWrap = false,
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontWeight = FontWeight.Bold,
-                                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                                fontSize = 10.sp
-                                            ),
-                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                } else if (isAutoClickUnlocked && getRemainingTime(FeatureIds.AUTO_CLICK) != null) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = Color(0xFF00E676).copy(alpha = 0.15f)
-                                    ) {
-                                        Text(
-                                            text = getRemainingTime(FeatureIds.AUTO_CLICK)!!,
-                                            maxLines = 1,
-                                            softWrap = false,
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF00E676),
-                                                fontSize = 10.sp
-                                            ),
-                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                } else if (!isAutoClickUnlocked) {
-                                    FilledTonalButton(
-                                        onClick = onAutoClickUnlock,
-                                        shape = RoundedCornerShape(6.dp),
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                        modifier = Modifier.height(25.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Lock,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(10.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(3.dp))
-                                        Text(
-                                            text = "300ms Boost ($autoClickRate Pts/Hr)",
-                                            maxLines = 1,
-                                            softWrap = false,
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(3.dp))
-                                Text(
-                                    text = when {
-                                        isAutoClickAdminLocked -> "🔒 Auto-Click locked by Admin"
-                                        !hasAnyAutoCapability -> "🔒 Auto-Click unavailable (Service offline or verifying)"
-                                        settingsState.isAutoClickEnabled && isAutoClickUnlocked -> "🟢 Green HUD: Full Auto Click (300-700ms Pro Speed)"
-                                        settingsState.isAutoClickEnabled -> "🟢 Green HUD: Full Auto Click (1-2s Free Mode Speed)"
-                                        else -> "🔴 Red HUD: Voice Alert Only"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = when {
-                                            isAutoClickAdminLocked -> MaterialTheme.colorScheme.error
-                                            !hasAnyAutoCapability -> MaterialTheme.colorScheme.onSurfaceVariant
-                                            settingsState.isAutoClickEnabled -> PrimaryEmerald
-                                            else -> MaterialTheme.colorScheme.error
-                                        },
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                )
-                            }
-                            val autoClickSwitchEnabled = !isAutoClickAdminLocked && hasAnyAutoCapability
-                            Box(
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .then(
-                                        if (!autoClickSwitchEnabled) {
-                                            Modifier.clickable {
-                                                if (isAutoClickAdminLocked) {
-                                                    Toast.makeText(context, "Auto-Click is locked by Admin", Toast.LENGTH_SHORT).show()
-                                                } else if (hasAnyEvaluationFilterUnlocked) {
-                                                    featureToUnlock = FeatureIds.AUTO_CLICK
-                                                } else {
-                                                    multiFilterPreselectedIds = setOf(FeatureIds.MIN_FARE, FeatureIds.AUTO_CLICK)
-                                                    showMultiFilterDialog = true
-                                                }
-                                            }
-                                        } else {
-                                            Modifier
-                                        }
-                                    ),
-                                contentAlignment = Alignment.Center
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.weight(1f)
                             ) {
-                                Switch(
-                                    checked = settingsState.isAutoClickEnabled && autoClickSwitchEnabled,
-                                    onCheckedChange = if (autoClickSwitchEnabled) {
-                                        { viewModel.toggleAutoClick(it) }
-                                    } else {
-                                        null
-                                    },
-                                    enabled = autoClickSwitchEnabled,
-                                    thumbContent = {
-                                        Icon(
-                                            imageVector = if (settingsState.isAutoClickEnabled && autoClickSwitchEnabled) Icons.Default.TouchApp else Icons.Default.RecordVoiceOver,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(SwitchDefaults.IconSize)
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(
+                                            if (settingsState.isAutoClickEnabled && autoClickSwitchEnabled)
+                                                MaterialTheme.colorScheme.primaryContainer
+                                            else
+                                                MaterialTheme.colorScheme.surfaceVariant,
+                                            RoundedCornerShape(10.dp)
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = if (settingsState.isAutoClickEnabled && autoClickSwitchEnabled)
+                                            Icons.Default.TouchApp
+                                        else
+                                            Icons.Default.RecordVoiceOver,
+                                        contentDescription = null,
+                                        tint = if (settingsState.isAutoClickEnabled && autoClickSwitchEnabled)
+                                            MaterialTheme.colorScheme.primary
+                                        else
+                                            MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = filterCopy.autoClickTitle,
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                            modifier = Modifier.weight(1f, fill = false)
                                         )
-                                    },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = Color.White,
-                                        checkedTrackColor = Color(0xFF10B981),
-                                        uncheckedThumbColor = Color.White,
-                                        uncheckedTrackColor = Color(0xFFEF4444)
-                                    ),
-                                    modifier = Modifier.testTag("auto_click_switch")
-                                )
+                                        val isAutoClickOn = settingsState.isAutoClickEnabled && autoClickSwitchEnabled
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = if (isAutoClickOn)
+                                                MaterialTheme.colorScheme.primaryContainer
+                                            else
+                                                MaterialTheme.colorScheme.errorContainer
+                                        ) {
+                                            Text(
+                                                text = if (isAutoClickOn) "ON" else "OFF",
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontSize = 10.sp,
+                                                    color = if (isAutoClickOn)
+                                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                                    else
+                                                        MaterialTheme.colorScheme.onErrorContainer
+                                                ),
+                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    Text(
+                                        text = filterCopy.autoClickDesc,
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    )
+                                    Spacer(modifier = Modifier.height(5.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                                    ) {
+                                        Text(
+                                            text = filterCopy.autoClickExample,
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                fontWeight = FontWeight.Medium,
+                                                lineHeight = 15.sp
+                                            ),
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                IconButton(
+                                    onClick = { viewModel.speakFilterExplanation(filterCopy.autoClickSpeech) },
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .testTag("auto_click_filter_card_speak_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.VolumeUp,
+                                        contentDescription = filterCopy.listenButtonLabel,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .then(
+                                            if (!autoClickSwitchEnabled) {
+                                                Modifier.clickable { onAutoClickUnlock() }
+                                            } else {
+                                                Modifier
+                                            }
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Switch(
+                                        checked = settingsState.isAutoClickEnabled && autoClickSwitchEnabled,
+                                        onCheckedChange = if (autoClickSwitchEnabled) {
+                                            { viewModel.toggleAutoClick(it) }
+                                        } else {
+                                            null
+                                        },
+                                        enabled = autoClickSwitchEnabled,
+                                        thumbContent = {
+                                            Icon(
+                                                imageVector = if (settingsState.isAutoClickEnabled && autoClickSwitchEnabled)
+                                                    Icons.Default.TouchApp
+                                                else
+                                                    Icons.Default.RecordVoiceOver,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(SwitchDefaults.IconSize)
+                                            )
+                                        },
+                                        colors = SwitchDefaults.colors(
+                                            checkedThumbColor = Color.White,
+                                            checkedTrackColor = MaterialTheme.colorScheme.primary,
+                                            uncheckedThumbColor = Color.White,
+                                            uncheckedTrackColor = MaterialTheme.colorScheme.error
+                                        ),
+                                        modifier = Modifier.testTag("auto_click_switch")
+                                    )
+                                }
                             }
                         }
 
-                        // Dynamic Price Display Indicator
+                        // Speed / Unlock Status + Last Ride Price
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = when {
+                                    isAutoClickAdminLocked -> "Admin ne Auto-Click band kiya hai"
+                                    !hasAnyAutoCapability -> "Service check ho rahi hai..."
+                                    settingsState.isAutoClickEnabled && isAutoClickUnlocked -> "Tez Auto-Accept ON (300-700ms Pro Speed)"
+                                    settingsState.isAutoClickEnabled -> "Free Auto-Accept ON (1-2 sec Speed)"
+                                    else -> "Sirf Aawaz Alert ON (Apne aap Accept nahi hoga)"
+                                },
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    color = if (settingsState.isAutoClickEnabled && autoClickSwitchEnabled)
+                                        MaterialTheme.colorScheme.primary
+                                    else
+                                        MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+
+                            if (!isAutoClickUnlocked && !isAutoClickAdminLocked) {
+                                FilledTonalButton(
+                                    onClick = onAutoClickUnlock,
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.heightIn(min = 36.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "300ms Boost ($autoClickRate Pts/Hr)",
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
+                        // Last Accepted Ride Price indicator
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -1287,34 +1461,12 @@ fun FilterSettingsScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(24.dp)
-                                            .background(
-                                                if (settingsState.isAutoClickEnabled && !isAutoClickAdminLocked && hasAnyAutoCapability) Color(0xFF10B981) else Color(0xFFEF4444),
-                                                CircleShape
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Text(
-                                            text = if (settingsState.isAutoClickEnabled && !isAutoClickAdminLocked && hasAnyAutoCapability) "A" else "V",
-                                            color = Color.White,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    Text(
-                                        text = "Last Accepted Ride Price:",
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                Text(
+                                    text = "Aakhri Accepted Ride Ka Kiraya:",
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
-                                }
-
+                                )
                                 Text(
                                     text = if (settingsState.lastAcceptedFare != null && settingsState.lastAcceptedFare!! > 0) {
                                         "₹${settingsState.lastAcceptedFare!!.toInt()}"
@@ -1332,36 +1484,45 @@ fun FilterSettingsScreen(
                 }
             }
 
-            // Bottom Spacing for Presets Bar
+            // =========================================================================================
+            // BOTTOM RESET BUTTON: "Sab Reset Karein (Safe Default)"
+            // =========================================================================================
             item {
-                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        viewModel.resetToSafeDefaults()
+                        Toast.makeText(context, filterCopy.resetSuccessToast, Toast.LENGTH_SHORT).show()
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 50.dp)
+                        .testTag("reset_safe_defaults_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.RestartAlt,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = filterCopy.resetButtonLabel,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
+
+            item {
+                Spacer(modifier = Modifier.height(12.dp))
             }
         }
-
-        // =========================================================================================
-        // 6. SAVE/RESTORE QUICK PRESETS BAR AT THE BOTTOM
-        // =========================================================================================
-        QuickPresetsBar(
-            onApplyPreset = { presetName ->
-                if (!viewModel.applyPreset(presetName)) {
-                    val missing = AppSettings.getMissingFeaturesForPreset(presetName)
-                        .filterNot { LicenseManager.isFeatureLockedByAdmin(it) }
-                    if (missing.isNotEmpty()) {
-                        multiFilterPreselectedIds = missing.toSet()
-                        showMultiFilterDialog = true
-                    }
-                }
-            },
-            hasAllFilters = hasAllFiltersForPresets,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp)
-        )
     }
 }
 
 /**
- * Reusable card container for individual modular filter settings with an on/off switch.
+ * Reusable card container for individual modular filter settings with ON/OFF badge,
+ * 1-line real-world example, and 48dp "Sunke Samjho" speaker explanation button.
  */
 @Composable
 private fun FilterCard(
@@ -1378,10 +1539,14 @@ private fun FilterCard(
     onUnlockClick: (() -> Unit)? = null,
     remainingTimeText: String? = null,
     pointsPerHour: Int = 10,
+    exampleText: String? = null,
+    onSpeakExplain: (() -> Unit)? = null,
+    speakContentDescription: String = "Sunke Samjho",
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
     val currentOnUnlockClick by rememberUpdatedState(onUnlockClick)
+    val currentOnSpeakExplain by rememberUpdatedState(onSpeakExplain)
     val effectivelyUnlocked = isUnlocked && !isAdminLocked
     val handleLockedInteraction = {
         if (isAdminLocked) {
@@ -1424,7 +1589,7 @@ private fun FilterCard(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Header: Icon + Title + Individual Switch Toggle
+            // Header: Icon + Title + ON/OFF Badge + Speaker + Switch Toggle
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1437,7 +1602,7 @@ private fun FilterCard(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(36.dp)
+                            .size(38.dp)
                             .background(
                                 if (isEnabled && effectivelyUnlocked)
                                     MaterialTheme.colorScheme.primaryContainer
@@ -1459,16 +1624,47 @@ private fun FilterCard(
                     }
 
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleSmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = if (isEnabled && effectivelyUnlocked)
-                                    MaterialTheme.colorScheme.onSurface
-                                else
-                                    MaterialTheme.colorScheme.onSurfaceVariant
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isEnabled && effectivelyUnlocked)
+                                        MaterialTheme.colorScheme.onSurface
+                                    else
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                ),
+                                modifier = Modifier.weight(1f, fill = false)
                             )
-                        )
+                            val isActiveOn = isEnabled && effectivelyUnlocked
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (isActiveOn) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                }
+                            ) {
+                                Text(
+                                    text = if (isActiveOn) "ON" else "OFF",
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 10.sp,
+                                        color = if (isActiveOn) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
                         Spacer(modifier = Modifier.height(3.dp))
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -1505,7 +1701,7 @@ private fun FilterCard(
                             } else if (effectivelyUnlocked && remainingTimeText != null) {
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
-                                    color = Color(0xFF00E676).copy(alpha = 0.15f)
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                                 ) {
                                     Text(
                                         text = remainingTimeText,
@@ -1513,7 +1709,7 @@ private fun FilterCard(
                                         softWrap = false,
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Bold,
-                                            color = Color(0xFF00E676),
+                                            color = MaterialTheme.colorScheme.primary,
                                             fontSize = 10.sp
                                         ),
                                         modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
@@ -1580,38 +1776,77 @@ private fun FilterCard(
                         Text(
                             text = subtitle,
                             style = MaterialTheme.typography.bodySmall.copy(
-                                fontSize = 11.sp,
+                                fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         )
+                        if (!exampleText.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                            ) {
+                                Text(
+                                    text = exampleText,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        fontWeight = FontWeight.Medium,
+                                        lineHeight = 15.sp
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
                     }
                 }
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(4.dp))
 
-                // Individual Toggle Switch
-                Box(
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .then(
-                            if (!effectivelyUnlocked) {
-                                Modifier.clickable { handleLockedInteraction() }
-                            } else {
-                                Modifier
-                            }
-                        ),
-                    contentAlignment = Alignment.Center
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Switch(
-                        checked = isEnabled && effectivelyUnlocked,
-                        onCheckedChange = if (effectivelyUnlocked) onToggle else null,
-                        enabled = effectivelyUnlocked,
-                        modifier = Modifier.testTag("${testTag}_switch"),
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = MaterialTheme.colorScheme.primary
+                    if (currentOnSpeakExplain != null) {
+                        IconButton(
+                            onClick = { currentOnSpeakExplain?.invoke() },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("${testTag}_speak_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VolumeUp,
+                                contentDescription = speakContentDescription,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+
+                    // Individual Toggle Switch
+                    Box(
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .then(
+                                if (!effectivelyUnlocked) {
+                                    Modifier.clickable { handleLockedInteraction() }
+                                } else {
+                                    Modifier
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Switch(
+                            checked = isEnabled && effectivelyUnlocked,
+                            onCheckedChange = if (effectivelyUnlocked) onToggle else null,
+                            enabled = effectivelyUnlocked,
+                            modifier = Modifier.testTag("${testTag}_switch"),
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = MaterialTheme.colorScheme.primary
+                            )
                         )
-                    )
+                    }
                 }
             }
 
@@ -1626,77 +1861,80 @@ private fun FilterCard(
 }
 
 /**
- * Save/Restore Quick Presets bar at the bottom.
+ * Sticky 3 Smart Modes 1-Tap Preset Bar pinned at the top of FilterSettingsScreen.
  */
 @Composable
-private fun QuickPresetsBar(
-    onApplyPreset: (String) -> Unit,
-    modifier: Modifier = Modifier,
-    hasAllFilters: Boolean = true
+private fun SmartModesStickyBar(
+    activeMode: AppSettings.SmartMode,
+    safeModeLabel: String,
+    zyadaKamaiLabel: String,
+    customLabel: String,
+    headerLabel: String,
+    onSelectMode: (AppSettings.SmartMode) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
         shape = RoundedCornerShape(18.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-        modifier = modifier
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 4.dp,
+        shadowElevation = 2.dp,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+        modifier = modifier.testTag("smart_modes_sticky_bar")
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Icon(
-                        imageVector = if (hasAllFilters) Icons.Default.Speed else Icons.Default.Lock,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text(
-                        text = "Quick Rule Presets",
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            fontWeight = FontWeight.Bold
-                        )
-                    )
-                }
+                Icon(
+                    imageVector = Icons.Default.Tune,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
+                )
                 Text(
-                    text = if (hasAllFilters) "Tap to apply" else "Tap preset to unlock filters",
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 10.sp
-                    )
+                    text = headerLabel,
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface
                 )
             }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                PresetChip(
-                    name = "Peak Hours",
-                    onClick = { onApplyPreset("peak") },
-                    modifier = Modifier.weight(1f)
+                SmartModeChip(
+                    label = safeModeLabel,
+                    icon = Icons.Default.Security,
+                    isSelected = activeMode == AppSettings.SmartMode.SAFE,
+                    selectedColor = MaterialTheme.colorScheme.primary,
+                    onClick = { onSelectMode(AppSettings.SmartMode.SAFE) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("smart_mode_safe")
                 )
-                PresetChip(
-                    name = "Short Trips",
-                    onClick = { onApplyPreset("short") },
-                    modifier = Modifier.weight(1f)
+                SmartModeChip(
+                    label = zyadaKamaiLabel,
+                    icon = Icons.Default.TrendingUp,
+                    isSelected = activeMode == AppSettings.SmartMode.ZYADA_KAMAI,
+                    selectedColor = MaterialTheme.colorScheme.secondary,
+                    onClick = { onSelectMode(AppSettings.SmartMode.ZYADA_KAMAI) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("smart_mode_zyada_kamai")
                 )
-                PresetChip(
-                    name = "High Value",
-                    onClick = { onApplyPreset("high") },
-                    modifier = Modifier.weight(1f)
-                )
-                PresetChip(
-                    name = "Default",
-                    onClick = { onApplyPreset("default") },
-                    modifier = Modifier.weight(1f)
+                SmartModeChip(
+                    label = customLabel,
+                    icon = Icons.Default.Tune,
+                    isSelected = activeMode == AppSettings.SmartMode.CUSTOM,
+                    selectedColor = MaterialTheme.colorScheme.tertiary,
+                    onClick = { onSelectMode(AppSettings.SmartMode.CUSTOM) },
+                    modifier = Modifier
+                        .weight(0.85f)
+                        .testTag("smart_mode_custom")
                 )
             }
         }
@@ -1704,24 +1942,318 @@ private fun QuickPresetsBar(
 }
 
 @Composable
-private fun PresetChip(
-    name: String,
+private fun SmartModeChip(
+    label: String,
+    icon: ImageVector,
+    isSelected: Boolean,
+    selectedColor: Color,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    OutlinedButton(
-        onClick = onClick,
-        shape = RoundedCornerShape(10.dp),
-        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
-        modifier = modifier.heightIn(min = 48.dp)
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (isSelected) selectedColor.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(
+            width = if (isSelected) 1.5.dp else 1.dp,
+            color = if (isSelected) selectedColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+        ),
+        modifier = modifier
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
     ) {
-        Text(
-            text = name,
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold
-            ),
-            maxLines = 1
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (isSelected) selectedColor else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            Text(
+                text = label,
+                maxLines = 1,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.SemiBold,
+                    fontSize = 11.sp,
+                    color = if (isSelected) selectedColor else MaterialTheme.colorScheme.onSurface
+                )
+            )
+        }
+    }
+}
+
+/**
+ * Live plain-language summary card ("Iska Matlab Kya Hai?") explaining combined filter rules.
+ */
+@Composable
+private fun PlainLanguageSummaryCard(
+    heading: String,
+    summaryText: String,
+    onSpeak: () -> Unit,
+    speakLabel: String
+) {
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.42f)
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("plain_language_summary_card")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = heading,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = summaryText,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontWeight = FontWeight.Medium,
+                        lineHeight = 18.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                )
+            }
+            IconButton(
+                onClick = onSpeak,
+                modifier = Modifier
+                    .size(48.dp)
+                    .testTag("summary_speak_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.VolumeUp,
+                    contentDescription = speakLabel,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+        }
+    }
+}
+
+private data class LocalizedFilterCopy(
+    val smartModesHeader: String,
+    val safeModeLabel: String,
+    val zyadaKamaiLabel: String,
+    val customLabel: String,
+    val customHintToast: String,
+    val summaryHeading: String,
+    val listenButtonLabel: String,
+    val resetButtonLabel: String,
+    val resetSuccessToast: String,
+    val minFareTitle: String,
+    val minFareDesc: String,
+    val minFareExample: String,
+    val minFareSpeech: String,
+    val maxFareTitle: String,
+    val maxFareDesc: String,
+    val maxFareExample: String,
+    val maxFareSpeech: String,
+    val pickupTitle: String,
+    val pickupDesc: String,
+    val pickupExample: String,
+    val pickupSpeech: String,
+    val dropTitle: String,
+    val dropDesc: String,
+    val dropExample: String,
+    val dropSpeech: String,
+    val minRateTitle: String,
+    val minRateDesc: String,
+    val minRateExample: String,
+    val minRateSpeech: String,
+    val blacklistTitle: String,
+    val blacklistDesc: String,
+    val blacklistExample: String,
+    val blacklistSpeech: String,
+    val voiceTitle: String,
+    val voiceDesc: String,
+    val voiceExample: String,
+    val voiceSpeech: String,
+    val overlayTitle: String,
+    val overlayDesc: String,
+    val overlayExample: String,
+    val overlaySpeech: String,
+    val autoClickTitle: String,
+    val autoClickDesc: String,
+    val autoClickExample: String,
+    val autoClickSpeech: String
+)
+
+private fun getLocalizedFilterCopy(lang: String): LocalizedFilterCopy {
+    return when (lang) {
+        "en" -> LocalizedFilterCopy(
+            smartModesHeader = "3 Smart Modes (1-Tap Setup)",
+            safeModeLabel = "Safe Mode",
+            zyadaKamaiLabel = "Zyada Kamai",
+            customLabel = "Custom",
+            customHintToast = "Adjust any filter below to customize",
+            summaryHeading = "What Do My Rules Mean?",
+            listenButtonLabel = "Listen Explanation",
+            resetButtonLabel = "Reset All (Safe Default)",
+            resetSuccessToast = "All filters reset to Safe Default!",
+            minFareTitle = "Minimum Ride Fare",
+            minFareDesc = "Skip cheap small-fare rides automatically",
+            minFareExample = "Example: Set ₹50 so a ₹45 ride is skipped",
+            minFareSpeech = "Minimum ride fare. If you set 50 rupees, any ride below 50 rupees will be skipped automatically.",
+            maxFareTitle = "Maximum Ride Fare",
+            maxFareDesc = "Stop very high-fare or out-of-town rides",
+            maxFareExample = "Example: Set ₹500 so a ₹650 long ride is skipped",
+            maxFareSpeech = "Maximum ride fare. Set a ceiling like 500 rupees if you do not want super long trips.",
+            pickupTitle = "How Far Is Customer (Pickup)",
+            pickupDesc = "Avoid driving far empty just to pick up customer",
+            pickupExample = "Example: Set 2.5 km so a 4 km pickup is skipped",
+            pickupSpeech = "Pickup distance limit. Keep it around 2.5 kilometers so you do not waste fuel reaching far customers.",
+            dropTitle = "Max Trip Distance (Drop)",
+            dropDesc = "Stay inside city by limiting long drop distances",
+            dropExample = "Example: Set 15 km so a 25 km trip is skipped",
+            dropSpeech = "Drop distance limit. Set 15 kilometers to avoid going too far outside your preferred city area.",
+            minRateTitle = "Earnings Per KM (₹/Km)",
+            minRateDesc = "Ensure good fuel profit on every kilometer",
+            minRateExample = "Example: Set ₹12/km so 10 km for ₹80 is skipped",
+            minRateSpeech = "Rate per kilometer. Set at least 12 rupees per kilometer so every trip covers petrol and gives profit.",
+            blacklistTitle = "Avoid Specific Areas",
+            blacklistDesc = "Block destinations or areas you do not want to visit",
+            blacklistExample = "Example: Add 'Airport' to skip all Airport drops",
+            blacklistSpeech = "Avoid specific areas. Type area names like Airport or Highway here, and rides going there will be skipped.",
+            voiceTitle = "Voice Ride Alerts (TTS)",
+            voiceDesc = "Hear fare and pickup/drop aloud without looking at screen",
+            voiceExample = "Example: Speaks 'Fare 85 rupees, Pickup 1 km' aloud",
+            voiceSpeech = "Voice ride alerts. Turn this on to hear ride fare, pickup and drop location aloud while riding safely.",
+            overlayTitle = "Floating Screen Button",
+            overlayDesc = "Small movable button over Rapido to pause/start in 1 tap",
+            overlayExample = "Example: Pause or resume auto-accept without leaving Rapido",
+            overlaySpeech = "Floating screen button. Shows a small bubble on top of Rapido so you can pause or start anytime with one tap.",
+            autoClickTitle = "Auto-Click Accept Button",
+            autoClickDesc = "ON accepts matching rides automatically; OFF gives voice alert only",
+            autoClickExample = "Example: Green (ON) = Auto Accept • Red (OFF) = Voice Only",
+            autoClickSpeech = "Auto click accept button. Keep it ON for automatic ride acceptance, or turn OFF for voice alerts only."
+        )
+        "hi" -> LocalizedFilterCopy(
+            smartModesHeader = "3 स्मार्ट मोड (1-टैप में सेट करें)",
+            safeModeLabel = "सेफ मोड",
+            zyadaKamaiLabel = "ज़्यादा कमाई",
+            customLabel = "कस्टम",
+            customHintToast = "नीचे कोई भी फ़िल्टर अपने हिसाब से बदलें",
+            summaryHeading = "इसका मतलब क्या है?",
+            listenButtonLabel = "सुनके समझें",
+            resetButtonLabel = "सब रीसेट करें (सेफ डिफ़ॉल्ट)",
+            resetSuccessToast = "सभी फ़िल्टर सेफ डिफ़ॉल्ट पर सेट हो गए!",
+            minFareTitle = "कम से कम किराया",
+            minFareDesc = "बहुत कम पैसे वाली छोटी राइड अपने आप छोड़ें",
+            minFareExample = "जैसे: ₹50 सेट किया तो ₹45 वाली राइड स्किप होगी",
+            minFareSpeech = "कम से कम किराया। अगर आपने पचास रुपये सेट किया, तो पचास से कम किराये वाली राइड अपने आप छूट जाएगी।",
+            maxFareTitle = "ज़्यादा से ज़्यादा किराया",
+            maxFareDesc = "बहुत बड़े किराये वाली लंबी राइड से बचें",
+            maxFareExample = "जैसे: ₹500 सेट किया तो ₹650 वाली लंबी राइड स्किप होगी",
+            maxFareSpeech = "ज़्यादा से ज़्यादा किराया। अगर आप बहुत लंबी राइड नहीं लेना चाहते तो इसे पांच सौ रुपये पर सेट रखें।",
+            pickupTitle = "ग्राहक कितनी दूर हो (पिकअप)",
+            pickupDesc = "दूर ग्राहक के पास खाली गाड़ी चलाने से बचें",
+            pickupExample = "जैसे: 2.5 किमी सेट किया तो 4 किमी दूर पिकअप स्किप होगा",
+            pickupSpeech = "पिकअप दूरी। इसे ढाई किलोमीटर रखें ताकि बहुत दूर ग्राहक को लेने जाने में पेट्रोल खर्च न हो।",
+            dropTitle = "राइड कितनी लंबी हो (ड्रॉप)",
+            dropDesc = "शहर के बाहर बहुत दूर जाने वाली राइड रोकें",
+            dropExample = "जैसे: 15 किमी सेट किया तो 25 किमी की राइड स्किप होगी",
+            dropSpeech = "ड्रॉप दूरी। शहर के अंदर रहने के लिए इसे पंद्रह किलोमीटर पर सेट कर सकते हैं।",
+            minRateTitle = "हर किमी की कमाई (₹/Km)",
+            minRateDesc = "हर किलोमीटर पर पक्का मुनाफ़ा — पेट्रोल नुकसान नहीं",
+            minRateExample = "जैसे: ₹12/किमी सेट किया तो 10 किमी में ₹80 वाली राइड स्किप होगी",
+            minRateSpeech = "हर किलोमीटर की कमाई। कम से कम बारह रुपये प्रति किलोमीटर रखें ताकि हर राइड में अच्छा मुनाफ़ा मिले।",
+            blacklistTitle = "ये जगह बंद करें (ब्लॉक एरिया)",
+            blacklistDesc = "जिन इलाकों में नहीं जाना, उनका नाम यहाँ जोड़ें",
+            blacklistExample = "जैसे: 'Airport' लिखा तो एयरपोर्ट जाने वाली राइड स्किप होगी",
+            blacklistSpeech = "जगह बंद करें। जिस इलाके में आप नहीं जाना चाहते उसका नाम लिखें, वहां की राइड अपने आप छूट जाएगी।",
+            voiceTitle = "आवाज़ में राइड बताएं",
+            voiceDesc = "स्क्रीन देखे बिना आवाज़ में किराया और जगह सुनें",
+            voiceExample = "जैसे: राइड आते ही बोलेगा 'किराया 85 रुपये, पिकअप 1 किमी'",
+            voiceSpeech = "आवाज़ अलर्ट। इसे चालू रखने पर राइड आते ही किराया और लोकेशन आवाज़ में सुनाई देगी।",
+            overlayTitle = "स्क्रीन पर छोटा बटन",
+            overlayDesc = "रैपिडो चलाते समय 1 टैप में चालू/बंद करने का बटन",
+            overlayExample = "जैसे: रैपिडो बंद किए बिना यहीं से ऑटो-एक्सेप्ट रोकें",
+            overlaySpeech = "स्क्रीन पर छोटा बटन। यह रैपिडो के ऊपर दिखता है ताकि आप एक टैप में ऐप को चालू या बंद कर सकें।",
+            autoClickTitle = "अपने आप एक्सेप्ट करें",
+            autoClickDesc = "ON पर पसंद की राइड खुद एक्सेप्ट होगी, OFF पर सिर्फ आवाज़",
+            autoClickExample = "जैसे: हरा (ON) = खुद एक्सेप्ट • लाल (OFF) = सिर्फ आवाज़",
+            autoClickSpeech = "अपने आप एक्सेप्ट बटन। इसे चालू रखेंगे तो सही राइड खुद एक्सेप्ट होगी, वरना सिर्फ आवाज़ में बताएगा।"
+        )
+        else -> LocalizedFilterCopy(
+            smartModesHeader = "3 Smart Modes (1-Tap Setup)",
+            safeModeLabel = "Safe Mode",
+            zyadaKamaiLabel = "Zyada Kamai",
+            customLabel = "Custom",
+            customHintToast = "Neeche kisi bhi filter ko apne hisab se badlein",
+            summaryHeading = "Iska Matlab Kya Hai?",
+            listenButtonLabel = "Sunke Samjho",
+            resetButtonLabel = "Sab Reset Karein (Safe Default)",
+            resetSuccessToast = "Sabhi filters Safe Default par set ho gaye!",
+            minFareTitle = "Kam se Kam Kiraya",
+            minFareDesc = "Bahut kam kiraye wali chhoti ride mat lo",
+            minFareExample = "Jaise: ₹50 set kiya toh ₹45 wali ride apne aap skip hogi",
+            minFareSpeech = "Kam se kam kiraya. Agar aapne pachas rupaye set kiya, toh pachas se kam wali ride apne aap skip ho jayegi.",
+            maxFareTitle = "Zyada se Zyada Kiraya",
+            maxFareDesc = "Bahut zyada kiraye ya lambi ride ki limit rakhein",
+            maxFareExample = "Jaise: ₹500 set kiya toh ₹650 wali lambi ride skip hogi",
+            maxFareSpeech = "Zyada se zyada kiraya. Agar aap bahut door ki lambi ride nahi lena chahte toh isko paanch sau rupaye par set karein.",
+            pickupTitle = "Customer Kitni Door Ho (Pickup)",
+            pickupDesc = "Zyada door pickup ke liye khaali gaadi mat chalao",
+            pickupExample = "Jaise: 2.5 km set kiya toh 4 km door wala customer skip hoga",
+            pickupSpeech = "Pickup doori. Isko dhai kilometer rakhein taaki zyada door customer lene jaane me petrol kharch na ho.",
+            dropTitle = "Ride Kitni Lambi Ho (Drop)",
+            dropDesc = "Shehar ke bahar ya bahut lambi trip se bachein",
+            dropExample = "Jaise: 15 km set kiya toh 25 km door ki ride skip hogi",
+            dropSpeech = "Drop doori. Shehar ke andar rehne ke liye isko pandrah kilometer par set kar sakte hain.",
+            minRateTitle = "Har KM Ki Kamai (₹/Km)",
+            minRateDesc = "Har kilometer par pakka munafa — petrol ka nuksan nahi",
+            minRateExample = "Jaise: ₹12/km set kiya toh 10 km me ₹80 wali ride skip hogi",
+            minRateSpeech = "Har kilometer ki kamai. Kam se kam barah rupaye prati kilometer rakhein taaki har ride me acha munafa mile.",
+            blacklistTitle = "Ye Jagah Band Karein",
+            blacklistDesc = "Jin ilakon me nahi jana, unka naam yahan daalein",
+            blacklistExample = "Jaise: 'Airport' likha toh Airport jaane wali ride skip hogi",
+            blacklistSpeech = "Ye jagah band karein. Jis area me nahi jana hai uska naam daalein, wahan ki ride apne aap skip ho jayegi.",
+            voiceTitle = "Aawaz Me Ride Bataye",
+            voiceDesc = "Screen dekhe bina aawaz me kiraya aur jagah sunein",
+            voiceExample = "Jaise: Ride aate hi bolega 'Kiraya 85 rupaye, Pickup 1 km'",
+            voiceSpeech = "Aawaz me ride bataye. Isko chalu rakhne par nayi ride aate hi kiraya aur jagah aawaz me sunai degi.",
+            overlayTitle = "Screen Par Chhota Button",
+            overlayDesc = "Rapido chalate waqt screen ke upar 1-tap control button",
+            overlayExample = "Jaise: Rapido band kiye bina 1-tap me Auto-Accept rok ya chalu karein",
+            overlaySpeech = "Screen par chhota button. Yeh Rapido ke upar dikhta hai jisse aap ek tap me auto accept rok ya chalu kar sakte hain.",
+            autoClickTitle = "Apne Aap Accept Karein",
+            autoClickDesc = "ON rakhein toh pasand ki ride khud accept hogi, OFF par sirf aawaz",
+            autoClickExample = "Jaise: Green (ON) = Khud Accept • Red (OFF) = Sirf Aawaz",
+            autoClickSpeech = "Apne aap accept karein. Isko chalu rakhenge toh pasand ki ride khud accept hogi, band par sirf aawaz aayegi."
         )
     }
 }
+

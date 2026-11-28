@@ -30,8 +30,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CurrencyRupee
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.ui.draw.alpha
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -39,6 +41,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -109,7 +112,10 @@ fun FareFilterCard(
     featureId: String? = null,
     onUnlockClick: (() -> Unit)? = null,
     remainingTimeText: String? = null,
-    pointsPerHour: Int = 10
+    pointsPerHour: Int = 10,
+    exampleText: String? = null,
+    onSpeakExplain: (() -> Unit)? = null,
+    speakContentDescription: String = "Sunke Samjho"
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -117,6 +123,7 @@ fun FareFilterCard(
     val currentOnToggle by rememberUpdatedState(onToggle)
     val currentOnValueChangeFinished by rememberUpdatedState(onValueChangeFinished)
     val currentOnUnlockClick by rememberUpdatedState(onUnlockClick)
+    val currentOnSpeakExplain by rememberUpdatedState(onSpeakExplain)
 
     // Local visual dragging state synced cleanly via LaunchedEffect to prevent remember(value) key desync
     var localSliderValue by remember {
@@ -240,13 +247,44 @@ fun FareFilterCard(
                     }
 
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = title,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                ),
+                                modifier = Modifier.weight(1f, fill = false)
                             )
-                        )
+                            val isActiveOn = isEnabled && effectivelyUnlocked
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (isActiveOn) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                }
+                            ) {
+                                Text(
+                                    text = if (isActiveOn) "ON" else "OFF",
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 10.sp,
+                                        color = if (isActiveOn) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
                         Spacer(modifier = Modifier.height(4.dp))
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -362,35 +400,74 @@ fun FareFilterCard(
                                 lineHeight = 16.sp
                             )
                         )
+                        if (!exampleText.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                            ) {
+                                Text(
+                                    text = exampleText,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        fontWeight = FontWeight.Medium,
+                                        lineHeight = 15.sp
+                                    ),
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
                     }
                 }
 
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(4.dp))
 
-                Box(
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .then(
-                            if (!effectivelyUnlocked) {
-                                Modifier.clickable { handleLockedInteraction() }
-                            } else {
-                                Modifier
-                            }
-                        ),
-                    contentAlignment = Alignment.Center
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    Switch(
-                        checked = isEnabled && effectivelyUnlocked,
-                        onCheckedChange = if (effectivelyUnlocked) currentOnToggle else null,
-                        enabled = effectivelyUnlocked,
-                        modifier = Modifier.testTag("${testTag}_switch"),
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = accentColor,
-                            uncheckedThumbColor = MaterialTheme.colorScheme.outline,
-                            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                    if (currentOnSpeakExplain != null) {
+                        IconButton(
+                            onClick = { currentOnSpeakExplain?.invoke() },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("${testTag}_speak_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VolumeUp,
+                                contentDescription = speakContentDescription,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .then(
+                                if (!effectivelyUnlocked) {
+                                    Modifier.clickable { handleLockedInteraction() }
+                                } else {
+                                    Modifier
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Switch(
+                            checked = isEnabled && effectivelyUnlocked,
+                            onCheckedChange = if (effectivelyUnlocked) currentOnToggle else null,
+                            enabled = effectivelyUnlocked,
+                            modifier = Modifier.testTag("${testTag}_switch"),
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = accentColor,
+                                uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+                                uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
                         )
-                    )
+                    }
                 }
             }
 

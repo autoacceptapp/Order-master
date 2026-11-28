@@ -8,6 +8,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -38,6 +40,7 @@ import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Radar
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.outlined.ElectricBolt
@@ -109,22 +112,14 @@ fun HomeScreen(
     viewModel: OrderMasterViewModel,
     onNavigateToSettings: () -> Unit,
     onOpenRestrictedSettingsGuide: () -> Unit,
+    onNavigateToFilters: () -> Unit = {},
     onTriggerGoogleSignIn: () -> Unit = {},
     onNavigateToSubscription: () -> Unit = {},
     onNavigateToPaymentVerification: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val isHomeTutorialCompleted by AppSettings.isHomeTutorialCompletedFlow.collectAsState()
     var showTutorialDialog by remember { mutableStateOf(false) }
-
-    // Auto-launch In-App Tutorial on first visit to Home screen
-    LaunchedEffect(isHomeTutorialCompleted) {
-        if (!isHomeTutorialCompleted) {
-            kotlinx.coroutines.delay(500L)
-            showTutorialDialog = true
-        }
-    }
     val settingsState by viewModel.settingsState.collectAsState()
     val logs by viewModel.liveLogs.collectAsState()
     val ttsStatus by viewModel.ttsStatus.collectAsState()
@@ -205,6 +200,14 @@ fun HomeScreen(
         label = "pulse_scale"
     )
 
+    val guidedSetupState = remember(isServiceRunningInSystem, settingsState, isAutomationActive) {
+        computeGuidedSetupState(
+            isAccessibilityEnabled = isServiceRunningInSystem,
+            settingsState = settingsState,
+            isAutomationActive = isAutomationActive
+        )
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -212,6 +215,20 @@ fun HomeScreen(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // =========================================================================================
+        // COMPONENT 0: 3-STEP GUIDED SETUP BANNER (ALWAYS CLEAR NEXT ACTION)
+        // =========================================================================================
+        GuidedSetupBanner(
+            state = guidedSetupState,
+            onFixNow = {
+                when (guidedSetupState.nextIncompleteStep) {
+                    1 -> launchAccessibilitySettingsWithGuideFallback()
+                    2 -> onNavigateToFilters()
+                    3 -> handleOpenAccessibilityService()
+                }
+            }
+        )
+
         // =========================================================================================
         // COMPONENT 1: MASTER TOGGLE SWITCH & ACCESSIBILITY STATUS
         // =========================================================================================
@@ -247,6 +264,7 @@ fun HomeScreen(
 
         if (showTutorialDialog) {
             AppTutorialGuideDialog(
+                initialStep = 0,
                 onDismiss = {
                     showTutorialDialog = false
                     AppSettings.setHomeTutorialCompleted(context, true)
@@ -371,18 +389,18 @@ private fun MasterToggleCard(
 
                     Column {
                         Text(
-                            text = "AUTOMATION SERVICE",
+                            text = "Auto-Accept Service",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.2.sp,
+                                letterSpacing = 0.6.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         )
                         Text(
                             text = when {
-                                !isServiceRunningInSystem -> "SYSTEM PERMISSION NEEDED"
-                                isAutoAcceptEnabled -> "ACTIVE & LISTENING"
-                                else -> "PAUSED BY CAPTAIN"
+                                !isServiceRunningInSystem -> "Permission Zaroori Hai"
+                                isAutoAcceptEnabled -> "Chalu Hai — Ride Dekh Raha Hai"
+                                else -> "Abhi Band Hai (Paused)"
                             },
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.ExtraBold,
@@ -417,6 +435,7 @@ private fun MasterToggleCard(
                     color = disabledColor.copy(alpha = 0.1f),
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(min = 48.dp)
                         .clickable { onFixService() }
                         .testTag("accessibility_alert_banner")
                 ) {
@@ -432,7 +451,7 @@ private fun MasterToggleCard(
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
-                            text = "Accessibility service is OFF in device settings. Tap to enable.",
+                            text = "Permission Baaki Hai — Chalu karne ke liye yahan tap karein.",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontWeight = FontWeight.Medium,
                                 color = disabledColor
@@ -449,9 +468,9 @@ private fun MasterToggleCard(
                 ) {
                     Text(
                         text = if (isAutoAcceptEnabled)
-                            "Continuously analyzing ride requests from driver overlay cards."
+                            "Rapido par aane wali har ride check kar raha hai."
                         else
-                            "Automated acceptance is halted. Tap the switch to resume monitoring.",
+                            "Auto-Accept ruka hua hai. Shuru karne ke liye switch ON karein.",
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         ),
@@ -474,7 +493,7 @@ private fun MasterToggleCard(
                                 modifier = Modifier.size(14.dp)
                             )
                             Text(
-                                text = if (isAutomationActive) "ACTIVE" else "PAUSED",
+                                text = if (isAutomationActive) "CHALU" else "BAND",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = if (isAutomationActive) activeColor else pausedColor
@@ -484,6 +503,192 @@ private fun MasterToggleCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@androidx.annotation.VisibleForTesting
+internal data class GuidedSetupState(
+    val step1PermissionDone: Boolean,
+    val step2FilterDone: Boolean,
+    val step3StartDone: Boolean,
+    val nextIncompleteStep: Int
+)
+
+@androidx.annotation.VisibleForTesting
+internal fun computeGuidedSetupState(
+    isAccessibilityEnabled: Boolean,
+    settingsState: com.example.SettingsState,
+    isAutomationActive: Boolean
+): GuidedSetupState {
+    val step1Done = isAccessibilityEnabled
+    val step2Done = AppSettings.detectActiveSmartMode(settingsState) != AppSettings.SmartMode.CUSTOM ||
+        settingsState.isMinFareEnabled ||
+        settingsState.isMaxFareEnabled ||
+        settingsState.isMaxPickupDistanceEnabled ||
+        settingsState.isMaxDropDistanceEnabled ||
+        settingsState.isMinPerKmRateEnabled
+    val step3Done = isAutomationActive
+    val nextStep = when {
+        !step1Done -> 1
+        !step2Done -> 2
+        !step3Done -> 3
+        else -> 0
+    }
+    return GuidedSetupState(
+        step1PermissionDone = step1Done,
+        step2FilterDone = step2Done,
+        step3StartDone = step3Done,
+        nextIncompleteStep = nextStep
+    )
+}
+
+@Composable
+private fun GuidedSetupBanner(
+    state: GuidedSetupState,
+    onFixNow: () -> Unit
+) {
+    val allDone = state.nextIncompleteStep == 0
+    val accentColor = if (allDone) PrimaryEmerald else AmberAccent
+
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (allDone) {
+                PrimaryEmerald.copy(alpha = 0.12f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
+        ),
+        border = BorderStroke(1.5.dp, accentColor.copy(alpha = 0.55f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("guided_setup_banner")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = if (allDone) {
+                            "✅ Sab Taiyar Hai! Rapido Chalu Karein"
+                        } else {
+                            "3 Aasan Step Me Shuru Karein"
+                        },
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold),
+                        color = if (allDone) PrimaryEmerald else MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = when (state.nextIncompleteStep) {
+                            1 -> "Agla kaam: Step 1 — Permission On karein"
+                            2 -> "Agla kaam: Step 2 — Filter Mode chunein"
+                            3 -> "Agla kaam: Step 3 — Auto-Accept Start karein"
+                            else -> "Har step complete hai. Aapki ride auto-check ho rahi hai."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                if (!allDone) {
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = onFixNow,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = accentColor,
+                            contentColor = Color.Black
+                        ),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("guided_setup_fix_now_btn")
+                    ) {
+                        Text(
+                            text = "Fix Now",
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold)
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                GuidedStepChip(
+                    stepNumber = 1,
+                    label = "Permission On",
+                    done = state.step1PermissionDone,
+                    isActive = state.nextIncompleteStep == 1,
+                    modifier = Modifier.weight(1f)
+                )
+                GuidedStepChip(
+                    stepNumber = 2,
+                    label = "Filter Mode",
+                    done = state.step2FilterDone,
+                    isActive = state.nextIncompleteStep == 2,
+                    modifier = Modifier.weight(1f)
+                )
+                GuidedStepChip(
+                    stepNumber = 3,
+                    label = "Start",
+                    done = state.step3StartDone,
+                    isActive = state.nextIncompleteStep == 3,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GuidedStepChip(
+    stepNumber: Int,
+    label: String,
+    done: Boolean,
+    isActive: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val color = when {
+        done -> PrimaryEmerald
+        isActive -> AmberAccent
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = color.copy(alpha = if (done || isActive) 0.14f else 0.06f),
+        border = BorderStroke(1.dp, color.copy(alpha = if (isActive) 0.7f else 0.35f)),
+        modifier = modifier
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(
+                imageVector = if (done) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                contentDescription = null,
+                tint = color,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = "$stepNumber. $label",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = if (done || isActive) FontWeight.Bold else FontWeight.Medium,
+                    fontSize = 10.sp
+                ),
+                color = color,
+                maxLines = 1
+            )
         }
     }
 }
@@ -540,7 +745,7 @@ private fun LiveFeedSection(
                         modifier = Modifier.size(20.dp)
                     )
                     Text(
-                        text = "Live Active Monitor",
+                        text = "Live Ride Check",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold
                         )
@@ -691,9 +896,9 @@ private fun EmptyMonitorDisplay(
 
             Text(
                 text = if (isAutomationActive)
-                    "Scanning for incoming ride offers..."
+                    "Nayi ride ka intezar hai..."
                 else
-                    "Automation Service Paused",
+                    "Auto-Accept Abhi Band Hai",
                 style = MaterialTheme.typography.titleSmall.copy(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -702,9 +907,9 @@ private fun EmptyMonitorDisplay(
 
             Text(
                 text = if (isAutomationActive)
-                    "Overlay cards from ride apps will be parsed and evaluated automatically here in real time."
+                    "Rapido par ride aate hi uska kiraya aur doori yahan live dikhegi."
                 else
-                    "Enable the master switch above to begin listening for screen offers.",
+                    "Ride check shuru karne ke liye upar wala bada button ON karein.",
                 style = MaterialTheme.typography.bodySmall.copy(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 16.sp
