@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -53,8 +54,8 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.QrCode
@@ -205,11 +206,11 @@ fun PaymentVerificationScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Verify UPI Payment",
+                            text = "UPI Payment Check",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Automated Bank SMS Verification",
+                            text = "Bank SMS Se Turant Pass Chalu",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -302,7 +303,7 @@ fun PaymentVerificationScreen(
                 item {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "1. SELECT YOUR PURCHASED PLAN",
+                            text = "1. APNA PLAN CHUNEIN",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 0.8.sp
@@ -322,6 +323,7 @@ fun PaymentVerificationScreen(
                                 FilterChip(
                                     selected = isSelected,
                                     onClick = { viewModel.onSelectTier(tier) },
+                                    modifier = Modifier.heightIn(min = 48.dp),
                                     label = {
                                         Text(
                                             text = "${tier.title} (₹$chipPrice)",
@@ -539,7 +541,7 @@ private fun MerchantPaymentQrCard(
                         modifier = Modifier.size(14.dp)
                     )
                     Text(
-                        text = "RECOMMENDED • SCAN QR OR COPY UPI ID",
+                        text = "2. QR SCAN YA UPI ID COPY KAREIN",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 0.5.sp
@@ -557,11 +559,11 @@ private fun MerchantPaymentQrCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Pay for ${selectedTier.title}",
+                        text = "${selectedTier.title} Ke Liye Pay Karein",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                     )
                     Text(
-                        text = "Validity: ${selectedTier.durationDays} Day${if (selectedTier.durationDays > 1) "s" else ""} • Exact amount required",
+                        text = "Validity: ${selectedTier.durationDays} Din • Bilkul sahi ₹$effectiveAmountInr bhejein",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -614,7 +616,7 @@ private fun MerchantPaymentQrCard(
 
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "Scan from another phone or screenshot & scan inside GPay / PhonePe / Paytm",
+                        text = "Doosre phone se QR scan karein ya screenshot lekar GPay / PhonePe / Paytm me pay karein",
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -635,7 +637,7 @@ private fun MerchantPaymentQrCard(
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
-                        text = "UPI ID (PAY EXACTLY ₹$effectiveAmountInr)",
+                        text = "UPI ID (BILKUL SAHI ₹$effectiveAmountInr PAY KAREIN)",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
@@ -644,7 +646,7 @@ private fun MerchantPaymentQrCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = merchantVpa.ifBlank { "Fetching Merchant UPI ID..." },
+                        text = merchantVpa.ifBlank { "UPI ID load ho raha hai..." },
                         style = MaterialTheme.typography.bodyLarge.copy(
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
@@ -666,7 +668,7 @@ private fun MerchantPaymentQrCard(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     modifier = Modifier
                         .weight(1.25f)
-                        .height(48.dp)
+                        .heightIn(min = 48.dp)
                         .testTag("copy_upi_id_button")
                 ) {
                     Icon(
@@ -676,7 +678,7 @@ private fun MerchantPaymentQrCard(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Copy UPI ID",
+                        text = "UPI ID Copy Karein",
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 }
@@ -687,7 +689,7 @@ private fun MerchantPaymentQrCard(
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     modifier = Modifier
                         .weight(1f)
-                        .height(48.dp)
+                        .heightIn(min = 48.dp)
                         .testTag("copy_exact_amount_button")
                 ) {
                     Icon(
@@ -697,7 +699,7 @@ private fun MerchantPaymentQrCard(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Copy ₹$effectiveAmountInr",
+                        text = "₹$effectiveAmountInr Copy",
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 }
@@ -711,7 +713,7 @@ private fun MerchantPaymentQrCard(
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .heightIn(min = 48.dp)
                     .testTag("open_upi_app_button")
             ) {
                 Icon(
@@ -721,13 +723,13 @@ private fun MerchantPaymentQrCard(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Open UPI App (Optional)",
+                    text = "UPI App Kholein (Optional)",
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
                 )
             }
 
             Text(
-                text = "Some UPI apps block direct links for personal UPI IDs. Scanning the QR or pasting the copied UPI ID works 100% of the time.",
+                text = "Kuch UPI apps direct link block kar dete hain. QR scan karna ya UPI ID copy-paste karna 100% kaam karta hai.",
                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
@@ -774,7 +776,7 @@ private fun UtrInputCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "2. ENTER 12-DIGIT UTR / REF NO",
+                    text = "3. 12-DIGIT UTR NUMBER DAALEIN",
                     style = MaterialTheme.typography.labelSmall.copy(
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 0.8.sp
@@ -799,7 +801,7 @@ private fun UtrInputCard(
                     .fillMaxWidth()
                     .testTag("utr_text_field"),
                 shape = RoundedCornerShape(14.dp),
-                label = { Text("12-Digit Reference / UTR Number") },
+                label = { Text("12-Digit UTR / Ref Number") },
                 placeholder = { Text("e.g. 426719823451") },
                 singleLine = true,
                 enabled = !isLoading && !isPending,
@@ -822,7 +824,10 @@ private fun UtrInputCard(
                 trailingIcon = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (utrInput.isNotEmpty()) {
-                            IconButton(onClick = onClear) {
+                            IconButton(
+                                onClick = onClear,
+                                modifier = Modifier.size(48.dp)
+                            ) {
                                 Icon(
                                     imageVector = Icons.Default.Clear,
                                     contentDescription = "Clear",
@@ -830,7 +835,10 @@ private fun UtrInputCard(
                                 )
                             }
                         }
-                        IconButton(onClick = onPaste) {
+                        IconButton(
+                            onClick = onPaste,
+                            modifier = Modifier.size(48.dp)
+                        ) {
                             Icon(
                                 imageVector = Icons.Default.ContentPaste,
                                 contentDescription = "Paste",
@@ -845,8 +853,8 @@ private fun UtrInputCard(
                 ),
                 supportingText = {
                     Text(
-                        text = if (isUtrValid) "✓ Valid 12-digit format ready to verify"
-                        else "Found on GPay, PhonePe, Paytm, or bank SMS as 'UPI Ref / UTR No'",
+                        text = if (isUtrValid) "✓ 12-digit number sahi hai, ab Verify dabayein"
+                        else "GPay, PhonePe, Paytm receipt ya Bank SMS me 'UPI Ref / UTR No' dekhein",
                         color = if (isUtrValid) PrimaryEmerald else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -863,7 +871,7 @@ private fun UtrInputCard(
                 ),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .heightIn(min = 48.dp)
                     .testTag("verify_utr_submit_button")
             ) {
                 if (isLoading) {
@@ -873,7 +881,7 @@ private fun UtrInputCard(
                         color = Color.White
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Querying Registry...", fontWeight = FontWeight.Bold)
+                    Text("Verify Ho Raha Hai...", fontWeight = FontWeight.Bold)
                 } else {
                     Icon(
                         imageVector = Icons.Default.FlashOn,
@@ -882,7 +890,7 @@ private fun UtrInputCard(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = if (isUtrValid) "Verify & Unlock App Immediately" else "Enter 12 Digits to Verify",
+                        text = if (isUtrValid) "Turant Verify Karein" else "12 Digits Daalein",
                         style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 }
@@ -1292,22 +1300,22 @@ private fun VerificationExplainerCard() {
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Icon(
-                    imageVector = Icons.Default.HelpOutline,
+                    imageVector = Icons.AutoMirrored.Outlined.HelpOutline,
                     contentDescription = null,
                     tint = PrimaryEmerald,
                     modifier = Modifier.size(20.dp)
                 )
                 Text(
-                    text = "How Automated Verification Works",
+                    text = "Verification Kaise Kaam Karta Hai",
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                 )
             }
 
             Text(
-                text = "1. Pay via any UPI app using the QR code or UPI ID above.\n" +
-                        "2. Locate the 12-digit UTR / Ref Number in your UPI receipt (e.g. 426719823451).\n" +
-                        "3. Enter the number here. Our automated server securely matches the bank confirmation in seconds.\n" +
-                        "4. Once matched, the pass activates immediately without manual support.",
+                text = "1. Upar diye QR code ya UPI ID par kisi bhi UPI app se pay karein.\n" +
+                        "2. Payment receipt me 12-digit UTR / Ref Number dekhein (jaise 426719823451).\n" +
+                        "3. Yahan number daalein. Server kuch seconds me bank confirmation match kar lega.\n" +
+                        "4. Match hote hi aapka pass turant chalu ho jayega.",
                 style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

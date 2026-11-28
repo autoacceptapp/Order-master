@@ -77,6 +77,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ui.theme.PrimaryEmerald
 import kotlin.math.roundToInt
 
 /**
@@ -102,7 +103,7 @@ fun FareFilterCard(
     presetValues: List<Float>,
     modifier: Modifier = Modifier,
     onValueChangeFinished: (() -> Unit)? = null,
-    accentColor: Color = Color(0xFF00E676), // Emerald Green
+    accentColor: Color = PrimaryEmerald,
     secondaryBadgeColor: Color? = null,
     validationWarning: String? = null,
     testTag: String = "fare_filter_card",
@@ -159,16 +160,16 @@ fun FareFilterCard(
 
     val displayedRoundedFare = localSliderValue.roundToInt()
     val minRangeLabel by remember(valueRange.start) {
-        derivedStateOf { "Min: ₹${valueRange.start.toInt()}" }
+        derivedStateOf { "Kam: ₹${valueRange.start.toInt()}" }
     }
     val maxRangeLabel by remember(valueRange.endInclusive) {
-        derivedStateOf { "Max: ₹${valueRange.endInclusive.toInt()}" }
+        derivedStateOf { "Zyada: ₹${valueRange.endInclusive.toInt()}" }
     }
 
     val effectivelyUnlocked = isUnlocked && !isAdminLocked
     val handleLockedInteraction = {
         if (isAdminLocked) {
-            Toast.makeText(context, "$title is locked by Admin", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "$title Admin se band hai", Toast.LENGTH_SHORT).show()
         } else {
             currentOnUnlockClick?.invoke()
         }
@@ -307,7 +308,7 @@ fun FareFilterCard(
                                             tint = MaterialTheme.colorScheme.onErrorContainer
                                         )
                                         Text(
-                                            text = "Locked by Admin",
+                                            text = "Admin Se Band",
                                             maxLines = 1,
                                             softWrap = false,
                                             style = MaterialTheme.typography.labelSmall.copy(
@@ -575,7 +576,7 @@ fun FareFilterCard(
                                     }
                                 }
                                 .testTag("${testTag}_text_input"),
-                            label = { Text("Exact Amount") },
+                            label = { Text("Apna Amount Likhein") },
                             prefix = {
                                 Text(
                                     text = "₹",
@@ -651,10 +652,10 @@ fun FareFilterCard(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = "Quick Preset Thresholds:",
+                            text = "1-Tap Quick Options:",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontWeight = FontWeight.Medium
+                                fontWeight = FontWeight.SemiBold
                             )
                         )
 

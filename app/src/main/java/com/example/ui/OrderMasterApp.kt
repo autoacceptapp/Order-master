@@ -21,12 +21,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.CardGiftcard
@@ -34,11 +36,9 @@ import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material.icons.outlined.ElectricBolt
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.WorkspacePremium
-import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -105,13 +105,13 @@ import com.example.ui.theme.AmberAccent
 
 sealed class Screen(val route: String, val title: String) {
     data object Home : Screen("home", "Order Master")
-    data object Filters : Screen("filters", "Filter Rules")
-    data object History : Screen("history", "Order History")
-    data object Profile : Screen("profile", "Captain Profile")
+    data object Filters : Screen("filters", "Saare Filters")
+    data object History : Screen("history", "Ride History")
+    data object Profile : Screen("profile", "Meri Profile")
     data object Settings : Screen("settings", "Settings & Permissions")
     data object ReferAndEarn : Screen("refer_and_earn", "Refer & Earn")
     data object Subscription : Screen("subscription", "Pass & Store")
-    data object PaymentVerification : Screen("payment_verification", "Verify UPI Payment")
+    data object PaymentVerification : Screen("payment_verification", "UPI Payment Check")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -174,8 +174,8 @@ fun OrderMasterApp(
                     )
 
                     Text(
-                        text = "Captain Auto-Accept & Surge Radar",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = "Aasan Auto Ride Helper",
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
@@ -190,7 +190,7 @@ fun OrderMasterApp(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     Text(
-                        text = "Connecting to Server...",
+                        text = "App Taiyaar Ho Raha Hai...",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.SemiBold
                         ),
@@ -200,9 +200,9 @@ fun OrderMasterApp(
                     Spacer(modifier = Modifier.height(6.dp))
 
                     Text(
-                        text = "Synchronizing licensing and captain profile",
+                        text = "Aapka account aur filters load ho rahe hain",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
                     )
                 }
             }
@@ -306,29 +306,29 @@ fun OrderMasterApp(
                             Text(
                                 text = when (currentRoute) {
                                     Screen.Home.route -> "Order Master"
-                                    Screen.Filters.route -> "Filter Rules"
-                                    Screen.History.route -> "Order History"
-                                    Screen.Profile.route -> "Captain Profile"
+                                    Screen.Filters.route -> "Saare Filters"
+                                    Screen.History.route -> "Ride History"
+                                    Screen.Profile.route -> "Meri Profile"
                                     Screen.Settings.route -> "Settings & Permissions"
                                     Screen.ReferAndEarn.route -> "Refer & Earn"
-                                    Screen.Subscription.route -> "Captain Store"
-                                    Screen.PaymentVerification.route -> "Verify UPI Payment"
+                                    Screen.Subscription.route -> "Pass & Store"
+                                    Screen.PaymentVerification.route -> "UPI Payment Check"
                                     else -> "Order Master"
                                 },
                                 maxLines = 1,
                                 softWrap = false,
                                 overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.titleMedium.copy(
-                                    fontSize = 17.sp,
+                                    fontSize = 18.sp,
                                     fontWeight = FontWeight.Black,
-                                    letterSpacing = (-0.4).sp
+                                    letterSpacing = (-0.3).sp
                                 )
                             )
                         }
                     },
                     actions = {
-                        // Contextual '?' Help Button on Home & Filters screens (48dp touch target)
-                        if (currentRoute == Screen.Home.route || currentRoute == Screen.Filters.route) {
+                        // Contextual '?' Help Button on all main tabs (48dp touch target)
+                        if (isMainTab) {
                             IconButton(
                                 onClick = {
                                     tutorialInitialStep = if (currentRoute == Screen.Filters.route) 1 else 0
@@ -339,7 +339,7 @@ fun OrderMasterApp(
                                     .testTag("top_bar_help_button")
                             ) {
                                 Icon(
-                                    imageVector = Icons.Outlined.HelpOutline,
+                                    imageVector = Icons.AutoMirrored.Outlined.HelpOutline,
                                     contentDescription = "Madad / App Guide",
                                     tint = MaterialTheme.colorScheme.primary
                                 )
@@ -391,7 +391,7 @@ fun OrderMasterApp(
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text = if (isRemoveAdsActive) "Remove Ads (Active)" else "Remove Ads Pass",
+                                            text = if (isRemoveAdsActive) "Ads Hatayein (Active)" else "Ads Hatayein Pass",
                                             fontWeight = FontWeight.SemiBold
                                         )
                                     },
@@ -413,7 +413,7 @@ fun OrderMasterApp(
                                         .testTag("top_bar_remove_ads_button")
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Captain Profile") },
+                                    text = { Text("Meri Profile") },
                                     leadingIcon = {
                                         Icon(
                                             imageVector = if (currentRoute == Screen.Profile.route) Icons.Filled.Person else Icons.Outlined.Person,
@@ -434,10 +434,10 @@ fun OrderMasterApp(
                                         .testTag("top_bar_profile_button")
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("App Guide & Tutorial") },
+                                    text = { Text("App Guide (3 Steps)") },
                                     leadingIcon = {
                                         Icon(
-                                            imageVector = Icons.Outlined.HelpOutline,
+                                            imageVector = Icons.AutoMirrored.Outlined.HelpOutline,
                                             contentDescription = null,
                                             tint = MaterialTheme.colorScheme.primary
                                         )
@@ -558,7 +558,7 @@ fun OrderMasterApp(
                         },
                         icon = {
                             Icon(
-                                imageVector = if (currentRoute == Screen.History.route) Icons.Filled.ReceiptLong else Icons.Outlined.ReceiptLong,
+                                imageVector = if (currentRoute == Screen.History.route) Icons.AutoMirrored.Filled.ReceiptLong else Icons.AutoMirrored.Outlined.ReceiptLong,
                                 contentDescription = "History"
                             )
                         },

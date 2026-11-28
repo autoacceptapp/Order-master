@@ -114,14 +114,16 @@ fun AppTutorialGuideDialog(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val userLang = remember { AppSettings.getVoiceLanguage(context).lowercase(Locale.ROOT) }
-    val isHindi = userLang == "hi"
-    val isEnglish = userLang == "en"
-    val steps = remember(userLang) {
+    var selectedLangCode by remember {
+        mutableStateOf(AppSettings.getVoiceLanguage(context).lowercase(Locale.ROOT))
+    }
+    val isHindi = selectedLangCode == "hi"
+    val isEnglish = selectedLangCode == "en"
+    val steps = remember(selectedLangCode) {
         getTutorialSteps(
             context = context,
             isHindi = isHindi,
-            langCode = userLang
+            langCode = selectedLangCode
         )
     }
 
@@ -136,7 +138,7 @@ fun AppTutorialGuideDialog(
         }
     }
 
-    LaunchedEffect(selectedTab, isNarrationMuted) {
+    LaunchedEffect(selectedTab, isNarrationMuted, selectedLangCode) {
         if (!isNarrationMuted && steps.isNotEmpty() && selectedTab in steps.indices) {
             kotlinx.coroutines.delay(250L)
             TTSManager.speakGuide(context, steps[selectedTab].speechText, flush = true)
@@ -221,8 +223,43 @@ fun AppTutorialGuideDialog(
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
                     ) {
+                        // Quick HI / Hinglish / EN language switcher
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    val nextLang = when {
+                                        isHindi -> "hinglish"
+                                        isEnglish -> "hi"
+                                        else -> "en"
+                                    }
+                                    selectedLangCode = nextLang
+                                    AppSettings.setVoiceLanguage(context, nextLang)
+                                }
+                                .testTag("tutorial_lang_toggle_btn")
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier.padding(horizontal = 10.dp)
+                            ) {
+                                Text(
+                                    text = when {
+                                        isHindi -> "HI"
+                                        isEnglish -> "EN"
+                                        else -> "HG"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.ExtraBold),
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
+                        }
+
                         IconButton(
                             onClick = {
                                 isNarrationMuted = !isNarrationMuted
@@ -573,9 +610,9 @@ fun AppTutorialGuideDialog(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = when {
-                                    isHindi -> "सेफ सेटिंग्स सेट करें"
-                                    isEnglish -> "Apply Safe Settings"
-                                    else -> "Safe Settings Apply Karein"
+                                    isHindi -> "1-टैप बेस्ट सेटिंग्स लगाएं"
+                                    isEnglish -> "Apply Best Settings"
+                                    else -> "1-Tap Best Settings Lagayein"
                                 },
                                 fontWeight = FontWeight.ExtraBold
                             )
@@ -1213,7 +1250,7 @@ private fun Step2InteractiveFilterSimulatorCard(
 
             // Live Evaluated Sample Ride Card 1: Short cheap far ride
             DemoRideEvaluationCard(
-                rideTitle = if (isEnglish) "Sample Ride A: Short Trip" else "Sample Ride A: Chhoti Ride",
+                rideTitle = if (isEnglish) "Sample Ride A: Low Fare & Far" else "Sample Ride A: Chhoti & Door Ride",
                 fare = 38,
                 pickupKm = 3.5f,
                 dropKm = 3.2f,
@@ -1226,9 +1263,24 @@ private fun Step2InteractiveFilterSimulatorCard(
                 testTag = "tutorial_sim_ride_card_1"
             )
 
-            // Live Evaluated Sample Ride Card 2: Good profitable ride
+            // Live Evaluated Sample Ride Card 2: Medium ride (flips right around default thresholds)
             DemoRideEvaluationCard(
-                rideTitle = if (isEnglish) "Sample Ride B: Good Trip" else "Sample Ride B: Achhi Ride",
+                rideTitle = if (isEnglish) "Sample Ride B: Medium City Trip" else "Sample Ride B: Medium Ride",
+                fare = 60,
+                pickupKm = 2.0f,
+                dropKm = 5.0f,
+                ratePerKm = 12,
+                minFare = demoMinFare,
+                maxPickup = demoMaxPickup,
+                minRate = demoMinRate,
+                isHindi = isHindi,
+                isEnglish = isEnglish,
+                testTag = "tutorial_sim_ride_card_2"
+            )
+
+            // Live Evaluated Sample Ride Card 3: High profit ride
+            DemoRideEvaluationCard(
+                rideTitle = if (isEnglish) "Sample Ride C: High Profit Trip" else "Sample Ride C: Zyada Kamai Ride",
                 fare = 110,
                 pickupKm = 1.2f,
                 dropKm = 6.8f,
@@ -1238,7 +1290,7 @@ private fun Step2InteractiveFilterSimulatorCard(
                 minRate = demoMinRate,
                 isHindi = isHindi,
                 isEnglish = isEnglish,
-                testTag = "tutorial_sim_ride_card_2"
+                testTag = "tutorial_sim_ride_card_3"
             )
         }
     }

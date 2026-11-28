@@ -224,11 +224,11 @@ fun AppSettingsScreen(
                 title = {
                     Column {
                         Text(
-                            text = stringResource(R.string.settings_title_permissions_setup),
+                            text = "Permissions & Setup",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = stringResource(R.string.settings_subtitle_permissions_setup),
+                            text = "Auto-Accept Ready Check",
                             style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
                         )
                     }
@@ -416,11 +416,12 @@ fun AppSettingsScreen(
                             FilledTonalButton(
                                 onClick = onTriggerGoogleSignIn,
                                 shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                modifier = Modifier.heightIn(min = 48.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
                             ) {
                                 Text(
-                                    text = stringResource(R.string.settings_btn_connect),
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                                    text = "Jodein",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                                 )
                             }
                         } else {
@@ -511,11 +512,11 @@ fun AppSettingsScreen(
                                     ) {
                                         Text(
                                             text = if (isProMode)
-                                                "Pro Mode (Full Automation)"
+                                                "Pro Mode (Sab Filters Chalu)"
                                             else if (hasCustomFilters)
-                                                "Free Mode (Custom Filters Active)"
+                                                "Free Mode (Chune Hue Filters Chalu)"
                                             else
-                                                "Free Mode (Filters Locked)",
+                                                "Free Mode (Filters Band Hain)",
                                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                                         )
                                         if (!isProMode) {
@@ -527,7 +528,7 @@ fun AppSettingsScreen(
                                                     MaterialTheme.colorScheme.tertiaryContainer
                                             ) {
                                                 Text(
-                                                    text = if (hasCustomFilters) "CUSTOM ACTIVE" else "PRO PASS",
+                                                    text = if (hasCustomFilters) "CUSTOM CHALU" else "PRO PASS",
                                                     style = MaterialTheme.typography.labelSmall.copy(
                                                         fontSize = 9.sp,
                                                         fontWeight = FontWeight.ExtraBold,
@@ -543,11 +544,11 @@ fun AppSettingsScreen(
                                     }
                                     Text(
                                         text = if (isProMode)
-                                            "All automation filters active. Orders are evaluated in 300-700ms with smart auto-reject."
+                                            "Sabhi filters chalu hain. Ride aate hi turant filter check hokar accept ya reject hogi."
                                         else if (hasCustomFilters)
-                                            "Custom filters unlocked with Points are active. Automation is evaluating rides matching your unlocked rules."
+                                            "Points se khole gaye filters chalu hain. Aapke rules ke hisaab se ride check ho rahi hai."
                                         else
-                                            "All filters are locked in Free Mode (Fast 1-2s Auto-Accept active). Unlock filters with Points in Filter Rules or activate a Daily / Weekly / Monthly Pass.",
+                                            "Free Mode me filters band hain (1-2s fast auto-accept chalu). Saare Filters me Points se filter kholein ya Pro Pass lein.",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -561,6 +562,7 @@ fun AppSettingsScreen(
                                 shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
                                     .testTag("upgrade_to_pro_button"),
                                 colors = ButtonDefaults.filledTonalButtonColors(
                                     containerColor = MaterialTheme.colorScheme.primary,
@@ -570,12 +572,12 @@ fun AppSettingsScreen(
                                 Icon(
                                     imageVector = Icons.Default.ShoppingCart,
                                     contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Upgrade to Pro Pass in Captain Store",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                                    text = "Store Se Pro Pass Lein",
+                                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                                 )
                             }
                         } else {
@@ -584,18 +586,19 @@ fun AppSettingsScreen(
                                 shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
                                     .testTag("manage_pass_button")
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.ShoppingCart,
                                     contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
+                                    modifier = Modifier.size(18.dp),
                                     tint = PrimaryEmerald
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Manage Pass in Captain Store",
-                                    style = MaterialTheme.typography.labelMedium.copy(
+                                    text = "Store Me Pass Dekhein",
+                                    style = MaterialTheme.typography.labelLarge.copy(
                                         fontWeight = FontWeight.Bold,
                                         color = PrimaryEmerald
                                     )
@@ -609,7 +612,7 @@ fun AppSettingsScreen(
             // 2. Section Header: Critical Core Permissions
             item {
                 Text(
-                    text = stringResource(R.string.settings_section_critical_permissions),
+                    text = "ZAROORI PERMISSIONS",
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
@@ -639,7 +642,7 @@ fun AppSettingsScreen(
             // 3. Section Header: Reliability & System Settings
             item {
                 Text(
-                    text = stringResource(R.string.settings_section_background_survival),
+                    text = "BACKGROUND & RELIABILITY",
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
@@ -665,7 +668,7 @@ fun AppSettingsScreen(
             // 4. Section Header: In-App Updater & Releases
             item {
                 Text(
-                    text = stringResource(R.string.settings_section_in_app_updater),
+                    text = "APP UPDATE CHECK",
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
@@ -682,7 +685,7 @@ fun AppSettingsScreen(
             // 5. Section Header: Troubleshooting & UI Diagnostics
             item {
                 Text(
-                    text = "TROUBLESHOOTING & UI DIAGNOSTICS",
+                    text = "DIKKAT AA RAHI HAI? (UI HELP)",
                     style = MaterialTheme.typography.labelMedium.copy(
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
@@ -797,17 +800,17 @@ fun ReadinessSummaryBanner(
                     Column {
                         Text(
                             text = if (isReady)
-                                stringResource(R.string.settings_banner_ready_title)
+                                "Sab Permissions Ready Hain"
                             else
-                                stringResource(R.string.settings_banner_action_required_title),
+                                "Zaroori Permission Baaki Hai",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             color = if (isReady) PrimaryEmerald else MaterialTheme.colorScheme.error
                         )
                         Text(
                             text = if (isReady)
-                                stringResource(R.string.settings_banner_ready_desc)
+                                "App bina rukawat ride check karne ke liye bilkul taiyaar hai."
                             else
-                                stringResource(R.string.settings_banner_action_required_desc),
+                                "Auto-accept chalane ke liye neeche diye permissions ON karein.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -821,6 +824,7 @@ fun ReadinessSummaryBanner(
                     onClick = onOpenPrimaryAction,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(min = 48.dp)
                         .testTag("resolve_permissions_button"),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error,
@@ -829,7 +833,7 @@ fun ReadinessSummaryBanner(
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Text(
-                        text = stringResource(R.string.settings_btn_grant_missing_permissions),
+                        text = "Baaki Permission ON Karein",
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -927,9 +931,9 @@ fun PermissionItemCard(
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         Text(
-                            text = if (item.isGranted) stringResource(R.string.settings_badge_granted)
-                            else if (item.id == "autostart") stringResource(R.string.settings_badge_manual_check)
-                            else stringResource(R.string.settings_badge_required),
+                            text = if (item.isGranted) "CHALU"
+                            else if (item.id == "autostart") "CHECK KAREIN"
+                            else "ZAROORI",
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             color = if (item.isGranted) PrimaryEmerald
@@ -946,26 +950,30 @@ fun PermissionItemCard(
             if (item.isGranted) {
                 IconButton(
                     onClick = onActionClick,
-                    modifier = Modifier.testTag("action_icon_${item.id}")
+                    modifier = Modifier
+                        .size(48.dp)
+                        .testTag("action_icon_${item.id}")
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowForwardIos,
                         contentDescription = stringResource(R.string.settings_btn_manage),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 }
             } else {
                 FilledTonalButton(
                     onClick = onActionClick,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.testTag("grant_button_${item.id}")
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("grant_button_${item.id}")
                 ) {
                     Text(
-                        text = if (item.id == "autostart") stringResource(R.string.settings_btn_manage) else stringResource(R.string.settings_btn_enable),
+                        text = if (item.id == "autostart") "Setting" else "ON Karein",
                         fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
@@ -1017,12 +1025,12 @@ fun OemGuidanceCard(
                 }
                 Column {
                     Text(
-                        text = "⚡ Important for $brandName Captains",
+                        text = "⚡ $brandName Phone Ke Liye Zaroori",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Prevent background service killing during shifts",
+                        text = "Background me app band hone se bachayein",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -1030,7 +1038,7 @@ fun OemGuidanceCard(
             }
 
             Text(
-                text = "$brandName aggressively kills background and Accessibility services when the screen turns off. Complete these 2 essential steps to prevent service crashes:",
+                text = "$brandName phone screen band hone par background apps ko band kar deta hai. Auto-accept bina ruke chalane ke liye yeh 2 step karein:",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 lineHeight = 18.sp
@@ -1057,12 +1065,12 @@ fun OemGuidanceCard(
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            text = "Step 1: Lock App in Recent Apps",
+                            text = "Step 1: Recent Apps Me App Lock Karein",
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Open Recent Apps (Overview), swipe down or long-press on Order Master, and tap the 🔒 Lock icon. This stops system RAM cleaning from closing the app.",
+                            text = "Recent Apps kholein, Order Master par neeche swipe ya hold karein aur 🔒 Lock dabayein. Isse phone app ko band nahi karega.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 16.sp
@@ -1092,12 +1100,12 @@ fun OemGuidanceCard(
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            text = "Step 2: Enable Auto-Start & No Restrictions",
+                            text = "Step 2: Auto-Start Aur Battery 'No Restrictions' Karein",
                             style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Turn ON Auto-Start / Background Launch, and set Battery Saver to 'No Restrictions' so the Accessibility service can react instantly to orders.",
+                            text = "Auto-Start ON karein aur Battery Saver ko 'No Restrictions' par rakhein taaki har ride turant check ho sake.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             lineHeight = 16.sp
@@ -1115,6 +1123,7 @@ fun OemGuidanceCard(
                     onClick = onOpenOemSettings,
                     modifier = Modifier
                         .weight(1f)
+                        .heightIn(min = 48.dp)
                         .testTag("open_oem_autostart_button"),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -1122,8 +1131,8 @@ fun OemGuidanceCard(
                     )
                 ) {
                     Text(
-                        text = "Open Auto-Start",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                        text = "Auto-Start Kholein",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 }
 
@@ -1131,12 +1140,13 @@ fun OemGuidanceCard(
                     onClick = { PermissionUtils.openBatteryOptimizationSettings(context) },
                     modifier = Modifier
                         .weight(1f)
+                        .heightIn(min = 48.dp)
                         .testTag("open_oem_battery_button"),
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Text(
-                        text = "Battery Settings",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                        text = "Battery Setting",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 }
             }
@@ -1223,9 +1233,11 @@ fun InAppUpdaterSettingsCard() {
                         }
                     },
                     enabled = updateState !is UpdateResult.Checking,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.testTag("check_updates_button")
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("check_updates_button")
                 ) {
                     if (updateState is UpdateResult.Checking) {
                         CircularProgressIndicator(
@@ -1443,7 +1455,7 @@ fun FeatureUnlockDialog(
                                 contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
                                 modifier = Modifier
                                     .weight(1f)
-                                    .height(30.dp),
+                                    .heightIn(min = 48.dp),
                                 colors = ButtonDefaults.filledTonalButtonColors(
                                     containerColor = if (hours == quickHour)
                                         MaterialTheme.colorScheme.primary
@@ -1571,7 +1583,8 @@ fun FeatureUnlockDialog(
                     }
                 },
                 enabled = !isLoading && hasEnoughPoints,
-                shape = RoundedCornerShape(10.dp)
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.heightIn(min = 48.dp)
             ) {
                 if (isLoading) {
                     CircularProgressIndicator(
@@ -1580,19 +1593,22 @@ fun FeatureUnlockDialog(
                         color = MaterialTheme.colorScheme.onPrimary
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Processing...")
+                    Text("Khul Raha Hai...")
                 } else {
                     Text(
-                        text = if (isAdminLocked) "Locked by Admin" else "Pay & Unlock ($totalCost Pts)",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                        text = if (isAdminLocked) "Admin Se Band" else "Kholein ($totalCost Pts)",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 }
             }
         },
         dismissButton = {
             if (!isLoading) {
-                TextButton(onClick = onDismiss) {
-                    Text("Cancel")
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Rukhein")
                 }
             }
         }
@@ -1751,7 +1767,7 @@ fun MultiFilterUnlockDialog(
                             contentPadding = PaddingValues(horizontal = 4.dp, vertical = 2.dp),
                             modifier = Modifier
                                 .weight(1f)
-                                .height(30.dp),
+                                .heightIn(min = 48.dp),
                             colors = ButtonDefaults.filledTonalButtonColors(
                                 containerColor = if (hours == quickHour)
                                     MaterialTheme.colorScheme.primary
@@ -1858,7 +1874,9 @@ fun MultiFilterUnlockDialog(
                 },
                 enabled = !isLoading && hasEnoughPoints,
                 shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.testTag("multi_filter_confirm_button")
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("multi_filter_confirm_button")
             ) {
                 if (isLoading) {
                     CircularProgressIndicator(
@@ -1867,19 +1885,22 @@ fun MultiFilterUnlockDialog(
                         color = MaterialTheme.colorScheme.onPrimary
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Unlocking...")
+                    Text("Khul Raha Hai...")
                 } else {
                     Text(
-                        text = if (selectedPricings.isEmpty()) "Select Filters" else "Pay & Unlock ($totalCost Pts)",
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                        text = if (selectedPricings.isEmpty()) "Filters Chunein" else "Kholein ($totalCost Pts)",
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 }
             }
         },
         dismissButton = {
             if (!isLoading) {
-                TextButton(onClick = onDismiss) {
-                    Text("Cancel")
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Rukhein")
                 }
             }
         }
@@ -1936,11 +1957,11 @@ private fun ReportUiIssueDiagnosticsCard(
                     }
                     Column {
                         Text(
-                            text = "Rapido UI Compatibility Helper",
+                            text = "Rapido Screen Support Helper",
                             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Rapido updated its screen? Copy a privacy-safe layout snapshot for support.",
+                            text = "Rapido screen badli ho to bina grahak details ke layout snapshot copy karein.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1962,9 +1983,9 @@ private fun ReportUiIssueDiagnosticsCard(
                 ) {
                     Text(
                         text = if (hasCapturedSnapshot) {
-                            "Latest Rapido layout snapshot ready (PII redacted)"
+                            "Rapido screen layout ready hai (sab private details chhupayi gayi hain)"
                         } else {
-                            "No Rapido screen captured yet — copies device & config summary"
+                            "Abhi koi Rapido screen capture nahi hui — device summary copy hogi"
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1997,7 +2018,7 @@ private fun ReportUiIssueDiagnosticsCard(
             }
 
             Text(
-                text = "Privacy guarantee: Copies only View IDs, bounds, and button labels. Passenger names, street addresses, and phone numbers are never included.",
+                text = "Privacy guarantee: Sirf button aur screen layout copy hota hai. Kisi bhi grahak ka naam, pata ya phone number copy nahi hota.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -2017,7 +2038,7 @@ private fun ReportUiIssueDiagnosticsCard(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Report UI Issue",
+                    text = "UI Snapshot Copy Karein",
                     style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                 )
             }

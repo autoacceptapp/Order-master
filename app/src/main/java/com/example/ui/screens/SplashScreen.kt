@@ -138,9 +138,9 @@ private fun LanguageSelectionView(
             Spacer(modifier = Modifier.height(4.dp))
 
             Text(
-                text = "Select Voice Language / आवाज़ भाषा चुनें",
+                text = "Apni Bhasha Chunein • भाषा चुनें",
                 style = MaterialTheme.typography.titleLarge.copy(
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.ExtraBold
                 ),
                 color = MaterialTheme.colorScheme.onBackground,
                 textAlign = TextAlign.Center
@@ -149,7 +149,7 @@ private fun LanguageSelectionView(
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = "Select Voice Announcement Language for ride readouts (TTS)",
+                text = "Ride aane par aawaz me bolne aur padhne ke liye bhasha chunein",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
@@ -363,8 +363,8 @@ private fun LoadingSplashView(
             )
 
             Text(
-                text = "Captain Auto-Accept & Surge Radar",
-                style = MaterialTheme.typography.bodySmall,
+                text = "Aasan Auto Ride Helper",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
@@ -379,7 +379,7 @@ private fun LoadingSplashView(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "Connecting to Server...",
+                text = "App Taiyaar Ho Raha Hai...",
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontWeight = FontWeight.SemiBold
                 ),
@@ -389,9 +389,9 @@ private fun LoadingSplashView(
             Spacer(modifier = Modifier.height(6.dp))
 
             Text(
-                text = "Synchronizing licensing and captain profile",
+                text = "Aapka account aur filters load ho rahe hain",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
             )
         }
     }

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -79,6 +80,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.OrderEntity
 import com.example.ui.HistoryFilter
 import com.example.ui.OrderMasterViewModel
+import com.example.ui.theme.PrimaryEmerald
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -141,6 +143,8 @@ fun OrderHistoryScreen(
     }
 
     val dateFormat = remember { SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()) }
+    val acceptedInView = remember(orders) { orders.count { it.isAccepted } }
+    val totalKamaiInr = remember(orders) { orders.filter { it.isAccepted }.sumOf { it.fare.toInt() } }
 
     Column(
         modifier = modifier
@@ -148,6 +152,33 @@ fun OrderHistoryScreen(
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Kamai Summary Bar (3 compact stat tiles)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("history_kamai_summary_bar"),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            KamaiSummaryTile(
+                label = "Total Dekhi",
+                value = "${orders.size}",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f)
+            )
+            KamaiSummaryTile(
+                label = "Li Gayi",
+                value = "$acceptedInView",
+                tint = PrimaryEmerald,
+                modifier = Modifier.weight(1f)
+            )
+            KamaiSummaryTile(
+                label = "Total Kamai",
+                value = "₹$totalKamaiInr",
+                tint = AmberAccent,
+                modifier = Modifier.weight(1f)
+            )
+        }
+
         // Search Bar & Clear Button Row
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -157,7 +188,7 @@ fun OrderHistoryScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { viewModel.setHistorySearchQuery(it) },
-                placeholder = { Text("Search location, fare, or reason...", fontSize = 13.sp) },
+                placeholder = { Text("Jagah, kiraya ya wajah likhein...", fontSize = 13.sp) },
                 leadingIcon = {
                     Icon(
                         imageVector = Icons.Default.Search,
@@ -167,7 +198,10 @@ fun OrderHistoryScreen(
                 },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.setHistorySearchQuery("") }) {
+                        IconButton(
+                            onClick = { viewModel.setHistorySearchQuery("") },
+                            modifier = Modifier.size(48.dp)
+                        ) {
                             Icon(
                                 imageVector = Icons.Default.Clear,
                                 contentDescription = "Clear search",
@@ -215,42 +249,45 @@ fun OrderHistoryScreen(
             FilterChip(
                 selected = statusFilter == HistoryFilter.ALL,
                 onClick = { viewModel.setHistoryStatusFilter(HistoryFilter.ALL) },
-                label = { Text("All ($totalOrdersCount)") },
-                shape = RoundedCornerShape(10.dp)
+                label = { Text("Sabhi ($totalOrdersCount)", fontWeight = FontWeight.SemiBold) },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.heightIn(min = 48.dp)
             )
             FilterChip(
                 selected = statusFilter == HistoryFilter.ACCEPTED,
                 onClick = { viewModel.setHistoryStatusFilter(HistoryFilter.ACCEPTED) },
-                label = { Text("Accepted") },
+                label = { Text("Li Gayi", fontWeight = FontWeight.SemiBold) },
                 leadingIcon = {
                     Icon(
                         imageVector = Icons.Default.CheckCircle,
                         contentDescription = null,
-                        tint = Color(0xFF10B981),
+                        tint = PrimaryEmerald,
                         modifier = Modifier.size(16.dp)
                     )
                 },
-                shape = RoundedCornerShape(10.dp)
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.heightIn(min = 48.dp)
             )
             FilterChip(
                 selected = statusFilter == HistoryFilter.IGNORED,
                 onClick = { viewModel.setHistoryStatusFilter(HistoryFilter.IGNORED) },
-                label = { Text("Ignored") },
+                label = { Text("Chhodi Gayi", fontWeight = FontWeight.SemiBold) },
                 leadingIcon = {
                     Icon(
                         imageVector = Icons.Default.ErrorOutline,
                         contentDescription = null,
-                        tint = Color(0xFFEF4444),
+                        tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(16.dp)
                     )
                 },
-                shape = RoundedCornerShape(10.dp)
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.heightIn(min = 48.dp)
             )
         }
 
         // Earn Free Points Banner in History
         Card(
-            shape = RoundedCornerShape(14.dp),
+            shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(
                 containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
             ),
@@ -267,43 +304,47 @@ fun OrderHistoryScreen(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Icon(
                         imageVector = Icons.Default.CardGiftcard,
                         contentDescription = null,
                         tint = AmberAccent,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(22.dp)
                     )
                     Text(
-                        text = "Need more points?",
-                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                        text = "Points Kam Hai? Free +5 Pts",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
+                Spacer(modifier = Modifier.width(8.dp))
                 Button(
                     onClick = handleWatchAd,
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = AmberAccent,
                         contentColor = Color.Black
                     ),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    modifier = Modifier.testTag("history_watch_ad_button")
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("history_watch_ad_button")
                 ) {
                     Icon(
                         imageVector = Icons.Default.PlayArrow,
                         contentDescription = null,
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
                         text = when {
-                            isAdLoading && !RewardedAdManager.isAdLoaded() -> "Loading Ad..."
-                            isAdNoFill && !RewardedAdManager.isAdLoaded() -> "Retry Ad (+5 Pts)"
-                            else -> "Watch Ad for +5 Points"
+                            isAdLoading && !RewardedAdManager.isAdLoaded() -> "Load Ho Raha..."
+                            isAdNoFill && !RewardedAdManager.isAdLoaded() -> "Retry (+5 Pts)"
+                            else -> "Ad Dekhein (+5 Pts)"
                         },
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }
             }
@@ -338,25 +379,65 @@ fun OrderHistoryScreen(
     if (showClearConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showClearConfirmDialog = false },
-            title = { Text("Clear Order History?") },
-            text = { Text("This will permanently delete all logged ride decisions from the local Room database.") },
+            title = { Text("Saari Ride History Hatayein?") },
+            text = { Text("Isse aapke phone me save saari purani rides ka record hamesha ke liye delete ho jayega.") },
             confirmButton = {
                 Button(
                     onClick = {
                         viewModel.clearHistory()
                         showClearConfirmDialog = false
                     },
+                    modifier = Modifier.heightIn(min = 48.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text("Clear All")
+                    Text("Sab Hatayein")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showClearConfirmDialog = false }) {
-                    Text("Cancel")
+                TextButton(
+                    onClick = { showClearConfirmDialog = false },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Rukhein")
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun KamaiSummaryTile(
+    label: String,
+    value: String,
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = tint.copy(alpha = 0.12f)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.ExtraBold,
+                    color = tint
+                ),
+                maxLines = 1
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                ),
+                maxLines = 1
+            )
+        }
     }
 }
 
@@ -498,7 +579,7 @@ private fun OrderHistoryCard(
                             modifier = Modifier.size(13.dp)
                         )
                         Text(
-                            text = if (isAccepted) "ACCEPTED" else "IGNORED",
+                            text = if (isAccepted) "LI GAYI" else "CHHODI GAYI",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.ExtraBold,
                                 color = badgeBg,
@@ -759,17 +840,18 @@ private fun OrderHistoryCard(
 
                 TextButton(
                     onClick = { showDetailsDialog = true },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    modifier = Modifier.heightIn(min = 48.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Info,
                         contentDescription = null,
-                        modifier = Modifier.size(14.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = "Full Details",
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                        text = "Poori Jaankari",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }
             }
@@ -786,7 +868,7 @@ private fun OrderHistoryCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "Order Details • ₹${order.fare.toInt()}",
+                        text = "Ride Jaankari • ₹${order.fare.toInt()}",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black)
                     )
                 }
@@ -803,7 +885,7 @@ private fun OrderHistoryCard(
                     ) {
                         Text(text = "Status:", style = MaterialTheme.typography.bodySmall)
                         Text(
-                            text = if (isAccepted) "ACCEPTED" else "IGNORED",
+                            text = if (isAccepted) "LI GAYI" else "CHHODI GAYI",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = badgeBg
@@ -836,7 +918,7 @@ private fun OrderHistoryCard(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            text = "🟢 Pickup: ${order.pickupDistanceKm?.let { "$it km" } ?: "N/A"}",
+                            text = "🟢 Grahak Tak (Pickup): ${order.pickupDistanceKm?.let { "$it km" } ?: "N/A"}",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFF047857)
@@ -866,7 +948,7 @@ private fun OrderHistoryCard(
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            text = "🔴 Drop: ${order.dropDistanceKm?.let { "$it km" } ?: "N/A"}",
+                            text = "🔴 Drop Jagah: ${order.dropDistanceKm?.let { "$it km" } ?: "N/A"}",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFFB91C1C)
@@ -886,7 +968,7 @@ private fun OrderHistoryCard(
 
                     // Decision Reason
                     Text(
-                        text = "Decision: ${order.decisionReason}",
+                        text = "Faisla: ${order.decisionReason}",
                         style = MaterialTheme.typography.bodySmall.copy(
                             fontWeight = FontWeight.Medium,
                             color = if (isAccepted) Color(0xFF047857) else Color(0xFFB91C1C)
@@ -895,19 +977,25 @@ private fun OrderHistoryCard(
                 }
             },
             confirmButton = {
-                Button(onClick = { showDetailsDialog = false }) {
-                    Text("Close")
+                Button(
+                    onClick = { showDetailsDialog = false },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
+                    Text("Band Karein")
                 }
             },
             dismissButton = {
-                FilledTonalButton(onClick = handleAnnounce) {
+                FilledTonalButton(
+                    onClick = handleAnnounce,
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.VolumeUp,
                         contentDescription = null,
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Announce Aloud")
+                    Text("Sunke Samjho")
                 }
             }
         )
@@ -944,15 +1032,15 @@ private fun EmptyHistoryView(
             }
 
             Text(
-                text = if (searchQuery.isNotBlank()) "No orders match '$searchQuery'" else "No Orders Recorded Yet",
+                text = if (searchQuery.isNotBlank()) "'$searchQuery' Ki Koi Ride Nahi Mili" else "Abhi Koi Ride Record Nahi Hai",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
             )
 
             Text(
                 text = if (searchQuery.isNotBlank())
-                    "Try clearing your search query or adjusting status filters."
+                    "Search clear karke ya 'Sabhi' filter chunein."
                 else
-                    "Ride offers detected on screen will be archived here in your local Room database.",
+                    "Screen par jo bhi ride offer aayega, uska poora hisaab yahan save hoga.",
                 style = MaterialTheme.typography.bodySmall.copy(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 ),
@@ -961,14 +1049,17 @@ private fun EmptyHistoryView(
 
             if (searchQuery.isBlank() && com.example.BuildConfig.DEBUG) {
                 Spacer(modifier = Modifier.height(4.dp))
-                FilledTonalButton(onClick = onSimulate) {
+                FilledTonalButton(
+                    onClick = onSimulate,
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.PlayArrow,
                         contentDescription = null,
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Simulate Sample Ride")
+                    Text("Demo Ride Test Karein")
                 }
             }
         }

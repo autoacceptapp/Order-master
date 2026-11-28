@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -168,11 +169,11 @@ fun SubscriptionScreen(
                 title = {
                     Column {
                         Text(
-                            text = "Captain Store & Passes",
+                            text = "Pass & Points Store",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Points Conversion & UPI Licensing",
+                            text = "Points Badlein ya UPI Se Pass Lein",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -287,7 +288,7 @@ fun SubscriptionScreen(
                 ) {
                     Column {
                         Text(
-                            text = "AVAILABLE SUBSCRIPTION PASSES",
+                            text = "AVAILABLE PASSES",
                             style = MaterialTheme.typography.labelMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 1.sp
@@ -295,7 +296,7 @@ fun SubscriptionScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = if (isPaymentSystemActive) "Smart Conversion: Pay with Points or direct UPI" else "Purchases temporarily offline for maintenance",
+                            text = if (isPaymentSystemActive) "Points se kholein ya seedha UPI se payment karein" else "Abhi payment maintenance ke liye band hai",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -363,11 +364,11 @@ fun SubscriptionScreen(
 
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Already Paid via UPI?",
+                                text = "Pehle Se UPI Payment Kar Di?",
                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                             )
                             Text(
-                                text = "Submit 12-digit UTR for automated bank confirmation verification",
+                                text = "12-digit UTR daal kar turant pass chalu karein",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -377,7 +378,8 @@ fun SubscriptionScreen(
                             onClick = { onNavigateToPaymentVerification(null) },
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = PrimaryEmerald),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                            modifier = Modifier.heightIn(min = 48.dp)
                         ) {
                             Text("Verify UTR", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
                         }
@@ -450,7 +452,7 @@ fun SubscriptionScreen(
                     }
 
                     Text(
-                        text = "• Active validity: ${tier.durationDays} Day(s)\n• Stacks onto any existing active pass\n• Instant cloud & local activation",
+                        text = "• Validity: ${tier.durationDays} Din\n• Pehle se chalu pass me din jud jayenge\n• Turant pass chalu ho jayega",
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -465,9 +467,9 @@ fun SubscriptionScreen(
                                 val res = PassManager.activatePassWithPoints(context, tier)
                                 if (res.isSuccess) {
                                     val successMsg = if (tier == PassTier.REMOVE_ADS) {
-                                        "🎉 Remove Ads Pass Activated! Banner ads hidden for ${tier.durationDays} days."
+                                        "🎉 Remove Ads Pass Chalu! ${tier.durationDays} din ads nahi dikhenge."
                                     } else {
-                                        "🎉 ${tier.title} Activated! Pro features unlocked."
+                                        "🎉 ${tier.title} Chalu Ho Gaya!"
                                     }
                                     Toast.makeText(context, successMsg, Toast.LENGTH_LONG).show()
                                 } else {
@@ -484,21 +486,23 @@ fun SubscriptionScreen(
                         }
                     },
                     enabled = !isProcessing,
+                    modifier = Modifier.heightIn(min = 48.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = PrimaryEmerald)
                 ) {
                     if (isProcessing) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
                         Spacer(modifier = Modifier.width(8.dp))
                     }
-                    Text("Redeem $effectivePoints Points", fontWeight = FontWeight.Bold)
+                    Text("$effectivePoints Points Lagayein", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(
                     onClick = { selectedPassForPointsPurchase = null },
-                    enabled = !isProcessing
+                    enabled = !isProcessing,
+                    modifier = Modifier.heightIn(min = 48.dp)
                 ) {
-                    Text("Cancel")
+                    Text("Rukhein")
                 }
             }
         )
@@ -619,7 +623,7 @@ private fun WalletHeaderCard(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = if (isLoggedIn) (userEmail ?: "Cloud Sync Active") else "Log in with Gmail to sync passes",
+                            text = if (isLoggedIn) (userEmail ?: "Cloud Backup Chalu Hai") else "Pass save rakhne ke liye Google Sign In karein",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -630,9 +634,10 @@ private fun WalletHeaderCard(
                     FilledTonalButton(
                         onClick = onSignIn,
                         shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier.heightIn(min = 48.dp)
                     ) {
-                        Text("Sign In", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+                        Text("Sign In", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
                     }
                 } else {
                     Surface(
@@ -661,7 +666,7 @@ private fun WalletHeaderCard(
             ) {
                 Column {
                     Text(
-                        text = "POINTS WALLET BALANCE",
+                        text = "MERA POINTS WALLET",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 0.8.sp
@@ -706,7 +711,7 @@ private fun WalletHeaderCard(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Referrals & Rewards",
+                            text = "Refer & Ads Se",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFFB45309)
@@ -1188,7 +1193,7 @@ private fun PassCard(
                         onClick = onBuyWithPoints,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp)
+                            .heightIn(min = 48.dp)
                             .testTag("buy_points_${passTier.id}"),
                         shape = RoundedCornerShape(12.dp),
                         enabled = !isProcessing,
@@ -1204,7 +1209,7 @@ private fun PassCard(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Buy with $effectivePoints Points",
+                            text = "$effectivePoints Points Se Kholein",
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                         )
                     }
@@ -1214,7 +1219,7 @@ private fun PassCard(
                         onClick = onPayViaUpi,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(42.dp)
+                            .heightIn(min = 48.dp)
                             .testTag("pay_upi_alt_${passTier.id}"),
                         shape = RoundedCornerShape(12.dp),
                         enabled = !isProcessing,
@@ -1224,12 +1229,12 @@ private fun PassCard(
                             imageVector = Icons.Default.Payment,
                             contentDescription = null,
                             tint = PrimaryEmerald,
-                            modifier = Modifier.size(16.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "Or Pay ₹$effectivePrice via UPI",
-                            style = MaterialTheme.typography.labelMedium.copy(
+                            text = "Ya ₹$effectivePrice UPI Se Pay Karein",
+                            style = MaterialTheme.typography.labelLarge.copy(
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -1244,7 +1249,7 @@ private fun PassCard(
                         onClick = onPayViaUpi,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(48.dp)
+                            .heightIn(min = 48.dp)
                             .testTag("pay_upi_${passTier.id}"),
                         shape = RoundedCornerShape(12.dp),
                         enabled = !isProcessing,
@@ -1260,7 +1265,7 @@ private fun PassCard(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Pay ₹$effectivePrice via UPI",
+                            text = "₹$effectivePrice UPI Se Pay Karein",
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
                         )
                     }
@@ -1287,7 +1292,7 @@ private fun PassCard(
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "$effectivePoints Points Required (You have $pointsBalance pts)",
+                                text = "$effectivePoints Points Chahiye (Aapke paas $pointsBalance pts)",
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1522,7 +1527,7 @@ fun EarnFreePointsCard(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "Earn Free Points",
+                        text = "Free Points Kamayein",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold
                         )
@@ -1546,7 +1551,7 @@ fun EarnFreePointsCard(
                     text = if (isAdNoFill && !isAdLoading && !RewardedAdManager.isAdLoaded()) {
                         RewardedAdManager.NO_FILL_USER_MESSAGE
                     } else {
-                        "Watch a short video ad to earn 5 reward points for your wallet"
+                        "Chhota video ad dekh kar turant +5 Points paayein"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1561,7 +1566,9 @@ fun EarnFreePointsCard(
                     contentColor = Color.Black
                 ),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                modifier = Modifier.testTag("earn_points_ad_button")
+                modifier = Modifier
+                    .heightIn(min = 48.dp)
+                    .testTag("earn_points_ad_button")
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -1574,9 +1581,9 @@ fun EarnFreePointsCard(
                     )
                     Text(
                         text = when {
-                            isAdLoading && !RewardedAdManager.isAdLoaded() -> "Loading..."
+                            isAdLoading && !RewardedAdManager.isAdLoaded() -> "Load Ho Raha..."
                             isAdNoFill && !RewardedAdManager.isAdLoaded() -> "Retry"
-                            else -> "Watch Ad"
+                            else -> "Ad Dekhein"
                         },
                         maxLines = 1,
                         softWrap = false,

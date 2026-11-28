@@ -34,6 +34,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -117,6 +118,7 @@ fun OnboardingScreen(
 
     val completeOnboarding: () -> Unit = {
         TTSManager.stop()
+        AppSettings.setVoiceLanguage(context, selectedCode)
         AppSettings.setAppLanguage(context, selectedCode)
         AppSettings.setHomeTutorialCompleted(context, true)
         AppSettings.setOnboardingCompleted(context, true)
@@ -191,7 +193,7 @@ fun OnboardingScreen(
                     textAlign = TextAlign.Center
                 )
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
                 Text(
                     text = "Jo bhasha aapko sabse aasan lage uspe tap karein.\nApp aur aawaz usi bhasha me chalegi.",
@@ -200,7 +202,77 @@ fun OnboardingScreen(
                     textAlign = TextAlign.Center
                 )
 
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // 3-Step Visual Preview Pills
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf(
+                        "1. Permission ON",
+                        "2. Filter Mode",
+                        "3. Ride Shuru"
+                    ).forEach { stepPill ->
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = stepPill,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 7.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Prominent 48dp+ Sunke Samjho Audio Guide Button
+                FilledTonalButton(
+                    onClick = {
+                        AppSettings.setVoiceLanguage(context, selectedCode)
+                        AppSettings.setAppLanguage(context, selectedCode)
+                        val guideSpeech = when (selectedCode) {
+                            "en" -> "Welcome to Order Master. Pick your language below, then tap Start to enable auto ride checks."
+                            "hi" -> "ऑर्डर मास्टर में आपका स्वागत है। नीचे अपनी भाषा चुनें और शुरू करें बटन दबाएं।"
+                            "gu" -> "ઓર્ડર માસ્ટરમાં આપનું સ્વાગત છે. નીચે તમારી ભાષા પસંદ કરો અને શરૂ કરો બટન દબાવો."
+                            "mr" -> "ऑर्डर मास्टरमध्ये तुमचे स्वागत आहे. खाली तुमची भाषा निवडा आणि सुरू करा बटण दाबा."
+                            else -> "Order Master me aapka swagat hai. Neeche apni bhasha chunein aur Shuru Karein button dabayein."
+                        }
+                        TTSManager.speakGuide(context, guideSpeech, flush = true)
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .testTag("onboarding_audio_guide_btn")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.VolumeUp,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = when (selectedCode) {
+                            "en" -> "Listen Audio Guide"
+                            "hi" -> "सुनके समझें (Audio Guide)"
+                            "gu" -> "સાંભળીને સમજો (Audio Guide)"
+                            "mr" -> "ऐकून समजून घ्या (Audio Guide)"
+                            else -> "Sunke Samjho (Audio Guide)"
+                        },
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
 
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -235,6 +307,7 @@ fun OnboardingScreen(
                                 .clip(RoundedCornerShape(16.dp))
                                 .clickable {
                                     selectedCode = option.code
+                                    AppSettings.setVoiceLanguage(context, option.code)
                                     AppSettings.setAppLanguage(context, option.code)
                                     TTSManager.speakGreeting(context, option.code)
                                 }
@@ -291,6 +364,7 @@ fun OnboardingScreen(
                                     IconButton(
                                         onClick = {
                                             selectedCode = option.code
+                                            AppSettings.setVoiceLanguage(context, option.code)
                                             AppSettings.setAppLanguage(context, option.code)
                                             TTSManager.speakGreeting(context, option.code)
                                         },
@@ -326,6 +400,7 @@ fun OnboardingScreen(
             ) {
                 OutlinedButton(
                     onClick = {
+                        AppSettings.setVoiceLanguage(context, selectedCode)
                         AppSettings.setAppLanguage(context, selectedCode)
                         showDemoGuide = true
                     },
@@ -348,7 +423,7 @@ fun OnboardingScreen(
                             "hi" -> "वीडियो / लाइव डेमो देखें"
                             "gu" -> "લાઇવ ડેમો જુઓ"
                             "mr" -> "लाइव्ह डेमो पहा"
-                            else -> "Video / Live Demo Dekhein"
+                            else -> "Live Demo Dekhein"
                         },
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                     )
@@ -356,7 +431,7 @@ fun OnboardingScreen(
 
                 Button(
                     onClick = completeOnboarding,
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary
@@ -364,16 +439,16 @@ fun OnboardingScreen(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 54.dp)
+                        .heightIn(min = 56.dp)
                         .testTag("onboarding_start_btn")
                 ) {
                     Text(
                         text = when (selectedCode) {
-                            "en" -> "Continue to Home"
-                            "hi" -> "आगे बढ़ें / शुरू करें"
-                            "gu" -> "આગળ વધો / શરૂ કરો"
-                            "mr" -> "पुढे जा / सुरू करा"
-                            else -> "Aage Badhein / Start"
+                            "en" -> "Start App"
+                            "hi" -> "शुरू करें"
+                            "gu" -> "શરૂ કરો"
+                            "mr" -> "सुरू करा"
+                            else -> "Shuru Karein"
                         },
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold)
                     )

@@ -93,6 +93,7 @@ import com.example.LogSeverity
 import com.example.PermissionOemHealthChecklistCard
 import com.example.PermissionUtils
 import com.example.R
+import com.example.TTSManager
 import com.example.auth.GoogleAuthManager
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
@@ -321,6 +322,7 @@ private fun MasterToggleCard(
     onToggle: () -> Unit,
     onFixService: () -> Unit
 ) {
+    val context = LocalContext.current
     val isDark = isSystemInDarkTheme()
     val activeColor = Color(0xFF10B981) // Emerald Green
     val pausedColor = Color(0xFFF59E0B) // Amber
@@ -337,12 +339,18 @@ private fun MasterToggleCard(
 
     val borderColor by animateColorAsState(
         targetValue = when {
-            !isServiceRunningInSystem -> disabledColor.copy(alpha = 0.5f)
-            isAutoAcceptEnabled -> activeColor.copy(alpha = 0.6f)
-            else -> pausedColor.copy(alpha = 0.5f)
+            !isServiceRunningInSystem -> disabledColor.copy(alpha = 0.55f)
+            isAutoAcceptEnabled -> activeColor.copy(alpha = 0.65f)
+            else -> pausedColor.copy(alpha = 0.55f)
         },
         label = "borderColor"
     )
+
+    val statusSpeech = when {
+        !isServiceRunningInSystem -> "Abhi permission baaki hai. Neeche laal button dabakar Order Master ki permission ON karein."
+        isAutoAcceptEnabled -> "Auto Accept chalu hai. Rapido par aane wali har ride aapke filters ke hisaab se check ho rahi hai."
+        else -> "Auto Accept abhi band hai. Shuru karne ke liye hara button dabayein."
+    }
 
     Card(
         modifier = Modifier
@@ -359,10 +367,10 @@ private fun MasterToggleCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Header Row: Status Badge & Large Switch
+            // Header Row: Status Badge, Voice Button & Large Switch
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -370,7 +378,8 @@ private fun MasterToggleCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     // Pulsing Status Dot
                     Box(
@@ -389,18 +398,18 @@ private fun MasterToggleCard(
 
                     Column {
                         Text(
-                            text = "Auto-Accept Service",
+                            text = "AUTO RIDE HELPER",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.6.sp,
+                                letterSpacing = 0.8.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         )
                         Text(
                             text = when {
-                                !isServiceRunningInSystem -> "Permission Zaroori Hai"
-                                isAutoAcceptEnabled -> "Chalu Hai — Ride Dekh Raha Hai"
-                                else -> "Abhi Band Hai (Paused)"
+                                !isServiceRunningInSystem -> "PERMISSION BAAKI HAI"
+                                isAutoAcceptEnabled -> "CHALU HAI • Ride Check Ho Rahi Hai"
+                                else -> "ABHI BAND HAI"
                             },
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.ExtraBold,
@@ -414,18 +423,36 @@ private fun MasterToggleCard(
                     }
                 }
 
-                // Tactile Master Switch
-                Switch(
-                    checked = isAutoAcceptEnabled && isServiceRunningInSystem,
-                    onCheckedChange = { onToggle() },
-                    modifier = Modifier.testTag("master_toggle_switch"),
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.White,
-                        checkedTrackColor = activeColor,
-                        uncheckedThumbColor = Color.White,
-                        uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    IconButton(
+                        onClick = { TTSManager.speakGuide(context, statusSpeech, flush = true) },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("master_card_speak_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.VolumeUp,
+                            contentDescription = "Sunke Samjho",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    // Tactile Master Switch
+                    Switch(
+                        checked = isAutoAcceptEnabled && isServiceRunningInSystem,
+                        onCheckedChange = { onToggle() },
+                        modifier = Modifier.testTag("master_toggle_switch"),
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.White,
+                            checkedTrackColor = activeColor,
+                            uncheckedThumbColor = Color.White,
+                            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
                     )
-                )
+                }
             }
 
             // Description or Alert Banner
@@ -451,7 +478,7 @@ private fun MasterToggleCard(
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
-                            text = "Permission Baaki Hai — Chalu karne ke liye yahan tap karein.",
+                            text = "App ko screen padhne ki permission nahi mili hai. Chalu karne ke liye button dabayein.",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontWeight = FontWeight.Medium,
                                 color = disabledColor
@@ -468,9 +495,9 @@ private fun MasterToggleCard(
                 ) {
                     Text(
                         text = if (isAutoAcceptEnabled)
-                            "Rapido par aane wali har ride check kar raha hai."
+                            "Rapido par aane wali har ride aapke rules se check ho rahi hai."
                         else
-                            "Auto-Accept ruka hua hai. Shuru karne ke liye switch ON karein.",
+                            "Auto-Accept ruka hua hai. Shuru karne ke liye neeche button dabayein.",
                         style = MaterialTheme.typography.bodySmall.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         ),
@@ -502,6 +529,49 @@ private fun MasterToggleCard(
                         }
                     }
                 }
+            }
+
+            // Large 52dp+ 1-Tap Action Button for effortless operation
+            Button(
+                onClick = {
+                    if (!isServiceRunningInSystem) onFixService() else onToggle()
+                },
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = when {
+                        !isServiceRunningInSystem -> disabledColor
+                        isAutoAcceptEnabled -> MaterialTheme.colorScheme.surfaceVariant
+                        else -> activeColor
+                    },
+                    contentColor = when {
+                        !isServiceRunningInSystem -> Color.White
+                        isAutoAcceptEnabled -> MaterialTheme.colorScheme.onSurface
+                        else -> Color.Black
+                    }
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 52.dp)
+                    .testTag("master_toggle_action_button")
+            ) {
+                Icon(
+                    imageVector = when {
+                        !isServiceRunningInSystem -> Icons.Default.Security
+                        isAutoAcceptEnabled -> Icons.Default.PauseCircle
+                        else -> Icons.Default.PlayArrow
+                    },
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = when {
+                        !isServiceRunningInSystem -> "Permission ON Karein"
+                        isAutoAcceptEnabled -> "BAND KAREIN (Pause)"
+                        else -> "CHALU KAREIN (Start)"
+                    },
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.ExtraBold)
+                )
             }
         }
     }
@@ -613,7 +683,7 @@ private fun GuidedSetupBanner(
                             .testTag("guided_setup_fix_now_btn")
                     ) {
                         Text(
-                            text = "Fix Now",
+                            text = "Theek Karein",
                             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.ExtraBold)
                         )
                     }
@@ -833,17 +903,18 @@ private fun LiveFeedSection(
                         OutlinedButton(
                             onClick = onSimulateOffer,
                             shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                            modifier = Modifier.heightIn(min = 48.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.PlayArrow,
                                 contentDescription = null,
-                                modifier = Modifier.size(16.dp)
+                                modifier = Modifier.size(18.dp)
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Simulate Offer",
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                                text = "Demo Ride Test Karein",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
                             )
                         }
                     }
@@ -922,15 +993,16 @@ private fun EmptyMonitorDisplay(
 
                 FilledTonalButton(
                     onClick = onSimulateOffer,
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.heightIn(min = 48.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.ElectricBolt,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Simulate Sample Ride Offer")
+                    Text("Demo Ride Test Karein", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -1011,7 +1083,7 @@ private fun LiveEventItem(log: ActivityLogEntry) {
                                 modifier = Modifier.size(11.dp)
                             )
                             Text(
-                                text = if (isAccepted) "ACCEPTED" else "IGNORED",
+                                text = if (isAccepted) "LI GAYI" else "CHHODI GAYI",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 10.sp,
@@ -1042,7 +1114,7 @@ private fun LiveEventItem(log: ActivityLogEntry) {
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     offer.totalFare?.let { fare ->
-                        EvaluationChip(label = "Fare", value = "₹${fare.toInt()}")
+                        EvaluationChip(label = "Kiraya", value = "₹${fare.toInt()}")
                     }
                     offer.pickupDistanceKm?.let { dist ->
                         EvaluationChip(label = "Pickup", value = "${String.format(Locale.US, "%.1f", dist)}km")
@@ -1139,7 +1211,7 @@ private fun GoogleAuthStatusCard(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = userName ?: "Google Account Linked",
+                            text = userName ?: "Google Account Link Hai",
                             style = MaterialTheme.typography.labelLarge.copy(
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
@@ -1148,7 +1220,7 @@ private fun GoogleAuthStatusCard(
                             maxLines = 1
                         )
                         Text(
-                            text = userEmail ?: "Cloud Sync Active",
+                            text = userEmail ?: "Aapka data safe sync me hai",
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1
@@ -1171,7 +1243,7 @@ private fun GoogleAuthStatusCard(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Connect Google Account",
+                            text = "Google Account Jodein",
                             style = MaterialTheme.typography.labelLarge.copy(
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
@@ -1179,7 +1251,7 @@ private fun GoogleAuthStatusCard(
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Backup filter rules & sync ride logs",
+                            text = "Apne filters aur points safe rakhein",
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1194,7 +1266,9 @@ private fun GoogleAuthStatusCard(
                     onClick = onTriggerSignIn,
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                    modifier = Modifier.testTag("home_google_sign_in_button")
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("home_google_sign_in_button")
                 ) {
                     Text(
                         text = "Sign In",
@@ -1207,7 +1281,7 @@ private fun GoogleAuthStatusCard(
                     color = Color(0xFF10B981).copy(alpha = 0.15f)
                 ) {
                     Text(
-                        text = "Synced",
+                        text = "Link Hai",
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.Bold,
                             color = PrimaryEmerald
@@ -1301,9 +1375,9 @@ private fun LicenseStatusHomeCard(
                         Text(
                             text = when (currentAccess) {
                                 is AccessStatus.PassActive -> currentAccess.passTier.title
-                                is AccessStatus.TrialActive -> "2-Day Free Trial"
-                                is AccessStatus.Expired -> "Free Mode Active"
-                                AccessStatus.Loading -> "Verifying..."
+                                is AccessStatus.TrialActive -> "2-Din Free Trial"
+                                is AccessStatus.Expired -> "Free Mode Chalu"
+                                AccessStatus.Loading -> "Check ho raha hai..."
                             },
                             style = MaterialTheme.typography.labelLarge.copy(
                                 fontWeight = FontWeight.Bold,
@@ -1341,10 +1415,10 @@ private fun LicenseStatusHomeCard(
                     }
                     Text(
                         text = when (currentAccess) {
-                            is AccessStatus.PassActive -> "Expires in ${currentAccess.formattedRemaining}"
-                            is AccessStatus.TrialActive -> "Remaining: ${currentAccess.formattedRemaining}"
-                            is AccessStatus.Expired -> "Buy filters with Points or get Pro Pass"
-                            AccessStatus.Loading -> "Checking system status..."
+                            is AccessStatus.PassActive -> "Samay baaki: ${currentAccess.formattedRemaining}"
+                            is AccessStatus.TrialActive -> "Trial baaki: ${currentAccess.formattedRemaining}"
+                            is AccessStatus.Expired -> "Points se filter kholein ya Pass lein"
+                            AccessStatus.Loading -> "Account check ho raha hai..."
                         },
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1367,10 +1441,12 @@ private fun LicenseStatusHomeCard(
                         }
                     ),
                     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    modifier = Modifier.testTag("home_store_pass_button")
+                    modifier = Modifier
+                        .heightIn(min = 48.dp)
+                        .testTag("home_store_pass_button")
                 ) {
                     Text(
-                        text = if (currentAccess is AccessStatus.PassActive) "Manage" else "Store",
+                        text = if (currentAccess is AccessStatus.PassActive) "Dekhein" else "Store",
                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
                     )
                 }

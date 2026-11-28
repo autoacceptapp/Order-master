@@ -358,7 +358,7 @@ fun FilterSettingsScreen(
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
         // =========================================================================================
-        // STICKY TOP BAR: 3 SMART MODES 1-TAP PRESET BAR
+        // STICKY TOP BAR: 3 SMART MODES 1-TAP PRESET BAR + LAMBA ROUTE QUICK PRESET
         // =========================================================================================
         SmartModesStickyBar(
             activeMode = activeSmartMode,
@@ -367,6 +367,12 @@ fun FilterSettingsScreen(
             customLabel = filterCopy.customLabel,
             headerLabel = filterCopy.smartModesHeader,
             onSelectMode = handleSmartModeClick,
+            onApplyLongRoute = {
+                val applied = viewModel.applyPreset("high")
+                if (applied) {
+                    Toast.makeText(context, "Lamba Route Mode ON (₹150+ • ₹15/km)!", Toast.LENGTH_SHORT).show()
+                }
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 10.dp)
@@ -441,7 +447,7 @@ fun FilterSettingsScreen(
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Text(
-                                    text = if (isProMode) "PRO MODE ACTIVE" else "FREEMIUM MODE",
+                                    text = if (isProMode) "PRO PASS CHALU HAI" else "FREE MODE CHALU",
                                     maxLines = 1,
                                     softWrap = false,
                                     style = MaterialTheme.typography.titleSmall.copy(
@@ -474,13 +480,13 @@ fun FilterSettingsScreen(
                             }
                             Text(
                                 text = when {
-                                    isProMode -> "All unlocked filter rules active. Ultra-fast auto-acceptance (300-700ms) with smart auto-reject."
-                                    unlockedFreeCount > 0 -> "Free Mode: $unlockedFreeCount feature(s) unlocked via Points. Locked filters are bypassed; active unlocks are enforced."
-                                    else -> "All filters are locked in Free Mode (Fast 1-2s Auto-Accept active). Unlock specific filters with Points or activate a Daily / Weekly / Monthly Pass."
+                                    isProMode -> "Sabhi unlocked filter rules chalu hain — tez auto-accept ke saath."
+                                    unlockedFreeCount > 0 -> "Free Mode: Points se $unlockedFreeCount filter khula hua hai."
+                                    else -> "Free Mode me filters lock hain. Points se filter kholein ya Pro Pass lein."
                                 },
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 11.sp
+                                    fontSize = 12.sp
                                 )
                             )
                             if (!isProMode) {
@@ -490,23 +496,22 @@ fun FilterSettingsScreen(
                                         multiFilterPreselectedIds = emptySet()
                                         showMultiFilterDialog = true
                                     },
-                                    shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                                     modifier = Modifier
-                                        .height(30.dp)
+                                        .heightIn(min = 48.dp)
                                         .testTag("buy_multiple_filters_button")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Tune,
                                         contentDescription = null,
-                                        modifier = Modifier.size(14.dp)
+                                        modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        text = "Buy 1 or Multiple Filters (Points)",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 11.sp
+                                        text = "Points Se Filter Kholein",
+                                        style = MaterialTheme.typography.labelMedium.copy(
+                                            fontWeight = FontWeight.Bold
                                         )
                                     )
                                 }
@@ -614,7 +619,7 @@ fun FilterSettingsScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Max Allowed Pickup:",
+                                text = "Grahak Ki Max Doori:",
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -656,7 +661,9 @@ fun FilterSettingsScreen(
                                 OutlinedButton(
                                     onClick = { if (isPickupUnlocked) viewModel.setMaxPickupDistance(distVal) },
                                     enabled = isPickupUnlocked,
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp),
                                     contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
                                     shape = RoundedCornerShape(8.dp),
                                     colors = if (selected) ButtonDefaults.outlinedButtonColors(
@@ -707,7 +714,7 @@ fun FilterSettingsScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Max Trip Distance:",
+                                text = "Trip Ki Max Doori:",
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -746,7 +753,9 @@ fun FilterSettingsScreen(
                                 OutlinedButton(
                                     onClick = { if (isDropUnlocked) viewModel.setMaxDropDistance(distVal) },
                                     enabled = isDropUnlocked,
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp),
                                     contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
                                     shape = RoundedCornerShape(8.dp),
                                     colors = if (selected) ButtonDefaults.outlinedButtonColors(
@@ -797,7 +806,7 @@ fun FilterSettingsScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Minimum ₹/Km Required:",
+                                text = "Har KM Kam Se Kam Rate:",
                                 style = MaterialTheme.typography.bodyMedium.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -836,7 +845,9 @@ fun FilterSettingsScreen(
                                 OutlinedButton(
                                     onClick = { if (isMinRateUnlocked) viewModel.setMinPerKmRate(rateVal) },
                                     enabled = isMinRateUnlocked,
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .heightIn(min = 48.dp),
                                     contentPadding = PaddingValues(horizontal = 2.dp, vertical = 0.dp),
                                     shape = RoundedCornerShape(8.dp),
                                     colors = if (selected) ButtonDefaults.outlinedButtonColors(
@@ -890,7 +901,7 @@ fun FilterSettingsScreen(
                                 value = newBlacklistKeyword,
                                 onValueChange = { if (isBlacklistUnlocked) newBlacklistKeyword = it },
                                 enabled = isBlacklistUnlocked,
-                                placeholder = { Text("e.g. Airport, Slum, Toll", fontSize = 13.sp) },
+                                placeholder = { Text("Jaise: Airport, Highway, Toll", fontSize = 13.sp) },
                                 modifier = Modifier
                                     .weight(1f)
                                     .testTag("blacklist_keyword_input"),
@@ -906,7 +917,9 @@ fun FilterSettingsScreen(
                                 },
                                 enabled = isBlacklistUnlocked && newBlacklistKeyword.isNotBlank(),
                                 shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.testTag("add_blacklist_button")
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("add_blacklist_button")
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Add,
@@ -914,13 +927,13 @@ fun FilterSettingsScreen(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Add", fontSize = 12.sp)
+                                Text("Jodein", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
 
                         if (settingsState.blockedLocations.isEmpty()) {
                             Text(
-                                text = "No blacklisted areas configured. Add landmark names above to auto-reject matching offers.",
+                                text = "Abhi koi jagah block nahi hai. Jahan nahi jana ho uska naam upar likhkar Jodein dabayein.",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1116,14 +1129,14 @@ fun FilterSettingsScreen(
                                     )
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = "Overlay Permission Missing",
+                                            text = "Screen Button Permission Baaki Hai",
                                             style = MaterialTheme.typography.labelMedium.copy(
                                                 fontWeight = FontWeight.Bold,
                                                 color = MaterialTheme.colorScheme.onErrorContainer
                                             )
                                         )
                                         Text(
-                                            text = "Tap to grant 'Display over other apps' in Android settings.",
+                                            text = "Settings me jakar 'Display over other apps' ON karein.",
                                             style = MaterialTheme.typography.bodySmall.copy(
                                                 color = MaterialTheme.colorScheme.onErrorContainer
                                             )
@@ -1137,10 +1150,11 @@ fun FilterSettingsScreen(
                                             )
                                             overlayPermissionLauncher.launch(intent)
                                         },
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        shape = RoundedCornerShape(8.dp)
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.heightIn(min = 48.dp)
                                     ) {
-                                        Text("Grant", fontSize = 12.sp)
+                                        Text("ON Karein", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -1871,6 +1885,7 @@ private fun SmartModesStickyBar(
     customLabel: String,
     headerLabel: String,
     onSelectMode: (AppSettings.SmartMode) -> Unit,
+    onApplyLongRoute: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -1886,20 +1901,46 @@ private fun SmartModesStickyBar(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Icon(
-                    imageVector = Icons.Default.Tune,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(16.dp)
-                )
-                Text(
-                    text = headerLabel,
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Tune,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = headerLabel,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f)),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable(onClick = onApplyLongRoute)
+                        .testTag("smart_mode_lamba_route")
+                ) {
+                    Text(
+                        text = "Lamba Route (₹150+)",
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
             }
 
             Row(

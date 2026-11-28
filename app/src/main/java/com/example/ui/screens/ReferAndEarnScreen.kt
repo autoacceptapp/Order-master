@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -274,8 +275,8 @@ fun ReferAndEarnScreen(
                 TopAppBar(
                     title = {
                         Text(
-                            text = "Refer & Earn",
-                            style = MaterialTheme.typography.titleLarge.copy(
+                            text = "Doston Ko Bhejein (Refer & Earn)",
+                            style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold
                             )
                         )
@@ -362,7 +363,7 @@ private fun BonusHeaderCard(
                     }
                     Column {
                         Text(
-                            text = "Points Balance",
+                            text = "Mera Points Balance",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -420,7 +421,7 @@ private fun BonusHeaderCard(
                             )
                         )
                         Text(
-                            text = if (hasClaimedWelcomeBonus) "Claimed" else "Available",
+                            text = if (hasClaimedWelcomeBonus) "Mil Chuka" else "Uplabdh Hai",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = 10.sp,
                                 color = if (hasClaimedWelcomeBonus) EmeraldSuccess else MaterialTheme.colorScheme.onSurfaceVariant
@@ -454,7 +455,7 @@ private fun BonusHeaderCard(
                             )
                         )
                         Text(
-                            text = "Per Captain Invited",
+                            text = "Har Dost Par",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontSize = 10.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -504,16 +505,16 @@ private fun MyReferralCodeCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Your Referral Code",
+                        text = "Apna Code Share Karein",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold
                         ),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Share this code to earn +20 Points for every driver",
+                        text = "Har dost ke join karne par +20 Points paayein",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -536,7 +537,7 @@ private fun MyReferralCodeCard(
                             modifier = Modifier.size(14.dp)
                         )
                         Text(
-                            text = "$referralCount Ref",
+                            text = "$referralCount Dost",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
@@ -558,15 +559,16 @@ private fun MyReferralCodeCard(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "Sign in to generate your referral code and earn free points.",
+                            text = "Apna referral code banane aur free points kamane ke liye Google Sign In karein.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Button(
                             onClick = onSignInRequest,
+                            modifier = Modifier.heightIn(min = 48.dp),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("Sign in with Google")
+                            Text("Google Se Sign In Karein")
                         }
                     }
                 }
@@ -587,7 +589,7 @@ private fun MyReferralCodeCard(
                     ) {
                         Column {
                             Text(
-                                text = "CODE",
+                                text = "MERA CODE",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontSize = 9.sp,
                                     letterSpacing = 1.sp
@@ -608,7 +610,9 @@ private fun MyReferralCodeCard(
                         FilledTonalButton(
                             onClick = onCopyCode,
                             shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.testTag("copy_referral_code_button")
+                            modifier = Modifier
+                                .heightIn(min = 48.dp)
+                                .testTag("copy_referral_code_button")
                         ) {
                             Icon(
                                 imageVector = if (copiedRecently) Icons.Default.CheckCircle else Icons.Default.ContentCopy,
@@ -616,7 +620,7 @@ private fun MyReferralCodeCard(
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (copiedRecently) "Copied!" else "Copy")
+                            Text(if (copiedRecently) "Copy Ho Gaya!" else "Copy")
                         }
                     }
                 }
@@ -631,7 +635,7 @@ private fun MyReferralCodeCard(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .weight(1f)
-                            .height(48.dp)
+                            .heightIn(min = 48.dp)
                             .testTag("share_code_button"),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary
@@ -644,7 +648,7 @@ private fun MyReferralCodeCard(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Share Code",
+                            text = "Code Share Karein",
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp
                         )
@@ -654,7 +658,7 @@ private fun MyReferralCodeCard(
                         onClick = onShareWhatsApp,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
-                            .height(48.dp)
+                            .heightIn(min = 48.dp)
                             .testTag("share_whatsapp_button"),
                         border = BorderStroke(1.dp, WhatsAppColor)
                     ) {
@@ -710,7 +714,7 @@ private fun EnterReferralCodeCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "Claim Referral Code",
+                    text = "Dost Ka Code Daalein",
                     style = MaterialTheme.typography.titleMedium.copy(
                         fontWeight = FontWeight.Bold
                     ),
@@ -734,7 +738,7 @@ private fun EnterReferralCodeCard(
                                 modifier = Modifier.size(12.dp)
                             )
                             Text(
-                                text = "CLAIMED",
+                                text = "MIL CHUKA",
                                 style = MaterialTheme.typography.labelSmall.copy(
                                     fontWeight = FontWeight.ExtraBold,
                                     color = EmeraldSuccess
@@ -757,24 +761,25 @@ private fun EnterReferralCodeCard(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "Please sign in with Google to enter a referral code and claim your 50 points.",
+                            text = "Dost ka referral code daal kar 50 free points paane ke liye Google Sign In karein.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Button(
                             onClick = onSignInRequest,
+                            modifier = Modifier.heightIn(min = 48.dp),
                             shape = RoundedCornerShape(12.dp)
                         ) {
-                            Text("Sign in with Google")
+                            Text("Google Se Sign In Karein")
                         }
                     }
                 }
             } else {
                 Text(
                     text = if (hasClaimedReferral)
-                        "You have already claimed your 50-point welcome bonus on this account."
+                        "Aap is account par apna 50-point welcome bonus pehle hi le chuke hain."
                     else
-                        "Enter an 8-digit referral code to claim 50 free points.",
+                        "8-digit referral code daalein aur 50 free points paayein.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -874,7 +879,7 @@ private fun EnterReferralCodeCard(
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(50.dp)
+                        .heightIn(min = 48.dp)
                         .testTag("submit_referral_button"),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
@@ -888,7 +893,7 @@ private fun EnterReferralCodeCard(
                             strokeWidth = 2.dp
                         )
                         Spacer(modifier = Modifier.width(10.dp))
-                        Text("Verifying...")
+                        Text("Check Ho Raha Hai...")
                     } else if (hasClaimedReferral) {
                         Icon(
                             imageVector = Icons.Default.CheckCircle,
@@ -898,7 +903,7 @@ private fun EnterReferralCodeCard(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Bonus Already Claimed",
+                            text = "Bonus Mil Chuka Hai",
                             fontWeight = FontWeight.Bold
                         )
                     } else {
@@ -909,7 +914,7 @@ private fun EnterReferralCodeCard(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Submit",
+                            text = "Submit Karein",
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -940,7 +945,7 @@ private fun ReferralInstructionsCard(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "How Refer & Earn Works",
+                text = "Refer & Earn Kaise Kaam Karta Hai",
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontWeight = FontWeight.Bold
                 ),
@@ -966,12 +971,12 @@ private fun ReferralInstructionsCard(
                 }
                 Column {
                     Text(
-                        text = "Share Your Code",
+                        text = "Apna Code Share Karein",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Send your 8-digit referral code to other captains.",
+                        text = "Apna 8-digit referral code baaki drivers ko WhatsApp ya share button se bhejein.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -997,12 +1002,12 @@ private fun ReferralInstructionsCard(
                 }
                 Column {
                     Text(
-                        text = "Both Get Rewarded",
+                        text = "Dono Ko Points Milenge",
                         style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "Your referee receives 50 Welcome Points, and you receive +20 Referral Points.",
+                        text = "Aapke dost ko 50 Welcome Points milenge, aur aapko +20 Referral Points.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

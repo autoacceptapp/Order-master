@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -274,10 +275,10 @@ fun ProfileScreen(
                             )
                             Text(
                                 text = when (val status = accessStatus) {
-                                    is AccessStatus.PassActive -> "${status.passTier.title} • Active"
-                                    is AccessStatus.TrialActive -> "Free Trial • Active"
-                                    is AccessStatus.Expired -> "Free Mode • Standard"
-                                    AccessStatus.Loading -> "Syncing License..."
+                                    is AccessStatus.PassActive -> "${status.passTier.title} • Chalu Hai"
+                                    is AccessStatus.TrialActive -> "Free Trial • Chalu Hai"
+                                    is AccessStatus.Expired -> "Free Mode • Basic"
+                                    AccessStatus.Loading -> "Account Load Ho Raha Hai..."
                                 },
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -332,15 +333,15 @@ fun ProfileScreen(
                             }
                             Column {
                                 Text(
-                                    text = if (userAuthState.isLoggedIn) "Google Account Linked" else "Google Account Sync",
+                                    text = if (userAuthState.isLoggedIn) "Google Account Link Hai" else "Google Account Sync",
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
                                     text = if (userAuthState.isLoggedIn) {
-                                        userAuthState.userEmail ?: "Cloud Sync Active"
+                                        userAuthState.userEmail ?: "Cloud Backup Chalu Hai"
                                     } else {
-                                        "Backup filters & sync ride logs"
+                                        "Filters aur ride history save rakhne ke liye link karein"
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -365,7 +366,7 @@ fun ProfileScreen(
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Text(
-                                        text = "Active",
+                                        text = "Chalu",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.Bold,
                                             color = PrimaryEmerald
@@ -393,7 +394,7 @@ fun ProfileScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "CUSTOM PROFILE ID",
+                                    text = "CUSTOM CAPTAIN ID",
                                     style = MaterialTheme.typography.labelSmall.copy(
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 10.sp,
@@ -417,9 +418,9 @@ fun ProfileScreen(
                             IconButton(
                                 onClick = {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    val clip = ClipData.newPlainText("Custom Profile ID", customProfileId)
+                                    val clip = ClipData.newPlainText("Captain ID", customProfileId)
                                     clipboard.setPrimaryClip(clip)
-                                    Toast.makeText(context, "Profile ID Copied", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Captain ID Copy Ho Gaya", Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier
                                     .size(48.dp)
@@ -444,7 +445,7 @@ fun ProfileScreen(
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(44.dp)
+                                .heightIn(min = 48.dp)
                                 .testTag("profile_sign_out_button"),
                             shape = RoundedCornerShape(12.dp)
                         ) {
@@ -455,7 +456,7 @@ fun ProfileScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Sign Out from Google",
+                                text = "Sign Out Karein",
                                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
                             )
                         }
@@ -464,7 +465,7 @@ fun ProfileScreen(
                             onClick = onTriggerGoogleSignIn,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(46.dp)
+                                .heightIn(min = 48.dp)
                                 .testTag("profile_sign_in_with_google_button"),
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
@@ -479,7 +480,7 @@ fun ProfileScreen(
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
-                                text = "Sign in with Google",
+                                text = "Google Se Sign In Karein",
                                 style = MaterialTheme.typography.labelLarge.copy(
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.surface
@@ -582,10 +583,10 @@ fun ProfileScreen(
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = when (currentAccess) {
-                                    is AccessStatus.PassActive -> "${currentAccess.passTier.title} Active • ${currentAccess.formattedRemaining}"
-                                    is AccessStatus.TrialActive -> "2-Day Free Trial • ${currentAccess.formattedRemaining} left"
-                                    is AccessStatus.Expired -> "Free Mode • Buy filters with Points or get Pro Pass"
-                                    AccessStatus.Loading -> "Checking cloud license..."
+                                    is AccessStatus.PassActive -> "${currentAccess.passTier.title} Chalu • ${currentAccess.formattedRemaining}"
+                                    is AccessStatus.TrialActive -> "2-Din Free Trial • ${currentAccess.formattedRemaining} baaki"
+                                    is AccessStatus.Expired -> "Free Mode • Points se filter kholein ya Pro Pass lein"
+                                    AccessStatus.Loading -> "License check ho raha hai..."
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -596,10 +597,12 @@ fun ProfileScreen(
                     FilledTonalButton(
                         onClick = onNavigateToSubscription,
                         shape = RoundedCornerShape(10.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier.testTag("profile_manage_subscription_button")
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("profile_manage_subscription_button")
                     ) {
-                        Text("Store", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+                        Text("Store", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold))
                     }
                 }
             }
@@ -673,7 +676,7 @@ fun ProfileScreen(
                                 }
                             }
                             Text(
-                                text = "Code: ${referralCode.orEmpty()} • Earn 20 pts per invite",
+                                text = "Code: ${referralCode.orEmpty()} • Har dost par +20 Pts",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -719,7 +722,7 @@ fun ProfileScreen(
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
-                            text = "Historical Shift Performance",
+                            text = "Meri Ride Performance",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold
                             )
@@ -731,23 +734,23 @@ fun ProfileScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         StatTile(
-                            title = "Total Scanned",
+                            title = "Total Dekhi",
                             value = "$totalOrders",
-                            subtitle = "Evaluations",
+                            subtitle = "Rides",
                             modifier = Modifier.weight(1f),
                             color = MaterialTheme.colorScheme.primary
                         )
                         StatTile(
-                            title = "Accepted",
+                            title = "Li Gayi",
                             value = "$acceptedOrders",
-                            subtitle = "Matches",
+                            subtitle = "Accepted",
                             modifier = Modifier.weight(1f),
                             color = PrimaryEmerald
                         )
                         StatTile(
-                            title = "Accept Ratio",
+                            title = "Pass Rate",
                             value = acceptanceRateDisplay,
-                            subtitle = "Efficiency",
+                            subtitle = "Hisaab",
                             modifier = Modifier.weight(1f),
                             color = AmberAccent
                         )
